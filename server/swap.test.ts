@@ -35,6 +35,13 @@ describe('wallet swap classification', () => {
     expect(flows.get(tokenA)).toBe(-18578888329828771644640278n);
   });
 
+  it('recognizes an outbound-only Binance DEX router swap', () => {
+    const dex = '0xb300000b72deaeb607a12d5f54773d1c19c7028d';
+    const event = { address: dex, topics: ['0xf228de527fc1b9843baac03b9a04565473a263375950e63435d4138464386f46'], data: '0x' };
+    expect(walletSwapFlows(wallet, 0n, [transfer(tokenA, wallet, dex, 100n), event]).get(tokenA)).toBe(-100n);
+    expect(walletSwapFlows(wallet, 0n, [transfer(tokenA, wallet, dex, 100n), { ...event, address: router }]).size).toBe(0);
+  });
+
   it('tracks token-to-token flows without counting other wallet transfers', () => {
     const flows = walletSwapFlows(wallet, 0n, [
       transfer(tokenA, wallet, router, 100n),

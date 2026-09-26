@@ -286,8 +286,9 @@ async function historicalVerificationLoop() {
           WHERE tx_hash=$1 AND source IN ('gmgn','node+gmgn')`, [row.hash]);
         return outcome;
       }));
-      const remaining = await pool.query(`SELECT COUNT(DISTINCT tx_hash)::int AS count FROM trades
-        WHERE source IN ('gmgn','node+gmgn') AND verification_attempted_at IS NULL`);
+      const remaining = await pool.query(`SELECT COUNT(DISTINCT t.tx_hash)::int AS count FROM trades t
+        JOIN kols k ON k.address=t.wallet_address
+        WHERE k.is_tracked AND t.source IN ('gmgn','node+gmgn') AND t.verification_attempted_at IS NULL`);
       await setState('historical_verification', {
         at: new Date().toISOString(),
         remaining: remaining.rows[0].count,

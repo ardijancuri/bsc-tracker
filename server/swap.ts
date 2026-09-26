@@ -6,6 +6,8 @@ export const swapTopics = new Set([
 // The Flap/GMGN router emits the actual BNB paid to the recipient in its Swap event.
 const flapRouter = '0x1de460f363af910f51726def188f9004276bf4bc';
 const flapSwapTopic = '0x8619026a40d38bedb4002fe511cea4bc4a9b336710efe8f21a61869a7ee0f02a';
+const binanceDexRouter = '0xb300000b72deaeb607a12d5f54773d1c19c7028d';
+const binanceDexSwapTopic = '0xf228de527fc1b9843baac03b9a04565473a263375950e63435d4138464386f46';
 const botRouter = '0x9689992f5b5c09447f15906d8d11214944488341';
 const wrappedBnb = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c';
 const withdrawalTopic = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65';
@@ -13,7 +15,8 @@ const withdrawalTopic = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a
 export type TransferLog = { address: string; topics: string[]; data: string };
 const addressFromTopic = (topic: string | undefined) => topic?.length === 66 ? `0x${topic.slice(-40).toLowerCase()}` : null;
 export const hasRecognizedSwap = (logs: TransferLog[]) => logs.some(log => swapTopics.has(log.topics[0]?.toLowerCase()) ||
-  (log.address.toLowerCase() === flapRouter && log.topics[0]?.toLowerCase() === flapSwapTopic));
+  (log.address.toLowerCase() === flapRouter && log.topics[0]?.toLowerCase() === flapSwapTopic) ||
+  (log.address.toLowerCase() === binanceDexRouter && log.topics[0]?.toLowerCase() === binanceDexSwapTopic));
 
 export function nativeSellProceeds(wallet: string, soldRaw: bigint, logs: TransferLog[], router?: string | null): bigint | null {
   const zero = '0x' + '0'.repeat(64);

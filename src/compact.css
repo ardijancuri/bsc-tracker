@@ -41,7 +41,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .section-title p { font-size: 13px; color: #9aa4a8; }
 .freshness { font-size: 12px; }
 .overview-strip { border-top: 0; border-bottom: 1px solid var(--line); margin-bottom: 25px; padding: 2px 0 20px; }
-.trades-page .overview-strip { border-bottom: 0; }
+.trades-page .overview-strip { border-bottom: 0; margin-bottom: 16px; }
 .trades-page .overview-strip .metric { border-bottom: 0; }
 .metric { border-right: 0; padding: 0 25px; gap: 5px; }
 .metric > span { font-size: 11px; color: #909a9f; }

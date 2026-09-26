@@ -17,6 +17,7 @@ export function calculateLeaderboard(trades: ValuedTrade[], wallets: string[], n
     walletAddress: wallet, period: period.name, realizedProfitUsd: null, buyCount: 0, sellCount: 0, winRate: null,
   });
   const lots = new Map<string, Lot[]>();
+  const incomplete = new Set<string>();
   for (const trade of trades) {
     const time = new Date(trade.timestamp).getTime();
     const quantity = Number(trade.tokenAmount);
@@ -37,24 +38,30 @@ export function calculateLeaderboard(trades: ValuedTrade[], wallets: string[], n
     }
     let remaining = quantity;
     let realized = 0;
-    let matched = false;
+    let fullyValued = valued;
     while (remaining > 1e-12 && queue.length) {
       const lot = queue[0];
       const used = Math.min(remaining, lot.quantity);
       if (valued && lot.costPerToken != null) {
         realized += (amountUsd! / quantity - lot.costPerToken) * used;
-        matched = true;
-      }
+      } else fullyValued = false;
       remaining -= used;
       lot.quantity -= used;
       if (lot.quantity <= 1e-12) queue.shift();
     }
-    if (matched) for (const period of periods) {
+    if (remaining > 1e-12) fullyValued = false;
+    for (const period of periods) {
       if (time < now - period.days * 86400_000) continue;
-      const stat = results.get(`${trade.walletAddress}:${period.name}`);
-      if (stat) stat.realizedProfitUsd = (stat.realizedProfitUsd || 0) + realized;
+      const statKey = `${trade.walletAddress}:${period.name}`;
+      const stat = results.get(statKey);
+      if (!stat) continue;
+      if (fullyValued) stat.realizedProfitUsd = (stat.realizedProfitUsd || 0) + realized;
+      else incomplete.add(statKey);
     }
   }
-  for (const stat of results.values()) if (stat.sellCount === 0) stat.realizedProfitUsd = 0;
+  for (const [key, stat] of results) {
+    if (stat.sellCount === 0) stat.realizedProfitUsd = 0;
+    else if (incomplete.has(key)) stat.realizedProfitUsd = null;
+  }
   return [...results.values()];
 }

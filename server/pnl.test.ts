@@ -27,8 +27,17 @@ describe('observed realized P&L', () => {
     expect(stats.find(row => row.period === '1d')?.realizedProfitUsd).toBeNull();
   });
 
-  it('consumes FIFO lots and leaves unmatched quantities out of profit', () => {
+  it('does not show a partial total when a sale exceeds observed FIFO lots', () => {
     const stats = calculateLeaderboard([trade('buy', 4, '2', '20'), trade('buy', 3, '2', '40'), trade('sell', 0.5, '5', '100')], [wallet], now);
-    expect(stats.find(row => row.period === '1d')?.realizedProfitUsd).toBe(20);
+    expect(stats.find(row => row.period === '1d')?.realizedProfitUsd).toBeNull();
+  });
+
+  it('does not rank a wallet on complete sales when another sale lacks a cost basis', () => {
+    const otherToken = '0x0000000000000000000000000000000000000003';
+    const stats = calculateLeaderboard([
+      trade('buy', 3, '2', '20'), trade('sell', 1, '2', '30'),
+      { ...trade('sell', 0.5, '1', '40'), tokenAddress: otherToken },
+    ], [wallet], now);
+    expect(stats.find(row => row.period === '7d')?.realizedProfitUsd).toBeNull();
   });
 });
