@@ -31,6 +31,9 @@ export async function ensureSchema() {
     );
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS logo_checked_at timestamptz;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS price_source text;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS total_supply_raw numeric;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS supply_checked_at timestamptz;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS market_cap_checked_at timestamptz;
     CREATE TABLE IF NOT EXISTS trades (
       id text PRIMARY KEY,
       tx_hash text NOT NULL,

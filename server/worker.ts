@@ -343,6 +343,76 @@ async function logoLoop() {
   }
 }
 
+async function refreshTokenSupplyOne(): Promise<boolean> {
+  const result = await pool.query(`SELECT t.address FROM tokens t
+    WHERE t.price_source='onchain' AND t.price_usd > 0 AND t.decimals BETWEEN 0 AND 36
+      AND (t.supply_checked_at IS NULL OR t.supply_checked_at < now() - interval '24 hours')
+      AND EXISTS (SELECT 1 FROM trades x JOIN kols k ON k.address=x.wallet_address
+        WHERE x.token_address=t.address AND k.is_tracked AND x.block_number IS NOT NULL)
+    ORDER BY t.metadata_updated_at DESC NULLS LAST LIMIT 1`);
+  const address = result.rows[0]?.address as string | undefined;
+  if (!address) return false;
+  try {
+    const raw = await rpc<string>('eth_call', [{ to: address, data: '0x18160ddd' }, 'latest']);
+    if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) throw new Error('Invalid totalSupply response');
+    const supply = BigInt(raw);
+    await pool.query('UPDATE tokens SET total_supply_raw=$2,supply_checked_at=now() WHERE address=$1', [address, supply > 0n ? supply.toString() : null]);
+  } catch (error) {
+    await pool.query(`UPDATE tokens SET supply_checked_at=now()-interval '23 hours' WHERE address=$1`, [address]);
+    console.warn(`Token supply ${address}:`, error);
+  }
+  return true;
+}
+
+async function supplyLoop() {
+  for (;;) {
+    let checked = false;
+    try { checked = await refreshTokenSupplyOne(); } catch (error) { console.warn('Token supply worker:', error); }
+    await sleep(checked ? 250 : 60_000);
+  }
+}
+
+async function refreshMarketCaps(): Promise<boolean> {
+  const result = await pool.query(`SELECT t.address FROM tokens t
+    WHERE (t.market_cap_checked_at IS NULL OR t.market_cap_checked_at < now() - interval '30 minutes')
+      AND EXISTS (SELECT 1 FROM trades x JOIN kols k ON k.address=x.wallet_address
+        WHERE x.token_address=t.address AND k.is_tracked AND x.block_number IS NOT NULL)
+    ORDER BY (SELECT MAX(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 30`);
+  const addresses = result.rows.map(row => row.address as string);
+  if (!addresses.length) return false;
+  try {
+    const response = await fetch(`https://api.dexscreener.com/tokens/v1/bsc/${addresses.join(',')}`, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const pairs = await response.json() as { baseToken?: { address?: string }; marketCap?: number | null; liquidity?: { usd?: number } }[];
+    if (!Array.isArray(pairs)) throw new Error('Invalid token pairs response');
+    const wanted = new Set(addresses);
+    const caps = new Map<string, { cap: number; liquidity: number }>();
+    for (const pair of pairs) {
+      const address = pair.baseToken?.address?.toLowerCase();
+      const cap = Number(pair.marketCap);
+      const liquidity = Number(pair.liquidity?.usd || 0);
+      if (!address || !wanted.has(address) || !Number.isFinite(cap) || cap <= 0) continue;
+      if (!caps.has(address) || liquidity > caps.get(address)!.liquidity) caps.set(address, { cap, liquidity });
+    }
+    for (const address of addresses) {
+      await pool.query('UPDATE tokens SET market_cap_usd=$2,market_cap_checked_at=now() WHERE address=$1', [address, caps.get(address)?.cap ?? null]);
+    }
+    await notifyUpdate();
+  } catch (error) {
+    await pool.query(`UPDATE tokens SET market_cap_checked_at=now()-interval '25 minutes' WHERE address=ANY($1::text[])`, [addresses]);
+    console.warn('Market cap worker:', error);
+  }
+  return true;
+}
+
+async function marketCapLoop() {
+  for (;;) {
+    let checked = false;
+    try { checked = await refreshMarketCaps(); } catch (error) { console.warn('Market cap worker:', error); }
+    await sleep(checked ? 1000 : 60_000);
+  }
+}
+
 async function repairSellValueOne() {
   const result = await pool.query(`SELECT id,tx_hash FROM trades WHERE side='sell' AND amount_usd IS NULL
     AND source IN ('node','node+gmgn') AND block_number IS NOT NULL
@@ -441,5 +511,5 @@ if (process.env.BSC_VERIFY_TX_HASH) {
   await verifyTransactionHash(process.env.BSC_VERIFY_TX_HASH);
   await pool.end();
 } else {
-  await Promise.all([nodeLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), logoLoop(), sellValueLoop()]);
+  await Promise.all([nodeLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), logoLoop(), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }
