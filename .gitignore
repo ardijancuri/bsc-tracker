@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-server/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+bscan-deploy.tar.gz
+output/*.tar.gz

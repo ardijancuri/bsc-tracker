@@ -1,0 +1,36 @@
+
+# Public, read-only bscan app.
+bscan.65.21.69.43.sslip.io {
+    tls {
+        issuer acme https://acme-v02.api.letsencrypt.org/directory {
+            disable_http_challenge
+        }
+    }
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3300
+}
+
+# Public domain for bscan.
+bscan.fun {
+    tls {
+        issuer acme https://acme-v02.api.letsencrypt.org/directory {
+            disable_http_challenge
+        }
+    }
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3300
+}
+
+www.bscan.fun {
+    tls {
+        issuer acme https://acme-v02.api.letsencrypt.org/directory {
+            disable_http_challenge
+        }
+    }
+    redir https://bscan.fun{uri} 308
+}
+
+# The shared proxy disables automatic HTTP redirects.
+http://bscan.fun, http://www.bscan.fun {
+    redir https://bscan.fun{uri} 308
+}
