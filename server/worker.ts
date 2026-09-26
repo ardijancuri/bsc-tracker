@@ -6,6 +6,7 @@ import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows }
 import { calculateLeaderboard } from './pnl.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
+const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
 const wsUrl = process.env.BSC_RPC_WS || 'ws://127.0.0.1:8546';
 const bnbUsdFeed = '0x0567f2323251f0aab15c8dfb1967e4e8a7d42aee';
 const stableSymbols = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI', 'USD1']);
@@ -20,8 +21,8 @@ type RpcTx = { hash: string; from: string; to: string | null; value: string; blo
 type RpcReceipt = { status: string; logs: RpcLog[]; blockHash: string };
 type RpcBlock = { number: string; hash: string; parentHash: string; timestamp: string };
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
-  const response = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }), signal: AbortSignal.timeout(20000) });
+async function rpc<T>(method: string, params: unknown[], endpoint = rpcUrl): Promise<T> {
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }), signal: AbortSignal.timeout(20000) });
   if (!response.ok) throw new Error(`RPC ${method}: HTTP ${response.status}`);
   const body = await response.json() as { result?: T; error?: { message: string } };
   if (body.error) throw new Error(`RPC ${method}: ${body.error.message}`);
@@ -81,7 +82,7 @@ async function bnbPrice(block: number | 'latest', blockTime?: number): Promise<{
       const raw = await rpc<string>('eth_call', [{ to: bnbUsdFeed, data: '0xfeaf968c' }, block === 'latest' ? 'latest' : hex(block)]);
       round = parseOracleRound(raw);
     } catch (error) {
-      if (block === 'latest' || !blockTime || !/not supported|missing trie node|state.*unavailable/i.test(String(error))) throw error;
+      if (block === 'latest' || !blockTime || !/not supported|missing trie node|state.*unavailable|header not found|block not found/i.test(String(error))) throw error;
       round = await historicalBnbPrice(blockTime);
     }
     if (!round) return null;
@@ -158,9 +159,9 @@ async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock,
       quoteAmount && (quoteSymbol?.toUpperCase() === 'WBNB' || quoteSymbol?.toUpperCase() === 'BNB') && oracle ? String(Number(quoteAmount) * oracle.price) : null;
     const priceUsd = amountUsd && Number(flow.amount) > 0 ? String(Number(amountUsd) / Number(flow.amount)) : null;
     const side = directional ? (flow.raw > 0n ? 'buy' : 'sell') : 'unknown';
-    await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node')
-      ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END`,
+    await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now())
+      ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
       [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp))]);
     if (priceUsd && Number.isFinite(Number(priceUsd))) await pool.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
   }
@@ -243,6 +244,62 @@ async function nodeLoop() {
       console.error('Node worker:', error);
       await setState('node_error', { message: String(error), at: new Date().toISOString() });
       await sleep(5000);
+    }
+  }
+}
+
+async function verifyImportedTrade(hash: string, expectedWallets: string[]): Promise<'verified' | 'unmatched'> {
+  const [tx, receipt] = await Promise.all([
+    rpc<RpcTx | null>('eth_getTransactionByHash', [hash], historicalRpcUrl),
+    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash], historicalRpcUrl),
+  ]);
+  const wallet = tx && normalized(tx.from);
+  if (!tx || !receipt || !wallet || !expectedWallets.includes(wallet) || receipt.status !== '0x1') return 'unmatched';
+  const block = await rpc<RpcBlock | null>('eth_getBlockByNumber', [tx.blockNumber, false], historicalRpcUrl);
+  if (!block || block.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) return 'unmatched';
+  await persistNodeTrade(tx, receipt, block, wallet);
+  const result = await pool.query(`SELECT COUNT(*)::int AS count FROM trades
+    WHERE tx_hash=$1 AND wallet_address=$2 AND source='node+gmgn' AND block_number IS NOT NULL`, [hash, wallet]);
+  return result.rows[0].count > 0 ? 'verified' : 'unmatched';
+}
+
+async function historicalVerificationLoop() {
+  for (;;) {
+    try {
+      const pending = await pool.query(`SELECT t.tx_hash AS hash,array_agg(DISTINCT t.wallet_address) AS wallets
+        FROM trades t JOIN kols k ON k.address=t.wallet_address
+        WHERE k.is_tracked AND (
+          (t.source='gmgn' AND t.block_number IS NULL
+            AND (t.verification_attempted_at IS NULL OR t.verification_attempted_at < now() - interval '1 day'))
+          OR (t.source='node+gmgn' AND t.verification_attempted_at IS NULL)
+        )
+        GROUP BY t.tx_hash ORDER BY MAX(t.timestamp) DESC LIMIT 6`);
+      if (!pending.rows.length) {
+        await sleep(60_000);
+        continue;
+      }
+      const outcomes = await Promise.all(pending.rows.map(async row => {
+        let outcome: 'verified' | 'unmatched' | 'error';
+        try { outcome = await verifyImportedTrade(row.hash, row.wallets); }
+        catch (error) { console.warn(`Historical verification ${row.hash}:`, error); outcome = 'error'; }
+        await pool.query(`UPDATE trades SET verification_attempted_at=now()
+          WHERE tx_hash=$1 AND source IN ('gmgn','node+gmgn')`, [row.hash]);
+        return outcome;
+      }));
+      const remaining = await pool.query(`SELECT COUNT(DISTINCT tx_hash)::int AS count FROM trades
+        WHERE source IN ('gmgn','node+gmgn') AND verification_attempted_at IS NULL`);
+      await setState('historical_verification', {
+        at: new Date().toISOString(),
+        remaining: remaining.rows[0].count,
+        verified: outcomes.filter(outcome => outcome === 'verified').length,
+        unmatched: outcomes.filter(outcome => outcome === 'unmatched').length,
+        errors: outcomes.filter(outcome => outcome === 'error').length,
+      });
+      if (outcomes.includes('verified')) await notifyUpdate();
+      await sleep(250);
+    } catch (error) {
+      console.error('Historical verification worker:', error);
+      await sleep(10_000);
     }
   }
 }
@@ -477,7 +534,7 @@ async function leaderboardLoop() {
         pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address'),
         pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp
           FROM trades t JOIN kols k ON k.address=t.wallet_address
-          WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.timestamp >= now() - interval '30 days' AND t.side IN ('buy','sell')
+          WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
           ORDER BY t.timestamp ASC,t.id ASC`),
       ]);
       const stats = calculateLeaderboard(tradeRows.rows, roster.rows.map(row => row.address as string));
@@ -518,5 +575,5 @@ if (process.env.BSC_VERIFY_TX_HASH) {
   await verifyTransactionHash(process.env.BSC_VERIFY_TX_HASH);
   await pool.end();
 } else {
-  await Promise.all([nodeLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), logoLoop(), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), logoLoop(), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }

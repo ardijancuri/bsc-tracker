@@ -58,7 +58,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 
 .trade-row { grid-template-columns: minmax(190px, 1.7fr) minmax(315px, 1.35fr) minmax(95px, .55fr) 76px; gap: 13px; min-height: 64px; padding: 9px 14px; border-bottom: 0; }
 .trades-table { background: #0b0e11; border: 1px solid #30383e; border-radius: 8px; overflow: hidden; }
-.trades-table .trade-row { grid-template-columns: minmax(170px, 1.7fr) minmax(235px, 1.35fr) minmax(125px, .7fr) 76px; min-height: 58px; padding: 6px 14px; }
+.trades-table .trade-row { grid-template-columns: minmax(170px, 1.7fr) minmax(235px, 1.35fr) minmax(155px, .8fr) 76px; min-height: 58px; padding: 6px 14px; }
 .trade-row:not(.table-head):nth-child(odd), .leaderboard-row:not(.table-head):nth-child(odd) { background: #15181b; }
 .trade-row:not(.table-head):hover, .leaderboard-row:not(.table-head):hover { background: #202529; }
 .trades-table .trade-row:nth-child(odd) { background: #0b0e11; }
@@ -84,6 +84,9 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .trade-value { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; color: #edf1f2; font-size: 16px; font-weight: 800; text-align: left; white-space: nowrap; }
 .trade-value > strong { color: inherit; font-size: 16px; font-weight: 800; }
 .trade-value .trade-amount { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: #acb6ba; font-size: 12px; font-weight: 700; }
+.trades-table .trade-value { flex-direction: row; align-items: baseline; gap: 8px; overflow: hidden; }
+.trades-table .trade-value > strong { flex: none; }
+.trades-table .trade-value .trade-amount { min-width: 0; }
 .trade-value.buy { color: var(--green); }
 .trade-value.sell { color: var(--red); }
 .trade-time { display: block; text-align: right; }
@@ -119,6 +122,8 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .token-column .token-list { display: flex; flex-direction: column; gap: 18px; }
 .token-card { display: block; border: 0; border-radius: 8px; background: #191d20; padding: 15px 16px 14px; transform: none; }
 .token-card:hover { background: #22282b; border: 0; transform: none; }
+.token-card-main { display: block; }
+.token-card-main:focus-visible, .token-trade-kol:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
 .token-card-top .identity { flex: 1; min-width: 0; }
 .token-card-cap { color: #aeb8bc; flex: none; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .copy-wallet:focus-visible { outline: 2px solid var(--yellow); outline-offset: 3px; }
@@ -131,6 +136,18 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .token-card-stats > div { gap: 5px; }
 .token-card-stats span { font-size: 11px; white-space: nowrap; }
 .token-card-stats strong { font-size: 14px; }
+.token-card-trades { border-top: 1px solid #343b3f; margin-top: 12px; padding-top: 5px; }
+.token-card-trade { display: grid; grid-template-columns: minmax(0, 1fr) 30px 78px 44px; align-items: center; gap: 5px; min-height: 24px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.token-trade-kol { min-width: 0; overflow: hidden; }
+.token-card-trade .identity { display: flex; width: 100%; gap: 6px; }
+.token-card-trade .avatar { width: 19px; height: 19px; font-size: 9px; }
+.token-card-trade .identity-copy { display: block; flex: 1; }
+.token-card-trade .identity-copy strong { display: block; max-width: 100%; font-size: 11px; }
+.token-trade-side { color: #9aa5aa; text-transform: capitalize; }
+.token-trade-value { color: #d3dadd; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.token-trade-side.buy, .token-trade-value.buy { color: var(--green); }
+.token-trade-side.sell, .token-trade-value.sell { color: var(--red); }
+.token-card-trade time { color: #8e9a9f; text-align: right; white-space: nowrap; }
 .token-card-foot { border: 0; padding: 0; gap: 9px; font-size: 11px; white-space: nowrap; }
 .unpriced-section { margin-top: 31px; }
 .unpriced-grid { gap: 18px; }
@@ -234,7 +251,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .section-title h1 { font-size: 29px; }
   .section-title p { font-size: 12px; }
   .trade-row, .profile-trades .trade-row { grid-template-columns: minmax(0, 1fr) 92px; gap: 6px 12px; min-height: 77px; padding: 10px 7px; }
-  .trades-table .trade-row { grid-template-columns: minmax(0, 1fr) 92px; min-height: 72px; padding: 7px; row-gap: 4px; }
+  .trades-table .trade-row { grid-template-columns: minmax(0, 1fr) 140px; min-height: 72px; padding: 7px; row-gap: 4px; }
   .trades-table .trade-kol .avatar { width: 35px; height: 35px; }
   .trades-table .trade-activity .token-avatar { width: 29px; height: 29px; }
   .token-detail-page .profile-trades .trade-row { grid-template-columns: minmax(0, 1fr) 92px; }

@@ -59,7 +59,7 @@ app.get<{ Querystring: { limit?: string; cursor?: string; side?: string; kol?: s
   return { items: rows, nextCursor: result.rows.length > count && last ? Buffer.from(JSON.stringify({ ts: last.timestamp, id: last.id })).toString('base64url') : null };
 });
 
-app.get<{ Querystring: { limit?: string; offset?: string; since?: string } }>('/api/tokens', async (request, reply) => {
+app.get<{ Querystring: { limit?: string; offset?: string; since?: string; withTrades?: string } }>('/api/tokens', async (request, reply) => {
   const limit = int(request.query.limit, 150, 300);
   const offsetRaw = Number(request.query.offset);
   const offset = Number.isInteger(offsetRaw) && offsetRaw >= 0 ? Math.min(offsetRaw, 100000) : 0;
@@ -70,8 +70,24 @@ app.get<{ Querystring: { limit?: string; offset?: string; since?: string } }>('/
     pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL GROUP BY v.address ${sinceValue ? 'HAVING MAX(t.created_at) > $3::timestamptz' : ''} ORDER BY MAX(t.timestamp) DESC,v.address ASC LIMIT $1 OFFSET $2`, sinceValue ? [limit, offset, sinceValue] : [limit, offset]),
     pool.query(`SELECT COUNT(DISTINCT t.token_address)::int AS total FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL ${sinceValue ? 'AND t.created_at > $1::timestamptz' : ''}`, sinceValue ? [sinceValue] : []),
   ]);
+  const tradeRows = request.query.withTrades === '1' && result.rows.length ? (await pool.query(`
+    SELECT ${tradeSelect()} FROM unnest($1::text[]) AS candidate(address)
+    CROSS JOIN LATERAL (
+      SELECT t.* FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address
+      WHERE t.token_address=candidate.address AND tracked.is_tracked AND t.block_number IS NOT NULL
+      ORDER BY t.timestamp DESC,t.id DESC LIMIT 5
+    ) t
+    JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
+    ORDER BY t.token_address,t.timestamp DESC,t.id DESC
+  `, [result.rows.map(row => row.address)])).rows : [];
+  const tradesByToken = new Map<string, typeof tradeRows>();
+  for (const trade of tradeRows) {
+    const trades = tradesByToken.get(trade.tokenAddress) ?? [];
+    trades.push(trade);
+    tradesByToken.set(trade.tokenAddress, trades);
+  }
   const total = count.rows[0]?.total || 0;
-  return { items: result.rows, total, nextOffset: offset + result.rows.length < total ? offset + result.rows.length : null };
+  return { items: request.query.withTrades === '1' ? result.rows.map(row => ({ ...row, recentTrades: tradesByToken.get(row.address) ?? [] })) : result.rows, total, nextOffset: offset + result.rows.length < total ? offset + result.rows.length : null };
 });
 
 app.get<{ Params: { address: string } }>('/api/tokens/:address', async request => {

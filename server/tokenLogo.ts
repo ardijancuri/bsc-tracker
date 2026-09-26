@@ -14,8 +14,12 @@ export function flapLogoFromHtml(html: string, address: string): string | null {
     const rawImage = html.slice(metadataStart, metadataStart + 1500).match(/\\"image\\":\\"([^\"]+)\\"/i)?.[1];
     if (!rawImage) return null;
     const image = rawImage.replaceAll('\\/', '/').replaceAll('\\u0026', '&').replaceAll('&amp;', '&');
-    if (image.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${image.slice(7).replace(/^ipfs\//, '')}`;
-    return /^https:\/\//i.test(image) ? image : null;
+    if (/^https:\/\//i.test(image)) return image;
+    const cid = image.replace(/^ipfs:\/\//i, '').replace(/^ipfs\//i, '');
+    if (/^b[a-z2-7]{20,}$/.test(cid) || /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid)) {
+      return `https://gateway.pinata.cloud/ipfs/${cid}`;
+    }
+    return null;
   }
   return null;
 }

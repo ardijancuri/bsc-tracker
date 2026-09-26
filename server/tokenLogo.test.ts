@@ -9,6 +9,14 @@ describe('Flap token logo extraction', () => {
     expect(flapLogoFromHtml(html, address)).toBe('https://wiredup.fun/uploads/heyicoins.png');
   });
 
+  it('resolves a bare IPFS CID from FlapCat metadata', () => {
+    const flapCat = '0xc92c66549abbcdcd6b050f9ac4df2652323f7777';
+    const cid = 'bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe';
+    const html = `\\"coin\\":{\\"address\\":\\"${flapCat}\\",\\"metadata\\":{\\"image\\":\\"${cid}\\"}}`;
+    expect(flapLogoFromHtml(html, flapCat)).toBe(`https://gateway.pinata.cloud/ipfs/${cid}`);
+    expect(flapLogoFromHtml(html.replace(cid, `ipfs://${cid}`), flapCat)).toBe(`https://gateway.pinata.cloud/ipfs/${cid}`);
+  });
+
   it('ignores another token and non-image schemes', () => {
     const html = `\\"coin\\":{\\"address\\":\\"${address}\\",\\"metadata\\":{\\"image\\":\\"javascript:alert(1)\\"}}`;
     expect(flapLogoFromHtml(html, address)).toBeNull();

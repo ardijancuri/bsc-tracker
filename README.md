@@ -11,7 +11,7 @@ Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handl
 
 The worker follows new BSC blocks via WebSocket and queries the local HTTP RPC for ERC-20 transfers, transactions, and receipts. It waits six blocks, stores trades once, and rescans after short reorganizations. BNB/USD comes from the [Chainlink BNB/USD feed on BSC](https://data.chain.link/feeds/bsc/mainnet/bnb-usd), read through the local node. BNB-quoted swaps are valued at the price reported near their block; stablecoin-quoted swaps use the quoted amount. Ambiguous interactions remain unpriced.
 
-The leaderboard uses FIFO cost basis for observed, valued buys and sells over the available 30 day trade history. Missing earlier buys and unpriced swaps are excluded, so P&L can be partial. A dash means no complete valued sale was observed. New roster wallets begin accumulating trades when the worker first sees them; older activity is available only where already indexed. Token prices are the last observed swap price, not a market quote. The site has no wallet connection or trading action.
+The leaderboard uses FIFO cost basis for observed, valued buys and sells, including buys before the selected period when they are in the indexed history. Missing earlier buys and unpriced swaps are excluded, so P&L can be partial. A dash means no complete valued sale was observed. The worker verifies previously imported trades against historical BSC receipts through `BSC_HISTORICAL_RPC_HTTP` (defaulting to the official public endpoint); unverified imports do not affect P&L. New roster wallets begin accumulating trades when the worker first sees them. Token prices are the last observed swap price, not a market quote. The site has no wallet connection or trading action.
 
 ## Run
 

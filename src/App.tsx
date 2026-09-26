@@ -146,21 +146,31 @@ function TradesPage({ overview }: { overview: Overview }) {
   </div>;
 }
 
-function TokenCard({ token }: { token: Token }) {
-  return <Link className="token-card" to={`/token/${token.address}`}><div className="token-card-top"><TokenIdentity token={token} /><span className="token-card-cap">{token.marketCapUsd ? `MC ${compact(token.marketCapUsd, true)}` : 'MC —'}</span></div><div className="token-card-stats"><div><span>Observed price</span><strong>{compact(token.priceUsd, true)}</strong></div><div><span>24h volume</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>Last trade</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></Link>;
+function TokenCard({ token, recentTrades, bnbPriceUsd }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null }) {
+  return <div className="token-card"><Link className="token-card-main" to={`/token/${token.address}`}><div className="token-card-top"><TokenIdentity token={token} /><span className="token-card-cap">{token.marketCapUsd ? `MC ${compact(token.marketCapUsd, true)}` : 'MC —'}</span></div><div className="token-card-stats"><div><span>Observed price</span><strong>{compact(token.priceUsd, true)}</strong></div><div><span>24h volume</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>Last trade</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></Link>
+    {recentTrades && recentTrades.length > 0 && <div className="token-card-trades" aria-label={`Recent ${token.symbol || 'token'} trades`}>
+      {recentTrades.slice(0, 5).map(trade => <div className="token-card-trade" key={trade.id}>
+        <Link className="token-trade-kol" to={`/kol/${trade.walletAddress}`} title={trade.kolName || trade.walletAddress}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} subtitle={false} /></Link>
+        <span className={`token-trade-side ${trade.side}`}>{trade.side}</span>
+        <span className={`token-trade-value ${trade.side}`}>{tradeBnbValue(trade, bnbPriceUsd ?? null)}</span>
+        <time dateTime={trade.timestamp} title={new Date(trade.timestamp).toLocaleString()}>{relativeTime(trade.timestamp)}</time>
+      </div>)}
+    </div>}
+  </div>;
 }
 
-function TokensPage() {
-  const [enteredAt] = useState(() => new Date(Date.now() - 10 * 60_000).toISOString());
-  const [items, setItems] = useState<Token[]>([]);
-  const { data, error } = useData<{ items: Token[] }>(`/api/tokens?since=${encodeURIComponent(enteredAt)}&limit=300`, { items: [] }, 10000);
+type LiveToken = Token & { recentTrades: Trade[] };
+function TokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
+  const [initialWindowStart] = useState(() => new Date(Date.now() - 60 * 60_000).toISOString());
+  const [items, setItems] = useState<LiveToken[]>([]);
+  const { data, error } = useData<{ items: LiveToken[] }>(`/api/tokens?since=${encodeURIComponent(initialWindowStart)}&limit=300&withTrades=1`, { items: [] }, 10000);
   useEffect(() => {
     if (!data.items.length) return;
     setItems(previous => [...new Map([...previous, ...data.items].map(token => [token.address, token])).values()]
       .sort((a, b) => new Date(b.lastTradeAt || 0).getTime() - new Date(a.lastTradeAt || 0).getTime()));
   }, [data]);
   const groups = useMemo(() => {
-    const result: Record<'low' | 'mid' | 'high', Token[]> = { low: [], mid: [], high: [] };
+    const result: Record<'low' | 'mid' | 'high', LiveToken[]> = { low: [], mid: [], high: [] };
     for (const token of items) {
       const cap = token.marketCapUsd == null ? NaN : Number(token.marketCapUsd);
       if (!Number.isFinite(cap) || cap <= 0) continue;
@@ -168,12 +178,12 @@ function TokensPage() {
     }
     return result;
   }, [items]);
-  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Token tracker" description="Starts with tokens traded in the previous 10 minutes and updates live." right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? 'Live feed reconnecting' : 'Watching live trades'}</span></div>} />
+  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Token tracker" right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? 'Live feed reconnecting' : 'Watching live trades'}</span></div>} />
     <div className="token-columns">{([
       { key: 'low', title: 'Low caps', range: 'Under $100K' },
       { key: 'mid', title: '$100K+', range: '$100K to $1M' },
       { key: 'high', title: '$1M+', range: '$1M and above' },
-    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{column.title}</h2><p>{column.range}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} />)}</div></section>)}</div>
+    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{column.title}</h2><p>{column.range}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} bnbPriceUsd={bnbPriceUsd} />)}</div></section>)}</div>
   </div>;
 }
 
@@ -215,7 +225,7 @@ export default function App() {
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />
-      <Route path="/tokens" element={<TokensPage />} />
+      <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
       <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/token/:address" element={<TokenPage bnbPriceUsd={overview.bnbPriceUsd} />} />
