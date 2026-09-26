@@ -59,13 +59,16 @@ app.get<{ Querystring: { limit?: string; cursor?: string; side?: string; kol?: s
   return { items: rows, nextCursor: result.rows.length > count && last ? Buffer.from(JSON.stringify({ ts: last.timestamp, id: last.id })).toString('base64url') : null };
 });
 
-app.get<{ Querystring: { limit?: string; offset?: string } }>('/api/tokens', async request => {
+app.get<{ Querystring: { limit?: string; offset?: string; since?: string } }>('/api/tokens', async (request, reply) => {
   const limit = int(request.query.limit, 150, 300);
   const offsetRaw = Number(request.query.offset);
   const offset = Number.isInteger(offsetRaw) && offsetRaw >= 0 ? Math.min(offsetRaw, 100000) : 0;
+  const since = request.query.since ? new Date(request.query.since) : null;
+  if (since && Number.isNaN(since.getTime())) return reply.code(400).send({ error: 'Invalid since date' });
+  const sinceValue = since?.toISOString();
   const [result, count] = await Promise.all([
-    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL GROUP BY v.address ORDER BY MAX(t.timestamp) DESC,v.address ASC LIMIT $1 OFFSET $2`, [limit, offset]),
-    pool.query('SELECT COUNT(DISTINCT t.token_address)::int AS total FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL'),
+    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL GROUP BY v.address ${sinceValue ? 'HAVING MAX(t.created_at) > $3::timestamptz' : ''} ORDER BY MAX(t.timestamp) DESC,v.address ASC LIMIT $1 OFFSET $2`, sinceValue ? [limit, offset, sinceValue] : [limit, offset]),
+    pool.query(`SELECT COUNT(DISTINCT t.token_address)::int AS total FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL ${sinceValue ? 'AND t.created_at > $1::timestamptz' : ''}`, sinceValue ? [sinceValue] : []),
   ]);
   const total = count.rows[0]?.total || 0;
   return { items: result.rows, total, nextOffset: offset + result.rows.length < total ? offset + result.rows.length : null };

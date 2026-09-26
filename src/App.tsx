@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
-import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Menu, Search, X } from 'lucide-react';
+import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Menu, Search, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
 import type { Kol, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
@@ -147,14 +147,18 @@ function TradesPage({ overview }: { overview: Overview }) {
 }
 
 function TokenCard({ token }: { token: Token }) {
-  return <Link className="token-card" to={`/token/${token.address}`}><div className="token-card-top"><TokenIdentity token={token} /><span className="token-card-cap">{token.marketCapUsd ? `MC ${compact(token.marketCapUsd, true)}` : 'MC —'}</span></div><div className="token-card-stats"><div><span>Observed price</span><strong>{compact(token.priceUsd, true)}</strong></div><div><span>24h volume</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>Last trade</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div><div className="token-card-foot"><span><span className="mini-dot" />{token.kolCount24h} KOLs · 24h</span><span className="positive">{token.buys24h} buys</span><span className="negative">{token.sells24h} sells</span></div></Link>;
+  return <Link className="token-card" to={`/token/${token.address}`}><div className="token-card-top"><TokenIdentity token={token} /><span className="token-card-cap">{token.marketCapUsd ? `MC ${compact(token.marketCapUsd, true)}` : 'MC —'}</span></div><div className="token-card-stats"><div><span>Observed price</span><strong>{compact(token.priceUsd, true)}</strong></div><div><span>24h volume</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>Last trade</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></Link>;
 }
 
-function TokensPage({ overview }: { overview: Overview }) {
-  const [offset, setOffset] = useState(0);
+function TokensPage() {
+  const [enteredAt] = useState(() => new Date(Date.now() - 10 * 60_000).toISOString());
   const [items, setItems] = useState<Token[]>([]);
-  const { data, loading, error } = useData<{ items: Token[]; total: number; nextOffset: number | null }>(`/api/tokens?limit=150&offset=${offset}`, { items: [], total: 0, nextOffset: null }, 20000);
-  useEffect(() => { setItems(previous => offset === 0 ? data.items : [...new Map([...previous, ...data.items].map(token => [token.address, token])).values()]); }, [data, offset]);
+  const { data, error } = useData<{ items: Token[] }>(`/api/tokens?since=${encodeURIComponent(enteredAt)}&limit=300`, { items: [] }, 10000);
+  useEffect(() => {
+    if (!data.items.length) return;
+    setItems(previous => [...new Map([...previous, ...data.items].map(token => [token.address, token])).values()]
+      .sort((a, b) => new Date(b.lastTradeAt || 0).getTime() - new Date(a.lastTradeAt || 0).getTime()));
+  }, [data]);
   const groups = useMemo(() => {
     const result: Record<'low' | 'mid' | 'high', Token[]> = { low: [], mid: [], high: [] };
     for (const token of items) {
@@ -164,14 +168,12 @@ function TokensPage({ overview }: { overview: Overview }) {
     }
     return result;
   }, [items]);
-  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Token tracker" description="Tokens traded by tracked KOL wallets." right={<div className="freshness"><i className={isFresh(overview.lastTokenPriceAt, 90 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.lastTokenPriceAt ? `Last priced trade ${relativeTime(overview.lastTokenPriceAt)}` : 'Trade pricing unavailable'}</span></div>} />
+  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Token tracker" description="Starts with tokens traded in the previous 10 minutes and updates live." right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? 'Live feed reconnecting' : 'Watching live trades'}</span></div>} />
     <div className="token-columns">{([
       { key: 'low', title: 'Low caps', range: 'Under $100K' },
       { key: 'mid', title: '$100K+', range: '$100K to $1M' },
       { key: 'high', title: '$1M+', range: '$1M and above' },
-    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{column.title}</h2><p>{column.range}</p></div><span className="count-badge">{groups[column.key].length}</span></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} />)}{!groups[column.key].length && !loading && <div className="column-empty">No observed tokens in this range yet.</div>}</div></section>)}</div>
-    {!items.length && !loading && <EmptyState title={error ? 'Token data unavailable' : 'No KOL tokens yet'} detail={error ? 'The API is reconnecting.' : 'This page fills as tracked KOL wallets trade tokens.'} />}
-    {data.nextOffset != null && <div className="load-more"><button onClick={() => setOffset(data.nextOffset!)}>Load more tokens · {Math.max(0, data.total - items.length)} remaining <ChevronDown size={16} /></button></div>}
+    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{column.title}</h2><p>{column.range}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} />)}</div></section>)}</div>
   </div>;
 }
 
@@ -213,7 +215,7 @@ export default function App() {
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />
-      <Route path="/tokens" element={<TokensPage overview={overview} />} />
+      <Route path="/tokens" element={<TokensPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
       <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/token/:address" element={<TokenPage bnbPriceUsd={overview.bnbPriceUsd} />} />
