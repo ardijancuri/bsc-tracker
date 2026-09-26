@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { ensureSchema, notifyUpdate, pool, setState } from './db.js';
+import { flapLogoFromHtml } from './tokenLogo.js';
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard } from './pnl.js';
@@ -293,19 +294,23 @@ async function pancakeLogo(address: string): Promise<string | null> {
 }
 async function lookupTokenLogo(address: string): Promise<string | null> {
   if (address.endsWith('4444') || address.endsWith('ffff')) {
-    const response = await fetch(`https://four.meme/meme-api/v1/private/token/get?address=${address}`, { signal: AbortSignal.timeout(12000) });
-    if (response.ok) {
-      const result = await response.json() as { data?: { address?: string; image?: string } };
-      if (result.data?.address?.toLowerCase() === address && validLogo(result.data.image)) return result.data.image;
-    }
+    try {
+      const response = await fetch(`https://four.meme/meme-api/v1/private/token/get?address=${address}`, { signal: AbortSignal.timeout(12000) });
+      if (response.ok) {
+        const result = await response.json() as { data?: { address?: string; image?: string } };
+        if (result.data?.address?.toLowerCase() === address && validLogo(result.data.image)) return result.data.image;
+      }
+    } catch (error) { console.warn(`Four.meme logo ${address}:`, error); }
   }
   if (address.endsWith('7777') || address.endsWith('8888')) {
-    const response = await fetch(`https://flap.sh/bnb/${address}`, { signal: AbortSignal.timeout(12000) });
-    if (response.ok) {
-      const html = await response.text();
-      const image = html.match(/https:\/\/flap\.mypinata\.cloud\/ipfs\/[a-z0-9]+/i)?.[0];
-      if (image) return image;
-    }
+    try {
+      const response = await fetch(`https://flap.sh/bnb/${address}`, { signal: AbortSignal.timeout(12000) });
+      if (response.ok) {
+        const html = await response.text();
+        const image = flapLogoFromHtml(html, address);
+        if (image) return image;
+      }
+    } catch (error) { console.warn(`Flap logo ${address}:`, error); }
   }
   const listed = await pancakeLogo(address);
   if (listed) return listed;
@@ -321,7 +326,9 @@ async function lookupTokenLogo(address: string): Promise<string | null> {
 async function refreshTokenLogoOne() {
   const result = await pool.query(`SELECT t.address FROM tokens t WHERE
     (t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%')
-    AND (t.logo_checked_at IS NULL OR t.logo_checked_at < now() - interval '7 days')
+    AND (t.logo_checked_at IS NULL OR t.logo_checked_at < now() - CASE
+      WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' THEN interval '30 minutes'
+      ELSE interval '7 days' END)
     ORDER BY CASE WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' THEN 0 ELSE 1 END,
       (SELECT max(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 1`);
   const address = result.rows[0]?.address as string | undefined;

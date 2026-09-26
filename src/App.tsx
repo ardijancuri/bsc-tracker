@@ -54,16 +54,19 @@ function Identity({ name, address, avatar, subtitle = true }: { name: string | n
   </span>;
 }
 
+function tokenImageSrc(logoUrl: string) {
+  return logoUrl.replace(/^https:\/\/flap\.mypinata\.cloud\/ipfs\//i, 'https://gateway.pinata.cloud/ipfs/');
+}
 function tokenImageError(event: React.SyntheticEvent<HTMLImageElement>) {
   const image = event.currentTarget;
-  const url = new URL(image.src);
-  if (url.hostname === 'flap.mypinata.cloud' && url.pathname.startsWith('/ipfs/') && !image.dataset.alternateGateway) {
-    image.dataset.alternateGateway = 'true';
-    image.src = `https://gateway.pinata.cloud${url.pathname}`;
+  const original = image.dataset.originalSrc;
+  if (original && !image.dataset.triedOriginal && original !== image.src) {
+    image.dataset.triedOriginal = 'true';
+    image.src = original;
   } else image.style.display = 'none';
 }
 function TokenIdentity({ token }: { token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> }) {
-  return <span className="identity token-identity"><span className="token-avatar"><span>{(token.symbol || '?').slice(0, 1)}</span>{token.logoUrl && <img key={token.logoUrl} src={token.logoUrl} alt="" onError={tokenImageError} />}</span><span className="identity-copy"><strong>{token.symbol || 'Unknown'}</strong><small>{token.name || shortAddress(token.address)}</small></span></span>;
+  return <span className="identity token-identity"><span className="token-avatar"><span>{(token.symbol || '?').slice(0, 1)}</span>{token.logoUrl && <img key={token.logoUrl} src={tokenImageSrc(token.logoUrl)} data-original-src={token.logoUrl} alt="" onError={tokenImageError} />}</span><span className="identity-copy"><strong>{token.symbol || 'Unknown'}</strong><small>{token.name || shortAddress(token.address)}</small></span></span>;
 }
 
 function ChainLogo() { return <img className="bnb-logo" src="/bnb-chain.svg" alt="BNB Chain" />; }
@@ -111,11 +114,12 @@ function EmptyState({ title, detail }: { title: string; detail: string }) { retu
 function SectionTitle({ eyebrow, title, description, right }: { eyebrow: string; title: string; description?: string; right?: React.ReactNode }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1>{description && <p>{description}</p>}</div>{right}</div>; }
 function Metric({ label, value, detail }: { label: string; value: string | number; detail?: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>; }
 
-function TradeRow({ trade, bnbPriceUsd, showSide = true }: { trade: Trade; bnbPriceUsd: number | null; showSide?: boolean }) {
+function TradeRow({ trade, bnbPriceUsd, showSide = true, tokenGmgnLink = false }: { trade: Trade; bnbPriceUsd: number | null; showSide?: boolean; tokenGmgnLink?: boolean }) {
   const sideIcon = trade.side === 'buy' ? <ArrowDownLeft size={14} /> : trade.side === 'sell' ? <ArrowUpRight size={14} /> : <ArrowLeftRight size={14} />;
+  const tokenIdentity = <TokenIdentity token={{ address: trade.tokenAddress, symbol: trade.tokenSymbol, name: trade.tokenName, logoUrl: trade.tokenLogoUrl }} />;
   return <div className="trade-row">
     <div className="trade-kol"><Link to={`/kol/${trade.walletAddress}`}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} twitter={trade.kolTwitter} subtitle={false} /></Link></div>
-    <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{trade.side}</span>}<Link to={`/token/${trade.tokenAddress}`}><TokenIdentity token={{ address: trade.tokenAddress, symbol: trade.tokenSymbol, name: trade.tokenName, logoUrl: trade.tokenLogoUrl }} /></Link></div>
+    <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{trade.side}</span>}{tokenGmgnLink ? <a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title="View token on GMGN">{tokenIdentity}</a> : <Link to={`/token/${trade.tokenAddress}`}>{tokenIdentity}</Link>}</div>
     <div className={`trade-value ${trade.side}`} title={trade.quoteSymbol === 'BNB' || trade.quoteSymbol === 'WBNB' ? 'Recorded BNB trade amount' : 'Approximate BNB amount based on the current BNB/USD price'}><strong>{tradeBnbValue(trade, bnbPriceUsd)}</strong><span className="trade-amount">{tradeTokenAmount(trade.tokenAmount)}</span></div>
     <div className="trade-time"><a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title={`${new Date(trade.timestamp).toLocaleString()} · View token activity on GMGN`} aria-label={`View ${trade.tokenSymbol || 'token'} activity on GMGN, ${relativeTime(trade.timestamp)}`}>{relativeTime(trade.timestamp)}<ExternalLink size={13} /></a></div>
   </div>;
@@ -127,7 +131,7 @@ function TradesPage({ overview }: { overview: Overview }) {
   return <div className="page trades-page"><SectionTitle eyebrow="THE LIVE TAPE" title="Realtime trades" description="Recent BNB Chain swaps from tracked KOL wallets." right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.latestTradeAt ? `Latest trade ${relativeTime(overview.latestTradeAt)}` : 'Waiting for trades'}</span></div>} />
     <div className="overview-strip"><Metric label="Tracked KOLs" value={overview.trackedKols} /><Metric label="Trades · 24h" value={compact(overview.trades24h)} /><Metric label="Tokens · 24h" value={compact(overview.tokens24h)} /><Metric label="Last trade" value={relativeTime(overview.latestTradeAt)} /></div>
     <div className="table-toolbar"><h2>Recent activity</h2></div>
-    <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={overview.bnbPriceUsd} showSide={false} />)}{!items.length && !loading && <EmptyState title={error ? 'Live feed unavailable' : 'Watching for the next trade'} detail={error ? 'The API is reconnecting. Try again shortly.' : 'Trades from tracked KOL wallets will appear here automatically.'} />}</div>
+    <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={overview.bnbPriceUsd} showSide={false} tokenGmgnLink />)}{!items.length && !loading && <EmptyState title={error ? 'Live feed unavailable' : 'Watching for the next trade'} detail={error ? 'The API is reconnecting. Try again shortly.' : 'Trades from tracked KOL wallets will appear here automatically.'} />}</div>
     <section className="trades-faq" aria-labelledby="trades-faq-title">
       <h2 id="trades-faq-title">FAQs</h2>
       <div className="faq-list">
