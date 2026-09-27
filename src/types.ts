@@ -49,9 +49,6 @@ export interface Token {
 export interface LeaderboardRow extends Kol {
   realizedProfitUsd: string | null;
   unrealizedProfitUsd: string | null;
-  buyCount: number | null;
-  sellCount: number | null;
-  winRate: string | null;
   updatedAt: string | null;
 }
 
@@ -67,4 +64,5 @@ export interface Overview {
   bnbPriceUsd: number | null;
   bnbPriceAt: string | null;
   lastLeaderboardAt: string | null;
+  leaderboardSource: 'gmgn' | 'onchain_estimate';
 }

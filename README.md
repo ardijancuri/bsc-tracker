@@ -22,3 +22,7 @@ For local development, run `npm install`, then `npm run dev` and `npm run dev:ap
 ## KOL images
 
 `node scripts/fetch-kol-avatars.mjs` reads the roster's X handles, saves publicly available profile images in `public/kol-avatars/`, and records their source URLs in `server/x-avatars.json`. It skips images already saved; pass `--refresh` to fetch current photos again. Rebuild the app and worker after updating the manifest. Wallets with no retrievable X photo show their initial instead of an unrelated image. The worker retries missing public X photos weekly.
+
+## Leaderboard P&L
+
+Set `GMGN_API_KEY` in the deployment `.env` to load 1-day, 7-day, and 30-day realized USD profit from GMGN's official batch wallet profits API. The worker refreshes it every two minutes. This read-only endpoint needs an API key but no wallet private key. Without a key, the leaderboard shows an explicitly labeled estimate calculated from the on-chain trades indexed by this app. These estimates can differ from GMGN because the indexed history and cost basis may be incomplete. Never commit the API key.

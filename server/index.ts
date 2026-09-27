@@ -48,7 +48,7 @@ app.get('/api/overview', async () => {
   const node = states.rows.find(row => row.key === 'node');
   const price = states.rows.find(row => row.key === 'bnb_price');
   const leaderboard = states.rows.find(row => row.key === 'leaderboard');
-  return { ...counts.rows[0], lastNodeBlock: node?.value?.blockNumber ?? null, nodeLagBlocks: node?.value?.headBlock != null ? Math.max(0, Number(node.value.headBlock) - Number(node.value.blockNumber)) : null, lastNodeAt: node?.updated_at ?? null, bnbPriceUsd: price?.value?.priceUsd ?? null, bnbPriceAt: price?.value?.oracleUpdatedAt ?? null, lastLeaderboardAt: leaderboard?.updated_at ?? null };
+  return { ...counts.rows[0], lastNodeBlock: node?.value?.blockNumber ?? null, nodeLagBlocks: node?.value?.headBlock != null ? Math.max(0, Number(node.value.headBlock) - Number(node.value.blockNumber)) : null, lastNodeAt: node?.updated_at ?? null, bnbPriceUsd: price?.value?.priceUsd ?? null, bnbPriceAt: price?.value?.oracleUpdatedAt ?? null, lastLeaderboardAt: leaderboard?.updated_at ?? null, leaderboardSource: leaderboard?.value?.source ?? 'onchain_estimate' };
 });
 
 app.get<{ Querystring: { limit?: string; cursor?: string; side?: string; kol?: string; token?: string } }>('/api/trades', async request => {
@@ -113,7 +113,7 @@ app.get<{ Params: { address: string } }>('/api/tokens/:address', async request =
 
 app.get<{ Querystring: { period?: string } }>('/api/leaderboard', async request => {
   const period = ['1d', '7d', '30d'].includes(request.query.period || '') ? request.query.period : '1d';
-  const result = await pool.query(`SELECT k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt",s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.buy_count AS "buyCount",s.sell_count AS "sellCount",s.win_rate AS "winRate",s.updated_at AS "updatedAt" FROM kols k LEFT JOIN leaderboard_snapshots s ON s.wallet_address=k.address AND s.period=$1 WHERE k.is_tracked ORDER BY s.realized_profit_usd DESC NULLS LAST,k.display_name,k.address LIMIT 300`, [period]);
+  const result = await pool.query(`SELECT k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt",s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt" FROM kols k LEFT JOIN leaderboard_snapshots s ON s.wallet_address=k.address AND s.period=$1 WHERE k.is_tracked ORDER BY s.realized_profit_usd DESC NULLS LAST,k.display_name,k.address LIMIT 300`, [period]);
   return { items: result.rows };
 });
 
@@ -122,7 +122,7 @@ app.get<{ Params: { address: string } }>('/api/kols/:address', async request => 
   if (!key) return { kol: null, stats: null, trades: [], tokens: [] };
   const [kol, stats, trades, tokens] = await Promise.all([
     pool.query(`SELECT address,display_name AS name,avatar_url AS "avatarUrl",twitter,source,last_seen_at AS "lastSeenAt" FROM kols WHERE address=$1 AND is_tracked`, [key]),
-    pool.query(`SELECT s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.buy_count AS "buyCount",s.sell_count AS "sellCount",s.win_rate AS "winRate",s.updated_at AS "updatedAt" FROM leaderboard_snapshots s JOIN kols k ON k.address=s.wallet_address WHERE s.wallet_address=$1 AND s.period='7d' AND k.is_tracked`, [key]),
+    pool.query(`SELECT s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt" FROM leaderboard_snapshots s JOIN kols k ON k.address=s.wallet_address WHERE s.wallet_address=$1 AND s.period='7d' AND k.is_tracked`, [key]),
     pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL ORDER BY t.timestamp DESC LIMIT 100`, [key]),
     pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL GROUP BY v.address ORDER BY MAX(t.timestamp) DESC LIMIT 24`, [key]),
   ]);

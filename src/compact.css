@@ -153,7 +153,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .unpriced-grid { gap: 18px; }
 .column-empty { border: 0; background: #181c1f; font-size: 12px; }
 
-.leaderboard-row { grid-template-columns: 48px minmax(240px, 1fr) 155px 175px; gap: 16px; min-height: 66px; padding: 9px 14px; border: 0; }
+.leaderboard-row { grid-template-columns: 48px minmax(240px, 1fr) 175px; gap: 16px; min-height: 66px; padding: 9px 14px; border: 0; }
 .leaderboard-row:not(.table-head) { background: #0b0e11; }
 .leaderboard-row.leader-rank-1, .leaderboard-row.leader-rank-2, .leaderboard-row.leader-rank-3 { border-left: 0; }
 .leaderboard-row.leader-rank-1 .rank-number { color: #e8bd4d; }
@@ -173,7 +173,6 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .leaderboard-row .identity-copy strong { font-size: 16px; max-width: 270px; }
 .twitter-handle { overflow: hidden; text-overflow: ellipsis; color: #9ba5aa; font-size: 12px; font-weight: 700; }
 .rank-number { font-size: 15px; }
-.buy-sell { font-size: 15px; }
 .leaderboard-row .pnl { font-size: 17px; letter-spacing: -.3px; white-space: nowrap; }
 .method-note { font-size: 11px; }
 
@@ -181,7 +180,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .profile-header .identity-copy strong { font-size: 29px; max-width: 650px; }
 .profile-links a, .address-pill { border: 0; background: #1d2225; font-size: 12px; padding: 9px 11px; }
 .profile-stats { border-top: 0; margin-bottom: 30px; }
-.kol-detail-page .profile-stats { border-bottom: 0; }
+.kol-detail-page .profile-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 0; }
 .profile-links .copy-wallet { font: inherit; font-size: 12px; font-weight: 700; color: #aab7bc; cursor: pointer; white-space: nowrap; }
 .profile-links .copy-wallet:hover { color: var(--yellow); background: #252c2f; }
 .token-detail-page .profile-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 0; }
@@ -265,7 +264,6 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .trade-activity .identity-copy strong { font-size: 13px; max-width: 120px; }
   .trade-value .trade-amount { font-size: 11px; }
   .leaderboard-row { min-width: 0; grid-template-columns: 34px minmax(0, 1fr) 135px; gap: 10px; padding: 9px 7px; }
-  .leaderboard-row .buy-sell, .leaderboard-row.table-head > span:nth-child(3) { display: none; }
   .leaderboard-row .pnl { font-size: 15px; }
   .leader-identity .identity { max-width: 100%; }
   .twitter-handle { display: none; }

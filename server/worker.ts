@@ -5,6 +5,7 @@ import { downloadTokenImage, onchainTokenImage, type TokenImage } from './tokenI
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard } from './pnl.js';
+import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -597,22 +598,34 @@ async function priceLoop() {
 async function leaderboardLoop() {
   for (;;) {
     try {
-      const [roster, tradeRows] = await Promise.all([
-        pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address'),
-        pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp
+      const roster = await pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address');
+      const wallets = roster.rows.map(row => row.address as string);
+      const apiKey = process.env.GMGN_API_KEY?.trim();
+      let stats: Array<{ walletAddress: string; period: string; realizedProfitUsd: string | number | null; unrealizedProfitUsd: string | null }>;
+      if (apiKey) {
+        const gmgnStats: GmgnProfit[] = [];
+        for (const period of ['1d', '7d', '30d'] as const) {
+          for (let index = 0; index < wallets.length; index += 100) {
+            gmgnStats.push(...await fetchGmgnProfits(wallets.slice(index, index + 100), period, apiKey));
+            await sleep(750);
+          }
+        }
+        stats = gmgnStats;
+      } else {
+        const tradeRows = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp
           FROM trades t JOIN kols k ON k.address=t.wallet_address
           WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
-          ORDER BY t.timestamp ASC,t.id ASC`),
-      ]);
-      const stats = calculateLeaderboard(tradeRows.rows, roster.rows.map(row => row.address as string));
+          ORDER BY t.timestamp ASC,t.id ASC`);
+        stats = calculateLeaderboard(tradeRows.rows, wallets).map(row => ({ ...row, unrealizedProfitUsd: null }));
+      }
       if (stats.length) {
-        await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,realized_profit_usd,buy_count,sell_count,win_rate,updated_at)
-          SELECT "walletAddress",period,"realizedProfitUsd","buyCount","sellCount","winRate",now()
-          FROM jsonb_to_recordset($1::jsonb) AS x("walletAddress" text,period text,"realizedProfitUsd" numeric,"buyCount" integer,"sellCount" integer,"winRate" numeric)
+        await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,win_rate,updated_at)
+          SELECT "walletAddress",period,"realizedProfitUsd","unrealizedProfitUsd",NULL,NULL,NULL,now()
+          FROM jsonb_to_recordset($1::jsonb) AS x("walletAddress" text,period text,"realizedProfitUsd" numeric,"unrealizedProfitUsd" numeric)
           ON CONFLICT(wallet_address,period) DO UPDATE SET realized_profit_usd=EXCLUDED.realized_profit_usd,
-          unrealized_profit_usd=NULL,buy_count=EXCLUDED.buy_count,sell_count=EXCLUDED.sell_count,
-          win_rate=EXCLUDED.win_rate,updated_at=now()`, [JSON.stringify(stats)]);
-        await setState('leaderboard', { at: new Date().toISOString(), source: 'onchain', wallets: roster.rows.length });
+          unrealized_profit_usd=EXCLUDED.unrealized_profit_usd,buy_count=NULL,sell_count=NULL,
+          win_rate=NULL,updated_at=now()`, [JSON.stringify(stats)]);
+        await setState('leaderboard', { at: new Date().toISOString(), source: apiKey ? 'gmgn' : 'onchain_estimate', wallets: wallets.length });
         await notifyUpdate();
       }
     } catch (error) { console.error('Leaderboard worker:', error); }
