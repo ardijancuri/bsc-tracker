@@ -97,7 +97,7 @@ function Header({ overview }: { overview: Overview }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === '/' && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); setSearchOpen(true); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, []);
   return <><header className="site-header"><div className="header-inner">
-    <Link className="brand" to="/trades"><span className="brand-mark"><img src="/bscan-mark.png" alt="" /></span><span>bscan</span></Link>
+    <Link className="brand" to="/trades"><span className="brand-mark"><img src="/bscan-mark-small.webp" alt="" /></span><span>bscan</span></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label="Main navigation">
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>Trades</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>Tokens</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>Leaderboard</NavLink>
@@ -234,7 +234,7 @@ export default function App() {
       <Route path="*" element={<Navigate to="/trades" replace />} />
     </Routes></main>
     <footer className="footer">
-      <div><span className="footer-brand"><img src="/bscan-mark.png" alt="" />bscan</span><span>BNB Smart Chain KOL analytics.</span></div>
+      <div><span className="footer-brand"><img src="/bscan-mark-small.webp" alt="" />bscan</span><span>BNB Smart Chain KOL analytics.</span></div>
       <nav className="footer-legal" aria-label="Legal"><span aria-hidden="true">|</span><Link to="/privacy-policy">Privacy Policy</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">Terms of Use</Link></nav>
     </footer>
   </>;

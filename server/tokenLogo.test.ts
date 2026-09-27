@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flapLogoFromHtml } from './tokenLogo.js';
+import { flapLogoFromHtml, geniusLogoFromHtml, normalizeLogoUrl } from './tokenLogo.js';
 
 const address = '0xbbf4431aacfc2b22dff09d2bc21fb0775c1c7777';
 
@@ -13,13 +13,32 @@ describe('Flap token logo extraction', () => {
     const flapCat = '0xc92c66549abbcdcd6b050f9ac4df2652323f7777';
     const cid = 'bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe';
     const html = `\\"coin\\":{\\"address\\":\\"${flapCat}\\",\\"metadata\\":{\\"image\\":\\"${cid}\\"}}`;
-    expect(flapLogoFromHtml(html, flapCat)).toBe(`https://gateway.pinata.cloud/ipfs/${cid}`);
-    expect(flapLogoFromHtml(html.replace(cid, `ipfs://${cid}`), flapCat)).toBe(`https://gateway.pinata.cloud/ipfs/${cid}`);
+    expect(flapLogoFromHtml(html, flapCat)).toBe(`https://flap.mypinata.cloud/ipfs/${cid}`);
+    expect(flapLogoFromHtml(html.replace(cid, `ipfs://${cid}`), flapCat)).toBe(`https://flap.mypinata.cloud/ipfs/${cid}`);
+    expect(normalizeLogoUrl(`https://flap.mypinata.cloud/ipfs/${cid}`)).toBe(`https://flap.mypinata.cloud/ipfs/${cid}`);
   });
 
   it('ignores another token and non-image schemes', () => {
     const html = `\\"coin\\":{\\"address\\":\\"${address}\\",\\"metadata\\":{\\"image\\":\\"javascript:alert(1)\\"}}`;
     expect(flapLogoFromHtml(html, address)).toBeNull();
     expect(flapLogoFromHtml(html, '0x207529c7aeed063e02fee9a1c07e801792b67777')).toBeNull();
+  });
+});
+
+describe('Genius.fun token logo extraction', () => {
+  it('uses the token image served by the matching contract page', () => {
+    const gstonk = '0xc1e1ffea92c932eb0ff6c74fae43db477abc9165';
+    const cid = 'bafkreicgcdz5sus2ebkn6sopnpyr6b6c7535xq2gtpn6h2idjsmtnmp5ua';
+    const path = `/api/image?src=ipfs%3A%2F%2F${cid}`;
+    const html = `<link rel="preload" as="image" href="${path}"/><a href="https://bscscan.com/address/${gstonk}">Contract</a>`;
+    expect(geniusLogoFromHtml(html, gstonk)).toBe(`https://genius.fun${path}`);
+    expect(geniusLogoFromHtml(html, address)).toBeNull();
+    const meta = `<meta property="og:image" content="https://genius.fun${path}"/><span>${gstonk}</span>`;
+    expect(geniusLogoFromHtml(meta, gstonk)).toBe(`https://genius.fun${path}`);
+  });
+
+  it('rejects unsafe image schemes', () => {
+    expect(normalizeLogoUrl('javascript:alert(1)')).toBeNull();
+    expect(normalizeLogoUrl('ipfs://bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe')).toBe('https://gateway.pinata.cloud/ipfs/bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe');
   });
 });

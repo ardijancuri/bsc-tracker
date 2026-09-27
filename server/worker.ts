@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { ensureSchema, notifyUpdate, pool, setState } from './db.js';
-import { flapLogoFromHtml } from './tokenLogo.js';
+import { flapLogoFromHtml, geniusLogoFromHtml } from './tokenLogo.js';
+import { downloadTokenImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard } from './pnl.js';
@@ -350,13 +351,21 @@ async function pancakeLogo(address: string): Promise<string | null> {
   }
   return pancakeLogos?.items.get(address.toLowerCase()) || null;
 }
-async function lookupTokenLogo(address: string): Promise<string | null> {
+async function usableLogo(url: unknown): Promise<TokenImage | null> {
+  if (!validLogo(url)) return null;
+  try { return await downloadTokenImage(url); } catch { return null; }
+}
+
+async function lookupTokenLogo(address: string): Promise<TokenImage | null> {
   if (address.endsWith('4444') || address.endsWith('ffff')) {
     try {
       const response = await fetch(`https://four.meme/meme-api/v1/private/token/get?address=${address}`, { signal: AbortSignal.timeout(12000) });
       if (response.ok) {
         const result = await response.json() as { data?: { address?: string; image?: string } };
-        if (result.data?.address?.toLowerCase() === address && validLogo(result.data.image)) return result.data.image;
+        if (result.data?.address?.toLowerCase() === address) {
+          const image = await usableLogo(result.data.image);
+          if (image) return image;
+        }
       }
     } catch (error) { console.warn(`Four.meme logo ${address}:`, error); }
   }
@@ -366,37 +375,94 @@ async function lookupTokenLogo(address: string): Promise<string | null> {
       if (response.ok) {
         const html = await response.text();
         const image = flapLogoFromHtml(html, address);
-        if (image) return image;
+        const fallback = image?.startsWith('https://flap.mypinata.cloud/ipfs/')
+          ? image.replace('https://flap.mypinata.cloud/ipfs/', 'https://gateway.pinata.cloud/ipfs/') : null;
+        const logo = await usableLogo(image) || await usableLogo(fallback);
+        if (logo) return logo;
       }
     } catch (error) { console.warn(`Flap logo ${address}:`, error); }
   }
+  try {
+    const response = await fetch(`https://genius.fun/token/${address}`, { signal: AbortSignal.timeout(12000) });
+    if (response.ok) {
+      const image = geniusLogoFromHtml(await response.text(), address);
+      const logo = await usableLogo(image);
+      if (logo) return logo;
+    }
+  } catch (error) { console.warn(`Genius.fun logo ${address}:`, error); }
   const listed = await pancakeLogo(address);
-  if (listed) return listed;
-  const response = await fetch(`https://api.dexscreener.com/tokens/v1/bsc/${address}`, { signal: AbortSignal.timeout(12000) });
-  if (response.ok) {
-    const pairs = await response.json() as { baseToken?: { address?: string }; info?: { imageUrl?: string } }[];
-    const image = Array.isArray(pairs) ? pairs.find(pair => pair.baseToken?.address?.toLowerCase() === address && validLogo(pair.info?.imageUrl))?.info?.imageUrl : null;
-    if (image) return image;
-  }
+  const listedLogo = await usableLogo(listed);
+  if (listedLogo) return listedLogo;
+  try {
+    const response = await fetch(`https://api.dexscreener.com/tokens/v1/bsc/${address}`, { signal: AbortSignal.timeout(12000) });
+    if (response.ok) {
+      const pairs = await response.json() as { baseToken?: { address?: string }; info?: { imageUrl?: string } }[];
+      for (const pair of Array.isArray(pairs) ? pairs : []) {
+        if (pair.baseToken?.address?.toLowerCase() !== address) continue;
+        const image = await usableLogo(pair.info?.imageUrl);
+        if (image) return image;
+      }
+    }
+  } catch (error) { console.warn(`DexScreener logo ${address}:`, error); }
+  try {
+    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/info`, { signal: AbortSignal.timeout(12000) });
+    if (response.ok) {
+      const result = await response.json() as { data?: { attributes?: { address?: string; image_url?: string } } };
+      if (result.data?.attributes?.address?.toLowerCase() === address) {
+        const image = await usableLogo(result.data.attributes.image_url);
+        if (image) return image;
+      }
+    }
+  } catch (error) { console.warn(`GeckoTerminal logo ${address}:`, error); }
+  try {
+    const response = await fetch(`https://brew.family/api/shared/token/${address}`, { signal: AbortSignal.timeout(12000) });
+    if (response.ok) {
+      const result = await response.json() as { token?: { address?: string; imageUrl?: string } };
+      if (result.token?.address?.toLowerCase() === address) {
+        const source = result.token.imageUrl || '';
+        const artwork = source.match(/^onchain:\/\/56\/(0x[a-f0-9]{40})$/i)?.[1];
+        if (artwork) {
+          const imageResponse = await fetch(`https://brew.family/api/shared/artwork/${artwork}`, { signal: AbortSignal.timeout(12000) });
+          if (imageResponse.ok) {
+            const image = await imageResponse.json() as { image?: string };
+            const logo = await onchainTokenImage(source, image.image || '');
+            if (logo) return logo;
+          }
+        } else {
+          const logo = await usableLogo(source);
+          if (logo) return logo;
+        }
+      }
+    }
+  } catch (error) { console.warn(`Brew logo ${address}:`, error); }
   return null;
 }
 
 async function refreshTokenLogoOne() {
-  const result = await pool.query(`SELECT t.address FROM tokens t WHERE
-    (t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%')
-    AND (t.logo_checked_at IS NULL OR t.logo_checked_at < now() - CASE
-      WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' THEN interval '30 minutes'
-      ELSE interval '7 days' END)
-    ORDER BY CASE WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' THEN 0 ELSE 1 END,
+  const result = await pool.query(`SELECT t.address,t.logo_url FROM tokens t WHERE t.logo_data IS NULL AND (
+    ((t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%')
+      AND (t.logo_checked_at IS NULL OR t.logo_checked_at < now() - interval '30 minutes'
+        OR (t.logo_checked_at < now() - interval '2 minutes' AND EXISTS (
+          SELECT 1 FROM trades recent WHERE recent.token_address=t.address AND recent.timestamp > now() - interval '2 hours'))))
+    OR (t.logo_url IS NOT NULL AND btrim(t.logo_url)<>'' AND t.logo_url NOT LIKE '%gmgn.ai%'
+      AND (t.logo_cache_checked_at IS NULL OR t.logo_cache_checked_at < now() - interval '7 days')))
+    ORDER BY CASE WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%' THEN 0 ELSE 1 END,
       (SELECT max(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 1`);
   const address = result.rows[0]?.address as string | undefined;
   if (!address) return;
   try {
-    const logo = await lookupTokenLogo(address);
-    await pool.query(`UPDATE tokens SET logo_url=COALESCE($2, NULLIF(logo_url,'')), logo_checked_at=now() WHERE address=$1`, [address, logo]);
-    if (logo) await notifyUpdate();
+    const existing = result.rows[0].logo_url as string | null;
+    const cached = existing && !existing.includes('gmgn.ai') ? await usableLogo(existing) : null;
+    const logo = cached || await lookupTokenLogo(address);
+    if (logo) {
+      await pool.query(`UPDATE tokens SET logo_url=$2,logo_data=$3,logo_mime=$4,logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address, logo.url, logo.data, logo.mime]);
+      await notifyUpdate();
+    } else {
+      await pool.query(`UPDATE tokens SET logo_url=CASE WHEN logo_url LIKE '%gmgn.ai%' THEN NULL ELSE logo_url END,
+        logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address]);
+    }
   } catch (error) {
-    await pool.query(`UPDATE tokens SET logo_checked_at=now()-interval '6 days 23 hours' WHERE address=$1`, [address]);
+    await pool.query(`UPDATE tokens SET logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address]);
     console.warn(`Token logo ${address}:`, error);
   }
 }

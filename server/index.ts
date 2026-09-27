@@ -17,13 +17,23 @@ function int(input: unknown, fallback: number, maximum: number) {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 }
 function address(input: string) { return addressPattern.test(input) ? input.toLowerCase() : null; }
-function tradeSelect() { return `t.id, t.tx_hash AS "txHash", t.wallet_address AS "walletAddress", k.display_name AS "kolName", k.avatar_url AS "kolAvatarUrl", k.twitter AS "kolTwitter", t.token_address AS "tokenAddress", v.symbol AS "tokenSymbol", v.name AS "tokenName", v.logo_url AS "tokenLogoUrl", t.side, t.token_amount AS "tokenAmount", t.quote_symbol AS "quoteSymbol", t.quote_amount AS "quoteAmount", t.amount_usd AS "amountUsd", t.price_usd AS "priceUsd", t.timestamp, t.source, t.block_number AS "blockNumber"`; }
+const logoUrl = `CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/' || v.address WHEN v.logo_url LIKE 'https://%' AND v.logo_url NOT LIKE '%gmgn.ai%' THEN v.logo_url END`;
+function tradeSelect() { return `t.id, t.tx_hash AS "txHash", t.wallet_address AS "walletAddress", k.display_name AS "kolName", k.avatar_url AS "kolAvatarUrl", k.twitter AS "kolTwitter", t.token_address AS "tokenAddress", v.symbol AS "tokenSymbol", v.name AS "tokenName", ${logoUrl} AS "tokenLogoUrl", t.side, t.token_amount AS "tokenAmount", t.quote_symbol AS "quoteSymbol", t.quote_amount AS "quoteAmount", t.amount_usd AS "amountUsd", t.price_usd AS "priceUsd", t.timestamp, t.source, t.block_number AS "blockNumber"`; }
 const tokenMarketCap = `CASE WHEN v.market_cap_usd > 0 AND v.market_cap_checked_at > now() - interval '2 hours' THEN v.market_cap_usd WHEN v.price_source='onchain' AND v.price_usd > 0 AND v.total_supply_raw > 0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at > now() - interval '2 days' THEN v.price_usd * v.total_supply_raw / power(10::numeric, v.decimals) END`;
-function tokenSelect() { return `v.address, v.symbol, v.name, v.logo_url AS "logoUrl", CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd", ${tokenMarketCap} AS "marketCapUsd", NULL AS "change24h", COUNT(DISTINCT t.wallet_address) FILTER (WHERE t.timestamp > now() - interval '24 hours')::int AS "kolCount24h", COUNT(*) FILTER (WHERE t.timestamp > now() - interval '24 hours' AND t.side='buy')::int AS "buys24h", COUNT(*) FILTER (WHERE t.timestamp > now() - interval '24 hours' AND t.side='sell')::int AS "sells24h", SUM(t.amount_usd) FILTER (WHERE t.timestamp > now() - interval '24 hours') AS "volume24hUsd", MAX(t.timestamp) AS "lastTradeAt"`; }
+function tokenSelect() { return `v.address, v.symbol, v.name, ${logoUrl} AS "logoUrl", CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd", ${tokenMarketCap} AS "marketCapUsd", NULL AS "change24h", COUNT(DISTINCT t.wallet_address) FILTER (WHERE t.timestamp > now() - interval '24 hours')::int AS "kolCount24h", COUNT(*) FILTER (WHERE t.timestamp > now() - interval '24 hours' AND t.side='buy')::int AS "buys24h", COUNT(*) FILTER (WHERE t.timestamp > now() - interval '24 hours' AND t.side='sell')::int AS "sells24h", SUM(t.amount_usd) FILTER (WHERE t.timestamp > now() - interval '24 hours') AS "volume24hUsd", MAX(t.timestamp) AS "lastTradeAt"`; }
 
 app.get('/api/health', async () => {
   await pool.query('SELECT 1');
   return { ok: true, service: 'bscan-api' };
+});
+
+app.get<{ Params: { address: string } }>('/api/token-image/:address', async (request, reply) => {
+  const key = address(request.params.address);
+  if (!key) return reply.code(404).send({ error: 'Not found' });
+  const result = await pool.query('SELECT logo_data,logo_mime FROM tokens WHERE address=$1', [key]);
+  const image = result.rows[0];
+  if (!image?.logo_data || !image?.logo_mime) return reply.code(404).send({ error: 'Not found' });
+  return reply.header('Cache-Control', 'public, max-age=3600').header('X-Content-Type-Options', 'nosniff').type(image.logo_mime).send(image.logo_data);
 });
 
 app.get('/api/overview', async () => {
@@ -125,7 +135,7 @@ app.get<{ Querystring: { q?: string } }>('/api/search', async request => {
   const like = `%${query.replace(/[%_]/g, '\\$&')}%`;
   const [kols, tokens] = await Promise.all([
     pool.query(`SELECT address,display_name AS name,avatar_url AS "avatarUrl",twitter,source,last_seen_at AS "lastSeenAt" FROM kols WHERE is_tracked AND (display_name ILIKE $1 ESCAPE '\\' OR address ILIKE $1 ESCAPE '\\' OR twitter ILIKE $1 ESCAPE '\\') ORDER BY last_seen_at DESC NULLS LAST LIMIT 8`, [like]),
-    pool.query(`SELECT v.address,v.symbol,v.name,v.logo_url AS "logoUrl",CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd",${tokenMarketCap} AS "marketCapUsd",NULL AS "change24h",0 AS "kolCount24h",0 AS "buys24h",0 AS "sells24h",NULL AS "volume24hUsd",NULL AS "lastTradeAt" FROM tokens v WHERE (v.symbol ILIKE $1 ESCAPE '\\' OR v.name ILIKE $1 ESCAPE '\\' OR v.address ILIKE $1 ESCAPE '\\') AND EXISTS (SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL) ORDER BY v.metadata_updated_at DESC NULLS LAST LIMIT 8`, [like]),
+    pool.query(`SELECT v.address,v.symbol,v.name,${logoUrl} AS "logoUrl",CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd",${tokenMarketCap} AS "marketCapUsd",NULL AS "change24h",0 AS "kolCount24h",0 AS "buys24h",0 AS "sells24h",NULL AS "volume24hUsd",NULL AS "lastTradeAt" FROM tokens v WHERE (v.symbol ILIKE $1 ESCAPE '\\' OR v.name ILIKE $1 ESCAPE '\\' OR v.address ILIKE $1 ESCAPE '\\') AND EXISTS (SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL) ORDER BY v.metadata_updated_at DESC NULLS LAST LIMIT 8`, [like]),
   ]);
   return { kols: kols.rows, tokens: tokens.rows };
 });
