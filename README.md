@@ -6,8 +6,8 @@ Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handl
 
 - `/trades` — observed swaps initiated by tracked wallets, with filters and BscScan links
 - `/tokens` — tokens traded by tracked wallets, ordered by recent activity
-- `/leaderboard` — 1, 7, and 30 day realized USD profit from valued observed trades
-- `/kol/:address` — wallet profile, X link, trades, tokens, and observed P&L
+- `/leaderboard` — wallets active in the last 24 hours, ranked by 24-hour realized USD profit and showing trade counts
+- `/kol/:address` — wallet profile, X link, paginated trades from the last 24 hours, tokens, and 24-hour P&L
 
 The worker follows new BSC blocks via WebSocket and queries the local HTTP RPC for ERC-20 transfers, transactions, and receipts. It waits six blocks, stores trades once, and rescans after short reorganizations. BNB/USD comes from the [Chainlink BNB/USD feed on BSC](https://data.chain.link/feeds/bsc/mainnet/bnb-usd), read through the local node. BNB-quoted swaps are valued at the price reported near their block; stablecoin-quoted swaps use the quoted amount. Ambiguous interactions remain unpriced.
 

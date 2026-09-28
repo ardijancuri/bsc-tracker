@@ -50,6 +50,9 @@ export interface LeaderboardRow extends Kol {
   realizedProfitUsd: string | null;
   unrealizedProfitUsd: string | null;
   updatedAt: string | null;
+  tradeCount24h: number;
+  buyCount24h: number;
+  sellCount24h: number;
 }
 
 export interface Overview {

@@ -153,7 +153,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .unpriced-grid { gap: 18px; }
 .column-empty { border: 0; background: #181c1f; font-size: 12px; }
 
-.leaderboard-row { grid-template-columns: 48px minmax(240px, 1fr) 175px; gap: 16px; min-height: 66px; padding: 9px 14px; border: 0; }
+.leaderboard-row { grid-template-columns: 48px minmax(240px, 1fr) 175px; gap: 16px; min-height: 76px; padding: 9px 14px; border: 0; }
 .leaderboard-row:not(.table-head) { background: #0b0e11; }
 .leaderboard-row.leader-rank-1, .leaderboard-row.leader-rank-2, .leaderboard-row.leader-rank-3 { border-left: 0; }
 .leaderboard-row.leader-rank-1 .rank-number { color: #e8bd4d; }
@@ -168,10 +168,10 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .leaderboard-row.leader-rank-2:not(.table-head):hover { background: #2c3439; }
 .leaderboard-row.leader-rank-3:not(.table-head):hover { background: #382a21; }
 .leaderboard-row .avatar { width: 40px; height: 40px; }
-.leader-identity { display: flex; align-items: baseline; gap: 12px; min-width: 0; white-space: nowrap; overflow: hidden; }
-.leader-identity .identity { flex: none; max-width: 70%; }
+.leader-identity { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; white-space: nowrap; overflow: hidden; }
+.leader-identity .identity { flex: none; max-width: 100%; }
 .leaderboard-row .identity-copy strong { font-size: 16px; max-width: 270px; }
-.twitter-handle { overflow: hidden; text-overflow: ellipsis; color: #9ba5aa; font-size: 12px; font-weight: 700; }
+.leader-activity { display: block; max-width: 100%; padding-left: 51px; overflow: hidden; text-overflow: ellipsis; color: #9ba5aa; font-size: 12px; font-weight: 600; }
 .rank-number { font-size: 15px; }
 .leaderboard-row .pnl { font-size: 17px; letter-spacing: -.3px; white-space: nowrap; }
 .method-note { font-size: 11px; }
@@ -180,7 +180,11 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .profile-header .identity-copy strong { font-size: 29px; max-width: 650px; }
 .profile-links a, .address-pill { border: 0; background: #1d2225; font-size: 12px; padding: 9px 11px; }
 .profile-stats { border-top: 0; margin-bottom: 30px; }
-.kol-detail-page .profile-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 0; }
+.profile-load-more { display: block; margin: 16px auto 0; padding: 10px 18px; border: 1px solid #3a4449; border-radius: 7px; background: transparent; color: #d7dfe1; font-size: 12px; font-weight: 700; cursor: pointer; }
+.profile-load-more:hover { border-color: #69787f; background: #1b2226; }
+.profile-load-more:disabled { opacity: .55; cursor: wait; }
+.profile-more-error { text-align: center; color: var(--red); font-size: 12px; }
+.kol-detail-page .profile-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 0; }
 .profile-links .copy-wallet { font: inherit; font-size: 12px; font-weight: 700; color: #aab7bc; cursor: pointer; white-space: nowrap; }
 .profile-links .copy-wallet:hover { color: var(--yellow); background: #252c2f; }
 .token-detail-page .profile-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 0; }
@@ -266,7 +270,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .leaderboard-row { min-width: 0; grid-template-columns: 34px minmax(0, 1fr) 135px; gap: 10px; padding: 9px 7px; }
   .leaderboard-row .pnl { font-size: 15px; }
   .leader-identity .identity { max-width: 100%; }
-  .twitter-handle { display: none; }
+  .leader-activity { padding-left: 43px; }
   .profile-trades { overflow: visible; }
   .profile-trades .trade-amount { display: block; }
   .footer { padding: 21px 18px; }
@@ -285,6 +289,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .column-heading p { display: block; }
   .metric { padding: 14px 12px !important; }
   .profile-stats .metric { padding: 14px 12px !important; }
+  .kol-detail-page .profile-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 520px) {
@@ -298,6 +303,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .leaderboard-row { grid-template-columns: 25px minmax(0, 1fr) 105px; }
   .leaderboard-row .identity-copy strong { font-size: 14px; max-width: 130px; }
   .leaderboard-row .avatar { width: 32px; height: 32px; }
+  .leader-activity { padding-left: 42px; font-size: 11px; }
   .leaderboard-row .pnl { font-size: 14px; }
   .token-card .identity-copy small { max-width: 145px; }
   .profile-header .identity-copy strong { font-size: 23px; }
