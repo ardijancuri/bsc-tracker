@@ -6,7 +6,7 @@ const router = '0x2222222222222222222222222222222222222222';
 const tokenA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const tokenB = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const indexed = (address: string) => `0x${address.slice(2).padStart(64, '0')}`;
-const transfer = (token: string, from: string, to: string, amount: bigint): TransferLog => ({ address: token, topics: [transferTopic, indexed(from), indexed(to)], data: `0x${amount.toString(16)}` });
+const transfer = (token: string, from: string, to: string, amount: bigint): TransferLog => ({ address: token, topics: [transferTopic, indexed(from), indexed(to)], data: `0x${amount.toString(16).padStart(64, '0')}` });
 const swap = (topic: string): TransferLog => ({ address: router, topics: [topic], data: '0x' });
 
 describe('wallet swap classification', () => {
@@ -54,6 +54,25 @@ describe('wallet swap classification', () => {
   it('nets multiple transfers and ignores zero net flow', () => {
     const flows = walletSwapFlows(wallet, 0n, [transfer(tokenA, wallet, router, 100n), transfer(tokenA, router, wallet, 100n), swap([...swapTopics][0])]);
     expect(flows.size).toBe(0);
+  });
+
+  it('ignores the NFT burn that stalled block 124454372 while retaining token swaps', () => {
+    const seller = '0x9c31fef448c9094b2aac6f244242b5b3a6ca6508';
+    const nft: TransferLog = {
+      address: '0xabbeb6e9b9c96a837c99fb9faa908fc7a1df2bc1',
+      topics: [transferTopic, indexed(seller), indexed('0x' + '0'.repeat(40)), '0x' + '7e30'.padStart(64, '0')],
+      data: '0x',
+    };
+    expect(walletSwapFlows(seller, 0n, [nft]).size).toBe(0);
+    expect([...walletSwapFlows(seller, 0n, [nft, transfer(tokenA, seller, router, 100n), transfer(tokenB, router, seller, 40n)]).entries()])
+      .toEqual([[tokenA, -100n], [tokenB, 40n]]);
+    expect(walletSwapFlows(seller, 0n, [{ ...nft, data: '0x' + '1'.padStart(64, '0') }, swap([...swapTopics][0])]).size).toBe(0);
+  });
+
+  it.each(['0x', '0x01', '0x' + '0'.repeat(63), '0x' + '0'.repeat(65), '0x' + 'g'.repeat(64)])('ignores invalid token amount data %s', data => {
+    const invalid = { ...transfer(tokenA, wallet, router, 100n), data };
+    expect([...walletSwapFlows(wallet, 10n ** 18n, [invalid, transfer(tokenB, router, wallet, 40n)]).entries()])
+      .toEqual([[tokenB, 40n]]);
   });
 });
 

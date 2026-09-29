@@ -44,7 +44,9 @@ export function nativeSellProceeds(wallet: string, soldRaw: bigint, logs: Transf
 export function walletSwapFlows(wallet: string, value: bigint, logs: TransferLog[]): Map<string, bigint> {
   const net = new Map<string, bigint>();
   for (const log of logs) {
-    if (log.topics[0]?.toLowerCase() !== transferTopic || log.topics.length < 3 || !/^0x[a-fA-F0-9]{40}$/.test(log.address)) continue;
+    // ERC-721 shares the Transfer signature but indexes its token ID and has no amount data.
+    if (log.topics[0]?.toLowerCase() !== transferTopic || log.topics.length !== 3 ||
+      !/^0x[a-fA-F0-9]{40}$/.test(log.address) || !/^0x[0-9a-fA-F]{64}$/.test(log.data)) continue;
     const from = addressFromTopic(log.topics[1]);
     const to = addressFromTopic(log.topics[2]);
     if (!from || !to || from === to) continue;

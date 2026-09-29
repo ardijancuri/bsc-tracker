@@ -6,6 +6,7 @@ import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard } from './pnl.js';
 import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
+import { readBlockRange } from './blockRange.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -208,15 +209,21 @@ async function scanRange(from: number, to: number, head: number) {
     list.push({ tx, receipt });
     byBlock.set(height, list);
   }
-  for (let height = from; height <= to; height++) {
-    const block = await rpc<RpcBlock>('eth_getBlockByNumber', [hex(height), false]);
-    if (!block) throw new Error(`Missing block ${height}`);
-    const previous = await pool.query('SELECT block_hash FROM processed_blocks WHERE block_number=$1', [height - 1]);
-    if (previous.rows.length && previous.rows[0].block_hash.toLowerCase() !== block.parentHash.toLowerCase()) throw new Error(`Parent hash mismatch at ${height}`);
-    for (const entry of byBlock.get(height) || []) await persistNodeTrade(entry.tx, entry.receipt, block, normalized(entry.tx.from)!);
-    await pool.query(`INSERT INTO processed_blocks(block_number,block_hash) VALUES($1,$2) ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`, [height, block.hash]);
-    await setState('node', { blockNumber: height, headBlock: head, blockHash: block.hash });
+  const previous = await pool.query('SELECT block_hash FROM processed_blocks WHERE block_number=$1', [from - 1]);
+  const blocks = await readBlockRange(from, to, height => rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(height), false]), previous.rows[0]?.block_hash);
+  for (const block of blocks) {
+    const height = Number(BigInt(block.number));
+    for (const entry of byBlock.get(height) || []) {
+      if (entry.receipt.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`Receipt block hash mismatch at ${height}`);
+      await persistNodeTrade(entry.tx, entry.receipt, block, normalized(entry.tx.from)!);
+    }
   }
+  // Save the checkpoint only after every trade in this range has been persisted. Replays are idempotent.
+  await pool.query(`INSERT INTO processed_blocks(block_number,block_hash)
+    SELECT * FROM unnest($1::bigint[],$2::text[])
+    ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`,
+    [blocks.map(block => Number(BigInt(block.number))), blocks.map(block => block.hash)]);
+  await setState('node', { blockNumber: to, headBlock: head, blockHash: blocks.at(-1)!.hash });
   await pool.query('DELETE FROM processed_blocks WHERE block_number < $1', [to - 128]);
   if (matched.size) await notifyUpdate();
 }
@@ -240,7 +247,7 @@ async function nodeLoop() {
       const latest = await pool.query('SELECT MAX(block_number) AS height FROM processed_blocks');
       const configured = Number(process.env.BSC_START_BLOCK);
       const start = latest.rows[0].height == null ? (Number.isInteger(configured) && configured > 0 ? configured : Math.max(0, target - 12)) : Number(latest.rows[0].height) + 1;
-      if (start <= target) await scanRange(start, Math.min(target, start + 15), head);
+      if (start <= target) await scanRange(start, Math.min(target, start + 511), head);
       else await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 3000); });
     } catch (error) {
       console.error('Node worker:', error);
