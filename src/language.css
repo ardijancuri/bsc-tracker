@@ -1,9 +1,9 @@
 .language-select{position:relative;display:inline-flex;flex:none;color:var(--muted)}
 .main-nav .mobile-social-link{display:none}
-.language-trigger{display:inline-flex;align-items:center;justify-content:center;min-width:35px;min-height:35px;padding:0;border:0;border-radius:5px;background:transparent;color:inherit;cursor:pointer}
-.language-trigger:hover{background:#202529;color:#e9eeef}
+.language-trigger{display:inline-flex;align-items:center;justify-content:center;width:35px;height:35px;flex:none;padding:0;border:1px solid #30383e;border-radius:7px;background:transparent;color:#a9b1b5;cursor:pointer;transition:border-color .15s,color .15s}
+.language-trigger:hover{border-color:#68757b;color:#fff}
 .language-trigger:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
-.language-menu{position:absolute;right:0;top:calc(100% + 8px);width:152px;max-width:calc(100vw - 28px);padding:5px;border:1px solid var(--line);border-radius:9px;background:#151b1f;box-shadow:0 8px 24px #0006;z-index:40;animation:language-enter .12s ease-out;transform-origin:top right}
+.language-menu{position:absolute;right:0;top:calc(100% + 8px);width:128px;max-width:calc(100vw - 28px);padding:5px;border:0;border-radius:9px;background:#151b1f;box-shadow:0 8px 24px #0006;z-index:40;animation:language-enter .12s ease-out;transform-origin:top right}
 .language-menu button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:36px;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#c5cdd1;font:inherit;font-size:13px;text-align:left;cursor:pointer}
 .language-menu button:hover,.language-menu button:focus-visible{background:#252c30;color:#fff;outline:0}
 .language-menu button[aria-checked="true"]{color:var(--yellow)}
@@ -17,5 +17,6 @@ html[lang="zh-CN"] .eyebrow,html[lang="zh-CN"] .small-label{letter-spacing:.6px}
 .profile-trades .trade-activity>a{max-width:100%}
 .profile-trades .trade-activity .identity{max-width:100%}
 .profile-trades .trade-activity .identity-copy strong{max-width:100%}
-@media(max-width:800px){.language-trigger{min-height:36px;min-width:36px}.footer-legal{flex-wrap:wrap}}
+@media(max-width:800px){.footer-legal{flex-wrap:wrap}}
+@media(max-width:400px){.language-trigger{width:32px}}
 @media(max-width:520px){.header-social>.header-x-link{display:none}.main-nav .mobile-social-link{display:flex;gap:7px}.header-right{gap:6px}}

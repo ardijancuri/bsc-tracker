@@ -1,8 +1,8 @@
 import { pool } from './db.js';
-import type { TokenTranslation } from '../shared/tokenTranslation.js';
+import { chineseTokenName, type TokenTranslation } from '../shared/tokenTranslation.js';
+export { chineseTokenName } from '../shared/tokenTranslation.js';
 
 const han = /\p{Script=Han}/u;
-const otherEastAsian = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 function decodeEntities(value: string) {
   const named: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ' };
   return value.replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt|nbsp);/gi, (entity, code: string) => {
@@ -10,13 +10,6 @@ function decodeEntities(value: string) {
     const point = code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
     return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff) ? String.fromCodePoint(point) : entity;
   });
-}
-export function chineseTokenName(token: { name?: string | null; symbol?: string | null }): string | null {
-  for (const value of [token.name, token.symbol]) {
-    const source = value?.normalize('NFC').trim().replace(/\s+/g, ' ');
-    if (source && han.test(source) && !otherEastAsian.test(source) && Buffer.byteLength(source, 'utf8') <= 500 && !/[\u0000-\u001f\u007f]/.test(source)) return source;
-  }
-  return null;
 }
 
 export function translatedName(body: unknown, source: string): string | null {
