@@ -1,0 +1,14 @@
+.language-select{display:inline-flex;align-items:center;gap:6px;color:var(--muted);flex:none;font-size:13px}
+.language-caption{display:none}
+.language-select select{font:inherit;color:inherit;background:transparent;border:0;border-radius:4px;cursor:pointer;max-width:100%;padding:6px 2px}
+.language-select select:focus-visible{outline:2px solid var(--yellow);outline-offset:3px}
+.language-select option{background:var(--bg);color:#e9eeef}
+html[lang="zh-CN"]{font-family:Manrope,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif}
+html[lang="zh-CN"] .section-title h1,html[lang="zh-CN"] .profile-header .identity-copy strong{letter-spacing:0}
+html[lang="zh-CN"] .eyebrow,html[lang="zh-CN"] .small-label{letter-spacing:.6px}
+.profile-grid>section{min-width:0}
+.profile-trades .trade-activity,.profile-trades .trade-activity>a{min-width:0}
+.profile-trades .trade-activity>a{max-width:100%}
+.profile-trades .trade-activity .identity{max-width:100%}
+.profile-trades .trade-activity .identity-copy strong{max-width:100%}
+@media(max-width:800px){.main-nav .language-select{justify-content:flex-end;min-height:44px}.language-caption{display:inline}.language-select select{min-height:36px}.footer-legal{flex-wrap:wrap}}
