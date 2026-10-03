@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, Languages } from 'lucide-react';
 import { t, useLanguage, type Language } from './i18n';
 
 const languages = [{ value: 'en', label: 'English' }, { value: 'zh-CN', label: '简体中文' }] as const;
@@ -26,7 +26,7 @@ export function LanguageSelect() {
   return <div className="language-select" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
     <button ref={trigger} type="button" className="language-trigger" aria-label={`${t('Language')}: ${language === 'en' ? 'English' : '简体中文'}`} title={t('Language')} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
       onClick={() => open ? setOpen(false) : show(language === 'en' ? 0 : 1)} onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowDown' ? 0 : languages.length - 1); } }}>
-      <span>{language === 'zh-CN' ? '中文' : 'EN'}</span><ChevronDown size={12} aria-hidden="true" />
+      <Languages size={18} aria-hidden="true" />
     </button>
     {open && <div className="language-menu" id={menuId} role="menu" aria-label={t('Language')} onKeyDown={navigate}>
       {languages.map((option, index) => <button key={option.value} ref={element => { options.current[index] = element; }} type="button" role="menuitemradio" aria-checked={language === option.value} tabIndex={active === index ? 0 : -1} lang={option.value} onFocus={() => setActive(index)} onClick={() => choose(option.value)}>
