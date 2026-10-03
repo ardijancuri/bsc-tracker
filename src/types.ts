@@ -53,6 +53,9 @@ export interface LeaderboardRow extends Kol {
   tradeCount24h: number;
   buyCount24h: number;
   sellCount24h: number;
+  unpricedSellCount24h: number;
+  valuedSellCount: number | null;
+  excludedSellCount: number | null;
 }
 
 export interface Overview {
@@ -67,5 +70,5 @@ export interface Overview {
   bnbPriceUsd: number | null;
   bnbPriceAt: string | null;
   lastLeaderboardAt: string | null;
-  leaderboardSource: 'gmgn' | 'onchain_estimate';
+  leaderboardSource: 'gmgn' | 'onchain_estimate' | 'window_trades';
 }

@@ -6,12 +6,14 @@ Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handl
 
 - `/trades` — observed swaps initiated by tracked wallets, with filters and BscScan links
 - `/tokens` — tokens traded by tracked wallets, ordered by recent activity
-- `/leaderboard` — wallets active in the last 24 hours, ranked by 24-hour realized USD profit and showing trade counts
-- `/kol/:address` — wallet profile, X link, paginated trades from the last 24 hours, tokens, and 24-hour P&L
+- `/leaderboard` — wallets active in the last 24 hours, ranked by realized USD profit from positions bought and sold within that rolling window
+- `/kol/:address` — wallet profile, X link, paginated trades from the last 24 hours, tokens, and 24-hour tracked P&L
 
 The worker follows new BSC blocks via WebSocket and queries the local HTTP RPC for ERC-20 transfers, transactions, and receipts. It waits six blocks, stores trades once, and rescans after short reorganizations. BNB/USD comes from the [Chainlink BNB/USD feed on BSC](https://data.chain.link/feeds/bsc/mainnet/bnb-usd), read through the local node. BNB-quoted swaps are valued at the price reported near their block; stablecoin-quoted swaps use the quoted amount. Ambiguous interactions remain unpriced.
 
-The leaderboard uses FIFO cost basis for observed, valued buys and sells, including buys before the selected period when they are in the indexed history. If any sale in a period lacks a verified, fully valued cost basis, its P&L is a dash rather than a partial total. A wallet with no observed sales in the period shows $0. The worker verifies previously imported trades against historical BSC receipts through `BSC_HISTORICAL_RPC_HTTP` (defaulting to the official public endpoint); unverified imports do not affect P&L. New roster wallets begin accumulating trades when the worker first sees them. Token prices are the last observed swap price, not a market quote. The site has no wallet connection or trading action.
+The public leaderboard uses a continuously moving 24-hour window and FIFO cost basis from observed, valued purchases made within that window. Sales without enough priced purchases in the window are excluded; complete sales still contribute, with an asterisk indicating excluded sales. A dash means sales occurred but none could be fully valued, while no sales means $0 realized. Auxiliary dividend trackers and ambiguous quote values duplicated across multiple assets in one transaction do not inflate P&L. These are tracked estimates: unobserved transfers, incomplete indexing, trading fees and gas can affect actual wallet profit. The worker verifies previously imported trades against historical BSC receipts through `BSC_HISTORICAL_RPC_HTTP` (defaulting to the official public endpoint); unverified imports do not affect P&L. New roster wallets begin accumulating trades when the worker first sees them. Token prices are the last observed swap price, not a market quote. The site has no wallet connection or trading action.
+
+The token tracker includes recognized meme launchpad contracts and known meme coins, excluding quote assets, LP tokens and dividend trackers. Its initial one-hour window uses on-chain trade timestamps. Logos are validated by decoding their image bytes, cached locally and served through `/api/token-image/:address` with a content version. IPFS images retry independent gateways; oversized animation uses a compact still frame. Coins with unavailable artwork keep a readable initial while background retries continue.
 
 ## Run
 
@@ -25,4 +27,4 @@ For local development, run `npm install`, then `npm run dev` and `npm run dev:ap
 
 ## Leaderboard P&L
 
-Set `GMGN_API_KEY` in the deployment `.env` to load 1-day, 7-day, and 30-day realized USD profit from GMGN's official batch wallet profits API. The worker refreshes it every two minutes. This read-only endpoint needs an API key but no wallet private key. Without a key, the leaderboard shows an explicitly labeled estimate calculated from the on-chain trades indexed by this app. These estimates can differ from GMGN because the indexed history and cost basis may be incomplete. Never commit the API key.
+The public 24-hour leaderboard is calculated from verified indexed trades every two minutes and stores period `1d` with its rolling window start. Optional `GMGN_API_KEY` still populates separate legacy 7-day and 30-day snapshots through the official batch wallet profits API; these are not used for the public ranking. Never commit the API key.

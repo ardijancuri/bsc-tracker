@@ -37,6 +37,7 @@ export async function ensureSchema() {
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS total_supply_raw numeric;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS supply_checked_at timestamptz;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS market_cap_checked_at timestamptz;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS is_meme boolean;
     CREATE TABLE IF NOT EXISTS trades (
       id text PRIMARY KEY,
       tx_hash text NOT NULL,
@@ -58,6 +59,7 @@ export async function ensureSchema() {
       UNIQUE (tx_hash, wallet_address, token_address)
     );
     ALTER TABLE trades ADD COLUMN IF NOT EXISTS value_checked_at timestamptz;
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS transaction_index integer;
     CREATE INDEX IF NOT EXISTS trades_recent_idx ON trades (timestamp DESC, id DESC);
     ALTER TABLE kols ADD COLUMN IF NOT EXISTS profile_checked_at timestamptz;
     ALTER TABLE kols ADD COLUMN IF NOT EXISTS avatar_checked_at timestamptz;
@@ -82,6 +84,11 @@ export async function ensureSchema() {
       block_hash text NOT NULL,
       processed_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE leaderboard_snapshots DROP CONSTRAINT IF EXISTS leaderboard_snapshots_period_check;
+    ALTER TABLE leaderboard_snapshots ADD CONSTRAINT leaderboard_snapshots_period_check CHECK (period IN ('1d','7d','30d','today'));
+    ALTER TABLE leaderboard_snapshots ADD COLUMN IF NOT EXISTS window_start timestamptz;
+    ALTER TABLE leaderboard_snapshots ADD COLUMN IF NOT EXISTS valued_sell_count integer;
+    ALTER TABLE leaderboard_snapshots ADD COLUMN IF NOT EXISTS excluded_sell_count integer;
     CREATE TABLE IF NOT EXISTS worker_state (
       key text PRIMARY KEY,
       value jsonb NOT NULL,

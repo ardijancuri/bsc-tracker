@@ -1,4 +1,4 @@
-import { normalizeLogoUrl } from './tokenLogo.js';
+import { normalizeLogoUrl, imageCandidateUrls } from './tokenLogo.js';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
@@ -47,18 +47,25 @@ export function imageMime(data: Uint8Array): string | null {
 
 export async function compressTokenImage(image: TokenImage): Promise<TokenImage | null> {
   if (!image.data.length || image.data.length > maxDownloadBytes || imageMime(image.data) !== image.mime) return null;
-  if (image.mime === 'image/gif') return image.data.length <= maxImageBytes ? image : null;
   try {
     const source = sharp(image.data, { limitInputPixels: 40_000_000, failOn: 'error' });
     const metadata = await source.metadata();
-    if ((metadata.pages || 1) > 1) return image.data.length <= maxImageBytes ? image : null;
-    if (image.mime === 'image/webp' && (metadata.width || 0) <= 192 && (metadata.height || 0) <= 192 && image.data.length <= maxImageBytes) return image;
+    if (image.mime === 'image/gif' || (metadata.pages || 1) > 1) {
+      await source.clone().resize(1, 1).raw().toBuffer();
+      if (image.data.length <= maxImageBytes) return image;
+      const data = await source.clone().resize(192, 192, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 82 }).toBuffer();
+      return data.length <= maxImageBytes ? { ...image, data, mime: 'image/webp' } : null;
+    }
+    if (image.mime === 'image/webp' && (metadata.width || 0) <= 192 && (metadata.height || 0) <= 192 && image.data.length <= maxImageBytes) {
+      await source.clone().resize(1, 1).raw().toBuffer();
+      return image;
+    }
     const data = await source.rotate().resize(192, 192, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82, effort: 4 }).toBuffer();
     if (data.length <= maxImageBytes && imageMime(data) === 'image/webp' && (data.length < image.data.length || image.data.length > maxImageBytes)) {
       return { ...image, data, mime: 'image/webp' };
     }
-  } catch { /* Keep an already small, verified image when Sharp cannot decode it. */ }
+  } catch { return null; }
   return image.data.length <= maxImageBytes ? image : null;
 }
 
@@ -73,6 +80,14 @@ export async function onchainTokenImage(source: string, dataUri: string): Promis
 }
 
 export async function downloadTokenImage(rawUrl: string): Promise<TokenImage | null> {
+  for (const url of imageCandidateUrls(rawUrl)) {
+    try { const image = await downloadImage(url); if (image) return image; }
+    catch { /* Retry an independent IPFS gateway for unavailable artwork. */ }
+  }
+  return null;
+}
+
+async function downloadImage(rawUrl: string): Promise<TokenImage | null> {
   const normalized = normalizeLogoUrl(rawUrl);
   if (!normalized) return null;
   let url = new URL(normalized);
@@ -82,7 +97,7 @@ export async function downloadTokenImage(rawUrl: string): Promise<TokenImage | n
     if (url.protocol !== 'https:' || url.port || url.username || url.password) return null;
     const knownHost = imageHosts.has(url.hostname.toLowerCase());
     if (!knownHost && (url.hostname.startsWith('[') || isIP(url.hostname))) return null;
-    const request = { signal: AbortSignal.timeout(12000), redirect: 'manual' as const,
+    const request = { signal: AbortSignal.timeout(6000), redirect: 'manual' as const,
       headers: { accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif' } };
     if (!knownHost) externalAgent ||= publicImageAgent();
     const response = knownHost

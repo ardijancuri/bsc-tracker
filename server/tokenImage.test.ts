@@ -33,8 +33,21 @@ describe('token image cache', () => {
       expect(await downloadTokenImage('https://genius.fun/api/image?src=test')).toBeNull();
       fetchMock.mockResolvedValueOnce(new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), { status: 200 }));
       const image = await downloadTokenImage('https://genius.fun/api/image?src=test');
-      expect(image?.mime).toBe('image/png');
-      expect(image?.data.length).toBe(8);
+      expect(image).toBeNull();
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it('tries another IPFS gateway when the first serves corrupt artwork', async () => {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#f2cc52' } }).png().toBuffer();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(Buffer.from([255, 216, 255]), { status: 200 }));
+      fetchMock.mockResolvedValueOnce(new Response(png, { status: 200 }));
+      const image = await downloadTokenImage('https://flap.mypinata.cloud/ipfs/bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe');
+      expect(image).not.toBeNull();
+      expect(image?.url).toContain('gateway.pinata.cloud');
+      expect((await sharp(image!.data).metadata()).width).toBe(8);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally { fetchMock.mockRestore(); }
   });
 
@@ -55,6 +68,17 @@ describe('token image cache', () => {
     } finally { fetchMock.mockRestore(); }
   });
 
+  it('renders an oversized animated logo as a compact first frame', async () => {
+    const gif = await sharp(randomBytes(1024 * 1024 * 3 * 3), {
+      raw: { width: 1024, height: 3072, pageHeight: 1024, channels: 3 },
+    }).gif({ effort: 1, dither: 0 }).toBuffer();
+    expect(gif.length).toBeGreaterThan(2 * 1024 * 1024);
+    const image = await compressTokenImage({ url: 'https://flap.sh/large.gif', data: gif, mime: 'image/gif' });
+    expect(image?.mime).toBe('image/webp');
+    expect((await sharp(image!.data).metadata()).width).toBe(192);
+    expect(image!.data.length).toBeLessThan(2 * 1024 * 1024);
+  }, 15000);
+
   it('compresses ordinary token art while keeping transparent pixels', async () => {
     const rgba = randomBytes(256 * 256 * 4);
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = ((i - 3) / 4) % 2 ? 255 : 0;
@@ -69,8 +93,8 @@ describe('token image cache', () => {
 
   it('decodes Brew on-chain artwork without accepting a mismatched data URI', async () => {
     const source = 'onchain://56/0xe84481a12e9404bc644948e589acd33600b677fa';
-    const jpeg = Buffer.from([255, 216, 255, 224, 0, 16]);
-    expect((await onchainTokenImage(source, `data:image/jpeg;base64,${jpeg.toString('base64')}`))?.mime).toBe('image/jpeg');
+    const jpeg = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#f2cc52' } }).jpeg().toBuffer();
+    expect(await onchainTokenImage(source, `data:image/jpeg;base64,${jpeg.toString('base64')}`)).not.toBeNull();
     expect(await onchainTokenImage(source, 'data:image/jpeg;base64,PGh0bWw+')).toBeNull();
     expect(await onchainTokenImage('onchain://1/0xe84481a12e9404bc644948e589acd33600b677fa', `data:image/jpeg;base64,${jpeg.toString('base64')}`)).toBeNull();
   });

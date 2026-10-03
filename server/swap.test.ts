@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { nativeSellProceeds, swapTopics, transferTopic, walletSwapFlows, type TransferLog } from './swap.js';
 
 const wallet = '0x1111111111111111111111111111111111111111';
@@ -77,6 +78,25 @@ describe('wallet swap classification', () => {
 });
 
 describe('native BNB proceeds', () => {
+  const receipts = JSON.parse(readFileSync(new URL('./fixtures/nativePayouts.json', import.meta.url), 'utf8')) as {
+    name: string; hash: string; wallet: string; router: string; soldToken: string; soldRaw: string; paid: string; logs: TransferLog[];
+  }[];
+  it.each(receipts)('recovers the net recipient payout from a real $name receipt ($hash)', receipt => {
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw), receipt.logs, receipt.router, receipt.soldToken)).toBe(BigInt(receipt.paid));
+    expect(nativeSellProceeds(wallet, BigInt(receipt.soldRaw), receipt.logs, receipt.router, receipt.soldToken)).toBeNull();
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw) * 2n, receipt.logs, receipt.router, receipt.soldToken)).toBeNull();
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw), [...receipt.logs, ...receipt.logs], receipt.router, receipt.soldToken)).toBeNull();
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw), receipt.logs.map(log => ({ ...log, address: router })), receipt.router, receipt.soldToken)).toBeNull();
+  });
+  it.each(receipts.filter(receipt => !receipt.name.startsWith('Flap')))('rejects the wrong input token or a nonnative $name payout', receipt => {
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw), receipt.logs, receipt.router, tokenA)).toBeNull();
+    // All native asset sentinels become WBNB; a token payout cannot be counted as native BNB as well.
+    const nonnative = receipt.logs.map(log => ({ ...log,
+      topics: log.topics.map(topic => /^0x0{64}$/.test(topic) ? indexed(tokenB) : topic),
+      data: log.data.replaceAll('0'.repeat(24) + 'e'.repeat(40), '0'.repeat(24) + tokenB.slice(2)),
+    }));
+    expect(nativeSellProceeds(receipt.wallet, BigInt(receipt.soldRaw), nonnative, receipt.router, receipt.soldToken)).toBeNull();
+  });
   it('reads the net BNB paid by the Flap router rather than its gross WBNB withdrawal', () => {
     const seller = '0xb2d1af0746c410e146272e804b1741f07f83b851';
     const sold = 2815127483162583606162285n;

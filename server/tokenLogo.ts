@@ -2,11 +2,21 @@ export function normalizeLogoUrl(value: string): string | null {
   const image = value.replaceAll('\\/', '/').replaceAll('\\u0026', '&').replaceAll('&amp;', '&');
   const gateway = image.match(/^https:\/\/(?:flap\.mypinata\.cloud|ipfs\.io)\/ipfs\/(.+)$/i);
   const cid = (gateway?.[1] || image.replace(/^ipfs:\/\//i, '').replace(/^ipfs\//i, ''));
-  if (/^b[a-z2-7]{20,}$/.test(cid) || /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid)) {
+  const root = cid.split('/')[0];
+  if (/^b[a-z2-7]{20,}$/.test(root) || /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(root)) {
     const host = /^https:\/\/flap\.mypinata\.cloud\/ipfs\//i.test(image) ? 'flap.mypinata.cloud' : 'gateway.pinata.cloud';
     return `https://${host}/ipfs/${cid}`;
   }
   return /^https:\/\//i.test(image) ? image : null;
+}
+
+export function imageCandidateUrls(value: string): string[] {
+  const normalized = normalizeLogoUrl(value);
+  if (!normalized) return [];
+  const parsed = new URL(normalized);
+  const ipfs = parsed.pathname.match(/^\/ipfs\/((?:b[a-z2-7]{20,}|Qm[1-9A-HJ-NP-Za-km-z]{44})(?:\/.*)?)$/);
+  if (!ipfs) return [normalized];
+  return [...new Set([normalized, ...['gateway.pinata.cloud', 'flap.mypinata.cloud', 'ipfs.io', 'dweb.link'].map(host => `https://${host}/ipfs/${ipfs[1]}`)])];
 }
 
 export function geniusLogoFromHtml(html: string, address: string): string | null {

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { flapLogoFromHtml, geniusLogoFromHtml, normalizeLogoUrl } from './tokenLogo.js';
+import { flapLogoFromHtml, geniusLogoFromHtml, normalizeLogoUrl, imageCandidateUrls } from './tokenLogo.js';
 
 const address = '0xbbf4431aacfc2b22dff09d2bc21fb0775c1c7777';
+
+it('preserves IPFS image paths across independent gateways', () => {
+  const cid = 'bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe';
+  expect(normalizeLogoUrl(`${cid}/logo.png`)).toBe(`https://gateway.pinata.cloud/ipfs/${cid}/logo.png`);
+  const candidates = imageCandidateUrls(`ipfs://${cid}/logo.png`);
+  expect(candidates).toHaveLength(4);
+  expect(candidates).toContain(`https://ipfs.io/ipfs/${cid}/logo.png`);
+  expect(imageCandidateUrls('javascript:alert(1)')).toEqual([]);
+});
 
 describe('Flap token logo extraction', () => {
   it('reads the current token metadata image regardless of its host', () => {

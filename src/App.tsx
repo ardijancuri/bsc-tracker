@@ -9,6 +9,8 @@ type List<T> = { items: T[]; nextCursor?: string | null };
 const EMPTY_OVERVIEW: Overview = { trackedKols: 0, trades24h: 0, tokens24h: 0, latestTradeAt: null, lastTokenPriceAt: null, lastNodeBlock: null, nodeLagBlocks: null, lastNodeAt: null, bnbPriceUsd: null, bnbPriceAt: null, lastLeaderboardAt: null, leaderboardSource: 'onchain_estimate' };
 const gmgnTokenUrl = (address: string) => `https://gmgn.ai/bsc/token/${address}`;
 const isFresh = (value: string | null, limitMs: number) => Boolean(value && Date.now() - new Date(value).getTime() < limitMs);
+const skopjeTimeZone = () => new Intl.DateTimeFormat('en', { timeZone: 'Europe/Skopje', timeZoneName: 'shortOffset' })
+  .formatToParts(Date.now()).find(part => part.type === 'timeZoneName')!.value.replace('GMT', 'UTC');
 function tradeTokenAmount(value: string | null) {
   if (value == null) return '—';
   const amount = Number(value);
@@ -63,6 +65,9 @@ function tokenImageError(event: React.SyntheticEvent<HTMLImageElement>) {
   if (original && !image.dataset.triedOriginal && original !== image.src) {
     image.dataset.triedOriginal = 'true';
     image.src = original;
+  } else if (image.src.includes('/api/token-image/') && !image.dataset.retried) {
+    image.dataset.retried = 'true';
+    window.setTimeout(() => { if (image.isConnected) image.src = `${image.src}&retry=1`; }, 3000);
   } else image.style.display = 'none';
 }
 function TokenIdentity({ token }: { token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> }) {
@@ -138,8 +143,8 @@ function TradesPage({ overview }: { overview: Overview }) {
         <details className="faq-item" name="trades-faq"><summary>What does bscan track?</summary><p>bscan shows token trades from a curated list of KOL wallets on BNB Smart Chain.</p></details>
         <details className="faq-item" name="trades-faq"><summary>How often do new trades appear?</summary><p>The feed updates automatically as newly indexed trades become available.</p></details>
         <details className="faq-item" name="trades-faq"><summary>What can I find in the token tracker?</summary><p>Browse tokens traded by tracked KOLs, grouped by market cap. Open a token to see its recent KOL trades and the wallets trading it.</p></details>
-        <details className="faq-item" name="trades-faq"><summary>What does a KOL profile show?</summary><p>Each tracked wallet has a profile with its last 24 hours of trades, traded tokens, and 24-hour realized P&amp;L.</p></details>
-        <details className="faq-item" name="trades-faq"><summary>How does the leaderboard work?</summary><p>It ranks KOLs who traded in the last 24 hours by realized USD profit. A dash means a complete cost basis is unavailable.</p></details>
+        <details className="faq-item" name="trades-faq"><summary>What does a KOL profile show?</summary><p>Each tracked wallet has a profile with its last 24 hours of trades, traded tokens, and realized profit from positions bought and sold in that window.</p></details>
+        <details className="faq-item" name="trades-faq"><summary>How does the leaderboard work?</summary><p>It ranks tracked positions by realized USD profit over the last 24 hours. Sales without enough priced purchases in that window are excluded. A dash means there are no fully priced completed positions yet.</p></details>
       </div>
     </section>
     <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">Follow us on X</h2><p>Updates from bscan.</p></div><a href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer">@bscanfun <ExternalLink size={15} /></a></section>
@@ -165,9 +170,7 @@ function TokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const [items, setItems] = useState<LiveToken[]>([]);
   const { data, error } = useData<{ items: LiveToken[] }>(`/api/tokens?since=${encodeURIComponent(initialWindowStart)}&limit=300&withTrades=1`, { items: [] }, 10000);
   useEffect(() => {
-    if (!data.items.length) return;
-    setItems(previous => [...new Map([...previous, ...data.items].map(token => [token.address, token])).values()]
-      .sort((a, b) => new Date(b.lastTradeAt || 0).getTime() - new Date(a.lastTradeAt || 0).getTime()));
+    setItems(data.items);
   }, [data]);
   const groups = useMemo(() => {
     const result: Record<'low' | 'mid' | 'high', LiveToken[]> = { low: [], mid: [], high: [] };
@@ -178,7 +181,7 @@ function TokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     }
     return result;
   }, [items]);
-  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Token tracker" right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? 'Live feed reconnecting' : 'Watching live trades'}</span></div>} />
+  return <div className="page tokens-page"><SectionTitle eyebrow="KOL CONVICTION" title="Meme coin tracker" right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? 'Live feed reconnecting' : 'Watching live trades'}</span></div>} />
     <div className="token-columns">{([
       { key: 'low', title: 'Low caps', range: 'Under $100K' },
       { key: 'mid', title: '$100K+', range: '$100K to $1M' },
@@ -189,39 +192,64 @@ function TokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
 
 function LeaderboardPage({ overview }: { overview: Overview }) {
   const { data, loading, error } = useData<List<LeaderboardRow>>('/api/leaderboard', { items: [] }, 60000);
-  return <div className="page leaderboard-page"><SectionTitle eyebrow="THE PERFORMANCE BOARD" title="KOL leaderboard" description={overview.leaderboardSource === 'gmgn' ? 'Realized USD profit over the last 24 hours from GMGN wallet data.' : 'Estimated realized USD profit from KOL trades in the last 24 hours.'} right={<div className="freshness"><i className={isFresh(overview.lastLeaderboardAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.lastLeaderboardAt ? `Calculated ${relativeTime(overview.lastLeaderboardAt)}` : 'Calculating rankings'}</span></div>} />
-    <div className="table-toolbar leaderboard-toolbar"><span className="small-label">LAST 24 HOURS · RANKED BY REALIZED P&amp;L</span><span className="coverage-note">{data.items.length} KOLs traded</span></div>
-    <div className="data-table leaderboard-table">{data.items.map((row, index) => <Link className={`leaderboard-row ${row.realizedProfitUsd == null ? '' : `leader-rank-${index + 1}`}`} key={row.address} to={`/kol/${row.address}`}><span className="rank-number">{row.realizedProfitUsd == null ? '—' : String(index + 1).padStart(2, '0')}</span><span className="leader-identity"><Identity name={row.name} address={row.address} avatar={row.avatarUrl} twitter={row.twitter} subtitle={false} /><span className="leader-activity">{row.twitter && <span>@{row.twitter} · </span>}{row.tradeCount24h} {row.tradeCount24h === 1 ? 'trade' : 'trades'} · {row.buyCount24h} {row.buyCount24h === 1 ? 'buy' : 'buys'} · {row.sellCount24h} {row.sellCount24h === 1 ? 'sell' : 'sells'}</span></span><strong className={`pnl ${row.realizedProfitUsd == null ? '' : Number(row.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}`}>{signedMoney(row.realizedProfitUsd)}</strong></Link>)}{!data.items.length && !loading && <EmptyState title={error ? 'Leaderboard unavailable' : 'No KOL trades in the last 24 hours'} detail={error ? 'The API is reconnecting.' : 'Recent wallet activity will appear here automatically.'} />}</div>
+  return <div className="page leaderboard-page"><SectionTitle eyebrow="THE PERFORMANCE BOARD" title="KOL leaderboard" description="Realized profit from positions bought and sold in the last 24 hours." right={<div className="freshness"><i className={isFresh(overview.lastLeaderboardAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.lastLeaderboardAt ? `Calculated ${relativeTime(overview.lastLeaderboardAt)}` : 'Calculating rankings'}</span></div>} />
+    <div className="table-toolbar leaderboard-toolbar"><span className="small-label">LAST 24 HOURS · RANKED BY REALIZED P&amp;L</span><span className="coverage-note">{data.items.filter(row => row.tradeCount24h > 0).length} active · {data.items.length} tracked KOLs</span></div>
+    <div className="data-table leaderboard-table">{data.items.map((row, index) => <Link className={`leaderboard-row ${row.realizedProfitUsd == null || !row.tradeCount24h ? '' : `leader-rank-${index + 1}`}`} key={row.address} to={`/kol/${row.address}`}><span className="rank-number">{row.realizedProfitUsd == null || !row.tradeCount24h ? '—' : String(index + 1).padStart(2, '0')}</span><span className="leader-identity"><Identity name={row.name} address={row.address} avatar={row.avatarUrl} twitter={row.twitter} subtitle={false} /><span className="leader-activity">{row.twitter && <span>@{row.twitter} · </span>}{row.tradeCount24h} {row.tradeCount24h === 1 ? 'trade' : 'trades'} · {row.buyCount24h} {row.buyCount24h === 1 ? 'buy' : 'buys'} · {row.sellCount24h} {row.sellCount24h === 1 ? 'sell' : 'sells'}</span></span><strong className={`pnl ${row.realizedProfitUsd == null ? '' : Number(row.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}`} title={`${row.valuedSellCount || 0} matched sales in the last 24 hours; ${row.excludedSellCount || 0} sales excluded because purchase costs or prices are unavailable`}>{signedMoney(row.realizedProfitUsd)}{row.realizedProfitUsd != null && (row.excludedSellCount || 0) > 0 ? '*' : ''}{row.realizedProfitUsd == null && <small className="pnl-status">{row.unpricedSellCount24h > 0 ? 'Unpriced sales' : 'Missing purchase costs'}</small>}</strong></Link>)}{!data.items.length && !loading && <EmptyState title={error ? 'Leaderboard unavailable' : 'No KOL trades in the last 24 hours'} detail={error ? 'The API is reconnecting.' : 'Recent wallet activity will appear here automatically.'} />}</div>
   </div>;
 }
 
-function KolPage({ bnbPriceUsd, leaderboardSource }: { bnbPriceUsd: number | null; leaderboardSource: Overview['leaderboardSource'] }) {
+function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const address = window.location.pathname.split('/').pop() || '';
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [extraTrades, setExtraTrades] = useState<Trade[]>([]);
   const [extraCursor, setExtraCursor] = useState<string | null | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState(false);
+  const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 10, loading: false, error: false });
   const copyWallet = async () => {
     try { await navigator.clipboard.writeText(address); setCopyState('copied'); }
     catch { setCopyState('failed'); }
   };
-  const { data, loading } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; tokens: Token[] }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, tokens: [] }, 20000);
+  const { data, loading } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; windowStart: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
   useEffect(() => { setExtraTrades([]); setExtraCursor(undefined); setMoreError(false); }, [address]);
+  useEffect(() => { setTokenPage({ address, items: [], visibleCount: 10, loading: false, error: false }); }, [address]);
+  const currentTokenPage = tokenPage.address === address ? tokenPage : { address, items: [], cursor: undefined, visibleCount: 10, loading: false, error: false };
+  const allTokens = useMemo(() => {
+    const unique = new Map<string, Token>();
+    for (const token of [...(tokenPage.address === address ? tokenPage.items : []), ...data.tokens]) unique.set(token.address, token);
+    return [...unique.values()].sort((a, b) => new Date(b.lastTradeAt || 0).getTime() - new Date(a.lastTradeAt || 0).getTime() || b.address.localeCompare(a.address));
+  }, [data.tokens, tokenPage.items, tokenPage.address, address]);
+  const visibleTokens = allTokens.slice(0, currentTokenPage.visibleCount);
+  const tokensNextCursor = currentTokenPage.cursor === undefined ? data.tokensNextCursor : currentTokenPage.cursor;
+  const hasMoreTokens = allTokens.length > visibleTokens.length || Boolean(tokensNextCursor);
+  const loadMoreTokens = async () => {
+    if (currentTokenPage.loading || !hasMoreTokens) return;
+    if (allTokens.length >= currentTokenPage.visibleCount + 10 || !tokensNextCursor) {
+      setTokenPage(current => current.address === address ? { ...current, visibleCount: current.visibleCount + 10 } : current);
+      return;
+    }
+    setTokenPage(current => ({ ...current, items: allTokens, loading: true, error: false }));
+    try {
+      const page = await api<List<Token>>(`/api/kols/${encodeURIComponent(address)}/tokens?cursor=${encodeURIComponent(tokensNextCursor)}`);
+      setTokenPage(current => current.address === address ? { ...current, items: [...current.items, ...page.items], cursor: page.nextCursor ?? null, visibleCount: current.visibleCount + 10, loading: false } : current);
+    } catch {
+      setTokenPage(current => current.address === address ? { ...current, loading: false, error: true } : current);
+    }
+  };
   const visibleTrades = useMemo(() => {
     const unique = new Map<string, Trade>();
     for (const trade of [...data.trades, ...extraTrades]) unique.set(trade.id, trade);
-    const cutoff = Date.now() - 24 * 60 * 60_000;
-    return [...unique.values()].filter(trade => new Date(trade.timestamp).getTime() > cutoff)
+    const cutoff = data.windowStart ? Date.parse(data.windowStart) : Infinity;
+    return [...unique.values()].filter(trade => new Date(trade.timestamp).getTime() >= cutoff)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime() || b.id.localeCompare(a.id));
-  }, [data.trades, extraTrades]);
+  }, [data.trades, extraTrades, data.windowStart]);
   const nextCursor = extraCursor === undefined ? data.tradesNextCursor : extraCursor;
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     setMoreError(false);
     try {
-      const page = await api<List<Trade>>(`/api/trades?kol=${encodeURIComponent(address)}&window=24h&limit=100&cursor=${encodeURIComponent(nextCursor)}`);
+      const page = await api<List<Trade>>(`/api/trades?kol=${encodeURIComponent(address)}&window=24h&limit=20&cursor=${encodeURIComponent(nextCursor)}`);
       setExtraTrades(current => [...current, ...page.items]);
       setExtraCursor(page.nextCursor ?? null);
     } catch { setMoreError(true); }
@@ -229,16 +257,41 @@ function KolPage({ bnbPriceUsd, leaderboardSource }: { bnbPriceUsd: number | nul
   };
   if (!loading && !data.kol) return <div className="page"><EmptyState title="KOL not found" detail="This wallet is not in the supplied KOL roster." /></div>;
   return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />Back to leaderboard</Link><div className="profile-header"><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /><div className="profile-links"><a href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer">BscScan <ExternalLink size={14} /></a><button className="address-pill copy-wallet" type="button" onClick={() => void copyWallet()} title={address} aria-label={copyState === 'copied' ? 'Wallet address copied' : 'Copy KOL wallet address'}>{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : shortAddress(address, 7)}{copyState === 'copied' ? <Check size={14} /> : <Copy size={14} />}</button>{data.kol?.twitter && <a href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noreferrer">@{data.kol.twitter} <ExternalLink size={14} /></a>}</div></div>
-    <div className="profile-stats"><Metric label={leaderboardSource === 'gmgn' ? '24H GMGN realized P&L' : '24H estimated realized P&L'} value={signedMoney(data.stats?.realizedProfitUsd)} detail={data.stats?.realizedProfitUsd == null ? 'Complete cost basis unavailable' : leaderboardSource === 'gmgn' ? 'GMGN wallet data' : 'Based on observed on-chain trades'} /><Metric label="Trades · 24h" value={data.tradeCount24h} detail={`${data.buyCount24h} buys · ${data.sellCount24h} sells`} /><Metric label="Last trade" value={relativeTime(data.kol?.lastSeenAt)} /></div>
-    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>Trades · last 24 hours</h2><span>{data.tradeCount24h} indexed trades from this wallet</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No trades in the last 24 hours" detail="New swaps from this wallet will appear here automatically." />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? 'Loading trades…' : 'Load more trades'}</button>}{moreError && <p className="profile-more-error">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>Traded tokens</h2><span>Recent token activity</span></div></div><div className="profile-token-list">{data.tokens.map(token => <TokenCard key={token.address} token={token} />)}{!data.tokens.length && <EmptyState title="No tracked tokens yet" detail="Tokens appear after a tracked swap." />}</div></section></div>
+    <div className="profile-stats"><Metric label="24H tracked realized P&L" value={signedMoney(data.stats?.realizedProfitUsd)} detail={data.stats?.realizedProfitUsd == null ? (data.unpricedSellCount24h > 0 ? 'Sale prices unavailable' : 'Purchase costs unavailable in the last 24 hours') : `${data.stats?.valuedSellCount || 0} matched sales · ${data.stats?.excludedSellCount || 0} excluded`} /><Metric label="Trades · last 24 hours" value={data.tradeCount24h} detail={`${data.buyCount24h} buys · ${data.sellCount24h} sells · ${skopjeTimeZone()}`} /><Metric label="Last trade" value={relativeTime(data.kol?.lastSeenAt)} /></div>
+    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>Trades · last 24 hours</h2><span>{data.tradeCount24h} indexed trades from this wallet</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No trades in the last 24 hours" detail="New swaps from this wallet will appear here automatically." />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? 'Loading trades…' : 'Load more trades'}</button>}{moreError && <p className="profile-more-error">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>Traded tokens</h2><span>Recent token activity</span></div></div><div className="profile-token-list">{visibleTokens.map(token => <TokenCard key={token.address} token={token} />)}{!visibleTokens.length && !loading && <EmptyState title="No tracked tokens yet" detail="Tokens appear after a tracked swap." />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? 'Loading tokens…' : 'Load more tokens'}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">Could not load more tokens. Try again.</p>}</section></div>
   </div>;
 }
 
 function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const address = window.location.pathname.split('/').pop() || '';
-  const { data, loading } = useData<{ token: Token | null; trades: Trade[]; kols: Kol[] }>(`/api/tokens/${address}`, { token: null, trades: [], kols: [] }, 20000);
+  const [tradePage, setTradePage] = useState<{ address: string; items: Trade[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 20, loading: false, error: false });
+  const { data, loading } = useData<{ token: Token | null; trades: Trade[]; tradesNextCursor: string | null; kols: Kol[] }>(`/api/tokens/${address}`, { token: null, trades: [], tradesNextCursor: null, kols: [] }, 20000);
+  useEffect(() => { setTradePage({ address, items: [], visibleCount: 20, loading: false, error: false }); }, [address]);
+  const currentTradePage = tradePage.address === address ? tradePage : { address, items: [], cursor: undefined, visibleCount: 20, loading: false, error: false };
+  const allTrades = useMemo(() => {
+    const unique = new Map<string, Trade>();
+    for (const trade of [...(tradePage.address === address ? tradePage.items : []), ...data.trades]) unique.set(trade.id, trade);
+    return [...unique.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime() || b.id.localeCompare(a.id));
+  }, [data.trades, tradePage.items, tradePage.address, address]);
+  const visibleTrades = allTrades.slice(0, currentTradePage.visibleCount);
+  const nextCursor = currentTradePage.cursor === undefined ? data.tradesNextCursor : currentTradePage.cursor;
+  const hasMoreTrades = allTrades.length > visibleTrades.length || Boolean(nextCursor);
+  const loadMore = async () => {
+    if (currentTradePage.loading || !hasMoreTrades) return;
+    if (allTrades.length >= currentTradePage.visibleCount + 20 || !nextCursor) {
+      setTradePage(current => current.address === address ? { ...current, visibleCount: current.visibleCount + 20 } : current);
+      return;
+    }
+    setTradePage(current => ({ ...current, items: allTrades, loading: true, error: false }));
+    try {
+      const page = await api<List<Trade>>(`/api/trades?token=${encodeURIComponent(address)}&limit=20&cursor=${encodeURIComponent(nextCursor)}`);
+      setTradePage(current => current.address === address ? { ...current, items: [...current.items, ...page.items], cursor: page.nextCursor ?? null, visibleCount: current.visibleCount + 20, loading: false } : current);
+    } catch {
+      setTradePage(current => current.address === address ? { ...current, loading: false, error: true } : current);
+    }
+  };
   if (!loading && !data.token) return <div className="page"><EmptyState title="Token not found" detail="No tracked KOL has traded this contract yet." /></div>;
-  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />Back to tokens</Link><div className="profile-header"><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /><div className="profile-links"><span className="address-pill">{shortAddress(address, 7)}</span><a href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer">Contract <ExternalLink size={14} /></a><a href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer">GMGN <ExternalLink size={14} /></a></div></div><div className="profile-stats"><Metric label="Observed price" value={compact(data.token?.priceUsd, true)} /><Metric label="Market cap" value={compact(data.token?.marketCapUsd, true)} /><Metric label="KOLs · 24h" value={data.token?.kolCount24h ?? '—'} /><Metric label="24h KOL volume" value={compact(data.token?.volume24hUsd, true)} /><Metric label="Last trade" value={relativeTime(data.token?.lastTradeAt)} /></div><div className="profile-grid"><section><div className="table-toolbar"><div><h2>KOL trades</h2><span>Recent activity in this token</span></div></div><div className="data-table profile-trades">{data.trades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}</div></section><section><div className="table-toolbar"><div><h2>KOLs trading it</h2></div></div><div className="kol-list">{data.kols.map(kol => <Link key={kol.address} to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></Link>)}</div></section></div></div>;
+  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />Back to tokens</Link><div className="profile-header"><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /><div className="profile-links"><span className="address-pill">{shortAddress(address, 7)}</span><a href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer">Contract <ExternalLink size={14} /></a><a href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer">GMGN <ExternalLink size={14} /></a></div></div><div className="profile-stats"><Metric label="Observed price" value={compact(data.token?.priceUsd, true)} /><Metric label="Market cap" value={compact(data.token?.marketCapUsd, true)} /><Metric label="KOLs · 24h" value={data.token?.kolCount24h ?? '—'} /><Metric label="24h KOL volume" value={compact(data.token?.volume24hUsd, true)} /><Metric label="Last trade" value={relativeTime(data.token?.lastTradeAt)} /></div><div className="profile-grid"><section><div className="table-toolbar"><div><h2>KOL trades</h2><span>Recent activity in this token</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No tracked trades yet" detail="New KOL trades in this token will appear here automatically." />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? 'Loading trades…' : 'Load more trades'}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>KOLs trading it</h2></div></div><div className="kol-list">{data.kols.map(kol => <Link key={kol.address} to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></Link>)}</div></section></div></div>;
 }
 
 export default function App() {
@@ -250,7 +303,7 @@ export default function App() {
       <Route path="/trades" element={<TradesPage overview={overview} />} />
       <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
-      <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} leaderboardSource={overview.leaderboardSource} />} />
+      <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/token/:address" element={<TokenPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
       <Route path="/terms-of-use" element={<TermsOfUsePage />} />

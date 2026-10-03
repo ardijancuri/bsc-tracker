@@ -4,9 +4,11 @@ import { flapLogoFromHtml, geniusLogoFromHtml } from './tokenLogo.js';
 import { downloadTokenImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
-import { calculateLeaderboard } from './pnl.js';
+import { calculateLeaderboard, calculate24hLeaderboard } from './pnl.js';
 import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
 import { readBlockRange } from './blockRange.js';
+import { last24hStart } from './dayWindow.js';
+import { isMemeToken } from './memeToken.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -20,7 +22,7 @@ const normalized = (value: unknown) => typeof value === 'string' && addressRe.te
 let rpcId = 0;
 
 type RpcLog = { address: string; topics: string[]; data: string; transactionHash: string; blockNumber: string; removed?: boolean };
-type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string };
+type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string; transactionIndex: string | null };
 type RpcReceipt = { status: string; logs: RpcLog[]; blockHash: string };
 type RpcBlock = { number: string; hash: string; parentHash: string; timestamp: string };
 
@@ -132,7 +134,7 @@ async function tokenMeta(address: string): Promise<TokenMeta> {
   }
   const result = { symbol, decimals: Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : 18 };
   metadataCache.set(address, result);
-  await pool.query(`INSERT INTO tokens(address,symbol,decimals) VALUES($1,$2,$3) ON CONFLICT(address) DO UPDATE SET symbol=COALESCE(tokens.symbol,EXCLUDED.symbol),decimals=COALESCE(tokens.decimals,EXCLUDED.decimals)`, [address, result.symbol, result.decimals]);
+  await pool.query(`INSERT INTO tokens(address,symbol,decimals,is_meme) VALUES($1,$2,$3,$4) ON CONFLICT(address) DO UPDATE SET symbol=COALESCE(tokens.symbol,EXCLUDED.symbol),decimals=COALESCE(tokens.decimals,EXCLUDED.decimals),is_meme=COALESCE(tokens.is_meme,EXCLUDED.is_meme)`, [address, result.symbol, result.decimals, isMemeToken({ address, symbol: result.symbol })]);
   return result;
 }
 
@@ -155,20 +157,20 @@ async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock,
     const isQuote = stableSymbols.has(flow.symbol?.toUpperCase() || '') || flow.symbol?.toUpperCase() === 'WBNB';
     if (isQuote && flows.some(other => other.address !== flow.address && other.raw * flow.raw < 0n)) continue;
     const nativeSale = !opposing && flow.raw < 0n ? nativeSellProceeds(wallet, -flow.raw, receipt.logs,
-      flows.filter(other => other.raw < 0n).length === 1 ? tx.to : null) : null;
+      flows.filter(other => other.raw < 0n).length === 1 ? tx.to : null, flow.address) : null;
     const quoteSymbol = opposing?.symbol || (nativeIn && flow.raw > 0n ? 'BNB' : nativeSale ? 'BNB' : null);
     const quoteAmount = opposing?.amount || (nativeIn && flow.raw > 0n ? units(BigInt(tx.value), 18) : nativeSale ? units(nativeSale, 18) : null);
     const amountUsd = quoteAmount && stableSymbols.has(quoteSymbol?.toUpperCase() || '') ? quoteAmount :
       quoteAmount && (quoteSymbol?.toUpperCase() === 'WBNB' || quoteSymbol?.toUpperCase() === 'BNB') && oracle ? String(Number(quoteAmount) * oracle.price) : null;
     const priceUsd = amountUsd && Number(flow.amount) > 0 ? String(Number(amountUsd) / Number(flow.amount)) : null;
     const side = directional ? (flow.raw > 0n ? 'buy' : 'sell') : 'unknown';
-    await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now())
-      ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
-      [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp))]);
+    await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at,transaction_index)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now(),$15)
+      ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,transaction_index=EXCLUDED.transaction_index,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
+      [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), tx.transactionIndex == null ? null : Number(BigInt(tx.transactionIndex))]);
     if (priceUsd && Number.isFinite(Number(priceUsd))) await pool.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
   }
-  await pool.query('UPDATE kols SET last_seen_at=to_timestamp($2) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
+  await pool.query('UPDATE kols SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
 }
 
 async function rollbackIfReorg() {
@@ -447,15 +449,19 @@ async function lookupTokenLogo(address: string): Promise<TokenImage | null> {
 }
 
 async function refreshTokenLogoOne() {
-  const result = await pool.query(`SELECT t.address,t.logo_url FROM tokens t WHERE t.logo_data IS NULL AND (
+  const result = await pool.query(`WITH candidate AS (SELECT t.address FROM tokens t WHERE t.logo_data IS NULL AND (
     ((t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%')
       AND (t.logo_checked_at IS NULL OR t.logo_checked_at < now() - interval '30 minutes'
         OR (t.logo_checked_at < now() - interval '2 minutes' AND EXISTS (
           SELECT 1 FROM trades recent WHERE recent.token_address=t.address AND recent.timestamp > now() - interval '2 hours'))))
     OR (t.logo_url IS NOT NULL AND btrim(t.logo_url)<>'' AND t.logo_url NOT LIKE '%gmgn.ai%'
-      AND (t.logo_cache_checked_at IS NULL OR t.logo_cache_checked_at < now() - interval '7 days')))
-    ORDER BY CASE WHEN t.logo_url IS NULL OR btrim(t.logo_url)='' OR t.logo_url LIKE '%gmgn.ai%' THEN 0 ELSE 1 END,
-      (SELECT max(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 1`);
+      AND (t.logo_cache_checked_at IS NULL OR t.logo_cache_checked_at < now() - interval '30 minutes'
+        OR (t.logo_cache_checked_at < now() - interval '2 minutes' AND EXISTS (
+          SELECT 1 FROM trades recent WHERE recent.token_address=t.address AND recent.timestamp > now() - interval '2 hours')))))
+    ORDER BY EXISTS(SELECT 1 FROM trades recent WHERE recent.token_address=t.address AND recent.timestamp > now() - interval '2 hours') DESC,
+      t.logo_checked_at ASC NULLS FIRST,
+      (SELECT max(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 1 FOR UPDATE SKIP LOCKED)
+    UPDATE tokens t SET logo_checked_at=now(),logo_cache_checked_at=now() FROM candidate c WHERE t.address=c.address RETURNING t.address,t.logo_url,t.symbol,t.name`);
   const address = result.rows[0]?.address as string | undefined;
   if (!address) return;
   try {
@@ -463,7 +469,7 @@ async function refreshTokenLogoOne() {
     const cached = existing && !existing.includes('gmgn.ai') ? await usableLogo(existing) : null;
     const logo = cached || await lookupTokenLogo(address);
     if (logo) {
-      await pool.query(`UPDATE tokens SET logo_url=$2,logo_data=$3,logo_mime=$4,logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address, logo.url, logo.data, logo.mime]);
+      await pool.query(`UPDATE tokens SET logo_url=$2,logo_data=$3,logo_mime=$4,logo_checked_at=now(),logo_cache_checked_at=now(),is_meme=CASE WHEN $5 THEN true ELSE is_meme END WHERE address=$1`, [address, logo.url, logo.data, logo.mime, isMemeToken({ address, symbol: result.rows[0].symbol, name: result.rows[0].name, logoUrl: logo.url })]);
       await notifyUpdate();
     } else {
       await pool.query(`UPDATE tokens SET logo_url=CASE WHEN logo_url LIKE '%gmgn.ai%' THEN NULL ELSE logo_url END,
@@ -552,34 +558,53 @@ async function marketCapLoop() {
   }
 }
 
+async function repairTradeValue(hash: string, wallet: string) {
+  const [tx, receipt] = await Promise.all([
+    rpc<RpcTx | null>('eth_getTransactionByHash', [hash]),
+    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash]),
+  ]);
+  if (!tx || !receipt) throw new Error(`Transaction receipt unavailable: ${hash}`);
+  const block = await rpc<RpcBlock>('eth_getBlockByNumber', [tx.blockNumber, false]);
+  if (!block) throw new Error(`Transaction block unavailable: ${hash}`);
+  await persistNodeTrade(tx, receipt, block, wallet);
+  await pool.query('UPDATE trades SET value_checked_at=now() WHERE tx_hash=$1 AND wallet_address=$2', [hash, wallet]);
+}
+
 async function repairSellValueOne() {
-  const result = await pool.query(`SELECT id,tx_hash FROM trades WHERE side='sell' AND amount_usd IS NULL
+  const result = await pool.query(`SELECT id,tx_hash,wallet_address FROM trades WHERE side IN ('buy','sell') AND amount_usd IS NULL
     AND source IN ('node','node+gmgn') AND block_number IS NOT NULL
     AND timestamp >= now() - interval '30 days'
-    AND (value_checked_at IS NULL OR value_checked_at < now() - interval '30 days')
-    ORDER BY timestamp DESC LIMIT 1`);
-  const row = result.rows[0] as { id: string; tx_hash: string } | undefined;
+    AND (value_checked_at IS NULL OR value_checked_at < now() -
+      CASE WHEN timestamp >= now() - interval '24 hours' THEN interval '1 hour' ELSE interval '30 days' END)
+    ORDER BY (timestamp >= now() - interval '24 hours') DESC,value_checked_at ASC NULLS FIRST,timestamp DESC LIMIT 1`);
+  const row = result.rows[0] as { id: string; tx_hash: string; wallet_address: string } | undefined;
   if (!row) return;
   let success = false;
   try {
-    const [tx, receipt] = await Promise.all([
-      rpc<RpcTx | null>('eth_getTransactionByHash', [row.tx_hash]),
-      rpc<RpcReceipt | null>('eth_getTransactionReceipt', [row.tx_hash]),
-    ]);
-    if (tx && receipt) {
-      const wallet = normalized(tx.from);
-      if (wallet) {
-        const block = await rpc<RpcBlock>('eth_getBlockByNumber', [tx.blockNumber, false]);
-        if (block) {
-          await persistNodeTrade(tx, receipt, block, wallet);
-          success = true;
-        }
-      }
-    }
+    await repairTradeValue(row.tx_hash, row.wallet_address);
+    success = true;
   } finally {
-    await pool.query(`UPDATE trades SET value_checked_at=CASE WHEN $2 THEN now() ELSE now()-interval '29 days' END WHERE id=$1`, [row.id, success]);
+    if (!success) await pool.query(`UPDATE trades SET value_checked_at=now()-interval '55 minutes' WHERE id=$1`, [row.id]);
     if (success) await notifyUpdate();
   }
+}
+
+async function repairWindowValues(since: string) {
+  const time = new Date(since);
+  if (!Number.isFinite(time.getTime())) throw new Error('BSCAN_REPAIR_VALUES_SINCE must be an ISO timestamp');
+  const pending = await pool.query(`SELECT DISTINCT t.tx_hash,t.wallet_address FROM trades t JOIN kols k ON k.address=t.wallet_address
+    WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.source IN ('node','node+gmgn')
+    AND t.side IN ('buy','sell') AND t.amount_usd IS NULL AND t.timestamp >= $1`, [time]);
+  let attempted = 0, failures = 0;
+  for (let offset = 0; offset < pending.rows.length; offset += 4) {
+    await Promise.all(pending.rows.slice(offset, offset + 4).map(async row => {
+      try { await repairTradeValue(row.tx_hash, row.wallet_address); }
+      catch (error) { failures++; console.warn('Trade repair:', row.tx_hash, String(error)); }
+      attempted++;
+    }));
+    if (attempted % 100 === 0 || attempted === pending.rows.length) console.log(JSON.stringify({ attempted, total: pending.rows.length, failures }));
+  }
+  await notifyUpdate();
 }
 
 async function sellValueLoop() {
@@ -607,11 +632,36 @@ async function leaderboardLoop() {
     try {
       const roster = await pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address');
       const wallets = roster.rows.map(row => row.address as string);
+      const windowEnd = Date.now();
+      const windowStart = last24hStart(windowEnd);
+      const missingOrder = await pool.query(`SELECT DISTINCT t.tx_hash FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.transaction_index IS NULL AND t.timestamp >= $1::timestamptz`, [windowStart]);
+      for (let offset = 0; offset < missingOrder.rows.length; offset += 32) {
+        await Promise.all(missingOrder.rows.slice(offset, offset + 32).map(async row => {
+          try {
+            const tx = await rpc<RpcTx | null>('eth_getTransactionByHash', [row.tx_hash]);
+            if (tx?.transactionIndex != null) await pool.query('UPDATE trades SET transaction_index=$2 WHERE tx_hash=$1', [row.tx_hash, Number(BigInt(tx.transactionIndex))]);
+          } catch (error) { console.warn(`Trade order ${row.tx_hash}:`, error); }
+        }));
+      }
+      const windowTrades = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp,t.block_number AS "blockNumber",t.transaction_index AS "transactionIndex",
+          t.tx_hash AS "txHash",t.quote_symbol AS "quoteSymbol",t.quote_amount AS "quoteAmount",v.symbol AS "tokenSymbol"
+        FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
+        WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell') AND t.timestamp >= $1::timestamptz AND t.timestamp <= $2::timestamptz
+        ORDER BY t.block_number ASC,t.transaction_index ASC NULLS LAST,t.id ASC`, [windowStart, new Date(windowEnd).toISOString()]);
+      const windowStats = calculate24hLeaderboard(windowTrades.rows, wallets, windowEnd);
+      await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,window_start,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,valued_sell_count,excluded_sell_count,updated_at)
+        SELECT "walletAddress",'1d',"windowStart","realizedProfitUsd",NULL,"buyCount","sellCount","valuedSellCount","excludedSellCount",now()
+        FROM jsonb_to_recordset($1::jsonb) AS x("walletAddress" text,"windowStart" timestamptz,"realizedProfitUsd" numeric,"buyCount" integer,"sellCount" integer,"valuedSellCount" integer,"excludedSellCount" integer)
+        ON CONFLICT(wallet_address,period) DO UPDATE SET window_start=EXCLUDED.window_start,realized_profit_usd=EXCLUDED.realized_profit_usd,
+          unrealized_profit_usd=NULL,buy_count=EXCLUDED.buy_count,sell_count=EXCLUDED.sell_count,
+          valued_sell_count=EXCLUDED.valued_sell_count,excluded_sell_count=EXCLUDED.excluded_sell_count,updated_at=now()`, [JSON.stringify(windowStats)]);
+      await setState('leaderboard_24h', { windowStart, windowEnd: new Date(windowEnd).toISOString(), source: 'window_trades', wallets: wallets.length });
+      await notifyUpdate();
       const apiKey = process.env.GMGN_API_KEY?.trim();
       let stats: Array<{ walletAddress: string; period: string; realizedProfitUsd: string | number | null; unrealizedProfitUsd: string | null }>;
       if (apiKey) {
         const gmgnStats: GmgnProfit[] = [];
-        for (const period of ['1d', '7d', '30d'] as const) {
+        for (const period of ['7d', '30d'] as const) {
           for (let index = 0; index < wallets.length; index += 100) {
             gmgnStats.push(...await fetchGmgnProfits(wallets.slice(index, index + 100), period, apiKey));
             await sleep(750);
@@ -623,7 +673,7 @@ async function leaderboardLoop() {
           FROM trades t JOIN kols k ON k.address=t.wallet_address
           WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
           ORDER BY t.timestamp ASC,t.id ASC`);
-        stats = calculateLeaderboard(tradeRows.rows, wallets).map(row => ({ ...row, unrealizedProfitUsd: null }));
+        stats = calculateLeaderboard(tradeRows.rows, wallets).filter(row => row.period !== '1d').map(row => ({ ...row, unrealizedProfitUsd: null }));
       }
       if (stats.length) {
         await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,win_rate,updated_at)
@@ -658,9 +708,12 @@ async function verifyTransactionHash(hash: string) {
 
 await ensureSchema();
 await ensureSeeds();
-if (process.env.BSC_VERIFY_TX_HASH) {
+if (process.env.BSCAN_REPAIR_VALUES_SINCE) {
+  await repairWindowValues(process.env.BSCAN_REPAIR_VALUES_SINCE);
+  await pool.end();
+} else if (process.env.BSC_VERIFY_TX_HASH) {
   await verifyTransactionHash(process.env.BSC_VERIFY_TX_HASH);
   await pool.end();
 } else {
-  await Promise.all([nodeLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), logoLoop(), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }
