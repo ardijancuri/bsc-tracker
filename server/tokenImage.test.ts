@@ -1,9 +1,39 @@
 import { describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import sharp from 'sharp';
-import { compressTokenImage, downloadTokenImage, imageMime, onchainTokenImage, publicImageIp } from './tokenImage.js';
+import { compressTokenImage, downloadTokenImage, downloadTokenMetadataImage, imageMime, onchainTokenImage, publicImageIp } from './tokenImage.js';
 
 describe('token image cache', () => {
+  it('recovers on-chain metadata and artwork through an independent gateway', async () => {
+    const cid = 'QmabJ9DdYZpq2K2XHJMHprma4gm5yUVbFjdZdsp6AF6UHc';
+    const art = 'QmdFAqpCgaFQuFQ8JCzH36zR1kg7tzYJEwhuc55eYZv4Gz';
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#f2cc52' } }).png().toBuffer();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('not pinned', { status: 403 }));
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ image: `ipfs://${art}` })));
+      fetchMock.mockResolvedValueOnce(new Response(png));
+      const image = await downloadTokenMetadataImage(`https://flap.mypinata.cloud/ipfs/${cid}`);
+      expect(image?.url).toBe(`https://ipfs.filebase.io/ipfs/${art}`);
+      expect((await sharp(image!.data).metadata()).width).toBe(8);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it('rejects unsafe metadata URLs, oversized JSON and unsafe artwork', async () => {
+    const cid = 'QmabJ9DdYZpq2K2XHJMHprma4gm5yUVbFjdZdsp6AF6UHc';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      expect(await downloadTokenMetadataImage('https://127.0.0.1/private')).toBeNull();
+      expect(await downloadTokenMetadataImage('https://ipfs.filebase.io/ipfs/not-a-cid')).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      fetchMock.mockImplementation(async () => new Response('x'.repeat(256_001)));
+      expect(await downloadTokenMetadataImage(`ipfs://${cid}`)).toBeNull();
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify({ image: 'https://127.0.0.1/private' })));
+      expect(await downloadTokenMetadataImage(`ipfs://${cid}`)).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    } finally { fetchMock.mockRestore(); }
+  });
   it('recognizes image bytes and rejects HTML responses', () => {
     expect(imageMime(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe('image/png');
     expect(imageMime(Buffer.from('<html>not an image</html>'))).toBeNull();
@@ -45,7 +75,7 @@ describe('token image cache', () => {
       fetchMock.mockResolvedValueOnce(new Response(png, { status: 200 }));
       const image = await downloadTokenImage('https://flap.mypinata.cloud/ipfs/bafkreibvcilgl2johr2xq4uifh2e6todmuy6tafvdppq4neq3dipzu67oe');
       expect(image).not.toBeNull();
-      expect(image?.url).toContain('gateway.pinata.cloud');
+      expect(image?.url).toContain('ipfs.filebase.io');
       expect((await sharp(image!.data).metadata()).width).toBe(8);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally { fetchMock.mockRestore(); }

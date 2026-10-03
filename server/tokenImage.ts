@@ -9,7 +9,7 @@ export type TokenImage = { url: string; data: Buffer; mime: string };
 const maxImageBytes = 2 * 1024 * 1024;
 const maxDownloadBytes = 10 * 1024 * 1024;
 const imageHosts = new Set([
-  'gateway.pinata.cloud', 'flap.mypinata.cloud', 'static.four.meme',
+  'gateway.pinata.cloud', 'flap.mypinata.cloud', 'ipfs.filebase.io', 'static.four.meme',
   'tokens.pancakeswap.finance', 'cdn.dexscreener.com', 'dd.dexscreener.com',
   'coin-images.coingecko.com', 'assets.geckoterminal.com',
   'genius.fun', 'wiredup.fun', 'pbs.twimg.com', 'bscscan.com',
@@ -83,6 +83,42 @@ export async function downloadTokenImage(rawUrl: string): Promise<TokenImage | n
   for (const url of imageCandidateUrls(rawUrl)) {
     try { const image = await downloadImage(url); if (image) return image; }
     catch { /* Retry an independent IPFS gateway for unavailable artwork. */ }
+  }
+  return null;
+}
+
+// Flap's contract metadata remains available even when its website has not indexed
+// the artwork. Only fetch JSON from fixed HTTPS IPFS gateways, with a bounded body.
+export async function downloadTokenMetadataImage(uri: string): Promise<TokenImage | null> {
+  const candidates = imageCandidateUrls(uri).filter(candidate => {
+    const url = new URL(candidate);
+    return ['flap.mypinata.cloud', 'ipfs.filebase.io', 'gateway.pinata.cloud'].includes(url.hostname) &&
+      url.protocol === 'https:' && !url.port && !url.username && !url.password && /^\/ipfs\/(?:b[a-z2-7]{20,}|Qm[1-9A-HJ-NP-Za-km-z]{44})(?:\/.*)?$/.test(url.pathname);
+  });
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'manual', headers: { accept: 'application/json' } });
+      if (!response.ok || !response.body || Number(response.headers.get('content-length') || 0) > 256_000) {
+        await response.body?.cancel(); continue;
+      }
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      let size = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > 256_000) { await reader.cancel(); break; }
+        chunks.push(value);
+      }
+      if (size > 256_000) continue;
+      const metadata = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const image = typeof metadata.image === 'string' ? normalizeLogoUrl(metadata.image) : null;
+      if (!image) continue;
+      const parsed = new URL(image);
+      const artwork = /^\/ipfs\//.test(parsed.pathname) ? `${new URL(url).origin}${parsed.pathname}${parsed.search}` : image;
+      const logo = await downloadTokenImage(artwork);
+      if (logo) return logo;
+    } catch { /* Another gateway may still have the creator's metadata pinned. */ }
   }
   return null;
 }

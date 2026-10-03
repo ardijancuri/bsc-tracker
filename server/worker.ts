@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { ensureSchema, notifyUpdate, pool, setState } from './db.js';
-import { flapLogoFromHtml, geniusLogoFromHtml } from './tokenLogo.js';
-import { downloadTokenImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
+import { flapLogoFromHtml, flapMetadataUri, geniusLogoFromHtml } from './tokenLogo.js';
+import { downloadTokenImage, downloadTokenMetadataImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard, calculate24hLeaderboard } from './pnl.js';
@@ -381,13 +381,17 @@ async function lookupTokenLogo(address: string): Promise<TokenImage | null> {
   }
   if (address.endsWith('7777') || address.endsWith('8888')) {
     try {
+      // IFlapToken.metaURI(): https://docs.flap.sh/flap/developers/wallet-and-terminal-and-bot-developers/parse-token-meta
+      const uri = flapMetadataUri(await rpc<string>('eth_call', [{ to: address, data: '0x67605787' }, 'latest']));
+      const image = uri ? await downloadTokenMetadataImage(uri) : null;
+      if (image) return image;
+    } catch { /* Older tokens can still expose artwork on their launch page. */ }
+    try {
       const response = await fetch(`https://flap.sh/bnb/${address}`, { signal: AbortSignal.timeout(12000) });
       if (response.ok) {
         const html = await response.text();
         const image = flapLogoFromHtml(html, address);
-        const fallback = image?.startsWith('https://flap.mypinata.cloud/ipfs/')
-          ? image.replace('https://flap.mypinata.cloud/ipfs/', 'https://gateway.pinata.cloud/ipfs/') : null;
-        const logo = await usableLogo(image) || await usableLogo(fallback);
+        const logo = await usableLogo(image);
         if (logo) return logo;
       }
     } catch (error) { console.warn(`Flap logo ${address}:`, error); }
@@ -464,13 +468,19 @@ async function refreshTokenLogoOne() {
     UPDATE tokens t SET logo_checked_at=now(),logo_cache_checked_at=now() FROM candidate c WHERE t.address=c.address RETURNING t.address,t.logo_url,t.symbol,t.name`);
   const address = result.rows[0]?.address as string | undefined;
   if (!address) return;
+  await cacheTokenLogo(result.rows[0]);
+}
+
+async function cacheTokenLogo(token: { address: string; logo_url: string | null; symbol: string | null; name: string | null }) {
+  const address = token.address;
   try {
-    const existing = result.rows[0].logo_url as string | null;
+    const existing = token.logo_url;
     const cached = existing && !existing.includes('gmgn.ai') ? await usableLogo(existing) : null;
     const logo = cached || await lookupTokenLogo(address);
     if (logo) {
-      await pool.query(`UPDATE tokens SET logo_url=$2,logo_data=$3,logo_mime=$4,logo_checked_at=now(),logo_cache_checked_at=now(),is_meme=CASE WHEN $5 THEN true ELSE is_meme END WHERE address=$1`, [address, logo.url, logo.data, logo.mime, isMemeToken({ address, symbol: result.rows[0].symbol, name: result.rows[0].name, logoUrl: logo.url })]);
+      await pool.query(`UPDATE tokens SET logo_url=$2,logo_data=$3,logo_mime=$4,logo_checked_at=now(),logo_cache_checked_at=now(),is_meme=CASE WHEN $5 THEN true ELSE is_meme END WHERE address=$1`, [address, logo.url, logo.data, logo.mime, isMemeToken({ address, symbol: token.symbol, name: token.name, logoUrl: logo.url })]);
       await notifyUpdate();
+      return true;
     } else {
       await pool.query(`UPDATE tokens SET logo_url=CASE WHEN logo_url LIKE '%gmgn.ai%' THEN NULL ELSE logo_url END,
         logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address]);
@@ -478,6 +488,20 @@ async function refreshTokenLogoOne() {
   } catch (error) {
     await pool.query(`UPDATE tokens SET logo_checked_at=now(),logo_cache_checked_at=now() WHERE address=$1`, [address]);
     console.warn(`Token logo ${address}:`, error);
+  }
+  return false;
+}
+
+async function repairTokenLogos(since: string) {
+  const time = new Date(since);
+  if (!Number.isFinite(time.getTime())) throw new Error('BSCAN_REPAIR_LOGOS_SINCE must be an ISO timestamp');
+  const pending = await pool.query(`SELECT v.address,v.logo_url,v.symbol,v.name FROM tokens v WHERE v.logo_data IS NULL
+    AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.token_address=v.address AND t.timestamp >= $1)
+    ORDER BY (SELECT MAX(timestamp) FROM trades WHERE token_address=v.address) DESC`, [time]);
+  for (let offset = 0; offset < pending.rows.length; offset += 3) {
+    await Promise.all(pending.rows.slice(offset, offset + 3).map(async token => {
+      console.log(JSON.stringify({ address: token.address, symbol: token.symbol, cached: await cacheTokenLogo(token) }));
+    }));
   }
 }
 
@@ -708,7 +732,10 @@ async function verifyTransactionHash(hash: string) {
 
 await ensureSchema();
 await ensureSeeds();
-if (process.env.BSCAN_REPAIR_VALUES_SINCE) {
+if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
+  await repairTokenLogos(process.env.BSCAN_REPAIR_LOGOS_SINCE);
+  await pool.end();
+} else if (process.env.BSCAN_REPAIR_VALUES_SINCE) {
   await repairWindowValues(process.env.BSCAN_REPAIR_VALUES_SINCE);
   await pool.end();
 } else if (process.env.BSC_VERIFY_TX_HASH) {

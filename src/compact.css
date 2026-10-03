@@ -191,13 +191,21 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .kol-detail-page .profile-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 0; }
 .profile-links .copy-wallet { font: inherit; font-size: 12px; font-weight: 700; color: #aab7bc; cursor: pointer; white-space: nowrap; }
 .profile-links .copy-wallet:hover { color: var(--yellow); background: #252c2f; }
+.profile-links .copy-wallet { min-height: 36px; }
+.profile-links .profile-icon-link { width: 36px; height: 36px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; line-height: 0; }
+.profile-icon-link img, .profile-icon-link svg { display: block; flex: none; }
+.profile-icon-link img { object-fit: contain; object-position: center; }
+.profile-icon-link:focus-visible { outline: 2px solid var(--yellow); outline-offset: 3px; }
 .token-detail-page .profile-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 0; }
 .token-detail-page .profile-stats .metric { border-bottom: 0 !important; }
 .profile-grid { grid-template-columns: minmax(0, 1.7fr) minmax(280px, .7fr); gap: 30px; }
 .token-detail-page .profile-grid { grid-template-columns: minmax(0, 1.85fr) minmax(240px, .65fr); }
 .profile-trades .trade-row { grid-template-columns: minmax(125px, 1fr) minmax(220px, 1.8fr) minmax(125px, .7fr) 70px; gap: 10px; padding: 9px 12px; }
-.profile-page .profile-trades .trade-row { background: transparent; border-bottom: 0; }
-.profile-trades .trade-row + .trade-row { border-top: 1px solid var(--line); }
+.profile-page .profile-trades { border-radius: 8px; overflow: hidden; }
+.profile-page .profile-trades .trade-row { position: relative; background: transparent; border: 0; border-radius: 8px; }
+.profile-page .profile-trades .trade-row:hover { background: #202529; }
+.profile-trades .trade-row + .trade-row::before { content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 1px; background: var(--line); pointer-events: none; transition: opacity .15s; }
+.profile-trades .trade-row:hover::before, .profile-trades .trade-row:hover + .trade-row::before { opacity: 0; }
 .profile-trades .trade-amount { display: block; }
 .token-detail-page .profile-trades .trade-row { grid-template-columns: minmax(190px, 1.45fr) minmax(190px, 1.25fr) minmax(125px, .55fr) 75px; }
 .token-detail-page .trade-kol .identity { max-width: 100%; }

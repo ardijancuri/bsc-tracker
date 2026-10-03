@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
-import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Menu, Search, X } from 'lucide-react';
+import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
 import type { Kol, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
@@ -60,19 +60,43 @@ function Identity({ name, address, avatar, subtitle = true }: { name: string | n
 function tokenImageSrc(logoUrl: string) {
   return logoUrl.replace(/^https:\/\/flap\.mypinata\.cloud\/ipfs\//i, 'https://gateway.pinata.cloud/ipfs/');
 }
-function tokenImageError(event: React.SyntheticEvent<HTMLImageElement>) {
-  const image = event.currentTarget;
-  const original = image.dataset.originalSrc;
-  if (original && !image.dataset.triedOriginal && original !== image.src) {
-    image.dataset.triedOriginal = 'true';
-    image.src = original;
-  } else if (image.src.includes('/api/token-image/') && !image.dataset.retried) {
-    image.dataset.retried = 'true';
-    window.setTimeout(() => { if (image.isConnected) image.src = `${image.src}&retry=1`; }, 3000);
-  } else image.style.display = 'none';
+function TokenImage({ logoUrl }: { logoUrl: string }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!failed || attempt >= 4) return;
+    const timer = window.setTimeout(() => { setAttempt(current => current + 1); setFailed(false); }, [1000, 3000, 10000, 20000][attempt]);
+    return () => window.clearTimeout(timer);
+  }, [failed, attempt]);
+  useEffect(() => {
+    const retry = () => { setAttempt(current => current + 1); setFailed(false); };
+    window.addEventListener('online', retry);
+    return () => window.removeEventListener('online', retry);
+  }, []);
+  const source = attempt === 1 ? logoUrl : tokenImageSrc(logoUrl);
+  const src = attempt > 0 ? `${source}${source.includes('?') ? '&' : '?'}retry=${attempt}` : source;
+  return <img src={src} alt="" style={{ visibility: failed ? 'hidden' : undefined }} onLoad={() => setFailed(false)} onError={() => setFailed(true)} />;
 }
 function TokenIdentity({ token }: { token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> }) {
-  return <span className="identity token-identity"><span className="token-avatar"><span>{(token.symbol || '?').slice(0, 1)}</span>{token.logoUrl && <img key={token.logoUrl} src={tokenImageSrc(token.logoUrl)} data-original-src={token.logoUrl} alt="" onError={tokenImageError} />}</span><span className="identity-copy"><strong>{token.symbol || 'Unknown'}</strong><small>{token.name || shortAddress(token.address)}</small></span></span>;
+  return <span className="identity token-identity"><span className="token-avatar"><span>{(token.symbol || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span><span className="identity-copy"><strong>{token.symbol || 'Unknown'}</strong><small>{token.name || shortAddress(token.address)}</small></span></span>;
+}
+
+function XBrandIcon({ size = 18 }: { size?: number }) {
+  return <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg>;
+}
+
+function CopyAddress({ address, label }: { address: string; label: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const timer = window.setTimeout(() => setState('idle'), 2000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(address); setState('copied'); }
+    catch { setState('failed'); }
+  };
+  return <button className="address-pill copy-wallet" type="button" onClick={() => void copy()} title={`Copy ${label.toLowerCase()}: ${address}`} aria-label={state === 'copied' ? `${label} copied` : `Copy ${label.toLowerCase()}`} aria-live="polite">{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : shortAddress(address, 7)}{state === 'copied' ? <Check size={14} /> : <Copy size={14} />}</button>;
 }
 
 function ChainLogo() { return <img className="bnb-logo" src="/bnb-chain.svg" alt="BNB Chain" />; }
@@ -201,16 +225,11 @@ function LeaderboardPage({ overview }: { overview: Overview }) {
 
 function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const address = window.location.pathname.split('/').pop() || '';
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [extraTrades, setExtraTrades] = useState<Trade[]>([]);
   const [extraCursor, setExtraCursor] = useState<string | null | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState(false);
   const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 10, loading: false, error: false });
-  const copyWallet = async () => {
-    try { await navigator.clipboard.writeText(address); setCopyState('copied'); }
-    catch { setCopyState('failed'); }
-  };
   const { data, loading } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; windowStart: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
   useEffect(() => { setExtraTrades([]); setExtraCursor(undefined); setMoreError(false); }, [address]);
   useEffect(() => { setTokenPage({ address, items: [], visibleCount: 10, loading: false, error: false }); }, [address]);
@@ -257,7 +276,7 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     finally { setLoadingMore(false); }
   };
   if (!loading && !data.kol) return <div className="page"><EmptyState title="KOL not found" detail="This wallet is not in the supplied KOL roster." /></div>;
-  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />Back to leaderboard</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title="View KOL profile on GMGN"><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><a href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer">BscScan <ExternalLink size={14} /></a><button className="address-pill copy-wallet" type="button" onClick={() => void copyWallet()} title={address} aria-label={copyState === 'copied' ? 'Wallet address copied' : 'Copy KOL wallet address'}>{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : shortAddress(address, 7)}{copyState === 'copied' ? <Check size={14} /> : <Copy size={14} />}</button>{data.kol?.twitter && <a href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noreferrer">@{data.kol.twitter} <ExternalLink size={14} /></a>}</div></div>
+  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />Back to leaderboard</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title="View KOL profile on GMGN"><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><CopyAddress key={address} address={address} label="KOL wallet address" /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label="View KOL wallet on BscScan" title="View wallet on BscScan"><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label="View KOL profile on GMGN" title="View KOL profile on GMGN"><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label="View KOL on X" title="View KOL on X"><XBrandIcon /></a>}</div></div>
     <div className="profile-stats"><Metric label="24H tracked realized P&L" value={signedMoney(data.stats?.realizedProfitUsd)} detail={data.stats?.realizedProfitUsd == null ? (data.unpricedSellCount24h > 0 ? 'Sale prices unavailable' : 'Purchase costs unavailable in the last 24 hours') : `${data.stats?.valuedSellCount || 0} matched sales · ${data.stats?.excludedSellCount || 0} excluded`} /><Metric label="Trades · last 24 hours" value={data.tradeCount24h} detail={`${data.buyCount24h} buys · ${data.sellCount24h} sells · ${skopjeTimeZone()}`} /><Metric label="Last trade" value={relativeTime(data.kol?.lastSeenAt)} /></div>
     <div className="profile-grid"><section><div className="table-toolbar"><div><h2>Trades · last 24 hours</h2><span>{data.tradeCount24h} indexed trades from this wallet</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No trades in the last 24 hours" detail="New swaps from this wallet will appear here automatically." />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? 'Loading trades…' : 'Load more trades'}</button>}{moreError && <p className="profile-more-error">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>Traded tokens</h2><span>Recent token activity</span></div></div><div className="profile-token-list">{visibleTokens.map(token => <TokenCard key={token.address} token={token} />)}{!visibleTokens.length && !loading && <EmptyState title="No tracked tokens yet" detail="Tokens appear after a tracked swap." />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? 'Loading tokens…' : 'Load more tokens'}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">Could not load more tokens. Try again.</p>}</section></div>
   </div>;
@@ -265,6 +284,8 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
 
 function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const address = window.location.pathname.split('/').pop() || '';
+  const { data: website } = useData<{ tokenAddress: string | null; websiteUrl: string | null }>(`/api/tokens/${address}/website`, { tokenAddress: null, websiteUrl: null }, 300000);
+  const tokenWebsite = website.tokenAddress === address ? website.websiteUrl : null;
   const [tradePage, setTradePage] = useState<{ address: string; items: Trade[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 20, loading: false, error: false });
   const { data, loading } = useData<{ token: Token | null; trades: Trade[]; tradesNextCursor: string | null; kols: Kol[] }>(`/api/tokens/${address}`, { token: null, trades: [], tradesNextCursor: null, kols: [] }, 20000);
   useEffect(() => { setTradePage({ address, items: [], visibleCount: 20, loading: false, error: false }); }, [address]);
@@ -292,7 +313,7 @@ function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     }
   };
   if (!loading && !data.token) return <div className="page"><EmptyState title="Token not found" detail="No tracked KOL has traded this contract yet." /></div>;
-  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />Back to tokens</Link><div className="profile-header"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title="View token on GMGN"><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a><div className="profile-links"><span className="address-pill">{shortAddress(address, 7)}</span><a href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer">Contract <ExternalLink size={14} /></a><a href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer">GMGN <ExternalLink size={14} /></a></div></div><div className="profile-stats"><Metric label="Observed price" value={compact(data.token?.priceUsd, true)} /><Metric label="Market cap" value={compact(data.token?.marketCapUsd, true)} /><Metric label="KOLs · 24h" value={data.token?.kolCount24h ?? '—'} /><Metric label="24h KOL volume" value={compact(data.token?.volume24hUsd, true)} /><Metric label="Last trade" value={relativeTime(data.token?.lastTradeAt)} /></div><div className="profile-grid"><section><div className="table-toolbar"><div><h2>KOL trades</h2><span>Recent activity in this token</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No tracked trades yet" detail="New KOL trades in this token will appear here automatically." />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? 'Loading trades…' : 'Load more trades'}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>KOLs trading it</h2></div></div><div className="kol-list">{data.kols.map(kol => <Link key={kol.address} to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></Link>)}</div></section></div></div>;
+  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />Back to tokens</Link><div className="profile-header"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title="View token on GMGN"><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a><div className="profile-links"><CopyAddress key={address} address={address} label="Token contract address" /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label="View token contract on BscScan" title="View contract on BscScan"><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label="View token on GMGN" title="View token on GMGN"><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label="Visit token website" title="Visit token website"><Globe size={18} /></a>}</div></div><div className="profile-stats"><Metric label="Observed price" value={compact(data.token?.priceUsd, true)} /><Metric label="Market cap" value={compact(data.token?.marketCapUsd, true)} /><Metric label="KOLs · 24h" value={data.token?.kolCount24h ?? '—'} /><Metric label="24h KOL volume" value={compact(data.token?.volume24hUsd, true)} /><Metric label="Last trade" value={relativeTime(data.token?.lastTradeAt)} /></div><div className="profile-grid"><section><div className="table-toolbar"><div><h2>KOL trades</h2><span>Recent activity in this token</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title="No tracked trades yet" detail="New KOL trades in this token will appear here automatically." />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? 'Loading trades…' : 'Load more trades'}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">Could not load more trades. Try again.</p>}</section><section><div className="table-toolbar"><div><h2>KOLs trading it</h2></div></div><div className="kol-list">{data.kols.map(kol => <Link key={kol.address} to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></Link>)}</div></section></div></div>;
 }
 
 export default function App() {

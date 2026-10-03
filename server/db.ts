@@ -33,6 +33,8 @@ export async function ensureSchema() {
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS logo_data bytea;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS logo_mime text;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS logo_cache_checked_at timestamptz;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS website_url text;
+    ALTER TABLE tokens ADD COLUMN IF NOT EXISTS website_checked_at timestamptz;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS price_source text;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS total_supply_raw numeric;
     ALTER TABLE tokens ADD COLUMN IF NOT EXISTS supply_checked_at timestamptz;

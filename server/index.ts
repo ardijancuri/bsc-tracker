@@ -7,6 +7,7 @@ import { ensureSchema, pool } from './db.js';
 import { ensureSeeds } from './seeds.js';
 import { last24hStart, todayStart } from './dayWindow.js';
 import { memeTokenSql } from './memeToken.js';
+import { lookupTokenWebsite } from './tokenWebsite.js';
 
 const app = Fastify({ logger: true, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,7 @@ app.get<{ Params: { address: string } }>('/api/token-image/:address', async (req
   if (!key) return reply.code(404).send({ error: 'Not found' });
   const result = await pool.query('SELECT logo_data,logo_mime FROM tokens WHERE address=$1', [key]);
   const image = result.rows[0];
-  if (!image?.logo_data || !image?.logo_mime) return reply.code(404).send({ error: 'Not found' });
+  if (!image?.logo_data || !image?.logo_mime) return reply.header('Cache-Control', 'no-store').code(404).send({ error: 'Not found' });
   return reply.header('Cache-Control', 'public, max-age=3600').header('X-Content-Type-Options', 'nosniff').type(image.logo_mime).send(image.logo_data);
 });
 
@@ -105,6 +106,27 @@ app.get<{ Querystring: { limit?: string; offset?: string; since?: string; withTr
   }
   const total = count.rows[0]?.total || 0;
   return { items: request.query.withTrades === '1' ? result.rows.map(row => ({ ...row, recentTrades: tradesByToken.get(row.address) ?? [] })) : result.rows, total, nextOffset: offset + result.rows.length < total ? offset + result.rows.length : null };
+});
+
+const websiteRequests = new Map<string, Promise<string | null>>();
+app.get<{ Params: { address: string } }>('/api/tokens/:address/website', async request => {
+  const key = address(request.params.address);
+  if (!key) return { tokenAddress: null, websiteUrl: null };
+  const cached = await pool.query(`SELECT website_url,website_checked_at > now() - interval '1 hour' AS fresh FROM tokens WHERE address=$1`, [key]);
+  const row = cached.rows[0];
+  if (!row || row.fresh) return { tokenAddress: key, websiteUrl: row?.website_url ?? null };
+  let pending = websiteRequests.get(key);
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const website = await lookupTokenWebsite(key);
+        const result = await pool.query(`UPDATE tokens SET website_url=COALESCE($2,website_url),website_checked_at=now() WHERE address=$1 RETURNING website_url`, [key, website]);
+        return result.rows[0]?.website_url ?? null;
+      } finally { websiteRequests.delete(key); }
+    })();
+    websiteRequests.set(key, pending);
+  }
+  return { tokenAddress: key, websiteUrl: await pending };
 });
 
 app.get<{ Params: { address: string } }>('/api/tokens/:address', async request => {
