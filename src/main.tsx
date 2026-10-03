@@ -9,6 +9,7 @@ import '@fontsource/manrope/800.css';
 import App from './App';
 import './styles.css';
 import './compact.css';
+import './intelligence.css';
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

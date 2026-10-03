@@ -9,6 +9,9 @@ import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
 import { readBlockRange } from './blockRange.js';
 import { last24hStart } from './dayWindow.js';
 import { isMemeToken } from './memeToken.js';
+import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
+import { telegramDeliveryLoop } from './telegram.js';
+import { reorgStart } from './chainReorg.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -20,6 +23,7 @@ const hashRe = /^0x[a-fA-F0-9]{64}$/;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const normalized = (value: unknown) => typeof value === 'string' && addressRe.test(value) ? value.toLowerCase() : null;
 let rpcId = 0;
+let featuresLiveSince = Infinity;
 
 type RpcLog = { address: string; topics: string[]; data: string; transactionHash: string; blockNumber: string; removed?: boolean };
 type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string; transactionIndex: string | null };
@@ -139,7 +143,7 @@ async function tokenMeta(address: string): Promise<TokenMeta> {
 }
 
 type Flow = { address: string; raw: bigint; amount: string; symbol: string | null };
-async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string) {
+async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string, live = false) {
   if (receipt.status !== '0x1') return;
   const net = walletSwapFlows(wallet, BigInt(tx.value || '0x0'), receipt.logs);
   const entries = [...net.entries()];
@@ -168,6 +172,7 @@ async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock,
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now(),$15)
       ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,transaction_index=EXCLUDED.transaction_index,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
       [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), tx.transactionIndex == null ? null : Number(BigInt(tx.transactionIndex))]);
+    if (live) await pool.query('UPDATE trades SET observed_live=true WHERE id=$1', [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`]);
     if (priceUsd && Number.isFinite(Number(priceUsd))) await pool.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
   }
   await pool.query('UPDATE kols SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
@@ -179,9 +184,25 @@ async function rollbackIfReorg() {
   const height = Number(last.rows[0].block_number);
   const canonical = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(height), false]);
   if (canonical?.hash.toLowerCase() === last.rows[0].block_hash.toLowerCase()) return;
-  const rollbackFrom = Math.max(0, height - 12);
-  await pool.query(`DELETE FROM trades WHERE block_number >= $1`, [rollbackFrom]);
-  await pool.query('DELETE FROM processed_blocks WHERE block_number >= $1', [rollbackFrom]);
+  const checkpoints = await pool.query(`SELECT block_number,block_hash FROM processed_blocks
+    UNION ALL SELECT block_number,block_hash FROM (SELECT DISTINCT ON(block_number) block_number,block_hash FROM trades
+      WHERE block_number<(SELECT MIN(block_number) FROM processed_blocks) AND block_hash IS NOT NULL ORDER BY block_number DESC LIMIT 128) older
+    ORDER BY block_number DESC`);
+  const rollbackFrom = await reorgStart(checkpoints.rows.map(row => ({ height: Number(row.block_number), hash: row.block_hash })), async number => {
+    const candidate = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(number), false]); return candidate?.hash ?? null;
+  });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(782319)');
+    await client.query('DELETE FROM trades WHERE block_number >= $1', [rollbackFrom]);
+    await rollbackIntelligence(client, rollbackFrom);
+    await client.query('DELETE FROM processed_blocks WHERE block_number >= $1', [rollbackFrom]);
+    await client.query(`DELETE FROM worker_state WHERE key='node'`);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+  await notifyUpdate();
   console.warn(`Reorganization at ${height}; rescanning from ${rollbackFrom}`);
 }
 
@@ -205,7 +226,7 @@ async function scanRange(from: number, to: number, head: number) {
   for (const hash of matched) {
     const [tx, receipt] = await Promise.all([rpc<RpcTx>('eth_getTransactionByHash', [hash]), rpc<RpcReceipt>('eth_getTransactionReceipt', [hash])]);
     const wallet = normalized(tx.from);
-    if (!wallet || !wallets.has(wallet) || !receipt || receipt.status !== '0x1') continue;
+    if (!wallet || !receipt || receipt.status !== '0x1') continue;
     const height = Number(BigInt(tx.blockNumber));
     const list = byBlock.get(height) || [];
     list.push({ tx, receipt });
@@ -217,9 +238,13 @@ async function scanRange(from: number, to: number, head: number) {
     const height = Number(BigInt(block.number));
     for (const entry of byBlock.get(height) || []) {
       if (entry.receipt.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`Receipt block hash mismatch at ${height}`);
-      await persistNodeTrade(entry.tx, entry.receipt, block, normalized(entry.tx.from)!);
+      const wallet = normalized(entry.tx.from)!;
+      const timestamp = Number(BigInt(block.timestamp)) * 1000;
+      if (wallets.has(wallet)) await persistNodeTrade(entry.tx, entry.receipt, block, wallet, timestamp >= featuresLiveSince && Date.now() - timestamp <= 300_000);
+      await recordWalletTransfers(entry.tx, entry.receipt, block, wallets);
     }
   }
+  await recordLaunchRange(from, to, blocks);
   // Save the checkpoint only after every trade in this range has been persisted. Replays are idempotent.
   await pool.query(`INSERT INTO processed_blocks(block_number,block_hash)
     SELECT * FROM unnest($1::bigint[],$2::text[])
@@ -742,5 +767,8 @@ if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await verifyTransactionHash(process.env.BSC_VERIFY_TX_HASH);
   await pool.end();
 } else {
-  await Promise.all([nodeLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
+  const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
+  featuresLiveSince = new Date(started.rows[0].at).getTime();
+  await Promise.all([nodeLoop(), intelligenceLoop(), telegramDeliveryLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }

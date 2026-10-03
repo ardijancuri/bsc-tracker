@@ -7,16 +7,18 @@
     "dev": "vite --host 127.0.0.1",
     "dev:api": "tsx watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",
-    "build": "vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "build": "vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts server/configureTelegram.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",
     "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "tsx server/intelligence.integration.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
     "@fastify/static": "^10.1.5",
     "@fontsource/manrope": "^5.2.0",
+    "ethers": "^6.17.0",
     "fastify": "^5.12.5",
     "ipaddr.js": "^2.5.0",
     "lucide-react": "^0.468.0",

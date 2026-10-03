@@ -8,3 +8,6 @@ coverage/
 *.log
 bscan-deploy.tar.gz
 output/*.tar.gz
+output/intelligence-integration.mjs
+output/verify-launchpads.mjs
+output/radar-live.png

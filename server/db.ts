@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 
 const { Pool } = pg;
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12 });
@@ -103,6 +104,7 @@ export async function ensureSchema() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
+  await ensureIntelligenceSchema(pool);
 }
 
 export async function setState(key: string, value: unknown) {

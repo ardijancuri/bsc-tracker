@@ -12,7 +12,7 @@ function LegalLayout({ title, children }: { title: string; children: ReactNode }
 
   return <article className="page legal-page">
     <Link className="back-link" to="/trades"><ChevronLeft size={15} aria-hidden="true" />Back to bscan</Link>
-    <header className="legal-header"><span>LEGAL</span><h1>{title}</h1><p>Last updated September 26, 2026</p></header>
+    <header className="legal-header"><span>LEGAL</span><h1>{title}</h1><p>Last updated October 3, 2026</p></header>
     <div className="legal-content">{children}</div>
   </article>;
 }
@@ -23,7 +23,9 @@ export function PrivacyPolicyPage() {
 
     <section><h2>Information shown on bscan</h2><p>We display public wallet addresses, blockchain transactions, token data, and analytics derived from them. The tracked wallet roster also contains KOL names and X handles supplied to bscan, and may include publicly available profile images. A name or handle shown beside a wallet is not independent proof of who owns it.</p></section>
 
-    <section><h2>Information from your visit</h2><p>When you use the site, normal web requests send your IP address, browser information, requested pages, and any search terms you enter to our server. Basic request and error logs may contain this information. The current site does not use its own cookies, browser storage for tracking, or a third-party analytics script.</p></section>
+    <section><h2>Information from your visit</h2><p>When you use the site, normal web requests send your IP address, browser information, requested pages, and any search terms you enter to our server. Basic request and error logs may contain this information. Browsing does not require an account. If you save a watchlist, we set an essential, secure HttpOnly cookie to recognize that browser. We do not use a third-party analytics script.</p></section>
+
+    <section><h2>Watchlists and Telegram</h2><p>We store followed wallet and token addresses, alert settings, and a hashed browser-session secret. Watchlists belong to the browser that created them. If you choose to connect Telegram and confirm in that browser, we store your Telegram chat identifier and available username to send the alerts you selected. We record delivery attempts to avoid duplicate alerts and diagnose failures. Telegram processes messages under its own privacy practices.</p><p>You can mute or disconnect Telegram in Watchlist settings, or send /stop to the bot. Clear watchlist deletes your saved preferences, Telegram connection, and delivery records. Browser sessions expire after up to a year without a save; linking codes expire after ten minutes and their records are removed after a day. Webhook update identifiers are kept for seven days to prevent duplicates. Clearing browser cookies loses access to that watchlist; cross-device recovery is unavailable.</p></section>
 
     <section><h2>How we use information</h2><p>We use public data to display the trade feed, token pages, KOL profiles, and leaderboard. We use request information to deliver the site, diagnose problems, and protect the service. Where applicable, this processing supports our legitimate interest in operating and securing a public analytics service.</p></section>
 

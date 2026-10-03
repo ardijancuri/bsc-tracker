@@ -21,8 +21,14 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      NODE_ENV: production
       PORT: "3300"
       DATABASE_URL: postgres://bscan:${BSCAN_DB_PASSWORD}@127.0.0.1:5434/bscan
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://bscan.fun}
+      TELEGRAM_DELIVERY_ENABLED: ${TELEGRAM_DELIVERY_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
@@ -34,6 +40,11 @@ services:
     network_mode: host
     environment:
       DATABASE_URL: postgres://bscan:${BSCAN_DB_PASSWORD}@127.0.0.1:5434/bscan
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://bscan.fun}
+      TELEGRAM_DELIVERY_ENABLED: ${TELEGRAM_DELIVERY_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       GMGN_API_KEY: ${GMGN_API_KEY:-}
       BSC_RPC_HTTP: http://127.0.0.1:8545
       BSC_RPC_WS: ws://127.0.0.1:8546

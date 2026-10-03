@@ -5,3 +5,8 @@ dist-server
 .env
 *.log
 coverage
+.env.*
+!.env.example
+output
+research
+*.tar.gz
