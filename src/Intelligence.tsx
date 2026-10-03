@@ -68,7 +68,7 @@ export function FollowButton({ kind, address, label }: { kind: 'kol' | 'token'; 
   const followed = watch.data.items.some(item => item.kind === kind && item.address === address.toLowerCase());
   const title = `${followed ? 'Unfollow' : 'Follow'} ${label || shortAddress(address)}`;
   return <button type="button" className={`follow-button${followed ? ' followed' : ''}`} aria-label={title} title={title} aria-pressed={followed}
-    disabled={!watch.loaded || watch.busy} onClick={event => { event.preventDefault(); event.stopPropagation(); void watch.toggle(kind, address); }}><Star size={15} fill={followed ? 'currentColor' : 'none'} /></button>;
+    disabled={!watch.loaded || watch.busy} onClick={event => { event.preventDefault(); event.stopPropagation(); void watch.toggle(kind, address); }}><Star size={18} fill={followed ? 'currentColor' : 'none'} /></button>;
 }
 export function FeatureTabs({ page }: { page: 'trades' | 'tokens' }) {
   const [params] = useSearchParams();
