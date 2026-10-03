@@ -1,7 +1,7 @@
 .language-select{position:relative;display:inline-flex;flex:none;color:var(--muted)}
 .main-nav .mobile-social-link{display:none}
 .language-trigger{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:48px;min-height:35px;padding:0;border:0;border-radius:5px;background:transparent;color:inherit;font-size:12px;font-weight:700;cursor:pointer}
-.language-trigger:hover,.language-trigger[aria-expanded="true"]{background:#202529;color:#e9eeef}
+.language-trigger:hover{background:#202529;color:#e9eeef}
 .language-trigger:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
 .language-trigger>svg{transition:transform .15s}.language-trigger[aria-expanded="true"]>svg{transform:rotate(180deg)}
 .language-menu{position:absolute;right:0;top:calc(100% + 8px);width:152px;max-width:calc(100vw - 28px);padding:5px;border:1px solid var(--line);border-radius:9px;background:#151b1f;box-shadow:0 8px 24px #0006;z-index:40;animation:language-enter .12s ease-out;transform-origin:top right}
