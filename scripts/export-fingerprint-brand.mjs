@@ -29,4 +29,4 @@ await writeFile(publicFile('bscan-mark.png'), await square.clone().resize(256, 2
 await writeFile(publicFile('bscan-mark-small.webp'), await square.clone().resize(80, 80).webp({ quality: 95 }).toBuffer());
 await copyFile(new URL('../branding/x/wallet-fingerprint-x-profile-black.png', import.meta.url), publicFile('social/bscan-x-profile.png'));
 await copyFile(new URL('../branding/x/wallet-fingerprint-x-header-black.png', import.meta.url), publicFile('social/bscan-x-header.png'));
-console.log('Exported the selected fingerprint logo, rounded favicon, and social assets.');
+console.log('Exported the selected fingerprint logo, transparent favicon, and social assets.');
