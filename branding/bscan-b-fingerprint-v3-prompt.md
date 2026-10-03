@@ -1,0 +1,7 @@
+# bscan fingerprint-b concept v3
+
+Generated with the built-in imagegen tool. Final artwork: `bscan-b-fingerprint-v3.png`.
+
+## Final prompt
+
+Use case: logo-brand. Refine the attached bscan fingerprint-b concept. Keep the yellow/charcoal palette and exact white lowercase bscan wordmark. Redraw the yellow mark as a MORE NATURAL, immediately recognizable biometric fingerprint: a broad upright fingertip silhouette, about EIGHT clean evenly spaced medium-fine ridges that bend continuously around a small organic loop-whorl near the lower center. Use long flowing nested contours, a few staggered ridge endings and one subtle fork, with rounded caps and generous crisp gaps. Reduce the many disconnected fragments and remove the pointed teardrop appearance. Let a lowercase b emerge subtly from a gently extended upper-left contour and a rounded lower-right lobe, without rigid parallel vertical stems or a solid letter. Fingerprint first, hidden b second. The inner ridge pattern must feel like real fingerprint ridge flow rather than concentric C shapes, a maze or Wi-Fi waves. Aim for a refined proprietary biometric identity symbol with balanced curves and coherent rhythm, delicate enough to read as ridges but strong enough for a logo. Main mark proportionally balanced to wordmark in one horizontal lockup, solid warm yellow #F4C540 and off-white #F3F5F7 on uniform dark charcoal #0B0E11. High-resolution flat vector-like graphic. No gradients, shading, texture, glow, shadow, 3D, extra text, symbols or mockup.

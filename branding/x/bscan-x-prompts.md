@@ -1,0 +1,28 @@
+# bscan X branding assets
+
+Generated with the built-in imagegen tool from the Wallet Fingerprint and Token Prism logo references. Each image was generated separately at native resolution.
+
+## wallet-fingerprint-x-profile.png
+
+Reference: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/bscan-option-4-wallet-fingerprint.png
+
+Use case: ads-marketing. Adapt the attached bscan logo into a polished high-resolution X/Twitter brand asset. Input image 1 is the exact brand identity reference. Preserve the distinctive symbol geometry, proportions, gaps and lowercase wordmark style; do not invent a different logo. Palette: warm yellow #F4C540, off-white #F3F5F7 and charcoal #0B0E11. Immaculate crisp edges and premium product branding. No blur, noise, texture, 3D, glow, watermark or social-media interface mockup. Asset type: X profile avatar. Generate a high-resolution SQUARE 1:1 image, ideally 2048x2048. Use ONLY the reference yellow symbol, remove all lettering. Center the mark optically on an opaque flat charcoal background. The mark occupies roughly 62% of the canvas height, with generous equal clear space and every part comfortably within a central circular crop. Solid smooth fills, clear strong silhouette at 400x400 and at tiny avatar sizes. No circular border, box, words, URL, decorative shapes or extra graphic. 
+
+## wallet-fingerprint-x-header.png
+
+Reference: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/bscan-option-4-wallet-fingerprint.png
+
+Use case: ads-marketing. Adapt the attached bscan logo into a polished high-resolution X/Twitter brand asset. Input image 1 is the exact brand identity reference. Preserve the distinctive symbol geometry, proportions, gaps and lowercase wordmark style; do not invent a different logo. Palette: warm yellow #F4C540, off-white #F3F5F7 and charcoal #0B0E11. Immaculate crisp edges and premium product branding. No blur, noise, texture, 3D, glow, watermark or social-media interface mockup. Asset type: X profile header banner. Generate a high-resolution WIDE 3:1 image, ideally 3000x1000, for a 1500x500 X header layout. Full-bleed opaque charcoal background. Place the exact reference logo lockup with yellow emblem and off-white "bscan" wordmark in the central-right safe zone, around 58% across and 46% down, with excellent breathing room. Under it in smaller beautifully spaced off-white sans-serif use exact text "Wallets. Trades. Tokens." and beneath that a discreet "bscan.fun". Keep all important content inside the middle 70% of canvas height and away from the lower-left quarter where the X avatar overlaps. Sophisticated restrained layout, no extra icon collection, no fake charts or fabricated metrics. Extend the fingerprint motif as very faint oversized charcoal-on-charcoal contour routes along the far left edge, suggesting traceable wallet activity. Keep them quiet and subordinate to the main logo, with no fingerprint pattern crossing the text.
+
+## token-prism-x-profile.png
+
+Reference: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/bscan-option-6-token-prism.png
+
+Use case: ads-marketing. Adapt the attached bscan logo into a polished high-resolution X/Twitter brand asset. Input image 1 is the exact brand identity reference. Preserve the distinctive symbol geometry, proportions, gaps and lowercase wordmark style; do not invent a different logo. Palette: warm yellow #F4C540, off-white #F3F5F7 and charcoal #0B0E11. Immaculate crisp edges and premium product branding. No blur, noise, texture, 3D, glow, watermark or social-media interface mockup. Asset type: X profile avatar. Generate a high-resolution SQUARE 1:1 image, ideally 2048x2048. Use ONLY the reference yellow symbol, remove all lettering. Center the mark optically on an opaque flat charcoal background. The mark occupies roughly 62% of the canvas height, with generous equal clear space and every part comfortably within a central circular crop. Solid smooth fills, clear strong silhouette at 400x400 and at tiny avatar sizes. No circular border, box, words, URL, decorative shapes or extra graphic. 
+
+## token-prism-x-header.png
+
+Reference: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/bscan-option-6-token-prism.png
+
+Use case: ads-marketing. Adapt the attached bscan logo into a polished high-resolution X/Twitter brand asset. Input image 1 is the exact brand identity reference. Preserve the distinctive symbol geometry, proportions, gaps and lowercase wordmark style; do not invent a different logo. Palette: warm yellow #F4C540, off-white #F3F5F7 and charcoal #0B0E11. Immaculate crisp edges and premium product branding. No blur, noise, texture, 3D, glow, watermark or social-media interface mockup. Asset type: X profile header banner. Generate a high-resolution WIDE 3:1 image, ideally 3000x1000, for a 1500x500 X header layout. Full-bleed opaque charcoal background. Place the exact reference logo lockup with yellow emblem and off-white "bscan" wordmark in the central-right safe zone, around 58% across and 46% down, with excellent breathing room. Under it in smaller beautifully spaced off-white sans-serif use exact text "Wallets. Trades. Tokens." and beneath that a discreet "bscan.fun". Keep all important content inside the middle 70% of canvas height and away from the lower-left quarter where the X avatar overlaps. Sophisticated restrained layout, no extra icon collection, no fake charts or fabricated metrics. Extend the prism geometry as subtle oversized flat charcoal-on-charcoal faceted planes at the far left and right edges, suggesting token discovery and structured data. A few restrained thin muted-gold segments may appear at the very far right. Do not create a 3D cube or put shapes behind the text.
+

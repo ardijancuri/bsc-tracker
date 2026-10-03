@@ -1,0 +1,7 @@
+# bscan: lowercase b fingerprint logo
+
+Generated with the built-in imagegen tool using the Wallet Fingerprint logo as the identity reference.
+
+## Final prompt
+
+Use case: logo-brand. Evolve the attached bscan Wallet Fingerprint identity into a distinctive lowercase "b" FINGERPRINT logo. Image 1 is a style and wordmark reference. Replace ONLY the symbol with an original fingerprint-derived lowercase b: a clear tall vertical ascender on the LEFT, a generous rounded bowl on the LOWER RIGHT, and open empty space above the bowl so the silhouette unmistakably reads lowercase b. Construct the b from just THREE substantial nested flowing fingerprint ridges with rounded caps, smooth curves, consistent spacing and a few intentional ridge breaks. The fingerprint paths should rise through the stem and curl around the bowl; the letter must be created by the ridges themselves, not a solid b filled with tiny fingerprint lines. It should communicate unique wallet identity and tracing on-chain trades, be memorable as a standalone brand glyph, and remain readable at 24px. Keep it simple, confident and optically balanced, with a strong b silhouette rather than a generic oval fingerprint, 6, @ or padlock. Preserve the exact lowercase "bscan" wordmark in off-white to the right and the reference yellow #F4C540 / dark charcoal #0B0E11 palette. One clean horizontal logo lockup on a solid charcoal background. Crisp flat vector-like graphic with smooth solid fills; no shading, texture, glow, 3D, extra symbols, slogan, mockup or watermark. High-quality finished logo concept.

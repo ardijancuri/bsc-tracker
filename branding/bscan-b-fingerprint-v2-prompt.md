@@ -1,0 +1,7 @@
+# bscan: fingerprint-first lowercase b concept
+
+Generated with the built-in imagegen tool. Final artwork: `bscan-b-fingerprint-v2.png`.
+
+## Final prompt
+
+Use case: logo-brand. Redesign ONLY the yellow symbol in this bscan logo. The current three thick strokes read as a letter instead of a fingerprint. Replace them completely with a clearly recognizable FINGERPRINT ICON, with a subtle lowercase-b influence. Fingerprint recognition is the priority. Draw about SEVEN nested flowing fingerprint ridges, medium-thin consistent rounded strokes, curved organic loops around a visible central whorl, with natural ridge endings and one or two controlled bifurcations. The ridges should form a compact fingertip-shaped body, with a softly extended upper-left ridge hinting at a lowercase b ascender and a rounded lower-right bowl. The b must emerge subtly from the overall contour; do not draw two tall parallel stems or a bold typographic b. This should look immediately like a familiar biometric fingerprint symbol, with layered curved ridges and a small central loop, not Wi-Fi, a maze, an @ sign, a padlock or a three-line monogram. Broad enough negative space between all ridges to remain crisp as a brand icon. Solid warm yellow #F4C540 on solid charcoal #0B0E11. Keep the exact existing off-white lowercase "bscan" wordmark, horizontal arrangement, optical balance and generous space. Crisp flat vector-like geometry, smooth edges, no gradients, texture, shadows, 3D, extra text or watermark. Render one polished horizontal logo lockup at high resolution.
