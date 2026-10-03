@@ -1,0 +1,16 @@
+.watchlist-banner { background: #0b0e11; border-top: 1px solid #20262b; border-bottom: 1px solid #20262b; min-width: 0; }
+.watchlist-banner-inner { display: flex; align-items: center; max-width: 1800px; height: 36px; margin: 0 auto; padding: 0 28px; min-width: 0; }
+.watchlist-banner-shortcut { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; height: 22px; padding-right: 14px; margin-right: 8px; border-right: 1px solid #30383e; color: var(--yellow); font-size: 11px; font-weight: 700; }
+.watchlist-banner-tokens { display: flex; align-items: center; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
+.watchlist-banner-tokens::-webkit-scrollbar { display: none; }
+.watchlist-banner-token { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 100%; padding: 0 12px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; transition: background-color .15s ease; }
+.watchlist-banner-token:hover { background: #171d21; }
+.watchlist-banner-token > strong { max-width: 130px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 700; color: #e9edf1; }
+.watchlist-banner-cap { color: #879299; }
+.watchlist-banner-avatar { position: relative; display: grid; place-items: center; width: 18px; height: 18px; flex: none; border-radius: 4px; overflow: hidden; background: #242b2f; color: var(--yellow); font-size: 10px; }
+.watchlist-banner-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.watchlist-banner-empty { display: inline-flex; align-items: center; min-height: 32px; padding: 0 8px; color: #879299; font-size: 12px; white-space: nowrap; }
+.watchlist-banner-empty:hover { color: #e9edf1; }
+.watchlist-banner a:focus-visible, .watchlist-banner-tokens:focus-visible { outline: 2px solid var(--yellow); outline-offset: -2px; }
+@media (max-width: 800px) { .watchlist-banner-inner { padding: 0 18px; } .watchlist-banner-shortcut { padding-right: 10px; margin-right: 2px; } .watchlist-banner-shortcut > span { display: none; } .watchlist-banner-token { padding: 0 10px; } }
+@media (prefers-reduced-motion: reduce) { .watchlist-banner-token { transition: none; } }

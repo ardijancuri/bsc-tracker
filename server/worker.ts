@@ -12,6 +12,7 @@ import { isMemeToken } from './memeToken.js';
 import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
 import { telegramDeliveryLoop } from './telegram.js';
 import { reorgStart } from './chainReorg.js';
+import { selectTokenMarkets } from './tokenMarkets.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -571,25 +572,18 @@ async function refreshMarketCaps(): Promise<boolean> {
     WHERE (t.market_cap_checked_at IS NULL OR t.market_cap_checked_at < now() - interval '30 minutes')
       AND EXISTS (SELECT 1 FROM trades x JOIN kols k ON k.address=x.wallet_address
         WHERE x.token_address=t.address AND k.is_tracked AND x.block_number IS NOT NULL)
-    ORDER BY (SELECT MAX(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 30`);
+    ORDER BY EXISTS(SELECT 1 FROM watch_entries w WHERE w.kind='token' AND w.address=t.address) DESC,
+      (SELECT MAX(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 30`);
   const addresses = result.rows.map(row => row.address as string);
   if (!addresses.length) return false;
   try {
     const response = await fetch(`https://api.dexscreener.com/tokens/v1/bsc/${addresses.join(',')}`, { signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const pairs = await response.json() as { baseToken?: { address?: string }; marketCap?: number | null; liquidity?: { usd?: number } }[];
+    const pairs = await response.json() as Parameters<typeof selectTokenMarkets>[0];
     if (!Array.isArray(pairs)) throw new Error('Invalid token pairs response');
-    const wanted = new Set(addresses);
-    const caps = new Map<string, { cap: number; liquidity: number }>();
-    for (const pair of pairs) {
-      const address = pair.baseToken?.address?.toLowerCase();
-      const cap = Number(pair.marketCap);
-      const liquidity = Number(pair.liquidity?.usd || 0);
-      if (!address || !wanted.has(address) || !Number.isFinite(cap) || cap <= 0) continue;
-      if (!caps.has(address) || liquidity > caps.get(address)!.liquidity) caps.set(address, { cap, liquidity });
-    }
+    const caps = selectTokenMarkets(pairs, addresses);
     for (const address of addresses) {
-      await pool.query('UPDATE tokens SET market_cap_usd=$2,market_cap_checked_at=now() WHERE address=$1', [address, caps.get(address)?.cap ?? null]);
+      await pool.query('UPDATE tokens SET market_cap_usd=$2,change_24h=$3,market_cap_checked_at=now() WHERE address=$1', [address, caps.get(address)?.cap ?? null, caps.get(address)?.change24h ?? null]);
     }
     await notifyUpdate();
   } catch (error) {

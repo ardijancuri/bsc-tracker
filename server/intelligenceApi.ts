@@ -52,7 +52,11 @@ async function telegramStatus(session: Session | null): Promise<TelegramStatus> 
 }
 async function watchlist(session: Session | null) {
   const items = session ? (await pool.query(`SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
-    v.symbol,k.avatar_url AS "avatarUrl",CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl"
+    v.symbol,k.avatar_url AS "avatarUrl",CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl",
+    CASE WHEN v.market_cap_usd > 0 AND v.market_cap_checked_at > now()-interval '2 hours' THEN v.market_cap_usd
+      WHEN v.price_source='onchain' AND v.price_usd > 0 AND v.total_supply_raw > 0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at > now()-interval '2 days'
+      THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END AS "marketCapUsd",
+    CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
     FROM watch_entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
     WHERE e.session_id=$1 ORDER BY e.kind,name NULLS LAST,e.address`, [session.id])).rows : [];
   return { items, preferences: session?.preferences ?? defaultPreferences, telegram: await telegramStatus(session) };
@@ -97,6 +101,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       }
       await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session!.id]);
       if (unique) {
+        await client.query(`UPDATE tokens v SET market_cap_checked_at=now()-interval '31 minutes'
+          WHERE v.address=ANY($1::text[]) AND NOT EXISTS(SELECT 1 FROM watch_entries w WHERE w.session_id=$2 AND w.kind='token' AND w.address=v.address)`,
+        [unique.filter(item => item.kind === 'token').map(item => item.address), session!.id]);
         await client.query('DELETE FROM watch_entries WHERE session_id=$1', [session!.id]);
         for (const item of unique) await client.query('INSERT INTO watch_entries(session_id,kind,address) VALUES($1,$2,$3)', [session!.id, item.kind, item.address]);
       }

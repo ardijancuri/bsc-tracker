@@ -2,11 +2,12 @@ import { t, useLanguage, getLocale, localDate } from './i18n';
 import { LanguageSelect } from './LanguageSelect';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, X } from 'lucide-react';
+import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
 import type { Kol, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
-import { FeatureTabs, FollowButton, LaunchesView, LaunchJourney, PositionBadge, RadarFeed, usePositions, WatchlistProvider, WatchlistView } from './Intelligence';
+import { FeatureTabs, FollowButton, LaunchesView, LaunchJourney, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
+import './watchlistBanner.css';
 import type { Position } from '../shared/intelligence';
 import { TokenName, useTokenTranslation } from './TokenName';
 
@@ -144,6 +145,28 @@ function Header({ overview }: { overview: Overview }) {
     </div>
     <div className="header-right"><LanguageSelect /><span className="chain-label"><ChainLogo /><span>{t("On BNB Chain")}</span></span><button className="header-search" onClick={() => setSearchOpen(true)} aria-label={t("Search")}><Search size={18} /><span>{t("Search")}</span><kbd>/</kbd></button><button className="mobile-menu icon-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label={t("Toggle menu")}><Menu size={21} /></button></div>
   </div></header>{searchOpen && <SearchDialog close={() => setSearchOpen(false)} />}</>;
+}
+
+function WatchlistBanner() {
+  const watch = useWatchlist();
+  const tokens = watch.data.items.filter(item => item.kind === 'token');
+  return <nav className="watchlist-banner" aria-label={t('Watchlist tokens')}>
+    <div className="watchlist-banner-inner">
+      <Link className="watchlist-banner-shortcut" to="/trades?view=watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
+      <div className="watchlist-banner-tokens" tabIndex={0} aria-label={t('Watchlist tokens')}>
+        {tokens.map(token => {
+          const change = token.change24h == null ? null : Number(token.change24h);
+          return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} title={token.name || token.symbol || token.address}>
+            <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
+            <strong>{token.symbol || token.name || shortAddress(token.address)}</strong>
+            <span className="watchlist-banner-cap" title={t('Market cap')}>{compact(token.marketCapUsd, true)}</span>
+            {change != null && Number.isFinite(change) && <span className={change >= 0 ? 'positive' : 'negative'} title={t('24h price change')}>{change > 0 ? '+' : ''}{new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 2 }).format(change)}%</span>}
+          </Link>;
+        })}
+        {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}
+      </div>
+    </div>
+  </nav>;
 }
 
 function EmptyState({ title, detail }: { title: string; detail: string }) { return <div className="empty-state"><span className="empty-icon"><Activity size={22} /></span><strong>{title}</strong><p>{detail}</p></div>; }
@@ -349,6 +372,7 @@ export default function App() {
   const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <WatchlistProvider>
     <Header overview={overview} />
+    <WatchlistBanner />
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />

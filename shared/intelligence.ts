@@ -11,7 +11,7 @@ export interface AlertPreferences {
   muted: boolean;
 }
 export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuyers: 3, categories: [...signalKinds], muted: false };
-export interface WatchEntry { kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null; avatarUrl?: string | null; logoUrl?: string | null }
+export interface WatchEntry { kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null; avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null; change24h?: string | null }
 export interface TelegramStatus {
   recipient: string | null;
   available: boolean;

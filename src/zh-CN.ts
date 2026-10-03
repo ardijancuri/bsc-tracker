@@ -3,6 +3,7 @@ export const chinese: Record<string, string> = {
   'bscan — BSC KOL tracker': 'bscan — BSC KOL 追踪工具',
   'Language': '语言', 'Main navigation': '主导航', 'Trades': '交易', 'Tokens': '代币', 'Leaderboard': '排行榜',
   'Radar': '雷达', 'Watchlist': '自选', 'Launches': '新币', 'Activity views': '活动视图', 'Token views': '代币视图',
+  'Watchlist tokens': '自选代币', 'Star tokens to add them here': '点击星标，将代币添加到这里', '24h price change': '24 小时价格变化',
   'On BNB Chain': 'BNB 链', 'BNB Chain': 'BNB 链', 'bscan on X': 'bscan 的 X 主页',
   'BNB/USD price unavailable': 'BNB/USD 价格暂不可用', 'Chainlink BNB/USD updated {time}': 'Chainlink BNB/USD 更新于 {time}',
   'Search': '搜索', 'Search bscan': '搜索 bscan', 'Close search': '关闭搜索', 'Toggle menu': '切换菜单',

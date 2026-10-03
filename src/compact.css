@@ -18,11 +18,12 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 .page.token-detail-page { max-width: 1040px; }
 .page.kol-detail-page { max-width: 1200px; }
 .header-inner { padding: 0 28px; gap: 24px; }
+.header-inner > .brand { margin-right: 8px; }
 .brand { font-size: 22px; gap: 8px; letter-spacing: -1px; flex: none; }
 .brand .brand-logo { display: block; width: auto; height: 30px; max-width: none; }
 .footer-brand img { display: block; width: auto; height: 18px; border-radius: 0; mix-blend-mode: screen; }
 .header-divider { display: none; }
-.main-nav { gap: 29px; }
+.main-nav { gap: 23px; }
 .main-nav a { font-size: 14px; border-bottom: 0; }
 .header-right { gap: 17px; }
 .header-social { display: inline-flex; align-items: center; gap: 8px; flex: none; }
@@ -250,7 +251,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 
 @media (max-width: 1000px) and (min-width: 801px) {
   .header-inner { padding: 0 20px; gap: 16px; }
-  .main-nav { gap: 18px; }
+  .main-nav { gap: 15px; }
   .chain-label span { display: none; }
 }
 
@@ -264,7 +265,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 @media (max-width: 800px) {
   .site-header { height: 62px; }
   .header-inner { padding: 0 18px; gap: 12px; }
-  .header-inner > .brand { margin-right: 12px; }
+  .header-inner > .brand { margin-right: 16px; }
   .main-nav.open { top: 100%; gap: 0; background: #0b0e11; border-bottom: 1px solid #30383e; }
   .main-nav a { height: 36px; justify-content: flex-end; text-align: right; }
   .brand .brand-logo { height: 26px; }
