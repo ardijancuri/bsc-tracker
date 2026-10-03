@@ -9,6 +9,7 @@ import { last24hStart, todayStart } from './dayWindow.js';
 import { memeTokenSql } from './memeToken.js';
 import { lookupTokenWebsite } from './tokenWebsite.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
+import { getTokenTranslation } from './tokenTranslation.js';
 
 const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.x-telegram-bot-api-secret-token', 'res.headers.set-cookie'] }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,12 @@ app.get<{ Querystring: { limit?: string; offset?: string; since?: string; withTr
 });
 
 const websiteRequests = new Map<string, Promise<string | null>>();
+app.get<{ Params: { address: string } }>('/api/tokens/:address/translation', async (request, reply) => {
+  const key = address(request.params.address);
+  if (!key) return reply.code(400).send({ error: 'Invalid token address' });
+  const result = await getTokenTranslation(key);
+  return reply.header('Cache-Control', result.englishName ? 'public, max-age=300' : 'no-store').send(result);
+});
 app.get<{ Params: { address: string } }>('/api/tokens/:address/website', async request => {
   const key = address(request.params.address);
   if (!key) return { tokenAddress: null, websiteUrl: null };

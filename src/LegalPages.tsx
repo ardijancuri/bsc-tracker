@@ -29,7 +29,7 @@ export function PrivacyPolicyPage() {
 
     <section><h2>How we use information</h2><p>We use public data to display the trade feed, token pages, KOL profiles, and leaderboard. We use request information to deliver the site, diagnose problems, and protect the service. Where applicable, this processing supports our legitimate interest in operating and securing a public analytics service.</p></section>
 
-    <section><h2>External services</h2><p>Some token images load from external hosts, which may receive standard request information from your browser. Links to X, BscScan, and GMGN take you to services with their own privacy practices. Our hosting provider processes information needed to deliver bscan.</p></section>
+    <section><h2>External services</h2><p>Some token images load from external hosts, which may receive standard request information from your browser. Links to X, BscScan, and GMGN take you to services with their own privacy practices. Our hosting provider processes information needed to deliver bscan. We send public token names to MyMemory to provide cached English translations; these requests do not include your browser identifiers or watchlist.</p></section>
 
     <section><h2>Retention and your choices</h2><p>We keep indexed public blockchain data and roster information while they are needed to run the service. Operational logs are kept only as long as needed for service and security purposes. You may ask us about access, correction, or removal of off-chain profile information, or object to its use. Public blockchain records cannot be changed by bscan. Depending on where you live, you may also have a right to complain to a privacy regulator.</p></section>
 

@@ -12,6 +12,7 @@ import { deliverTelegramBatch, hashSecret, queueDeliveries } from './telegram.js
 import { defaultPreferences } from '../shared/intelligence.js';
 import { flapInterface, fourInterface, FLAP_PORTAL, FOUR_HELPER, FOUR_MANAGERS, pairInterface } from './launchpad.js';
 import { transferTopic } from './swap.js';
+import { getTokenTranslation } from './tokenTranslation.js';
 
 if (!/^\/bscan_intelligence_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_intelligence_test database');
 process.env.NODE_ENV = 'production';
@@ -26,9 +27,16 @@ const hash = (height: number) => `0x${height.toString(16).padStart(64, '0')}`;
 let height = 108, curve = 40, fourGraduated = false, balanceFails = false, staleBlock = false, liquidity = 1000;
 const balances = new Map<string, bigint>(), calls: { method: string; body: Record<string, unknown> }[] = [];
 let botResult: 'ok' | '429' | '403' | 'timeout' = 'ok';
+let translationCalls = 0;
 const nativeFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input));
+  if (url.hostname === 'api.mymemory.translated.net') {
+    translationCalls++;
+    const source = url.searchParams.get('q');
+    if (source === '失败名称') return new Response('', { status: 503 });
+    return Response.json({ responseStatus: 200, responseData: { translatedText: source === '毛毯小象' ? 'Blanket elephant' : 'Panda' } });
+  }
   if (url.hostname === 'api.telegram.org') {
     const method = url.pathname.split('/').at(-1)!;
     calls.push({ method, body: JSON.parse(String(init?.body || '{}')) });
@@ -83,6 +91,21 @@ try {
   await insertTrade(1, wallets[0], 'buy', 101, 9, false); await insertTrade(2, wallets[0], 'buy', 102, 8, false);
   await insertTrade(3, wallets[1], 'buy', 103, 7, false); await insertTrade(4, wallets[2], 'buy', 104, 6, false); await insertTrade(5, wallets[0], 'sell', 105, 5, false);
   await insertTrade(30, wallets[2], 'buy', 101, 3, false, flapToken); await insertTrade(31, wallets[2], 'buy', 101, 3, false, unsupported);
+  await pool.query('UPDATE tokens SET name=$1 WHERE address=ANY($2::text[])', ['毛毯小象', [token, flapToken]]);
+  const translated = await Promise.all([getTokenTranslation(token), getTokenTranslation(flapToken)]);
+  assert.ok(translated.every(item => item.englishName === 'Blanket elephant')); assert.equal(translationCalls, 1);
+  assert.equal((await getTokenTranslation(token)).englishName, 'Blanket elephant'); assert.equal(translationCalls, 1);
+  await pool.query('UPDATE tokens SET name=$1 WHERE address=$2', ['熊猫', token]);
+  assert.equal((await getTokenTranslation(token)).englishName, 'Panda'); assert.equal(translationCalls, 2);
+  await pool.query('UPDATE tokens SET name=$1 WHERE address=$2', ['失败名称', token]);
+  assert.equal((await getTokenTranslation(token)).englishName, null); assert.equal(translationCalls, 3);
+  await getTokenTranslation(token); assert.equal(translationCalls, 3);
+  await pool.query('UPDATE token_translation_usage SET characters=5000');
+  await pool.query('UPDATE tokens SET name=$1 WHERE address=$2', ['财富自由', token]);
+  assert.equal((await getTokenTranslation(token)).englishName, null); assert.equal(translationCalls, 3);
+  assert.equal((await getTokenTranslation(outsider)).sourceText, null);
+  await pool.query('UPDATE tokens SET name=symbol WHERE address=ANY($1::text[])', [[token, flapToken]]);
+  await pool.query('DELETE FROM token_translation_usage');
   await collectSignals();
   const historical = await pool.query('SELECT * FROM radar_signals');
   assert.equal(historical.rowCount, 3); assert.ok(historical.rows.every(row => !row.live));

@@ -31,7 +31,9 @@ The public 24-hour leaderboard is calculated from verified indexed trades every 
 
 ## Radar, watchlists, holdings and launches
 
-`/trades?view=radar` shows 20 signals at a time with expandable transaction evidence. `/trades?view=watchlist` groups followed KOLs/tokens and their signals. Filters are saved in the same browser: 5/10/30 minute buying windows, 2–10 distinct buyers, categories and mute. A new filter profile backfills the last day without alerting. Live triggers use confirmed chain order and a ten-minute cooldown. Imported activity is silent; corrected signals remain visible after a reorganization.
+Chinese token detail pages show a short English name beneath the original title. `/api/tokens/:address/translation` translates the Chinese full name, or symbol when a Chinese full name is unavailable. Successful translations persist by normalized source text, so duplicate token names share a cache and renamed tokens use a new entry. English/Japanese/Korean names are skipped. MyMemory receives only public token names and the language pair, never browser cookies or wallet data. Its [documented API](https://mymemory.translated.net/doc/spec.php) allows 500-byte inputs; requests share a persistent 5,000-character daily anonymous allowance, with two concurrent lookups and an hour between failed attempts. A provider outage or exhausted allowance exposes a compact Google Translate link rather than an incorrect name. These are automatic translations, not official token renames.
+
+`/trades?view=radar` shows 20 signals at a time with expandable transaction evidence. `/trades?view=watchlist` groups followed KOLs/tokens and their signals. Filters are saved in the same browser: 5/10/30 minute buying windows, 2â€“10 distinct buyers, categories and mute. A new filter profile backfills the last day without alerting. Live triggers use confirmed chain order and a ten-minute cooldown. Imported activity is silent; corrected signals remain visible after a reorganization.
 
 A secure HttpOnly, SameSite=Strict cookie identifies an anonymous watchlist; the server stores its hash. No wallet connection or account signup is needed. Follow stars appear on profiles, token cards and leaderboard rows. Clearing Watchlist deletes its session, preferences, Telegram connection and delivery records. Cross-device recovery is deferred.
 
@@ -43,7 +45,7 @@ The additive migration is in `server/intelligenceSchema.ts`. Collection, signal 
 
 ### Dedicated Telegram bot
 
-Create the bot with BotFather, then privately set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, a random `TELEGRAM_WEBHOOK_SECRET` (1–256 URL-safe characters), and HTTPS `PUBLIC_APP_URL` on the server. Keep `TELEGRAM_DELIVERY_ENABLED=false` while validating live collection. Never commit or paste the token into logs.
+Create the bot with BotFather, then privately set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, a random `TELEGRAM_WEBHOOK_SECRET` (1â€“256 URL-safe characters), and HTTPS `PUBLIC_APP_URL` on the server. Keep `TELEGRAM_DELIVERY_ENABLED=false` while validating live collection. Never commit or paste the token into logs.
 
 Recreate app/worker containers to load the private settings, then register the authenticated webhook:
 
