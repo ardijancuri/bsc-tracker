@@ -264,6 +264,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
 @media (max-width: 800px) {
   .site-header { height: 62px; }
   .header-inner { padding: 0 18px; gap: 12px; }
+  .header-inner > .brand { margin-right: 12px; }
   .main-nav.open { top: 100%; gap: 0; background: #0b0e11; border-bottom: 1px solid #30383e; }
   .main-nav a { height: 36px; justify-content: flex-end; text-align: right; }
   .brand-mark { width: 28px; height: 28px; }
@@ -309,7 +310,10 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrol
   .footer-brand img { width: 15px; height: 15px; }
   .footer-legal { gap: 6px; }
   .trades-faq { margin-top: 42px; }
-  .trades-follow { align-items: flex-start; flex-direction: column; }
+  .trades-follow { align-items: center; flex-direction: row; gap: 12px; padding: 18px 14px; }
+  .trades-follow > div { flex: 1; min-width: 0; }
+  .trades-follow h2 { font-size: 18px; }
+  .trades-follow a { flex-shrink: 0; padding: 0 10px; }
   .token-columns, .unpriced-grid { grid-template-columns: 1fr; }
   .token-list { grid-template-columns: 1fr; gap: 8px; }
   .column-heading p { display: block; }
