@@ -12,5 +12,5 @@
 .watchlist-banner-empty { display: inline-flex; align-items: center; min-height: 28px; padding: 0 8px; color: #879299; font-size: 12px; white-space: nowrap; }
 .watchlist-banner-empty:hover { color: #e9edf1; }
 .watchlist-banner a:focus-visible, .watchlist-banner-tokens:focus-visible { outline: 2px solid var(--yellow); outline-offset: -2px; }
-@media (max-width: 800px) { .watchlist-banner-inner { padding: 0 18px; } .watchlist-banner-shortcut > span { display: none; } }
+@media (max-width: 800px) { .watchlist-banner-inner { padding: 0 18px; } .watchlist-banner-shortcut { padding-right: 2px; margin-right: 0; } .watchlist-banner-shortcut > span { display: none; } }
 @media (prefers-reduced-motion: reduce) { .watchlist-banner-token { transition: none; } }

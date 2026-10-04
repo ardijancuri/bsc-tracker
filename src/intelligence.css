@@ -13,7 +13,7 @@
 
 .position-popover>span:first-child strong{max-width:148px;overflow:visible;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 
-.radar-settings{margin:0 0 18px;border-top:0}.radar-settings>summary{padding:0 0 12px;color:var(--muted)}
+.radar-settings{margin:0 0 18px;border:0}.radar-settings>summary{padding:0 0 12px;color:var(--muted)}
 @media(max-width:760px){.signal-row>summary{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 68px;gap:8px}.signal-row>summary>a{min-width:0}.signal-label{min-width:0}.signal-label strong{font-size:13px}.launch-row{grid-template-columns:minmax(0,1fr) 98px 30px}.launch-row>a{min-width:0}}
 
 .feature-table,.signal-row,.watch-row,.launch-row,.kol-list>.kol-holder-row{background:transparent}.signal-evidence a:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;display:block;white-space:nowrap}.signal-participants a{max-width:100%;overflow:hidden;text-overflow:ellipsis}
