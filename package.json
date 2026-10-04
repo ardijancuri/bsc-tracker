@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:api": "tsx watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",
-    "build": "vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts server/configureTelegram.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "build": "vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",
     "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",

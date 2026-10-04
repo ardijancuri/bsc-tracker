@@ -1,20 +1,19 @@
 import { t, localDate } from './i18n';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bell, BellOff, ChevronDown, ExternalLink, Star, X } from 'lucide-react';
+import { ChevronDown, ExternalLink, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress } from './lib';
 import { TokenName } from './TokenName';
-import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type TelegramStatus, type Watchlist } from '../shared/intelligence';
+import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
-const emptyTelegram: TelegramStatus = { available: false, state: 'disconnected', username: null, recipient: null, linkUrl: null, expiresAt: null };
-const emptyWatchlist: Watchlist = { items: [], preferences: defaultPreferences, telegram: emptyTelegram };
+const emptyWatchlist: Watchlist = { items: [], preferences: defaultPreferences };
 async function mutate<T>(url: string, method: string, body?: unknown): Promise<T> {
   const response = await fetch(url, { method, headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || 'Try again shortly');
   return result as T;
 }
-type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void>; preferences: (value: AlertPreferences) => Promise<void>; telegram: (action: 'link' | 'confirm' | 'disconnect') => Promise<TelegramStatus | null>; clear: () => Promise<void> };
+type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void>; preferences: (value: AlertPreferences) => Promise<void>; clear: () => Promise<void> };
 const WatchContext = createContext<WatchContextValue | null>(null);
 export function WatchlistProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<Watchlist>(emptyWatchlist);
@@ -46,15 +45,6 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     const followed = items.some(item => item.kind === kind && item.address === key);
     await save({ items: followed ? items.filter(item => item.kind !== kind || item.address !== key) : [...items, { kind, address: key }] });
   };
-  const telegram = async (action: 'link' | 'confirm' | 'disconnect') => {
-    if (locked.current) return null;
-    locked.current = true; revision.current++; setBusy(true); setError(null);
-    try {
-      const value = await mutate<TelegramStatus>(action === 'confirm' ? '/api/telegram/confirm' : '/api/telegram/link', action === 'disconnect' ? 'DELETE' : 'POST');
-      accept({ ...current.current, telegram: value }); return value;
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Telegram unavailable'); return null; }
-    finally { locked.current = false; setBusy(false); }
-  };
   const clear = async () => {
     if (locked.current) return;
     locked.current = true; revision.current++; setBusy(true);
@@ -62,7 +52,7 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     catch { setError('Could not clear watchlist'); }
     finally { locked.current = false; setBusy(false); }
   };
-  return <WatchContext.Provider value={{ data, busy, loaded, error, refresh, toggle, preferences: value => save({ preferences: value }), telegram, clear }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
+  return <WatchContext.Provider value={{ data, busy, loaded, error, refresh, toggle, preferences: value => save({ preferences: value }), clear }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
 }
 export function useWatchlist() { const value = useContext(WatchContext); if (!value) throw new Error('Watchlist provider missing'); return value; }
 export function FollowButton({ kind, address, label }: { kind: 'kol' | 'token'; address: string; label?: string | null }) {
@@ -141,20 +131,16 @@ export function RadarFeed({ watched = false }: { watched?: boolean }) {
   const selectedId = params.get('signal');
   const selected = useFeatureData<{ signal: Signal | null }>(selectedId ? `/api/signals/${selectedId}` : null, { signal: null });
   const pinned = selectedId && selected.data.signal && !list.items.some(signal => signal.id === selectedId) ? selected.data.signal : null;
-  return <>{!watched && <AlertSettings connections={false} />}<div className="data-table feature-table">{pinned && <SignalRow signal={pinned} open />}{list.items.map(signal => <SignalRow key={signal.id} signal={signal} open={signal.id === selectedId} />)}{!list.items.length && !pinned && <FeatureEmpty>{list.loading ? t("Loading radar…") : list.error ? t("Radar unavailable") : watched ? t("No watched signals yet") : t("No signals yet")}</FeatureEmpty>}</div>
+  return <>{!watched && <AlertSettings watchlist={false} />}<div className="data-table feature-table">{pinned && <SignalRow signal={pinned} open />}{list.items.map(signal => <SignalRow key={signal.id} signal={signal} open={signal.id === selectedId} />)}{!list.items.length && !pinned && <FeatureEmpty>{list.loading ? t("Loading radar…") : list.error ? t("Radar unavailable") : watched ? t("No watched signals yet") : t("No signals yet")}</FeatureEmpty>}</div>
     {list.more && <button className="profile-load-more" disabled={list.busy} onClick={() => void list.loadMore()}>{list.busy ? t("Loading…") : t("Load more")}</button>}{list.moreError && <p className="profile-more-error">{t("Could not load more. Try again.")}</p>}</>;
 }
-function AlertSettings({ connections = true }: { connections?: boolean }) {
+function AlertSettings({ watchlist = true }: { watchlist?: boolean }) {
   const watch = useWatchlist();
-  const [link, setLink] = useState<string | null>(null);
   const preferences = watch.data.preferences;
-  const telegram = watch.data.telegram;
-  const connect = async () => { const result = await watch.telegram('link'); if (result?.linkUrl) setLink(result.linkUrl); };
   const change = (value: Partial<AlertPreferences>) => void watch.preferences({ ...preferences, ...value });
-  return <details className={`watch-settings${connections ? '' : ' radar-settings'}`} open={!connections}><summary>{connections ? t("Alerts") : t("Filters")}<ChevronDown size={14} /></summary><div className="alert-settings"><div className="alert-controls"><label>{t("Window")}<select aria-label={t("Buying window")} value={preferences.windowMinutes} disabled={watch.busy || !watch.loaded} onChange={event => change({ windowMinutes: Number(event.target.value) as AlertPreferences['windowMinutes'] })}>{[5, 10, 30].map(value => <option key={value} value={value}>{t('{minutes}m', { minutes: value })}</option>)}</select></label><label>{t("KOLs")}<select aria-label={t("KOL threshold")} value={preferences.minBuyers} disabled={watch.busy || !watch.loaded} onChange={event => change({ minBuyers: Number(event.target.value) })}>{Array.from({ length: 9 }, (_, i) => i + 2).map(value => <option key={value} value={value}>{value}+</option>)}</select></label><button className="feature-button" disabled={watch.busy || !watch.loaded} onClick={() => change({ muted: !preferences.muted })}>{preferences.muted ? <BellOff size={14} /> : <Bell size={14} />}{preferences.muted ? t("Muted") : t("Alerts on")}</button></div>
+  return <details className={`watch-settings${watchlist ? '' : ' radar-settings'}`} open={!watchlist}><summary>{t("Filters")}<ChevronDown size={14} /></summary><div className="alert-settings"><div className="alert-controls"><label>{t("Window")}<select aria-label={t("Buying window")} value={preferences.windowMinutes} disabled={watch.busy || !watch.loaded} onChange={event => change({ windowMinutes: Number(event.target.value) as AlertPreferences['windowMinutes'] })}>{[5, 10, 30].map(value => <option key={value} value={value}>{t('{minutes}m', { minutes: value })}</option>)}</select></label><label>{t("KOLs")}<select aria-label={t("KOL threshold")} value={preferences.minBuyers} disabled={watch.busy || !watch.loaded} onChange={event => change({ minBuyers: Number(event.target.value) })}>{Array.from({ length: 9 }, (_, i) => i + 2).map(value => <option key={value} value={value}>{value}+</option>)}</select></label></div>
       <div className="alert-categories">{signalKinds.map(kind => <label key={kind}><input type="checkbox" checked={preferences.categories.includes(kind)} disabled={watch.busy || !watch.loaded} onChange={event => change({ categories: event.target.checked ? [...preferences.categories, kind] : preferences.categories.filter(value => value !== kind) })} />{t(signalLabels[kind])}</label>)}</div>
-      {connections && <>      <div className="telegram-controls"><span>Telegram{telegram.recipient && <small>{telegram.recipient}</small>}</span>{telegram.state === 'connected' ? <><span className="positive">{t("Connected")}</span><button className="feature-button" disabled={watch.busy} onClick={() => void watch.telegram('disconnect')}>{t("Disconnect")}</button></> : telegram.state === 'confirm' ? <button className="feature-button" disabled={watch.busy} onClick={() => void watch.telegram('confirm')}>{t("Enable alerts")}</button> : <><button className="feature-button" disabled={watch.busy || !telegram.available || !watch.data.items.length} title={telegram.available ? t("Connect your watchlist") : t("Telegram unavailable")} onClick={() => void connect()}>{telegram.state === 'pending' ? t("New link") : t("Connect")}</button>{link && telegram.state === 'pending' && <a className="feature-button" href={link} target="_blank" rel="noopener noreferrer">{t("Open Telegram")}<ExternalLink size={13} /></a>}{!telegram.available && <small>{t("Unavailable")}</small>}</>}</div>
-      <button className="watch-clear" disabled={watch.busy || !watch.loaded} onClick={() => void watch.clear()}><X size={12} />{t("Clear watchlist")}</button></>}</div></details>;
+      {watchlist && <button className="watch-clear" disabled={watch.busy || !watch.loaded} onClick={() => void watch.clear()}><X size={12} />{t("Clear watchlist")}</button>}</div></details>;
 }
 export function WatchlistView() {
   const watch = useWatchlist();

@@ -1,4 +1,4 @@
-// Runs only against an explicitly named disposable database. No live bot or RPC requests.
+// Runs only against an explicitly named disposable database. No live RPC requests.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import Fastify from 'fastify';
@@ -8,7 +8,7 @@ import { ensureSeeds } from './seeds.js';
 import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
 import { collectLaunches, collectPositions, collectSignals, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
-import { deliverTelegramBatch, hashSecret, queueDeliveries } from './telegram.js';
+import { hashSecret } from './intelligenceApi.js';
 import { defaultPreferences } from '../shared/intelligence.js';
 import { flapInterface, fourInterface, FLAP_PORTAL, FOUR_HELPER, FOUR_MANAGERS, pairInterface } from './launchpad.js';
 import { transferTopic } from './swap.js';
@@ -17,16 +17,11 @@ import { getTokenTranslation } from './tokenTranslation.js';
 if (!/^\/bscan_intelligence_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_intelligence_test database');
 process.env.NODE_ENV = 'production';
 process.env.PUBLIC_APP_URL = 'https://bscan.fun';
-process.env.TELEGRAM_BOT_TOKEN = 'test-token';
-process.env.TELEGRAM_BOT_USERNAME = 'bscan_test_bot';
-process.env.TELEGRAM_WEBHOOK_SECRET = 'test-webhook-secret';
-process.env.TELEGRAM_DELIVERY_ENABLED = 'true';
 const token = `0x${'1'.repeat(40)}`, flapToken = `0x${'2'.repeat(40)}`, unsupported = `0x${'3'.repeat(40)}`, pair = `0x${'4'.repeat(40)}`;
 const poolId = `0x${'5'.repeat(64)}`, outsider = `0x${'6'.repeat(40)}`, unit = 10n ** 36n;
 const hash = (height: number) => `0x${height.toString(16).padStart(64, '0')}`;
 let height = 108, curve = 40, fourGraduated = false, balanceFails = false, staleBlock = false, liquidity = 1000;
-const balances = new Map<string, bigint>(), calls: { method: string; body: Record<string, unknown> }[] = [];
-let botResult: 'ok' | '429' | '403' | 'timeout' = 'ok';
+const balances = new Map<string, bigint>();
 let translationCalls = 0;
 const nativeFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -36,12 +31,6 @@ globalThis.fetch = async (input, init) => {
     const source = url.searchParams.get('q');
     if (source === '失败名称') return new Response('', { status: 503 });
     return Response.json({ responseStatus: 200, responseData: { translatedText: source === '毛毯小象' ? 'Blanket elephant' : 'Panda' } });
-  }
-  if (url.hostname === 'api.telegram.org') {
-    const method = url.pathname.split('/').at(-1)!;
-    calls.push({ method, body: JSON.parse(String(init?.body || '{}')) });
-    if (botResult === 'timeout') throw new Error('Simulated timeout');
-    return Response.json(botResult === '429' ? { ok: false, error_code: 429, parameters: { retry_after: 55 } } : botResult === '403' ? { ok: false, error_code: 403 } : { ok: true, result: { message_id: calls.length, username: 'bscan_test_bot' } });
   }
   if (url.hostname === 'api.dexscreener.com') return Response.json({ pairs: [{ chainId: 'bsc', pairAddress: poolId, baseToken: { address: flapToken }, quoteToken: { address: outsider }, liquidity: { usd: liquidity } }] });
   return nativeFetch(input, init);
@@ -79,7 +68,26 @@ process.env.BSC_RPC_HTTP = `http://127.0.0.1:${(rpc.address() as { port: number 
 const app = Fastify(); registerIntelligenceRoutes(app);
 try {
   await ensureSchema(); await ensureSeeds();
+  // Exercise retirement on an existing watchlist without losing its session or filters.
+  await pool.query(`ALTER TABLE watch_sessions ADD COLUMN telegram_chat_id text,
+    ADD COLUMN telegram_username text, ADD COLUMN telegram_connected_at timestamptz;
+    CREATE TABLE telegram_links (id text PRIMARY KEY);
+    CREATE TABLE telegram_updates (update_id bigint PRIMARY KEY);
+    CREATE TABLE notification_deliveries (id text PRIMARY KEY);`);
+  await pool.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at,telegram_chat_id)
+    VALUES('retirement-test',$1,now()+interval '1 year','12345')`, [hashSecret('retirement-test')]);
   await Promise.all([ensureIntelligenceSchema(pool), ensureIntelligenceSchema(pool)]);
+  assert.equal((await pool.query(`SELECT id FROM watch_sessions WHERE id='retirement-test'`)).rowCount, 1);
+  assert.equal((await pool.query(`SELECT column_name FROM information_schema.columns
+    WHERE table_name='watch_sessions' AND column_name LIKE 'telegram_%'`)).rowCount, 0);
+  assert.equal((await pool.query(`SELECT tablename FROM pg_tables WHERE schemaname='public'
+    AND tablename IN ('telegram_links','telegram_updates','notification_deliveries')`)).rowCount, 0);
+  await pool.query(`DELETE FROM watch_sessions WHERE id='retirement-test'`);
+  for (const [method, url] of [['GET', '/api/telegram/status'], ['POST', '/api/telegram/link'],
+    ['POST', '/api/telegram/confirm'], ['DELETE', '/api/telegram/link'], ['POST', '/api/telegram/webhook']] as const) {
+    assert.equal((await app.inject({ method, url })).statusCode, 404);
+  }
+  assert.equal('telegram' in (await app.inject('/api/watchlist')).json(), false);
   const wallets = (await pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address LIMIT 3')).rows.map(row => row.address as string);
   for (const [address, symbol] of [[token, 'RADAR'], [flapToken, 'FLAP'], [unsupported, 'OTHER']]) await pool.query(`INSERT INTO tokens(address,symbol,name,decimals,is_meme,price_source,price_usd,total_supply_raw,supply_checked_at) VALUES($1,$2,$2,36,true,'onchain',0.001,$3,now())`, [address, symbol, (1000000000n * unit).toString()]);
   for (let number = 100; number <= 125; number++) await pool.query('INSERT INTO processed_blocks(block_number,block_hash) VALUES($1,$2)', [number, hash(number)]);
@@ -131,37 +139,6 @@ try {
   assert.ok(custom.items.length > 0); assert.ok(custom.items.every((row: { kind: string; minBuyers: number; windowMinutes: number }) => row.kind === 'clustered_buys' && row.minBuyers === 2 && row.windowMinutes === 30));
   assert.ok((await pool.query(`SELECT live FROM radar_signals WHERE window_minutes=30`)).rows.every(row => !row.live));
   const sessionA = (await pool.query('SELECT id FROM watch_sessions WHERE secret_hash=$1', [hashSecret(cookieA.split('=')[1])])).rows[0].id;
-  const link = async () => (await app.inject({ method: 'POST', url: '/api/telegram/link', headers: { ...headers, cookie: cookieA } })).json();
-  const webhook = (id: number, text: string, chat = 12345) => app.inject({ method: 'POST', url: '/api/telegram/webhook', headers: { 'x-telegram-bot-api-secret-token': 'test-webhook-secret' }, payload: { update_id: id, message: { text, chat: { id: chat, type: 'private' }, from: { username: 'test_user' } } } });
-  const expired = new URL((await link()).linkUrl).searchParams.get('start')!;
-  await pool.query(`UPDATE telegram_links SET expires_at=now()-interval '1 second' WHERE session_id=$1`, [sessionA]);
-  await webhook(1, `/start ${expired}`);
-  assert.equal((await pool.query('SELECT telegram_chat_id FROM watch_sessions WHERE id=$1', [sessionA])).rows[0].telegram_chat_id, null);
-  const nonce = new URL((await link()).linkUrl).searchParams.get('start')!;
-  assert.notEqual((await pool.query('SELECT nonce_hash FROM telegram_links WHERE session_id=$1', [sessionA])).rows[0].nonce_hash, nonce);
-  const untrusted = await app.inject({ method: 'POST', url: '/api/telegram/webhook', payload: { update_id: 2 } }); assert.equal(untrusted.statusCode, 403);
-  await webhook(2, `/start ${nonce}`); const callCount = calls.length; await webhook(2, `/start ${nonce}`); assert.equal(calls.length, callCount);
-  assert.equal((await pool.query('SELECT telegram_chat_id FROM watch_sessions WHERE id=$1', [sessionA])).rows[0].telegram_chat_id, null);
-  assert.equal((await app.inject({ url: '/api/telegram/status', headers: { cookie: cookieA } })).json().state, 'confirm');
-  assert.equal((await app.inject({ method: 'POST', url: '/api/telegram/confirm', headers: { ...headers, cookie: cookieB } })).statusCode, 409);
-  assert.equal((await app.inject({ method: 'POST', url: '/api/telegram/confirm', headers: { ...headers, cookie: cookieA } })).statusCode, 200);
-  await webhook(3, `/start ${nonce}`, 54321);
-  assert.equal((await pool.query('SELECT telegram_chat_id FROM watch_sessions WHERE id=$1', [sessionA])).rows[0].telegram_chat_id, '12345');
-  await queueDeliveries(); assert.equal((await pool.query('SELECT * FROM notification_deliveries')).rowCount, 0);
-  await insertTrade(6, wallets[1], 'buy', 106); await collectSignals(); await queueDeliveries(); await queueDeliveries();
-  assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='queued'`)).rowCount, 1);
-  await put(cookieA, { preferences: { ...defaultPreferences, muted: true } }); assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='queued'`)).rowCount, 0);
-  await insertTrade(7, wallets[1], 'sell', 107); await collectSignals(); await queueDeliveries(); assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='queued'`)).rowCount, 0);
-  await put(cookieA, { preferences: defaultPreferences }); await queueDeliveries(); assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='queued'`)).rowCount, 0);
-  await insertTrade(8, wallets[2], 'buy', 108); await collectSignals(); await queueDeliveries();
-  botResult = '429'; await deliverTelegramBatch(); const rateCount = calls.length; await deliverTelegramBatch(); assert.equal(calls.length, rateCount);
-  assert.equal((await pool.query(`SELECT attempts FROM notification_deliveries WHERE status='queued'`)).rows[0].attempts, 1);
-  await setState('telegram_retry', { until: new Date(0).toISOString() }); await pool.query(`UPDATE notification_deliveries SET available_at=now() WHERE status='queued'`);
-  botResult = 'ok'; await deliverTelegramBatch(); const sentCount = calls.length; await deliverTelegramBatch(); assert.equal(calls.length, sentCount);
-  assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='sent'`)).rowCount, 1);
-  // A persisted in-flight send after restart is uncertain and must never be replayed.
-  await pool.query(`UPDATE notification_deliveries SET status='sending',updated_at=now()-interval '3 minutes' WHERE status='sent'`);
-  await deliverTelegramBatch(); assert.equal(calls.length, sentCount); assert.equal((await pool.query(`SELECT * FROM notification_deliveries WHERE status='uncertain'`)).rowCount, 1);
   await node(109); balances.set(`${wallets[0]}:${token}`, 100n * unit); await collectPositions();
   const position = async () => (await app.inject(`/api/kols/${wallets[0]}/positions?tokens=${token}`)).json().items[0];
   assert.equal((await position()).status, 'Holding');
@@ -205,13 +182,10 @@ try {
   fourGraduated = true; await node(116); await pool.query(`UPDATE token_launches SET checked_at=now()-interval '61 seconds'`); await collectLaunches(); assert.equal((await launch(token)).stage, 'graduated'); assert.equal((await launch(token)).graduatedAt, null);
   const launches = (await app.inject('/api/launches?limit=1')).json(); assert.equal(launches.items.length, 1); assert.ok(launches.nextCursor);
   assert.notEqual((await app.inject(`/api/launches?limit=1&cursor=${launches.nextCursor}`)).json().items[0].tokenAddress, launches.items[0].tokenAddress);
-  await queueDeliveries();
   const client = await pool.connect(); try { await client.query('BEGIN'); await rollbackIntelligence(client, 110); await client.query('DELETE FROM trades WHERE block_number>=110'); await client.query('DELETE FROM processed_blocks WHERE block_number>=110'); await client.query('COMMIT'); } finally { client.release(); }
   assert.equal((await pool.query('SELECT * FROM wallet_transfers WHERE block_number>=110')).rowCount, 0); assert.equal((await pool.query('SELECT * FROM position_snapshots WHERE block_number>=110')).rowCount, 0); assert.equal((await pool.query('SELECT * FROM launch_events WHERE block_number>=110')).rowCount, 0);
-  assert.ok((await pool.query('SELECT * FROM radar_signals WHERE source_block>=110')).rows.every(row => row.corrected)); assert.equal((await pool.query(`SELECT * FROM notification_deliveries d JOIN radar_signals s ON s.id=d.signal_id WHERE s.corrected AND d.status='queued'`)).rowCount, 0);
+  assert.ok((await pool.query('SELECT * FROM radar_signals WHERE source_block>=110')).rows.every(row => row.corrected));
   assert.equal((await launch(token)).stage, 'unavailable');
-  await webhook(9, '/stop'); assert.equal((await app.inject({ url: '/api/telegram/status', headers: { cookie: cookieA } })).json().state, 'disconnected');
-  const disconnect = await app.inject({ method: 'DELETE', url: '/api/telegram/link', headers: { ...headers, cookie: cookieA } }); assert.equal(disconnect.statusCode, 200);
   await app.inject({ method: 'DELETE', url: '/api/watchlist', headers: { ...headers, cookie: cookieA } }); assert.equal((await pool.query('SELECT * FROM watch_sessions WHERE id=$1', [sessionA])).rowCount, 0);
   if (process.env.INTELLIGENCE_PREVIEW_FIXTURES === '1') {
     for (let number = 110; number <= 125; number++) await pool.query('INSERT INTO processed_blocks(block_number,block_hash) VALUES($1,$2) ON CONFLICT DO NOTHING', [number, hash(number)]);
@@ -229,5 +203,5 @@ try {
     for (const wallet of wallets) await pool.query(`INSERT INTO position_snapshots(wallet_address,token_address,block_number,block_hash,balance_raw,status,checked_at,block_timestamp) VALUES($1,$2,125,$3,$4,'Added',now(),now())`, [wallet, token, hash(125), (125n * unit + 1n).toString()]);
     console.log(`Preview fixtures: /token/${token}, /kol/${wallets[0]}`);
   }
-  console.log('Intelligence integration checks passed: migrations, signals, sessions, linking, delivery, positions, launches and reorgs.');
+  console.log('Intelligence integration checks passed: migrations, Telegram retirement, signals, sessions, positions, launches and reorgs.');
 } finally { globalThis.fetch = nativeFetch; await app.close(); await new Promise<void>(resolve => rpc.close(() => resolve())); await pool.end(); }

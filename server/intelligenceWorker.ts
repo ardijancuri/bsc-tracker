@@ -62,7 +62,6 @@ export async function rollbackIntelligence(client: PoolClient, from: number) {
   await client.query('SELECT pg_advisory_xact_lock(782319)');
   await client.query(`UPDATE radar_signals SET corrected=true WHERE source_block >= $1 OR EXISTS (
     SELECT 1 FROM jsonb_array_elements(evidence) item WHERE (item->>'blockNumber')::bigint >= $1)`, [from]);
-  await client.query(`UPDATE notification_deliveries d SET status='cancelled',updated_at=now() FROM radar_signals s WHERE d.signal_id=s.id AND s.corrected AND d.status='queued'`);
   await client.query('DELETE FROM wallet_transfers WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM position_snapshots WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM launch_events WHERE block_number >= $1', [from]);

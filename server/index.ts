@@ -11,7 +11,7 @@ import { lookupTokenWebsite } from './tokenWebsite.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
 import { getTokenTranslation } from './tokenTranslation.js';
 
-const app = Fastify({ logger: { redact: ['req.headers.cookie', 'req.headers.x-telegram-bot-api-secret-token', 'res.headers.set-cookie'] }, trustProxy: true });
+const app = Fastify({ logger: { redact: ['req.headers.cookie', 'res.headers.set-cookie'] }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, '..', 'dist');
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;

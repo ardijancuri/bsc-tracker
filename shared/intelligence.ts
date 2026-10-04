@@ -12,15 +12,7 @@ export interface AlertPreferences {
 }
 export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuyers: 3, categories: [...signalKinds], muted: false };
 export interface WatchEntry { kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null; avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null; change24h?: string | null }
-export interface TelegramStatus {
-  recipient: string | null;
-  available: boolean;
-  state: 'disconnected' | 'pending' | 'confirm' | 'connected';
-  username: string | null;
-  linkUrl: string | null;
-  expiresAt: string | null;
-}
-export interface Watchlist { items: WatchEntry[]; preferences: AlertPreferences; telegram: TelegramStatus }
+export interface Watchlist { items: WatchEntry[]; preferences: AlertPreferences }
 export interface SignalEvidence {
   id: string; txHash: string; walletAddress: string; kolName: string | null;
   side: string; timestamp: string; blockNumber: string; blockHash: string;

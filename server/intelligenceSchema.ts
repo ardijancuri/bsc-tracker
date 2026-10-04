@@ -12,23 +12,21 @@ export async function ensureIntelligenceSchema(pool: Pool) {
     CREATE TABLE IF NOT EXISTS watch_sessions (
       id text PRIMARY KEY, secret_hash text UNIQUE NOT NULL, expires_at timestamptz NOT NULL,
       preferences jsonb NOT NULL DEFAULT '{"windowMinutes":10,"minBuyers":3,"categories":["clustered_buys","repeat_buy","buyer_selling","near_graduation","graduated"],"muted":false}',
-      telegram_chat_id text, telegram_username text, telegram_connected_at timestamptz,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS watch_sessions_chat_idx ON watch_sessions(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL;
+    -- Retired Telegram integration: remove connection identifiers and bot delivery data.
+    DROP TABLE IF EXISTS notification_deliveries;
+    DROP TABLE IF EXISTS telegram_links;
+    DROP TABLE IF EXISTS telegram_updates;
+    ALTER TABLE watch_sessions DROP COLUMN IF EXISTS telegram_chat_id,
+      DROP COLUMN IF EXISTS telegram_username, DROP COLUMN IF EXISTS telegram_connected_at;
+    DELETE FROM worker_state WHERE key IN ('telegram','telegram_retry');
     CREATE TABLE IF NOT EXISTS watch_entries (
       session_id text NOT NULL REFERENCES watch_sessions(id) ON DELETE CASCADE,
       kind text NOT NULL CHECK(kind IN ('kol','token')), address text NOT NULL,
       PRIMARY KEY(session_id,kind,address)
     );
     CREATE INDEX IF NOT EXISTS watch_entries_entity_idx ON watch_entries(kind,address);
-    CREATE TABLE IF NOT EXISTS telegram_links (
-      id text PRIMARY KEY, session_id text NOT NULL REFERENCES watch_sessions(id) ON DELETE CASCADE,
-      nonce_hash text UNIQUE NOT NULL, expires_at timestamptz NOT NULL,
-      chat_id text, username text, claimed_at timestamptz, confirmed_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS telegram_updates (update_id bigint PRIMARY KEY, received_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS radar_signals (
       id text PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, token_address text NOT NULL REFERENCES tokens(address),
       wallet_addresses text[] NOT NULL, evidence jsonb NOT NULL, window_minutes integer NOT NULL, min_buyers integer NOT NULL,
@@ -42,15 +40,6 @@ export async function ensureIntelligenceSchema(pool: Pool) {
       profile text PRIMARY KEY, window_minutes integer NOT NULL, min_buyers integer NOT NULL, backfilled_at timestamptz
     );
     INSERT INTO radar_profiles(profile,window_minutes,min_buyers) VALUES('10:3',10,3) ON CONFLICT(profile) DO NOTHING;
-    CREATE TABLE IF NOT EXISTS notification_deliveries (
-      session_id text NOT NULL REFERENCES watch_sessions(id) ON DELETE CASCADE,
-      signal_id text NOT NULL REFERENCES radar_signals(id),
-      status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sending','sent','cancelled','failed','uncertain')),
-      attempts integer NOT NULL DEFAULT 0, available_at timestamptz NOT NULL DEFAULT now(),
-      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-      message_id text, last_error text, PRIMARY KEY(session_id,signal_id)
-    );
-    CREATE INDEX IF NOT EXISTS notification_deliveries_pending_idx ON notification_deliveries(available_at) WHERE status='queued';
     CREATE TABLE IF NOT EXISTS wallet_transfers (
       id text PRIMARY KEY, tx_hash text NOT NULL, log_index integer NOT NULL,
       wallet_address text NOT NULL REFERENCES kols(address), token_address text NOT NULL REFERENCES tokens(address),

@@ -1,16 +1,16 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
-import { defaultPreferences, signalKinds, type TelegramStatus, type PositionStatus } from '../shared/intelligence.js';
+import { defaultPreferences, signalKinds, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
-import { handleTelegramUpdate, hashSecret, telegramBotUsername, validWebhookSecret } from './telegram.js';
+export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 const preferencesSchema = z.object({ windowMinutes: z.union([z.literal(5), z.literal(10), z.literal(30)]), minBuyers: z.number().int().min(2).max(10), categories: z.array(z.enum(signalKinds)).max(5).transform(values => [...new Set(values)]), muted: z.boolean() }).strict();
 const watchSchema = z.object({ items: z.array(z.object({ kind: z.enum(['kol', 'token']), address: addressSchema }).strict()).max(200).optional(), preferences: preferencesSchema.optional() }).strict();
 const cookieName = 'bscan_watch';
-type Session = { id: string; preferences: typeof defaultPreferences; telegram_chat_id: string | null; telegram_username: string | null };
+type Session = { id: string; preferences: typeof defaultPreferences };
 const attempts = new Map<string, { count: number; until: number }>();
 function mutationAllowed(request: FastifyRequest, reply: FastifyReply) {
   const origin = request.headers.origin;
@@ -35,20 +35,12 @@ export function sessionSecret(cookie: string | undefined) {
 async function getSession(request: FastifyRequest): Promise<Session | null> {
   const secret = sessionSecret(request.headers.cookie);
   if (!secret) return null;
-  const result = await pool.query('SELECT id,preferences,telegram_chat_id,telegram_username FROM watch_sessions WHERE secret_hash=$1 AND expires_at>now()', [hashSecret(secret)]);
+  const result = await pool.query('SELECT id,preferences FROM watch_sessions WHERE secret_hash=$1 AND expires_at>now()', [hashSecret(secret)]);
   return result.rows[0] ?? null;
 }
 function privateResponse(reply: FastifyReply) { reply.header('Cache-Control', 'no-store').header('Vary', 'Cookie'); }
 function setSessionCookie(reply: FastifyReply, secret: string) {
   reply.header('Set-Cookie', `${cookieName}=${secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
-}
-async function telegramStatus(session: Session | null): Promise<TelegramStatus> {
-  const username = await telegramBotUsername();
-  const available = Boolean(username && process.env.TELEGRAM_DELIVERY_ENABLED === 'true');
-  if (session?.telegram_chat_id) return { available, state: 'connected', username: session.telegram_username, recipient: session.telegram_username ? `@${session.telegram_username}` : `Chat …${session.telegram_chat_id.slice(-4)}`, linkUrl: null, expiresAt: null };
-  const pending = session ? (await pool.query(`SELECT claimed_at,chat_id,username,expires_at FROM telegram_links WHERE session_id=$1 AND expires_at>now() AND confirmed_at IS NULL ORDER BY created_at DESC LIMIT 1`, [session.id])).rows[0] : null;
-  return { available, state: pending ? pending.claimed_at ? 'confirm' : 'pending' : 'disconnected', username: pending?.username ?? null,
-    recipient: pending?.chat_id ? pending.username ? `@${pending.username}` : `Chat …${pending.chat_id.slice(-4)}` : null, linkUrl: null, expiresAt: pending?.expires_at ? new Date(pending.expires_at).toISOString() : null };
 }
 async function watchlist(session: Session | null) {
   const items = session ? (await pool.query(`SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
@@ -59,7 +51,7 @@ async function watchlist(session: Session | null) {
     CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
     FROM watch_entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
     WHERE e.session_id=$1 ORDER BY e.kind,name NULLS LAST,e.address`, [session.id])).rows : [];
-  return { items, preferences: session?.preferences ?? defaultPreferences, telegram: await telegramStatus(session) };
+  return { items, preferences: session?.preferences ?? defaultPreferences };
 }
 function pageCursor(value: unknown) {
   if (value == null) return null;
@@ -96,7 +88,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       await client.query('BEGIN');
       if (!session) {
         const secret = randomBytes(32).toString('hex');
-        const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at) VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences,telegram_chat_id,telegram_username`, [randomUUID(), hashSecret(secret)]);
+        const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at) VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences`, [randomUUID(), hashSecret(secret)]);
         session = result.rows[0]; setSessionCookie(reply, secret);
       }
       await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session!.id]);
@@ -107,10 +99,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         await client.query('DELETE FROM watch_entries WHERE session_id=$1', [session!.id]);
         for (const item of unique) await client.query('INSERT INTO watch_entries(session_id,kind,address) VALUES($1,$2,$3)', [session!.id, item.kind, item.address]);
       }
-      const updated = await client.query(`UPDATE watch_sessions SET preferences=COALESCE($2::jsonb,preferences),updated_at=now(),expires_at=now()+interval '1 year' WHERE id=$1 RETURNING id,preferences,telegram_chat_id,telegram_username`, [session!.id, preferences ? JSON.stringify(preferences) : null]);
+      const updated = await client.query(`UPDATE watch_sessions SET preferences=COALESCE($2::jsonb,preferences),updated_at=now(),expires_at=now()+interval '1 year' WHERE id=$1 RETURNING id,preferences`, [session!.id, preferences ? JSON.stringify(preferences) : null]);
       session = updated.rows[0];
       if (preferences) await client.query(`INSERT INTO radar_profiles(profile,window_minutes,min_buyers) VALUES($1,$2,$3) ON CONFLICT(profile) DO NOTHING`, [`${preferences.windowMinutes}:${preferences.minBuyers}`, preferences.windowMinutes, preferences.minBuyers]);
-      if (session!.preferences.muted) await client.query(`UPDATE notification_deliveries SET status='cancelled',updated_at=now() WHERE session_id=$1 AND status='queued'`, [session!.id]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -211,72 +202,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const date = last?.firstKolAt ?? last?.launchedAt ?? new Date(0).toISOString();
     return { items, nextCursor: result.rows.length > count && last && date ? Buffer.from(JSON.stringify({ ts: new Date(date).toISOString(), id: last.tokenAddress })).toString('base64url') : null };
   });
-  app.get('/api/telegram/status', async (request, reply) => { privateResponse(reply); return telegramStatus(await getSession(request)); });
-  app.post('/api/telegram/link', async (request, reply) => {
-    privateResponse(reply); if (!mutationAllowed(request, reply)) return;
-    const session = await getSession(request);
-    if (!session) return reply.code(401).send({ error: 'Follow a KOL or token first' });
-    const username = await telegramBotUsername();
-    if (!username || process.env.TELEGRAM_DELIVERY_ENABLED !== 'true') return reply.code(503).send({ error: 'Telegram unavailable' });
-    const nonce = randomBytes(32).toString('base64url');
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session.id]);
-      await client.query('DELETE FROM telegram_links WHERE session_id=$1', [session.id]);
-      const result = await client.query(`INSERT INTO telegram_links(id,session_id,nonce_hash,expires_at) VALUES($1,$2,$3,now()+interval '10 minutes') RETURNING expires_at`, [randomUUID(), session.id, hashSecret(nonce)]);
-      await client.query('COMMIT');
-      return { available: true, state: 'pending', username: null, recipient: null, linkUrl: `https://t.me/${username}?start=${nonce}`, expiresAt: new Date(result.rows[0].expires_at).toISOString() };
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
-  });
-  app.post('/api/telegram/confirm', async (request, reply) => {
-    privateResponse(reply); if (!mutationAllowed(request, reply)) return;
-    const session = await getSession(request);
-    if (!session) return reply.code(401).send({ error: 'Watchlist unavailable' });
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session.id]);
-      await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session.id]);
-      const result = await client.query(`SELECT * FROM telegram_links WHERE session_id=$1 AND expires_at>now() AND claimed_at IS NOT NULL AND confirmed_at IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [session.id]);
-      const link = result.rows[0];
-      if (!link) { await client.query('ROLLBACK'); return reply.code(409).send({ error: 'Open your Telegram link first' }); }
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,782321))', [link.chat_id]);
-      const conflict = await client.query('SELECT id FROM watch_sessions WHERE telegram_chat_id=$1 AND id<>$2', [link.chat_id, session.id]);
-      if (conflict.rows.length) { await client.query('ROLLBACK'); return reply.code(409).send({ error: 'Disconnect this Telegram account from its other watchlist first' }); }
-      await client.query(`UPDATE watch_sessions SET telegram_chat_id=$2,telegram_username=$3,telegram_connected_at=now(),updated_at=now() WHERE id=$1`, [session.id, link.chat_id, link.username]);
-      await client.query('UPDATE telegram_links SET confirmed_at=now() WHERE id=$1', [link.id]);
-      await client.query('COMMIT');
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
-    return telegramStatus(await getSession(request));
-  });
-  app.delete('/api/telegram/link', async (request, reply) => {
-    privateResponse(reply); if (!mutationAllowed(request, reply)) return;
-    const session = await getSession(request);
-    if (session) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query(`UPDATE watch_sessions SET telegram_chat_id=NULL,telegram_username=NULL,telegram_connected_at=NULL,updated_at=now() WHERE id=$1`, [session.id]);
-        await client.query('DELETE FROM telegram_links WHERE session_id=$1', [session.id]);
-        await client.query(`UPDATE notification_deliveries SET status='cancelled',updated_at=now() WHERE session_id=$1 AND status='queued'`, [session.id]);
-        await client.query('COMMIT');
-      } catch (error) { await client.query('ROLLBACK'); throw error; }
-      finally { client.release(); }
-    }
-    return telegramStatus(null);
-  });
-  const updateSchema = z.object({ update_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), message: z.object({ text: z.string().max(4096).optional(), chat: z.object({ id: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER), type: z.string() }), from: z.object({ username: z.string().max(64).optional() }).optional() }).optional() });
-  app.post('/api/telegram/webhook', { bodyLimit: 16384 }, async (request, reply) => {
-    if (!validWebhookSecret(request.headers['x-telegram-bot-api-secret-token'])) return reply.code(403).send({ error: 'Forbidden' });
-    const parsed = updateSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: 'Invalid update' });
-    await handleTelegramUpdate(parsed.data); return { ok: true };
-  });
   app.get('/api/intelligence/health', async () => {
-    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','telegram','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
+    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
     const metrics = await pool.query(`SELECT
       (SELECT COUNT(*)::int FROM trades WHERE NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
       (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",

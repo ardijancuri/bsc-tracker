@@ -10,7 +10,6 @@ import { readBlockRange } from './blockRange.js';
 import { last24hStart } from './dayWindow.js';
 import { isMemeToken } from './memeToken.js';
 import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
-import { telegramDeliveryLoop } from './telegram.js';
 import { reorgStart } from './chainReorg.js';
 import { selectTokenMarkets } from './tokenMarkets.js';
 
@@ -764,5 +763,5 @@ if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), intelligenceLoop(), telegramDeliveryLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), intelligenceLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }
