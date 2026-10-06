@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
+import { nonStockTokenSql } from './stockToken.js';
 import { defaultPreferences, signalKinds, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
 export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -50,7 +51,7 @@ async function watchlist(session: Session | null) {
       THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END AS "marketCapUsd",
     CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
     FROM watch_entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
-    WHERE e.session_id=$1 ORDER BY e.kind,name NULLS LAST,e.address`, [session.id])).rows : [];
+    WHERE e.session_id=$1 AND (e.kind='kol' OR ${nonStockTokenSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [session.id])).rows : [];
   return { items, preferences: session?.preferences ?? defaultPreferences };
 }
 function pageCursor(value: unknown) {
@@ -77,7 +78,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (unique && ['kol', 'token'].some(kind => unique.filter(item => item.kind === kind).length > 100)) return reply.code(400).send({ error: 'Watch up to 100 KOLs and 100 tokens' });
     if (unique?.length) {
       const known = await pool.query(`SELECT 'kol' AS kind,address FROM kols WHERE is_tracked AND address=ANY($1::text[])
-        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`,
+        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND ${nonStockTokenSql()} AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`,
       [unique.filter(item => item.kind === 'kol').map(item => item.address), unique.filter(item => item.kind === 'token').map(item => item.address)]);
       const valid = new Set(known.rows.map(row => `${row.kind}:${row.address}`));
       if (unique.some(item => !valid.has(`${item.kind}:${item.address}`))) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
@@ -119,7 +120,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (session || request.query.watched === '1') privateResponse(reply);
     if (request.query.watched === '1' && !session) return { items: [], nextCursor: null };
     const values: unknown[] = [];
-    const where: string[] = [];
+    const where: string[] = [nonStockTokenSql()];
     const preference = session?.preferences ?? defaultPreferences;
     values.push(preference.windowMinutes, preference.minBuyers);
     where.push('(s.window_minutes=0 OR s.window_minutes=$1 AND s.min_buyers=$2)');
@@ -152,7 +153,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
       s.wallet_addresses AS "walletAddresses",s.window_minutes AS "windowMinutes",s.min_buyers AS "minBuyers",s.timestamp,s.published_at AS "publishedAt",s.corrected,s.evidence,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url)) FROM kols k WHERE k.address=ANY(s.wallet_addresses)),'[]'::jsonb) AS kols
-      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1`, [request.params.id]);
+      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1 AND ${nonStockTokenSql()}`, [request.params.id]);
     return { signal: result.rows[0] ?? null };
   });
   for (const mode of ['kols', 'tokens'] as const) {
@@ -172,7 +173,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         SELECT pairs.wallet_address,pairs.token_address,v.decimals,s.* FROM pairs JOIN kols k ON k.address=pairs.wallet_address AND k.is_tracked
         JOIN tokens v ON v.address=pairs.token_address LEFT JOIN LATERAL(SELECT balance_raw,status,checked_at,block_number,block_timestamp,last_movement_at,error FROM position_snapshots
           WHERE wallet_address=pairs.wallet_address AND token_address=pairs.token_address ORDER BY block_number DESC LIMIT 1) s ON true
-        WHERE true ${tokenFilter} ORDER BY pairs.wallet_address,pairs.token_address LIMIT 300`, values);
+        WHERE ${nonStockTokenSql()} ${tokenFilter} ORDER BY pairs.wallet_address,pairs.token_address LIMIT 300`, values);
       return { items: result.rows.map(row => {
         const fresh = !row.error && positionIsFresh(row.checked_at ? new Date(row.checked_at).toISOString() : null)
           && positionIsFresh(row.block_timestamp ? new Date(row.block_timestamp).toISOString() : null);
@@ -185,11 +186,11 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
   app.get<{ Params: { address: string } }>('/api/tokens/:address/launch', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid address' });
-    const result = await pool.query(`SELECT ${launchColumns} FROM token_launches l WHERE token_address=$1`, [parsed.data]);
+    const result = await pool.query(`SELECT ${launchColumns} FROM token_launches l JOIN tokens v ON v.address=l.token_address WHERE token_address=$1 AND ${nonStockTokenSql()}`, [parsed.data]);
     return { launch: result.rows[0] ? { ...result.rows[0], progress: result.rows[0].progress == null ? null : Number(result.rows[0].progress) } : null };
   });
   app.get<{ Querystring: { limit?: string; cursor?: string; platform?: string; stage?: string } }>('/api/launches', async (request, reply) => {
-    const values: unknown[] = [], where = ['l.platform IS NOT NULL', 'EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=l.token_address AND k.is_tracked AND t.block_number IS NOT NULL)'];
+    const values: unknown[] = [], where = [nonStockTokenSql(), 'l.platform IS NOT NULL', 'EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=l.token_address AND k.is_tracked AND t.block_number IS NOT NULL)'];
     if (request.query.platform && ['fourmeme', 'flap'].includes(request.query.platform)) { values.push(request.query.platform); where.push(`l.platform=$${values.length}`); }
     if (request.query.stage && ['bonding', 'near_graduation', 'graduated', 'unavailable'].includes(request.query.stage)) { values.push(request.query.stage); where.push(`l.stage=$${values.length}`); }
     try { const cursor = pageCursor(request.query.cursor); if (cursor) { values.push(cursor.ts, cursor.id); where.push(`(COALESCE(l.first_kol_at,l.launched_at,to_timestamp(0)),l.token_address)<($${values.length - 1}::timestamptz,$${values.length}::text)`); } }
@@ -205,8 +206,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
   app.get('/api/intelligence/health', async () => {
     const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
     const metrics = await pool.query(`SELECT
-      (SELECT COUNT(*)::int FROM trades WHERE NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
-      (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",
+      (SELECT COUNT(*)::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
+      (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",
       (SELECT COUNT(*)::int FROM (SELECT DISTINCT ON(wallet_address,token_address) error,checked_at,block_timestamp FROM position_snapshots ORDER BY wallet_address,token_address,block_number DESC) p
         WHERE error OR checked_at<now()-interval '5 minutes' OR block_timestamp<now()-interval '5 minutes') AS "stalePositions"`);
     return { ...metrics.rows[0], states: Object.fromEntries(states.rows.map(row => [row.key, { ...row.value, updatedAt: row.updated_at }])) };

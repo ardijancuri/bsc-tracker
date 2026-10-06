@@ -9,6 +9,7 @@ import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
 import { readBlockRange } from './blockRange.js';
 import { last24hStart } from './dayWindow.js';
 import { isMemeToken } from './memeToken.js';
+import { nonStockTokenSql } from './stockToken.js';
 import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
 import { reorgStart } from './chainReorg.js';
 import { selectTokenMarkets } from './tokenMarkets.js';
@@ -688,7 +689,7 @@ async function leaderboardLoop() {
       const windowTrades = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp,t.block_number AS "blockNumber",t.transaction_index AS "transactionIndex",
           t.tx_hash AS "txHash",t.quote_symbol AS "quoteSymbol",t.quote_amount AS "quoteAmount",v.symbol AS "tokenSymbol"
         FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
-        WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell') AND t.timestamp >= $1::timestamptz AND t.timestamp <= $2::timestamptz
+        WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.side IN ('buy','sell') AND t.timestamp >= $1::timestamptz AND t.timestamp <= $2::timestamptz
         ORDER BY t.block_number ASC,t.transaction_index ASC NULLS LAST,t.id ASC`, [windowStart, new Date(windowEnd).toISOString()]);
       const windowStats = calculate24hLeaderboard(windowTrades.rows, wallets, windowEnd);
       await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,window_start,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,valued_sell_count,excluded_sell_count,updated_at)
@@ -713,7 +714,7 @@ async function leaderboardLoop() {
       } else {
         const tradeRows = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp
           FROM trades t JOIN kols k ON k.address=t.wallet_address
-          WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
+          WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
           ORDER BY t.timestamp ASC,t.id ASC`);
         stats = calculateLeaderboard(tradeRows.rows, wallets).filter(row => row.period !== '1d').map(row => ({ ...row, unrealizedProfitUsd: null }));
       }

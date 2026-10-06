@@ -13,6 +13,8 @@ import { defaultPreferences } from '../shared/intelligence.js';
 import { flapInterface, fourInterface, FLAP_PORTAL, FOUR_HELPER, FOUR_MANAGERS, pairInterface } from './launchpad.js';
 import { transferTopic } from './swap.js';
 import { getTokenTranslation } from './tokenTranslation.js';
+import { isStockToken, nonStockTokenSql } from './stockToken.js';
+import { memeTokenSql } from './memeToken.js';
 
 if (!/^\/bscan_intelligence_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_intelligence_test database');
 process.env.NODE_ENV = 'production';
@@ -96,6 +98,12 @@ try {
     await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,block_number,block_hash,transaction_index,timestamp,source,observed_live,token_amount,quote_symbol,quote_amount,amount_usd) VALUES($1,$2,$3,$4,$5,$6,$7,0,$8,'node',$9,25,'BNB',0.1,50)`, [String(id), hash(1000 + id), wallet, asset, side, number, hash(number), new Date(Date.now() - minutesAgo * 60_000).toISOString(), live]);
   };
   await node(108);
+  const stock = '0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1';
+  await pool.query(`INSERT INTO tokens(address,symbol,decimals,is_meme,logo_url) VALUES($1,'SPCXB',18,true,'https://genius.fun/api/image?src=stock')`, [stock]);
+  for (let i = 0; i < 3; i++) await insertTrade(400 + i, wallets[i], 'buy', 108, 0, true, stock);
+  const classifier = await pool.query(`SELECT v.address,${nonStockTokenSql()} AS visible FROM tokens v`);
+  assert.ok(classifier.rows.every(row => row.visible === !isStockToken(row.address)), 'SQL and ingestion classify the same contracts');
+  assert.equal((await pool.query(`SELECT address FROM tokens v WHERE v.address=$1 AND ${memeTokenSql()}`, [stock])).rowCount, 0, 'Cached meme flags cannot admit stock tokens');
   await insertTrade(1, wallets[0], 'buy', 101, 9, false); await insertTrade(2, wallets[0], 'buy', 102, 8, false);
   await insertTrade(3, wallets[1], 'buy', 103, 7, false); await insertTrade(4, wallets[2], 'buy', 104, 6, false); await insertTrade(5, wallets[0], 'sell', 105, 5, false);
   await insertTrade(30, wallets[2], 'buy', 101, 3, false, flapToken); await insertTrade(31, wallets[2], 'buy', 101, 3, false, unsupported);
@@ -118,6 +126,18 @@ try {
   const historical = await pool.query('SELECT * FROM radar_signals');
   assert.equal(historical.rowCount, 3); assert.ok(historical.rows.every(row => !row.live));
   await collectSignals(); assert.equal((await pool.query('SELECT * FROM radar_signals')).rowCount, 3);
+  assert.equal((await pool.query('SELECT * FROM radar_signals WHERE token_address=$1', [stock])).rowCount, 0, 'Stock buys do not generate Radar signals');
+  assert.ok((await pool.query('SELECT intelligence_processed FROM trades WHERE token_address=$1', [stock])).rows.every(row => row.intelligence_processed));
+  // Existing stock signals must also be hidden, including direct links and pagination.
+  const stockSignal = hashSecret('historical-stock-signal');
+  await pool.query(`INSERT INTO radar_signals(id,kind,entity,token_address,wallet_addresses,evidence,window_minutes,min_buyers,timestamp,source_block,source_hash,live)
+    VALUES($1,'clustered_buys',$2,$2,$3,'[]',10,3,now(),108,$4,false)`, [stockSignal, stock, wallets, hash(108)]);
+  assert.equal((await app.inject(`/api/signals?token=${stock}`)).json().items.length, 0);
+  assert.equal((await app.inject(`/api/signals/${stockSignal}`)).json().signal, null);
+  assert.equal((await app.inject('/api/signals?limit=3')).json().items.length, 3);
+  assert.equal((await app.inject('/api/signals?limit=3')).json().nextCursor, null, 'Hidden signals do not create phantom pages');
+  assert.equal((await app.inject(`/api/kols/${wallets[0]}/positions?tokens=${stock}`)).json().items.length, 0);
+  await pool.query('DELETE FROM radar_signals WHERE id=$1', [stockSignal]);
   const headers = { origin: 'https://bscan.fun' };
   const put = (cookie: string | undefined, payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/watchlist', headers: { ...headers, ...(cookie ? { cookie } : {}) }, payload });
   const first = await put(undefined, { items: [{ kind: 'token', address: token }] }); assert.equal(first.statusCode, 200);

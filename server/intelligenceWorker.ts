@@ -5,6 +5,7 @@ import { classifyPosition, compareTrades, cooldownAllows, detectSignals, profile
 import { blockHex, chainRpc } from './rpc.js';
 import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
 import { transferTopic } from './swap.js';
+import { nonStockTokenSql } from './stockToken.js';
 
 type ChainLog = { address: string; topics: string[]; data: string; transactionHash: string; logIndex?: string; blockNumber?: string; blockHash?: string; removed?: boolean };
 type Block = { number: string; hash: string; timestamp: string };
@@ -78,11 +79,11 @@ export async function collectSignals() {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock_shared(782319)');
-    await client.query(`UPDATE trades SET intelligence_processed=true WHERE NOT intelligence_processed AND block_number IS NOT NULL AND timestamp<=now()-interval '24 hours'`);
+    await client.query(`UPDATE trades SET intelligence_processed=true WHERE NOT intelligence_processed AND block_number IS NOT NULL AND (timestamp<=now()-interval '24 hours' OR NOT ${nonStockTokenSql('token_address')})`);
     const rows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex",t.observed_live AS "observedLive"
       FROM trades t JOIN kols k ON k.address=t.wallet_address
-      WHERE k.is_tracked AND NOT t.intelligence_processed AND t.block_number IS NOT NULL AND t.timestamp > now()-interval '24 hours'
+      WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND NOT t.intelligence_processed AND t.block_number IS NOT NULL AND t.timestamp > now()-interval '24 hours'
       AND t.block_number <= COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
       ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id LIMIT 200 FOR SHARE OF t`);
     if (!rows.rows.length) { await client.query('COMMIT'); return; }
@@ -90,7 +91,7 @@ export async function collectSignals() {
     const earliest = Math.min(...trades.map(trade => Date.parse(trade.timestamp))) - 86400_000;
     const historyRows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex"
-      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.token_address=ANY($1::text[]) AND t.timestamp >= $2
+      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.token_address=ANY($1::text[]) AND t.timestamp >= $2
       AND t.block_number <= $3 ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`,
     [[...new Set(trades.map(trade => trade.tokenAddress))], new Date(earliest).toISOString(), trades.at(-1)!.blockNumber]);
     const history: ObservedTrade[] = historyRows.rows.map(row => ({ ...row, timestamp: new Date(row.timestamp).toISOString() }));
@@ -134,7 +135,7 @@ async function backfillSignalProfile() {
     if (!profile) { await client.query('COMMIT'); return; }
     const rows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex"
-      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.timestamp>now()-interval '48 hours'
+      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.timestamp>now()-interval '48 hours'
       AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
       ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`);
     const history = new Map<string, ObservedTrade[]>(), cooldown = new Map<string, string>();
