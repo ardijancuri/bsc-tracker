@@ -1,0 +1,8 @@
+# Globe launch image
+
+Edited with the built-in imagegen tool from `bscan-launch-post-20261004.png`. Final artwork: `bscan-launch-post-globe-20261004.png`.
+
+## Final prompt
+
+Use case: precise-object-edit. Edit this existing bscan launch graphic with ONE localized change only: replace the LARGE bright yellow fingerprint symbol in the right half with a beautiful realistic globe of Earth of approximately the same size and center position. The globe should be a complete round sphere fully visible, showing recognizable continents, realistic land and ocean texture, elegant subdued illumination, a dark charcoal and muted gold color treatment that fits the bscan black/white/warm yellow brand, a delicate warm golden rim light, and refined photographic planet detail. It must clearly read as a globe image, not a fingerprint or a yellow ball. Keep it visually balanced in the right half and away from all text.
+Preserve the existing background image exactly, especially the giant faint charcoal fingerprint motif behind the right-hand subject, black backdrop, fine yellow connection curves, gold points and their placement. Preserve the original canvas dimensions, composition and margins. Keep the SMALL yellow fingerprint logo at upper left and the white bscan wordmark completely unchanged. Keep every letter, font, position, size, and color of all existing text unchanged: "bscan is", "live.", "BNB Chain KOL intelligence", "Live trades", "KOL Radar", "24h P&L", "bscan.fun". Do not add text, coins, spacecraft, extra logos or UI. Only the large foreground fingerprint on the right is replaced; background fingerprint stays.

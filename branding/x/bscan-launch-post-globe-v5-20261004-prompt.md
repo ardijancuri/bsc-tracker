@@ -1,0 +1,13 @@
+# Reference-inspired gold globe
+
+Edited with the built-in imagegen tool. Final artwork: `bscan-launch-post-globe-v5-20261004.png`. Style reference: the user-supplied gold network globe image.
+
+## Final prompt
+
+Use case: compositing and style-transfer. Two input images have DIFFERENT roles:
+IMAGE 1 is the EDIT TARGET, the existing bscan launch announcement. Preserve its entire text and branding, font, placement, sizes and canvas dimensions.
+IMAGE 2 is the STYLE REFERENCE for the right-hand globe illustration ONLY. Do NOT copy its text or remove the small fingerprint logo from Image 1.
+
+Replace the abstract looping orb in Image 1 with a golden connected globe closely inspired by Image 2: a very large spherical Earth cropped by the right canvas edge, tilted in perspective, showing Europe, Africa and Asia, built from fine gold geographic outline fragments and tiny gold stippled surface lights over dark negative space. A bright narrow gold horizon rim, warm gold luminous hubs, delicate layered connection paths, a mixture of thin solid and dotted routes, some passing above and around the globe in deep perspective. Use the same cinematic oblique camera angle, partial globe composition, fine detail and layered depth as Image 2, rather than a fully centered flat front-facing globe. The artwork should feel like an illuminated international connection network, with selected nearby foreground points softly blurred and smaller distant points crisp. Globe visible mainly in right third to right half, curving from approximately x=1020 at its left edge beyond the right edge of a 1672px-wide canvas. Keep the globe's upper rim around y=175; leave the left text fully unobstructed. Elegant gold and black ONLY for the globe and its connections. No white continents, blue oceans, rainbow colors or photorealistic clouds. Use subtle amber glow, not excessive haze.
+
+Preserve the faint giant charcoal fingerprint BACKGROUND from Image 1 behind and around this new globe, keeping it subdued. Keep the exact black background in the left half and all typography pixel-faithful. The text must remain: small top-left fingerprint logo + white "bscan"; big white "bscan is"; gold "live."; white "BNB Chain KOL intelligence"; footer "Live trades" gold dot "KOL Radar" gold dot "24h P&L"; bottom-right white "bscan.fun". Ensure "bscan.fun" stays legible over a clear dark area; route arcs avoid its letters. Keep the existing left headline composition and spacing. Do not use Image 2's gold wordmark or "KOL trades on BNB Chain" subtitle. Add no text, no coins, no extra symbols. The key change is replacing Image 1's abstract orb with Image 2's beautiful cropped, dimensional gold connected globe aesthetic.
