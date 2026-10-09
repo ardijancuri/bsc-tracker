@@ -45,6 +45,12 @@ Holding badges use confirmed `balanceOf` snapshots and tracked-wallet ERC-20 mov
 
 The migration is in `server/intelligenceSchema.ts`. Collection, signal evidence, movement snapshots, launch observations persist in PostgreSQL. Reorg handling marks signals corrected and removes affected observations. Independent collector loops keep launch RPC retries from delaying Radar. `GET /api/intelligence/health` reports processing lag, stale positions; `/api/overview` includes chain lag.
 
+### Token market charts
+
+`GET /api/tokens/:address/chart?period=24h|7d|30d` serves GeckoTerminal USD OHLCV for the requested contract, independently of KOL trades. The provider's token/pool relationship is checked so paired assets cannot be charted by mistake. The 24-hour view uses five-minute candles; weekly and monthly views use hourly candles. Watchlist charts use their closes; token pages offer candles, lines, market volume, crosshair OHLC values, zoom, pan and reset. Price-change columns use market history when available; tracked volume and KOL counts still measure roster activity.
+
+Requests are coalesced and paced below the [GeckoTerminal public API limit](https://apiguide.geckoterminal.com/faq). Chart responses are cached in memory and `.cache/token-charts`; `TOKEN_CHART_CACHE_DIR` can point to a persistent volume. Cached candles survive refresh failures. When a token has no indexed market history, recorded prices or its latest known quote remain visible, explicitly labelled; no artificial historical candles are created. New/unindexed tokens without any price have a live-chart link. No GMGN API key is needed for these charts.
+
 ### Validation
 
 Run `npm run check`, `npm test`, and `npm run build`. For database-backed validation, create a disposable PostgreSQL database named `bscan_intelligence_test` or `bscan_intelligence_test_<digits>` and set its private `DATABASE_URL`, then run `npm run test:integration`. The runner refuses other database names, mocks RPC/DEX Screener, and tests migrations, profile backfills, isolation, movements, stale/failed checks, launch milestones, pool IDs and reorgs. `INTELLIGENCE_PREVIEW_FIXTURES=1` leaves synthetic fixtures for isolated desktop/mobile QA; never use them in production.

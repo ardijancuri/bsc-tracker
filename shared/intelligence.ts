@@ -12,6 +12,12 @@ export interface AlertPreferences {
 }
 export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuyers: 3, categories: [...signalKinds], muted: false };
 export interface WatchPricePoint { timestamp: string; priceUsd: string }
+export interface MarketCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
+export interface TokenChart {
+  address: string; period: WatchPeriod; candles: MarketCandle[]; points: WatchPricePoint[];
+  source: 'geckoterminal' | 'recorded' | 'quote' | 'unavailable';
+  updatedAt: string | null; resolution: string; poolAddress?: string; pending: boolean; stale: boolean;
+}
 export const watchPeriods = ['24h', '7d', '30d'] as const;
 export type WatchPeriod = typeof watchPeriods[number];
 export interface WatchEntry {

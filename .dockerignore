@@ -5,6 +5,7 @@ dist-server
 .env
 *.log
 coverage
+.cache
 .env.*
 !.env.example
 output

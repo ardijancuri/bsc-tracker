@@ -1,0 +1,7 @@
+Your watchlist. A clearer view. ⭐
+
+Scan BNB Chain tokens with 24h / 1w / 1m market charts, MCAP, tracked volume, search, sorting & copyable contracts.
+
+Token pages now include zoomable candles, volume bars, hover details & KOL activity.
+
+https://bscan.fun/watchlist

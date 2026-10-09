@@ -25,6 +25,9 @@ services:
       PORT: "3300"
       DATABASE_URL: postgres://bscan:${BSCAN_DB_PASSWORD}@127.0.0.1:5434/bscan
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://bscan.fun}
+      TOKEN_CHART_CACHE_DIR: /app/.cache/token-charts
+    volumes:
+      - bscan_chartcache:/app/.cache/token-charts
     depends_on:
       db:
         condition: service_healthy
@@ -47,3 +50,4 @@ services:
 
 volumes:
   bscan_pgdata:
+  bscan_chartcache:

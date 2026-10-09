@@ -1,7 +1,7 @@
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { TokenMarketPanel } from './TokenMarketPanel';
-import { WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
+import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
@@ -158,13 +158,12 @@ function WatchlistBanner() {
       <Link className="watchlist-banner-shortcut" to="/watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
       <div className="watchlist-banner-tokens" tabIndex={0} aria-label={t('Watchlist tokens')}>
         {tokens.map(token => {
-          const change = token.change24h == null ? null : Number(token.change24h);
           return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} title={token.name || token.symbol || token.address}>
             <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
             <strong>{token.symbol || token.name || shortAddress(token.address)}</strong>
             <span className="watchlist-banner-cap" title={t('Market cap')}>MC <WatchMarketValue value={token.marketCapUsd} /></span>
-            {change != null && Number.isFinite(change) && <span className={change >= 0 ? 'positive' : 'negative'} title={t('24h price change')}>{change > 0 ? '+' : ''}{new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 2 }).format(change)}%</span>}
-            <WatchSparkline points={token.priceHistory} />
+            <WatchTokenChange token={token} />
+            <WatchSparkline address={token.address} priceUsd={token.priceUsd} points={token.priceHistory} />
           </Link>;
         })}
         {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}

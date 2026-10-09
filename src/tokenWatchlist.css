@@ -46,6 +46,8 @@
 .watch-copy-address:hover{color:var(--yellow)}
 .watch-copy-address:focus-visible{outline:2px solid var(--yellow);outline-offset:3px;border-radius:3px}
 .watch-sparkline{display:block;width:120px;height:40px;flex:none;margin-left:auto}
+.watchlist-banner-token .watch-sparkline-host{width:54px;flex:none}
+.watch-token-details .watch-sparkline-host{width:90px;flex:none}
 .watch-chart-empty{display:flex;width:120px;height:40px;align-items:center;justify-content:center;color:var(--muted);flex:none}
 .token-watchlist-table .watch-sparkline,.token-watchlist-table .watch-chart-empty{width:110px;height:28px}
 .watch-neutral{color:var(--muted)}

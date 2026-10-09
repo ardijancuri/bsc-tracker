@@ -5,6 +5,7 @@ dist-server/
 .env.*
 !.env.example
 coverage/
+.cache/
 *.log
 bscan-deploy.tar.gz
 output/*.tar.gz

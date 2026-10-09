@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, Copy, Search } from 'lucide-react';
 import { FollowButton, useWatchlist } from './Intelligence';
 import { useTokenTranslation } from './TokenName';
 import { api, relativeTime, shortAddress } from './lib';
 import { t } from './i18n';
-import { watchPeriods, type WatchEntry, type Watchlist, type WatchPeriod } from '../shared/intelligence';
+import { watchPeriods, type TokenChart, type WatchEntry, type Watchlist, type WatchPeriod } from '../shared/intelligence';
 import { PriceChange, WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
 import { compareWatchTokens, type WatchSortKey } from './watchlistSort';
+import { marketChartChanges } from './tokenChartData';
 import './tokenWatchlist.css';
 
 const periodLabels: Record<WatchPeriod, string> = { '24h': '24h', '7d': '1 week', '30d': '1 month' };
-const chartLabels: Record<WatchPeriod, string> = { '24h': 'Recorded trade prices in the last 24 hours', '7d': 'Recorded trade prices in the last week', '30d': 'Recorded trade prices in the last 30 days' };
+const chartLabels: Record<WatchPeriod, string> = { '24h': 'Token price chart · 24h', '7d': 'Token price chart · 1 week', '30d': 'Token price chart · 1 month' };
 
 function WatchSortIcon({ direction }: { direction?: 'ascending' | 'descending' }) {
   return <svg className={direction ? 'watch-sort-icon' : 'watch-sort-icon watch-sort-idle'} width="6" height="11" viewBox="0 0 10 18" fill="currentColor" aria-hidden="true">
@@ -37,7 +38,7 @@ function WatchContractAddress({ address }: { address: string }) {
   </button>;
 }
 
-function WatchTokenRow({ token, period }: { token: WatchEntry; period: WatchPeriod }) {
+function WatchTokenRow({ token, period, onChart }: { token: WatchEntry; period: WatchPeriod; onChart: (chart: TokenChart) => void }) {
   const translation = useTokenTranslation(token);
   const name = token.symbol || token.name || shortAddress(token.address);
   return <tr>
@@ -49,7 +50,7 @@ function WatchTokenRow({ token, period }: { token: WatchEntry; period: WatchPeri
     <td className="watch-contract"><WatchContractAddress address={token.address} /></td>
     <td className="watch-extra"><PriceChange value={token.change1h} /></td><td><PriceChange value={token.periodChange} /></td>
     <td><WatchMarketValue value={token.marketCapUsd} /></td><td className="watch-extra"><WatchMarketValue value={token.periodVolumeUsd} /></td><td className="watch-extra">{token.periodKolCount ?? '—'}</td>
-    <td className="watch-last-trade" title={token.lastTradeAt || undefined}>{relativeTime(token.lastTradeAt)}</td><td className="watch-chart"><WatchSparkline points={token.priceHistory} label={chartLabels[period]} /></td>
+    <td className="watch-last-trade" title={token.lastTradeAt || undefined}>{relativeTime(token.lastTradeAt)}</td><td className="watch-chart"><WatchSparkline address={token.address} period={period} priceUsd={token.priceUsd} points={token.priceHistory} label={chartLabels[period]} onChart={onChart} /></td>
   </tr>;
 }
 
@@ -61,6 +62,8 @@ export function TokenWatchlistPage() {
   const [historyError, setHistoryError] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sort, setSort] = useState<{ key: WatchSortKey; ascending: boolean }>({ key: 'name', ascending: true });
+  const [chartHistory, setChartHistory] = useState<Record<string, TokenChart>>({});
+  const chartLoaded = useCallback((chart: TokenChart) => setChartHistory(current => ({ ...current, [`${chart.address}-${chart.period}`]: chart })), []);
   const membership = watch.data.items.filter(item => item.kind === 'token').map(item => item.address).sort().join(',');
   useEffect(() => {
     setHistory(null); setHistoryError(false); setLoadingHistory(false);
@@ -80,7 +83,9 @@ export function TokenWatchlistPage() {
     const selected = new Map(history?.period === period ? history.items.map(item => [item.address, item]) : []);
     return watch.data.items.filter(item => item.kind === 'token').map(item => period === '24h' ? item : selected.get(item.address) || { ...item, periodChange: null, periodVolumeUsd: null, periodKolCount: undefined, priceHistory: [] });
   }, [watch.data.items, history, period]);
-  const visible = useMemo(() => tokens.filter(item => `${item.name || ''} ${item.symbol || ''} ${item.address}`.toLowerCase().includes(query.toLowerCase().trim())).sort((a, b) => compareWatchTokens(a, b, sort.key, sort.ascending)), [tokens, query, sort]);
+  const visible = useMemo(() => tokens.map(item => { const chart = chartHistory[`${item.address}-${period}`]; const changes = marketChartChanges(chart);
+    return chart?.points.length ? { ...item, priceHistory: chart.points, ...(changes || {}) } : item; })
+    .filter(item => `${item.name || ''} ${item.symbol || ''} ${item.address}`.toLowerCase().includes(query.toLowerCase().trim())).sort((a, b) => compareWatchTokens(a, b, sort.key, sort.ascending)), [tokens, query, sort, chartHistory, period]);
   const column = (key: WatchSortKey, label: string, className = '') => <th className={className} scope="col" aria-sort={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : 'none'}><button type="button" title={key === 'chart' ? t('Sort by chart price change') : undefined} onClick={() => setSort(current => ({ key, ascending: current.key === key ? !current.ascending : key === 'name' || key === 'address' }))}>
     {t(label)}{key === 'chart' && <> · {t(periodLabels[period])}</>}<WatchSortIcon direction={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : undefined} /></button></th>;
   return <div className="page token-watchlist-page">
@@ -91,7 +96,7 @@ export function TokenWatchlistPage() {
     <div id="watch-token-details" role="tabpanel" aria-labelledby={`watch-period-${period}`} aria-busy={loadingHistory} className="token-watchlist-table-wrap"><table className="token-watchlist-table"><thead><tr>
       <th scope="col" className="watch-star" aria-label={t('Watchlist')} />{column('name', 'Name', 'watch-token-name')}{column('address', 'Contract address', 'watch-contract')}{column('change1h', '1h', 'watch-extra')}{column('periodChange', periodLabels[period])}{column('marketCapUsd', 'Market cap')}{column('periodVolumeUsd', 'Tracked volume', 'watch-extra')}
       {column('periodKolCount', 'KOLs', 'watch-extra')}{column('lastTradeAt', 'Last trade', 'watch-last-trade')}{column('chart', 'Chart', 'watch-chart')}
-    </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} />)}</tbody></table></div>
+    </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
     {!visible.length && <div className="watch-token-empty"><strong>{!watch.loaded ? t('Loading…') : query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
   </div>;
 }
