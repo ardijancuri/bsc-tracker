@@ -11,8 +11,18 @@ export interface AlertPreferences {
   muted: boolean;
 }
 export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuyers: 3, categories: [...signalKinds], muted: false };
-export interface WatchEntry { kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null; avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null; change24h?: string | null }
-export interface Watchlist { items: WatchEntry[]; preferences: AlertPreferences }
+export interface WatchPricePoint { timestamp: string; priceUsd: string }
+export const watchPeriods = ['24h', '7d', '30d'] as const;
+export type WatchPeriod = typeof watchPeriods[number];
+export interface WatchEntry {
+  kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null;
+  avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null;
+  priceUsd?: string | null; change1h?: string | null; change24h?: string | null;
+  volume24hUsd?: string | null; kolCount24h?: number; lastTradeAt?: string | null;
+  priceHistory?: WatchPricePoint[];
+  periodChange?: string | null; periodVolumeUsd?: string | null; periodKolCount?: number;
+}
+export interface Watchlist { items: WatchEntry[]; preferences: AlertPreferences; period?: WatchPeriod }
 export interface SignalEvidence {
   id: string; txHash: string; walletAddress: string; kolName: string | null;
   side: string; timestamp: string; blockNumber: string; blockHash: string;

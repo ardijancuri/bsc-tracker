@@ -4,6 +4,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ExternalLink, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress } from './lib';
 import { TokenName } from './TokenName';
+import { WatchTokenDetails } from './WatchTokenVisuals';
+import './tokenWatchlist.css';
 import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
 const emptyWatchlist: Watchlist = { items: [], preferences: defaultPreferences };
@@ -144,7 +146,7 @@ function AlertSettings({ watchlist = true }: { watchlist?: boolean }) {
 }
 export function WatchlistView() {
   const watch = useWatchlist();
-  return <><div className="watchlist-grid">{(['kol', 'token'] as const).map(kind => <section key={kind}><div className="table-toolbar"><h2>{kind === 'kol' ? t("KOLs") : t("Tokens")}</h2><span>{watch.data.items.filter(item => item.kind === kind).length}</span></div><div className="data-table feature-table">{watch.data.items.filter(item => item.kind === kind).map(item => <div className="watch-row" key={`${kind}:${item.address}`}><Link to={`/${kind}/${item.address}`}><FeatureIdentity token={kind === 'token'} address={item.address} name={item.name} symbol={kind === 'token' ? item.symbol : undefined} image={kind === 'token' ? item.logoUrl : item.avatarUrl} /></Link><FollowButton kind={kind} address={item.address} label={item.name} /></div>)}{!watch.data.items.some(item => item.kind === kind) && <FeatureEmpty>{watch.loaded ? t(kind === 'kol' ? 'No followed KOLs' : 'No followed tokens') : t("Loading…")}</FeatureEmpty>}</div></section>)}</div>
+  return <><div className="watchlist-grid">{(['kol', 'token'] as const).map(kind => <section key={kind}><div className="table-toolbar"><h2>{kind === 'kol' ? t("KOLs") : t("Tokens")}</h2><span>{watch.data.items.filter(item => item.kind === kind).length}</span>{kind === 'token' && <Link className="watch-token-more" to="/watchlist">{t('View token watchlist')}<ExternalLink size={12} /></Link>}</div><div className="data-table feature-table">{watch.data.items.filter(item => item.kind === kind).map(item => <div className={`watch-row${kind === 'token' ? ' watch-row-token' : ''}`} key={`${kind}:${item.address}`}><div><Link to={`/${kind}/${item.address}`}><FeatureIdentity token={kind === 'token'} address={item.address} name={item.name} symbol={kind === 'token' ? item.symbol : undefined} image={kind === 'token' ? item.logoUrl : item.avatarUrl} /></Link>{kind === 'token' && <WatchTokenDetails token={item} />}</div><FollowButton kind={kind} address={item.address} label={item.name} /></div>)}{!watch.data.items.some(item => item.kind === kind) && <FeatureEmpty>{watch.loaded ? t(kind === 'kol' ? 'No followed KOLs' : 'No followed tokens') : t("Loading…")}</FeatureEmpty>}</div></section>)}</div>
     <AlertSettings />
     {watch.error && <p className="profile-more-error" role="alert">{t(watch.error)}</p>}<div className="table-toolbar watch-signals-heading"><h2>{t("Watched signals")}</h2></div><RadarFeed watched />
   </>;

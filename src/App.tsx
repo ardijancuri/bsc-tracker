@@ -1,4 +1,7 @@
 import { t, useLanguage, getLocale, localDate } from './i18n';
+import { TokenWatchlistPage } from './TokenWatchlist';
+import { TokenMarketPanel } from './TokenMarketPanel';
+import { WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
@@ -6,7 +9,7 @@ import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLe
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
 import type { Kol, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
-import { FeatureTabs, FollowButton, LaunchesView, LaunchJourney, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
+import { FeatureTabs, FollowButton, LaunchesView, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
 import './watchlistBanner.css';
 import type { Position } from '../shared/intelligence';
 import { TokenName, useTokenTranslation } from './TokenName';
@@ -136,7 +139,7 @@ function Header({ overview }: { overview: Overview }) {
     <Link className="brand" to="/trades"><img className="brand-logo" src="/bscan-fingerprint-logo.svg?v=2" alt="bscan" width="103" height="30" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
-      <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink>
+      <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
       <a className="mobile-social-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('bscan on X')}</a>
     </nav>
     <div className="header-social">
@@ -152,15 +155,16 @@ function WatchlistBanner() {
   const tokens = watch.data.items.filter(item => item.kind === 'token');
   return <nav className="watchlist-banner" aria-label={t('Watchlist tokens')}>
     <div className="watchlist-banner-inner">
-      <Link className="watchlist-banner-shortcut" to="/trades?view=watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
+      <Link className="watchlist-banner-shortcut" to="/watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
       <div className="watchlist-banner-tokens" tabIndex={0} aria-label={t('Watchlist tokens')}>
         {tokens.map(token => {
           const change = token.change24h == null ? null : Number(token.change24h);
           return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} title={token.name || token.symbol || token.address}>
             <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
             <strong>{token.symbol || token.name || shortAddress(token.address)}</strong>
-            <span className="watchlist-banner-cap" title={t('Market cap')}>{compact(token.marketCapUsd, true)}</span>
+            <span className="watchlist-banner-cap" title={t('Market cap')}>MC <WatchMarketValue value={token.marketCapUsd} /></span>
             {change != null && Number.isFinite(change) && <span className={change >= 0 ? 'positive' : 'negative'} title={t('24h price change')}>{change > 0 ? '+' : ''}{new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 2 }).format(change)}%</span>}
+            <WatchSparkline points={token.priceHistory} />
           </Link>;
         })}
         {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}
@@ -362,7 +366,7 @@ function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     }
   };
   if (!loading && !data.token) return <div className="page"><EmptyState title={t("Token not found")} detail={t("No tracked KOL has traded this contract yet.")} /></div>;
-  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-header"><div className="token-profile-title"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><CopyAddress key={address} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><div className="profile-stats"><Metric label={t("Observed price")} value={compact(data.token?.priceUsd, true)} /><Metric label={t("Market cap")} value={compact(data.token?.marketCapUsd, true)} /><Metric label={t("KOLs · 24h")} value={data.token?.kolCount24h ?? '—'} /><Metric label={t("24h KOL volume")} value={compact(data.token?.volume24hUsd, true)} /><Metric label={t("Last trade")} value={relativeTime(data.token?.lastTradeAt)} /></div><LaunchJourney address={address} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list">{data.kols.map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div></section></div></div>;
+  return <div className="page profile-page token-detail-page"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-header"><div className="token-profile-title"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><CopyAddress key={address} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list">{data.kols.map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div></section></div></div>;
 }
 
 export default function App() {
@@ -377,6 +381,7 @@ export default function App() {
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />
       <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
+      <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
       <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/token/:address" element={<TokenPage bnbPriceUsd={overview.bnbPriceUsd} />} />

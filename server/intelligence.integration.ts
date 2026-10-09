@@ -147,6 +147,49 @@ try {
   assert.equal((await app.inject('/api/watchlist')).json().items.length, 0);
   assert.equal((await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0].address, token);
   assert.equal((await app.inject({ url: '/api/watchlist', headers: { cookie: cookieB } })).json().items[0].address, flapToken);
+  const market = (await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0];
+  assert.equal(Number(market.priceUsd), 0.001);
+  assert.equal(Number(market.volume24hUsd), 250);
+  assert.equal(market.kolCount24h, 3);
+  assert.deepEqual(market.priceHistory, []);
+  assert.ok(market.lastTradeAt);
+  // Price history must preserve chronological prices across buckets, without leaking baselines.
+  const originalPrices = (await pool.query('SELECT id,timestamp,price_usd FROM trades WHERE id IN ($1,$2)', ['1', '5'])).rows;
+  await pool.query(`UPDATE trades SET price_usd=CASE WHEN id=$1 THEN 0.001 ELSE 0.002 END,
+    timestamp=CASE WHEN id=$1 THEN now()-interval '70 minutes' ELSE now()-interval '1 minute' END
+    WHERE id IN ($1,$2)`, ['1', '5']);
+  const pricedMarket = (await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0];
+  assert.equal(Number(pricedMarket.priceUsd), 0.002);
+  assert.equal(Number(pricedMarket.change1h), 100);
+  assert.equal(pricedMarket.priceHistory.length, 2);
+  assert.equal(Number(pricedMarket.priceHistory[0].priceUsd), 0.001);
+  assert.equal(Number(pricedMarket.priceHistory[1].priceUsd), 0.002);
+  assert.equal('price1hAgo' in pricedMarket, false);
+  await pool.query(`UPDATE trades SET timestamp=now()-interval '2 minutes' WHERE id=$1`, ['1']);
+  assert.equal((await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0].priceHistory.length, 2, 'New tokens retain first and last prices even in one chart bucket');
+  for (const original of originalPrices) await pool.query('UPDATE trades SET timestamp=$2,price_usd=$3 WHERE id=$1', [original.id, original.timestamp, original.price_usd]);
+  for (const [id, days, price] of [[6, 3, 0.0008], [7, 7 + 1 / 24, 0.0005], [8, 30 + 1 / 24, 0.00025], [9, 1 / 1440, 0.001]]) {
+    await insertTrade(id, wallets[0], 'buy', 100, days * 1440, false);
+    await pool.query('UPDATE trades SET price_usd=$2 WHERE id=$1', [String(id), price]);
+  }
+  const range = async (period: string) => (await app.inject({ url: `/api/watchlist?period=${period}`, headers: { cookie: cookieA } })).json();
+  const daily = await range('24h'), weekly = await range('7d'), monthly = await range('30d');
+  assert.equal(daily.period, '24h'); assert.equal(Number(daily.items[0].periodVolumeUsd), 300);
+  assert.equal(weekly.period, '7d'); assert.equal(Number(weekly.items[0].periodVolumeUsd), 350);
+  assert.equal(Number(weekly.items[0].periodChange), 100); assert.equal(weekly.items[0].priceHistory.length, 2);
+  assert.equal(monthly.period, '30d'); assert.equal(Number(monthly.items[0].periodVolumeUsd), 400);
+  assert.equal(Number(monthly.items[0].periodChange), 300); assert.equal(monthly.items[0].priceHistory.length, 3);
+  assert.equal((await app.inject('/api/watchlist?period=1y')).statusCode, 400);
+  for (const watched of [daily, weekly, monthly]) {
+    const publicMarket = (await app.inject(`/api/tokens/${token}/market?period=${watched.period}`)).json();
+    assert.equal(publicMarket.period, watched.period);
+    assert.deepEqual(publicMarket.token, watched.items[0], 'Token details match watchlist metrics without a watchlist cookie');
+  }
+  assert.equal((await app.inject(`/api/tokens/${stock}/market`)).json().token, null, 'Stock tokens stay excluded from public market details');
+  assert.equal((await app.inject(`/api/tokens/${outsider}/market`)).json().token, null, 'Unknown contracts do not get fabricated market details');
+  assert.equal((await app.inject(`/api/tokens/${token}/market?period=1y`)).statusCode, 400);
+  assert.equal((await app.inject('/api/tokens/not-an-address/market')).statusCode, 400);
+  await pool.query('DELETE FROM trades WHERE id=ANY($1::text[])', [['6', '7', '8', '9']]);
   assert.equal((await app.inject({ method: 'PUT', url: '/api/watchlist', headers: { origin: 'https://attacker.invalid', cookie: cookieA }, payload: { items: [] } })).statusCode, 403);
   assert.equal((await put(cookieA, { preferences: { ...defaultPreferences, minBuyers: 11 } })).statusCode, 400);
   assert.equal((await put(cookieA, { items: [{ kind: 'kol', address: outsider }] })).statusCode, 400);

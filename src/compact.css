@@ -9,6 +9,9 @@
 
 html, body, .search-results { scrollbar-width: none; }
 html::-webkit-scrollbar, body::-webkit-scrollbar, .search-results::-webkit-scrollbar { display: none; }
+#root { min-height: 100svh; display: flex; flex-direction: column; }
+#root > .site-header, #root > .watchlist-banner, #root > .footer { flex-shrink: 0; }
+main { min-height: 0; flex: 1; }
 
 .site-header { height: 64px; background: #0b0e11; border-bottom: 0; backdrop-filter: none; }
 .header-inner { max-width: 1800px; }

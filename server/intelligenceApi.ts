@@ -2,8 +2,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
+import { watchlistMarket } from './watchlistMarket.js';
 import { nonStockTokenSql } from './stockToken.js';
-import { defaultPreferences, signalKinds, type PositionStatus } from '../shared/intelligence.js';
+import { defaultPreferences, signalKinds, watchPeriods, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
 export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -43,16 +44,49 @@ function privateResponse(reply: FastifyReply) { reply.header('Cache-Control', 'n
 function setSessionCookie(reply: FastifyReply, secret: string) {
   reply.header('Set-Cookie', `${cookieName}=${secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
 }
-async function watchlist(session: Session | null) {
-  const items = session ? (await pool.query(`SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
+async function watchlist(session: Session | null, period: WatchPeriod = '24h', tokenAddress?: string) {
+  const seconds = { '24h': 86400, '7d': 604800, '30d': 2592000 }[period];
+  const bucketSeconds = { '24h': 1800, '7d': 10800, '30d': 43200 }[period];
+  const items = session || tokenAddress ? (await pool.query(`WITH entries AS (
+    ${tokenAddress ? `SELECT 'token'::text AS kind,v.address FROM tokens v WHERE v.address=$1 AND EXISTS (
+      SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : 'SELECT kind,address FROM watch_entries WHERE session_id=$1'}
+    ) SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
+    COALESCE(stats.latest_price,CASE WHEN v.price_source='onchain' THEN v.price_usd END) AS "priceUsd",
+    stats.price_1h AS "price1hAgo",stats.price_24h AS "price24hAgo",
+    stats.price_period AS "pricePeriodAgo",stats.period_volume AS "periodVolumeUsd",COALESCE(stats.period_kols,0)::int AS "periodKolCount",
+    stats.volume AS "volume24hUsd",COALESCE(stats.kols,0)::int AS "kolCount24h",stats.last_trade AS "lastTradeAt",
+    COALESCE(history.points,'[]'::json) AS "priceHistory",
     v.symbol,k.avatar_url AS "avatarUrl",CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl",
     CASE WHEN v.market_cap_usd > 0 AND v.market_cap_checked_at > now()-interval '2 hours' THEN v.market_cap_usd
       WHEN v.price_source='onchain' AND v.price_usd > 0 AND v.total_supply_raw > 0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at > now()-interval '2 days'
       THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END AS "marketCapUsd",
     CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
-    FROM watch_entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
-    WHERE e.session_id=$1 AND (e.kind='kol' OR ${nonStockTokenSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [session.id])).rows : [];
-  return { items, preferences: session?.preferences ?? defaultPreferences };
+    FROM entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
+    LEFT JOIN LATERAL (
+      SELECT (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp>now()-interval '48 hours'))[1] AS latest_price,
+        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-interval '1 hour' AND t.timestamp>now()-interval '48 hours'))[1] AS price_1h,
+        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-interval '24 hours' AND t.timestamp>now()-interval '48 hours'))[1] AS price_24h,
+        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-$2*interval '1 second'))[1] AS price_period,
+        SUM(t.amount_usd) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_volume,
+        COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_kols,
+        SUM(t.amount_usd) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS volume,
+        COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS kols,MAX(t.timestamp) AS last_trade
+      FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
+      WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL
+        AND t.timestamp>now()-($2+86400)*interval '1 second' AND t.timestamp<=now()
+    ) stats ON true
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object('timestamp',p.timestamp,'priceUsd',p.price_usd::text) ORDER BY p.timestamp) AS points
+      FROM (SELECT samples.timestamp,samples.price_usd FROM (SELECT t.timestamp,t.price_usd,
+        row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp,t.id) AS first_in_bucket,
+        row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp DESC,t.id DESC) AS last_in_bucket
+        FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
+        WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL AND t.price_usd>0
+          AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()) samples
+        WHERE samples.first_in_bucket=1 OR samples.last_in_bucket=1) p
+    ) history ON true
+    WHERE (e.kind='kol' OR ${nonStockTokenSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [tokenAddress || session!.id, seconds, bucketSeconds])).rows : [];
+  return { items: items.map(item => watchlistMarket(item, period)), preferences: session?.preferences ?? defaultPreferences, period };
 }
 function pageCursor(value: unknown) {
   if (value == null) return null;
@@ -67,7 +101,19 @@ export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.sta
   l.liquidity_usd AS "liquidityUsd",l.liquidity_baseline_usd AS "liquidityBaselineUsd",l.liquidity_baseline_at AS "liquidityBaselineAt",l.liquidity_at AS "liquidityAt",l.checked_at AS "checkedAt"`;
 
 export function registerIntelligenceRoutes(app: FastifyInstance) {
-  app.get('/api/watchlist', async (request, reply) => { privateResponse(reply); return watchlist(await getSession(request)); });
+  app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/market', async (request, reply) => {
+    const parsed = addressSchema.safeParse(request.params.address);
+    const period = request.query.period ?? '24h';
+    if (!parsed.success || !watchPeriods.includes(period as WatchPeriod)) return reply.code(400).send({ error: 'Invalid token or period' });
+    const data = await watchlist(null, period as WatchPeriod, parsed.data);
+    return { token: data.items[0] ?? null, period: data.period };
+  });
+  app.get<{ Querystring: { period?: string } }>('/api/watchlist', async (request, reply) => {
+    privateResponse(reply);
+    const period = request.query.period ?? '24h';
+    if (!watchPeriods.includes(period as WatchPeriod)) return reply.code(400).send({ error: 'Invalid watchlist period' });
+    return watchlist(await getSession(request), period as WatchPeriod);
+  });
   app.put('/api/watchlist', { bodyLimit: 32768 }, async (request, reply) => {
     privateResponse(reply);
     if (!mutationAllowed(request, reply)) return;
