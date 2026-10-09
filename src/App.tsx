@@ -390,7 +390,7 @@ export default function App() {
       <Route path="*" element={<Navigate to="/trades" replace />} />
     </Routes></main>
     <footer className="footer">
-      <div><span className="footer-brand"><img src="/bscan-fingerprint-logo.svg?v=2" alt="bscan" width="62" height="18" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
+      <div><span className="footer-brand"><img src="/bscan-fingerprint-icon.svg" alt="" width="18" height="18" /><span>bscan</span></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
   </WatchlistProvider>;

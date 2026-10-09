@@ -1,6 +1,6 @@
 .watchlist-banner { background: #0b0e11; border-top: 1px solid #20262b; border-bottom: 1px solid #20262b; min-width: 0; }
 .watchlist-banner-inner { display: flex; align-items: center; max-width: 1800px; height: 28px; margin: 0 auto; padding: 0 28px; min-width: 0; }
-.watchlist-banner-shortcut { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; height: 20px; padding-right: 4px; margin-right: 6px; color: var(--yellow); font-size: 11px; font-weight: 700; }
+.watchlist-banner-shortcut { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; height: 20px; padding-right: 8px; margin-right: 6px; color: var(--yellow); font-size: 11px; font-weight: 700; }
 .watchlist-banner-tokens { display: flex; align-items: center; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
 .watchlist-banner-tokens::-webkit-scrollbar { display: none; }
 .watchlist-banner-token { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 100%; padding: 0 8px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; transition: background-color .15s ease; }
@@ -12,5 +12,5 @@
 .watchlist-banner-empty { display: inline-flex; align-items: center; min-height: 28px; padding: 0 8px; color: #879299; font-size: 12px; white-space: nowrap; }
 .watchlist-banner-empty:hover { color: #e9edf1; }
 .watchlist-banner a:focus-visible, .watchlist-banner-tokens:focus-visible { outline: 2px solid var(--yellow); outline-offset: -2px; }
-@media (max-width: 800px) { .watchlist-banner-inner { padding: 0 18px; } .watchlist-banner-shortcut { padding-right: 2px; margin-right: 0; } .watchlist-banner-shortcut > span { display: none; } }
+@media (max-width: 800px) { .watchlist-banner-inner { padding: 0 18px; } .watchlist-banner-shortcut { padding-right: 6px; margin-right: 0; } .watchlist-banner-shortcut > span { display: none; } }
 @media (prefers-reduced-motion: reduce) { .watchlist-banner-token { transition: none; } }

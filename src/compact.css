@@ -24,7 +24,9 @@ main { min-height: 0; flex: 1; }
 .header-inner > .brand { margin-right: 8px; }
 .brand { font-size: 22px; gap: 8px; letter-spacing: -1px; flex: none; }
 .brand .brand-logo { display: block; width: auto; height: 30px; max-width: none; }
-.footer-brand img { display: block; width: auto; height: 18px; border-radius: 0; mix-blend-mode: screen; }
+.footer-brand { gap: 3px; background: transparent; color: #fff; font-size: 14px; letter-spacing: -.6px; line-height: 1; }
+.footer-brand img { display: block; width: 18px; height: 18px; border-radius: 0; background: transparent; }
+.footer-brand > span { background: transparent; }
 .header-divider { display: none; }
 .main-nav { gap: 23px; }
 .main-nav a { font-size: 14px; border-bottom: 0; }
@@ -309,8 +311,8 @@ main { min-height: 0; flex: 1; }
 @media (max-width: 620px) {
   .footer { padding: 21px 8px; gap: 6px; font-size: clamp(8px, 2.4vw, 10px); }
   .footer > div { display: flex; gap: 5px; }
-  .footer-brand { font-size: 10px; gap: 4px; }
-  .footer-brand img { width: auto; height: 14px; }
+  .footer-brand { font-size: 12px; gap: 3px; }
+  .footer-brand img { width: 14px; height: 14px; }
   .footer-legal { gap: 6px; }
   .trades-faq { margin-top: 42px; }
   .trades-follow { align-items: center; flex-direction: row; gap: 12px; padding: 18px 14px; }
