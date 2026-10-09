@@ -141,6 +141,8 @@ export const chinese: Record<string, string> = {
   'Market chart unavailable': '市场图表暂不可用',
   'Open live chart': '打开实时图表',
   'Candles': 'K线',
+  'Loading candles…': '正在加载K线…',
+  'Candle data unavailable': '暂时没有K线数据',
   'candles': '根K线',
   'Line': '折线',
   'Cached': '缓存数据',

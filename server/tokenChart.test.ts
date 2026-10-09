@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchMarketCandles, parseCandles, selectChartPool } from './tokenChart.js';
+import { fetchMarketCandles, parseCandles, selectChartPool, selectChartPools } from './tokenChart.js';
 
 const address = '0x13920fe6467e9e3c852b8d365a036c995f0f7777';
 const pool = '0xfd55be774ea18067bd06a6aed49fb1cc4ad966e9';
@@ -46,5 +46,36 @@ describe('market chart data', () => {
     expect(urls[0].pathname).toContain('/ohlcv/hour');
     expect(urls[0].searchParams.get('limit')).toBe('1000');
     expect(result).toBeNull();
+  });
+  it('accepts v4 pool IDs while keeping token contracts restricted to 20 bytes', async () => {
+    const v4Pool = '0x' + 'a'.repeat(64);
+    expect(selectChartPools({ data: [poolRow(v4Pool, address, 1000), poolRow(pool, address, 100)] }, address)).toEqual([v4Pool, pool]);
+    const now = 2000000000;
+    const result = await fetchMarketCandles(address, '24h', v4Pool, async url => {
+      expect(url.pathname).toContain(v4Pool);
+      return { data: { attributes: { ohlcv_list: [[now - 300, 1, 2, .5, 1.5, 20]] } } };
+    }, now * 1000);
+    expect(result?.poolAddress).toBe(v4Pool);
+    await expect(fetchMarketCandles(v4Pool, '24h', pool)).rejects.toThrow('Invalid chart address');
+  });
+  it('tries another verified pool when the most liquid pool has no candles', async () => {
+    const now = 2000000000;
+    const urls: URL[] = [];
+    const result = await fetchMarketCandles(address, '24h', undefined, async url => {
+      urls.push(url);
+      if (url.pathname.endsWith('/pools')) return { data: [poolRow(pool, address, 1000), poolRow(other, address, 100)] };
+      return { data: { attributes: { ohlcv_list: url.pathname.includes(other) ? [[now - 300, 1, 2, .5, 1.5, 20]] : [] } } };
+    }, now * 1000);
+    expect(result?.poolAddress).toBe(other);
+    expect(urls).toHaveLength(3);
+  });
+  it('does not multiply upstream requests after a rate limit', async () => {
+    const urls: URL[] = [];
+    await expect(fetchMarketCandles(address, '24h', undefined, async url => {
+      urls.push(url);
+      if (url.pathname.endsWith('/pools')) return { data: [poolRow(pool, address, 1000), poolRow(other, address, 100)] };
+      throw new Error('Market chart request failed: 429');
+    })).rejects.toThrow('429');
+    expect(urls).toHaveLength(2);
   });
 });

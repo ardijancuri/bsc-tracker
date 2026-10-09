@@ -23,7 +23,7 @@ describe('token website metadata', () => {
       if (url.includes('dexscreener')) return Response.json([{ baseToken: { address: 'wrong' }, info: { websites: [{ url: 'https://wrong.example' }] } }]);
       return Response.json({ data: { attributes: { address, websites: ['https://bscscan.com/token/test', 'https://right.example'] } } });
     });
-    expect(await lookupTokenWebsite(address)).toBe('https://right.example/');
+    expect(await lookupTokenWebsite(address, async url => fetch(url))).toBe('https://right.example/');
   });
 
   it('reads long streamed Flap records without borrowing another token website', () => {
@@ -38,6 +38,6 @@ describe('token website metadata', () => {
 
   it('keeps unavailable website metadata optional', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('upstream unavailable'));
-    expect(await lookupTokenWebsite(address)).toBeNull();
+    expect(await lookupTokenWebsite(address, async url => fetch(url))).toBeNull();
   });
 });

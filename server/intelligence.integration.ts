@@ -15,6 +15,7 @@ import { transferTopic } from './swap.js';
 import { getTokenTranslation } from './tokenTranslation.js';
 import { isStockToken, nonStockTokenSql } from './stockToken.js';
 import { memeTokenSql } from './memeToken.js';
+import { reserveGeckoSlot } from './geckoApi.js';
 
 if (!/^\/bscan_intelligence_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_intelligence_test database');
 process.env.NODE_ENV = 'production';
@@ -70,6 +71,12 @@ process.env.BSC_RPC_HTTP = `http://127.0.0.1:${(rpc.address() as { port: number 
 const app = Fastify(); registerIntelligenceRoutes(app);
 try {
   await ensureSchema(); await ensureSeeds();
+  const slots = (await Promise.all(Array.from({ length: 4 }, () => reserveGeckoSlot('chart')))).sort((a, b) => a - b);
+  assert.ok(slots[0] < 1000 && slots[1] >= 3500 && slots[2] >= 7500 && slots[3] >= 11500, 'Concurrent chart jobs reserve separate provider slots');
+  await assert.rejects(() => reserveGeckoSlot('metadata'), /Market provider busy/, 'Metadata cannot take slots from queued charts');
+  await pool.query(`UPDATE worker_state SET value=jsonb_build_object('nextAt',0,'pausedUntil',floor(extract(epoch FROM now())*1000)::bigint+60000) WHERE key='gecko_api_budget'`);
+  await assert.rejects(() => reserveGeckoSlot('chart'), /Market provider busy/, 'Provider pauses apply across processes');
+  await pool.query(`DELETE FROM worker_state WHERE key='gecko_api_budget'`);
   // Exercise retirement on an existing watchlist without losing its session or filters.
   await pool.query(`ALTER TABLE watch_sessions ADD COLUMN telegram_chat_id text,
     ADD COLUMN telegram_username text, ADD COLUMN telegram_connected_at timestamptz;

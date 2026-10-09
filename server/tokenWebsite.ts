@@ -1,3 +1,5 @@
+import { geckoFetch } from './geckoApi.js';
+
 export function websiteUrl(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim() || value.length > 2048) return null;
   try {
@@ -43,7 +45,7 @@ export function flapWebsiteFromHtml(html: string, address: string): string | nul
   return null;
 }
 
-export async function lookupTokenWebsite(address: string): Promise<string | null> {
+export async function lookupTokenWebsite(address: string, fetchGecko: typeof geckoFetch = geckoFetch): Promise<string | null> {
   if (/7777$|8888$/i.test(address)) {
     try {
       const response = await fetch(`https://flap.sh/bnb/${address}`, { signal: AbortSignal.timeout(3000) });
@@ -71,7 +73,7 @@ export async function lookupTokenWebsite(address: string): Promise<string | null
     })(),
     (async () => {
       try {
-        const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/info`, { signal: AbortSignal.timeout(3000) });
+        const response = await fetchGecko(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/info`, { timeoutMs: 3000 });
         if (!response.ok) return null;
         const result = await response.json() as { data?: { attributes?: { address?: string; websites?: string[] } } };
         const metadata = result.data?.attributes;

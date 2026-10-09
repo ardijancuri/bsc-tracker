@@ -1,13 +1,15 @@
 import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type { MarketCandle, TokenChart, WatchPeriod } from '../shared/intelligence.js';
+import { geckoFetch } from './geckoApi.js';
 
 export const chartWindows = {
-  '24h': { seconds: 86400, timeframe: 'minute', aggregate: 5, resolution: '5m', fresh: 60_000 },
+  '24h': { seconds: 86400, timeframe: 'minute', aggregate: 5, resolution: '5m', fresh: 120_000 },
   '7d': { seconds: 604800, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 300_000 },
   '30d': { seconds: 2592000, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 600_000 },
 } as const;
 const addressRe = /^0x[0-9a-f]{40}$/;
+const poolRe = /^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 type JsonRequest = (url: URL) => Promise<any>;
 
 export function parseCandles(rows: unknown, since: number, until: number): MarketCandle[] {
@@ -23,52 +25,49 @@ export function parseCandles(rows: unknown, since: number, until: number): Marke
   return [...candles.values()].sort((a, b) => a.time - b.time);
 }
 
-export function selectChartPool(payload: any, address: string): string | null {
+export function selectChartPools(payload: any, address: string): string[] {
   const pools = Array.isArray(payload?.data) ? payload.data : [];
   const match = pools.filter((p: any) => {
     const tokens = [p?.relationships?.base_token?.data?.id, p?.relationships?.quote_token?.data?.id];
-    return addressRe.test(p?.attributes?.address || '') && tokens.includes(`bsc_${address}`);
+    return poolRe.test(p?.attributes?.address || '') && tokens.includes(`bsc_${address}`);
   }).sort((a: any, b: any) => (Number(b.attributes.reserve_in_usd) || 0) - (Number(a.attributes.reserve_in_usd) || 0));
-  return match[0]?.attributes.address ?? null;
+  return [...new Set<string>(match.map((p: any) => p.attributes.address))].slice(0, 3);
 }
+export function selectChartPool(payload: any, address: string): string | null { return selectChartPools(payload, address)[0] ?? null; }
 
 // Public API budget is shared across all users. Coalesce identical jobs and keep
 // cached data visible while queued refreshes run; never turn missing data into candles.
-let nextRequestAt = 0;
-let pausedUntil = 0;
 async function providerRequest(url: URL) {
-  if (pausedUntil > Date.now()) throw new Error('Market chart provider cooling down');
-  const slot = Math.max(Date.now(), nextRequestAt);
-  nextRequestAt = slot + 2500;
-  await new Promise(resolve => setTimeout(resolve, Math.max(0, slot - Date.now())));
-  if (pausedUntil > Date.now()) throw new Error('Market chart provider cooling down');
-  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
-  if (response.status === 429) {
-    const retry = Number(response.headers.get('retry-after'));
-    pausedUntil = Date.now() + (Number.isFinite(retry) && retry > 0 ? Math.min(retry, 600) * 1000 : 60_000);
-  }
+  const response = await geckoFetch(url, { priority: 'chart', timeoutMs: 10_000 });
   if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
   return response.json();
 }
 
 export async function fetchMarketCandles(address: string, period: WatchPeriod, poolAddress: string | undefined, request: JsonRequest = providerRequest, now = Date.now()): Promise<TokenChart | null> {
-  if (!addressRe.test(address) || poolAddress && !addressRe.test(poolAddress)) throw new Error('Invalid chart address');
+  if (!addressRe.test(address) || poolAddress && !poolRe.test(poolAddress)) throw new Error('Invalid chart address');
   const settings = chartWindows[period];
-  const pool = poolAddress ?? selectChartPool(await request(new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/pools`)), address);
-  if (!pool) return null;
-  const url = new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/pools/${pool}/ohlcv/${settings.timeframe}`);
-  url.searchParams.set('aggregate', String(settings.aggregate));
-  url.searchParams.set('limit', '1000');
-  url.searchParams.set('currency', 'usd');
-  // A contract address selects the requested token even when it is the quote asset.
-  url.searchParams.set('token', address);
-  url.searchParams.set('include_empty_intervals', 'true');
-  const until = Math.floor(now / 1000);
-  const body = await request(url);
-  const candles = parseCandles(body?.data?.attributes?.ohlcv_list, until - settings.seconds, until);
-  if (!candles.length) return null;
-  return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
-    source: 'geckoterminal', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, poolAddress: pool, pending: false, stale: false };
+  const pools = poolAddress ? [poolAddress] : selectChartPools(await request(new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/pools`)), address);
+  for (const pool of pools) {
+    const url = new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/pools/${pool}/ohlcv/${settings.timeframe}`);
+    url.searchParams.set('aggregate', String(settings.aggregate));
+    url.searchParams.set('limit', '1000');
+    url.searchParams.set('currency', 'usd');
+    // A contract address selects the requested token even when it is the quote asset.
+    url.searchParams.set('token', address);
+    url.searchParams.set('include_empty_intervals', 'true');
+    const until = Math.floor(now / 1000);
+    let body: any;
+    try { body = await request(url); }
+    catch (error) {
+      if (poolAddress || !(error instanceof Error) || !/request failed: (404|422)$/.test(error.message)) throw error;
+      continue;
+    }
+    const candles = parseCandles(body?.data?.attributes?.ohlcv_list, until - settings.seconds, until);
+    if (!candles.length) continue;
+    return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
+      source: 'geckoterminal', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, poolAddress: pool, pending: false, stale: false };
+  }
+  return null;
 }
 
 const cache = new Map<string, TokenChart>();
@@ -98,13 +97,17 @@ export async function currentMarketChart(address: string, period: WatchPeriod): 
   const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < chartWindows[period].fresh;
   if (fresh) return { chart: saved, pending: false };
   let job = jobs.get(key);
-  if (!job && Date.now() >= (retryAt.get(key) || 0) && jobs.size < 32 && pausedUntil <= Date.now()) {
+  if (!job && Date.now() >= (retryAt.get(key) || 0) && jobs.size < 32) {
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
         let result: TokenChart | null;
         try { result = await fetchMarketCandles(address, period, poolAddress); }
-        catch (error) { if (!poolAddress) throw error; result = await fetchMarketCandles(address, period, undefined); }
+        catch (error) {
+          // Discovery cannot fix a timeout, 429 or a provider cooldown.
+          if (!poolAddress || !(error instanceof Error) || !/request failed: (404|422)$/.test(error.message)) throw error;
+          result = await fetchMarketCandles(address, period, undefined);
+        }
         if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined);
         if (!result) { retryAt.set(key, Date.now() + 300_000); return null; }
         if (cache.size >= 500) cache.delete(cache.keys().next().value!);

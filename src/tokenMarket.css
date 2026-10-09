@@ -9,7 +9,8 @@
 .price-chart-controls,.price-chart-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:11px}
 .price-chart-controls>div,.price-chart-footer>span:last-child{display:flex;align-items:center;gap:6px}
 .price-chart-controls button{padding:5px 9px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
-.price-chart-controls button:hover,.price-chart-controls button[aria-pressed=true]{border-color:var(--line);color:#fff;background:#171d21}
+.price-chart-controls button:not(:disabled):hover,.price-chart-controls button[aria-pressed=true]{border-color:var(--line);color:#fff;background:#171d21}
+.price-chart-controls button:disabled{opacity:.45;cursor:default}
 .price-chart-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;min-height:38px;padding:8px 0;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .price-chart-legend b{color:#e9edf1;font-weight:600}
 .price-chart-canvas{height:340px;width:100%;min-width:0}

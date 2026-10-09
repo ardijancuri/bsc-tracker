@@ -35,6 +35,8 @@ export function TokenPriceChart({ address, period, fallbackPoints = [], priceUsd
   const fallback = fallbackPoints.length ? fallbackPoints : Number(priceUsd) > 0 ? [{ timestamp: quoteAt || new Date().toISOString(), priceUsd: priceUsd! }] : [];
   const points = linePoints(data?.points.length ? data.points : fallback);
   const marketCandles = data?.candles ?? [];
+  const displayingCandles = mode === 'candles' && marketCandles.length > 0;
+  const candleStatus = !marketCandles.length ? !data || data.pending ? 'Loading candles…' : 'Candle data unavailable' : null;
   const source = data?.source === 'geckoterminal' ? 'Market candles' : points.length > 1 ? 'Recorded trades' : 'Latest available quote';
   const last = hover ?? marketCandles.at(-1);
   const latestPrice = last?.close ?? points.at(-1)?.value;
@@ -76,13 +78,13 @@ export function TokenPriceChart({ address, period, fallbackPoints = [], priceUsd
 
   return <div className="token-price-chart">
     <div className="price-chart-controls"><span>{t(source)}{data?.resolution && data.source === 'geckoterminal' && <> · {data.resolution}</>}{data?.stale && <> · {t('Cached')}</>}</span>
-      <div><button type="button" aria-pressed={mode === 'candles'} onClick={() => setMode('candles')}>{t('Candles')}</button><button type="button" aria-pressed={mode === 'line'} onClick={() => setMode('line')}>{t('Line')}</button><button type="button" onClick={() => chart.current?.timeScale().fitContent()}>{t('Reset')}</button></div></div>
+      <div><button type="button" disabled={!marketCandles.length} title={candleStatus ? t(candleStatus) : undefined} aria-pressed={displayingCandles} onClick={() => setMode('candles')}>{t('Candles')}</button><button type="button" aria-pressed={!displayingCandles} onClick={() => setMode('line')}>{t('Line')}</button><button type="button" onClick={() => chart.current?.timeScale().fitContent()}>{t('Reset')}</button></div></div>
     <div className="price-chart-legend" aria-live="off">
       {last ? <><span>O <b>{chartPrice(last.open)}</b></span><span>H <b>{chartPrice(last.high)}</b></span><span>L <b>{chartPrice(last.low)}</b></span><span>C <b>{chartPrice(last.close)}</b></span><span>{t('Volume')} <b>{compact(last.volume, true)}</b></span></> : <span>USD {latestPrice ? <b>{chartPrice(latestPrice)}</b> : '—'}</span>}
       {hover && <span>{new Date(hover.time * 1000).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</span>}
     </div>
     <div className="price-chart-canvas" ref={container} role="img" aria-label={`${t('Token price chart')}: ${marketCandles.length ? `${marketCandles.length} ${t('candles')}` : t(source)}`} />
     {!points.length && !marketCandles.length && <div className="price-chart-status">{t(error || data?.source === 'unavailable' && !data.pending ? 'Market chart unavailable' : 'Loading market chart…')} <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a></div>}
-    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(source)}{error && points.length ? ` · ${t('Refresh paused')}` : ''}</span><span>{data?.source === 'geckoterminal' && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
+    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(candleStatus!)}{error && points.length ? ` · ${t('Refresh paused')}` : ''}</span><span>{!marketCandles.length && points.length > 0 && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a>}{data?.source === 'geckoterminal' && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
   </div>;
 }

@@ -13,6 +13,7 @@ import { nonStockTokenSql } from './stockToken.js';
 import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
 import { reorgStart } from './chainReorg.js';
 import { selectTokenMarkets } from './tokenMarkets.js';
+import { geckoFetch } from './geckoApi.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -445,7 +446,7 @@ async function lookupTokenLogo(address: string): Promise<TokenImage | null> {
     }
   } catch (error) { console.warn(`DexScreener logo ${address}:`, error); }
   try {
-    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/info`, { signal: AbortSignal.timeout(12000) });
+    const response = await geckoFetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/info`);
     if (response.ok) {
       const result = await response.json() as { data?: { attributes?: { address?: string; image_url?: string } } };
       if (result.data?.attributes?.address?.toLowerCase() === address) {
