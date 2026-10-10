@@ -68,6 +68,7 @@ export const chinese: Record<string, string> = {
   'Recorded BNB trade amount': '已记录的 BNB 交易金额',
   'Approximate BNB amount based on the current BNB/USD price': '按当前 BNB/USD 价格估算的 BNB 金额',
   'View token activity on GMGN': '在 GMGN 查看代币动态', 'View {token} activity on GMGN, {time}': '在 GMGN 查看 {token} 动态，{time}',
+  'View token details': '查看代币详情', 'View {token} details, {time}': '查看 {token} 详情，{time}',
   'Recent {token} trades': '{token} 的最新交易', 'token': '代币',
   'Follow': '关注', 'Unfollow': '取消关注', '{action} {name}': '{action} {name}',
   'KOLs buying': 'KOL 集中买入', 'Buying again': '再次买入', 'Buyer selling': '买家卖出',
