@@ -36,7 +36,7 @@ describe('market chart data', () => {
     ], 300).map(c => c.time)).toEqual([300]);
   });
   it.each([
-    ['1m', 'minute', '1', 60], ['5m', 'minute', '5', 300],
+    ['5m', 'minute', '5', 300],
     ['1h', 'hour', '1', 3600], ['4h', 'hour', '4', 14400], ['1d', 'day', '1', 86400],
   ] as const)('requests real %s candles at the selected interval', async (interval, timeframe, aggregate, step) => {
     const now = 2000000000;

@@ -14,7 +14,7 @@ describe('market cap candle chart', () => {
     ['rate_limited', 'Market provider cooling down. Retrying automatically…'],
     ['provider_error', 'Market provider unavailable. Retrying automatically…'],
   ] as const)('explains %s without falsely claiming that candles do not exist', (loadStatus, message) => {
-    state.chart = { address, period: '1m', source: 'unavailable', candles: [], points: [], pending: false, stale: false, updatedAt: null, resolution: '1m', loadStatus, retryAfterMs: 30_000 };
+    state.chart = { address, period: '5m', source: 'unavailable', candles: [], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m', loadStatus, retryAfterMs: 30_000 };
     const html = render();
     expect(html).toContain(message);
     expect(html).not.toContain('Candle data unavailable');

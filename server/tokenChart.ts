@@ -9,7 +9,6 @@ export const chartWindows = {
   '30d': { seconds: 2592000, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 600_000 },
 } as const;
 export const candleWindows = {
-  '1m': { seconds: 60_000, timeframe: 'minute', aggregate: 1, resolution: '1m', fresh: 60_000 },
   '5m': chartWindows['24h'],
   '1h': chartWindows['30d'],
   '4h': { seconds: 7_776_000, timeframe: 'hour', aggregate: 4, resolution: '4h', fresh: 600_000 },
@@ -24,7 +23,7 @@ export function chartForRange(chart: TokenChart, range: ChartRange, now = Date.n
 const addressRe = /^0x[0-9a-f]{40}$/;
 const poolRe = /^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 type JsonRequest = (url: URL) => Promise<any>;
-const resolutionSeconds: Record<string, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+const resolutionSeconds: Record<string, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
 
 // Combine real finer candles; never split a coarse candle into invented prices.
 export function aggregateCandles(candles: MarketCandle[], seconds: number): MarketCandle[] {

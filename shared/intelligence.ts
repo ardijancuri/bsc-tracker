@@ -24,7 +24,7 @@ export interface TokenChart {
 }
 export const watchPeriods = ['24h', '7d', '30d'] as const;
 export type WatchPeriod = typeof watchPeriods[number];
-export const candleIntervals = ['1m', '5m', '1h', '4h', '1d'] as const;
+export const candleIntervals = ['5m', '1h', '4h', '1d'] as const;
 export type CandleInterval = typeof candleIntervals[number];
 export type ChartRange = WatchPeriod | CandleInterval;
 export interface WatchEntry {
