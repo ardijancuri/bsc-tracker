@@ -1,0 +1,35 @@
+{
+  "token": {
+    "kind": "token",
+    "address": "0x14f6a94909c407854390aa2d2462a3095d317777",
+    "name": null,
+    "priceUsd": "0.015034705629273388",
+    "periodVolumeUsd": "3717.4742739089571",
+    "periodKolCount": 1,
+    "volume24hUsd": "3717.4742739089571",
+    "kolCount24h": 1,
+    "lastTradeAt": "2026-10-09T19:58:05Z",
+    "priceHistory": [
+      {
+        "timestamp": "2026-10-09T11:29:14+02:00",
+        "priceUsd": "0.013565321364480534"
+      },
+      {
+        "timestamp": "2026-10-09T21:09:09+02:00",
+        "priceUsd": "0.013744708354896794"
+      },
+      {
+        "timestamp": "2026-10-09T21:58:05+02:00",
+        "priceUsd": "0.015034705629273388"
+      }
+    ],
+    "symbol": "旺柴",
+    "avatarUrl": null,
+    "logoUrl": "/api/token-image/0x14f6a94909c407854390aa2d2462a3095d317777?v=c917f6f6615ab6968646ec6457ce2f40",
+    "marketCapUsd": "15730033",
+    "change24h": "35.3381437177561",
+    "change1h": "0",
+    "periodChange": "35.3381437177561"
+  },
+  "period": "24h"
+}

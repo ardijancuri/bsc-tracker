@@ -1,0 +1,47 @@
+{
+  "token": {
+    "kind": "token",
+    "address": "0xabffa443547b34ab6c3b3173d26e233900527777",
+    "name": "Truman World",
+    "priceUsd": "0.0012691549152308637",
+    "periodVolumeUsd": "5922.01834512",
+    "periodKolCount": 1,
+    "volume24hUsd": "5922.01834512",
+    "kolCount24h": 1,
+    "lastTradeAt": "2026-10-09T15:06:52Z",
+    "priceHistory": [
+      {
+        "timestamp": "2026-10-09T12:57:03+02:00",
+        "priceUsd": "0.0011482664100597596"
+      },
+      {
+        "timestamp": "2026-10-09T13:02:14+02:00",
+        "priceUsd": "0.0012407222222821442"
+      },
+      {
+        "timestamp": "2026-10-09T13:04:08+02:00",
+        "priceUsd": "0.0012703321959731141"
+      },
+      {
+        "timestamp": "2026-10-09T14:39:36+02:00",
+        "priceUsd": "0.001195844400527678"
+      },
+      {
+        "timestamp": "2026-10-09T17:06:52+02:00",
+        "priceUsd": "0.0012431247416940544"
+      },
+      {
+        "timestamp": "2026-10-09T17:06:52+02:00",
+        "priceUsd": "0.0012691549152308637"
+      }
+    ],
+    "symbol": "TRUMAN",
+    "avatarUrl": null,
+    "logoUrl": "/api/token-image/0xabffa443547b34ab6c3b3173d26e233900527777?v=044fe724a49151fc1868ce3a3ae409dd",
+    "marketCapUsd": "1247600",
+    "change24h": "-0.9134280319686439",
+    "change1h": "0",
+    "periodChange": "-0.9134280319686439"
+  },
+  "period": "24h"
+}

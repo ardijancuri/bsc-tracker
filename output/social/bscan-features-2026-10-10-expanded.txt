@@ -1,0 +1,13 @@
+Your BNB Chain watchlist just got an upgrade 🟡
+
+We’ve made bscan easier to explore, so you can keep your favorite tokens close and get a clearer view of their activity.
+
+⭐ A dedicated token watchlist with 24h, 1-week and 1-month views.
+📊 Compare market cap, price changes, tracked KOL volume, KOL counts and recent trades, with mini charts alongside each token.
+🔎 Search by name or contract, sort the table, copy addresses and open token profiles directly from a row.
+🕯️ Explore market-cap candles and volume bars across 1m, 5m, 1h, 4h and 1d intervals.
+✨ Cleaner token pages and “Load more” for KOL lists.
+
+Come explore the update, build your watchlist and let us know what you’d like to see next.
+
+https://bscan.fun/watchlist

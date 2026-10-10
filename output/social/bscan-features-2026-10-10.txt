@@ -1,0 +1,10 @@
+New on bscan 🟡
+
+• Market-cap candles + volume bars
+• 1m / 5m / 1h / 4h / 1d charts
+• 24h / 1w / 1m watchlist views
+• Search, sort & open token profiles
+• Cleaner token pages + paginated KOL lists
+
+Follow BNB Chain activity with a clearer view.
+https://bscan.fun/watchlist

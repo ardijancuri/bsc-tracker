@@ -1,0 +1,47 @@
+{
+  "token": {
+    "kind": "token",
+    "address": "0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+    "name": null,
+    "priceUsd": "0.0023494352655875185",
+    "periodVolumeUsd": "24660.530273067013707547",
+    "periodKolCount": 3,
+    "volume24hUsd": "24660.530273067013707547",
+    "kolCount24h": 3,
+    "lastTradeAt": "2026-10-09T15:14:35Z",
+    "priceHistory": [
+      {
+        "timestamp": "2026-10-09T16:22:42+02:00",
+        "priceUsd": "0.0023698465876386497"
+      },
+      {
+        "timestamp": "2026-10-09T16:28:52+02:00",
+        "priceUsd": "0.0024297614792043805"
+      },
+      {
+        "timestamp": "2026-10-09T16:30:08+02:00",
+        "priceUsd": "0.0026425077356333547"
+      },
+      {
+        "timestamp": "2026-10-09T16:59:52+02:00",
+        "priceUsd": "0.0022833068481881344"
+      },
+      {
+        "timestamp": "2026-10-09T17:01:39+02:00",
+        "priceUsd": "0.0025338267189796426"
+      },
+      {
+        "timestamp": "2026-10-09T17:14:35+02:00",
+        "priceUsd": "0.0023494352655875185"
+      }
+    ],
+    "symbol": "GM",
+    "avatarUrl": null,
+    "logoUrl": "/api/token-image/0x13920fe6467e9e3c852b8d365a036c995f0f7777?v=4568884195b3dd429fd4d1b70a7e245f",
+    "marketCapUsd": "2544740",
+    "change24h": "81.42749664016438",
+    "change1h": "0",
+    "periodChange": "81.42749664016438"
+  },
+  "period": "24h"
+}

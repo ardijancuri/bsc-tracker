@@ -1,0 +1,9 @@
+bscan update 🟡
+
+Watchlist: 24h/1w/1m views, mini charts, MCAP, 1h + period change, tracked volume, KOLs & last trade.
+
+Search, sort, copy contracts & open profiles.
+
+Plus market-cap candles, 5 chart intervals, cleaner pages & paginated KOL lists.
+
+https://bscan.fun/watchlist
