@@ -58,9 +58,9 @@ export function TokenPriceChart({ address, interval }: { address: string; interv
   }, [data, address, interval]);
 
   return <div className="token-price-chart">
-    <div className="price-chart-controls"><span title={t('Calculated using current token supply')}>{t('Market cap')} · {interval}{data?.stale && <> · {t('Cached')}</>}</span></div>
-    <div className="price-chart-legend" aria-live="off">
+    <div className="price-chart-legend" aria-live="off" title={t('Calculated using current token supply')}>
       {last ? <><span>{t('Market cap')} <b>{compact(last.close, true)}</b></span><span>O <b>{compact(last.open, true)}</b></span><span>H <b>{compact(last.high, true)}</b></span><span>L <b>{compact(last.low, true)}</b></span><span>C <b>{compact(last.close, true)}</b></span><span>{t('Volume')} <b>{compact(last.volume, true)}</b></span></> : <span>{t('Market cap')} —</span>}
+      {data?.stale && <span>{t('Cached')}</span>}
       {hover && <span>{new Date(hover.time * 1000).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</span>}
     </div>
     <div className="price-chart-canvas" ref={container} role="img" aria-label={`${t('Token market cap chart')}: ${marketCandles.length} ${t('candles')}`} />
