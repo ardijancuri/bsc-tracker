@@ -28,7 +28,7 @@
 .watch-sort-idle{opacity:.4}
 .token-watchlist-table th button:hover .watch-sort-idle{opacity:1}
 .token-watchlist-table td{padding:5px 9px;height:40px;white-space:nowrap}
-.token-watchlist-table tbody tr{transition:background .15s}
+.token-watchlist-table tbody tr{cursor:pointer;transition:background .15s}
 .token-watchlist-table tbody tr:nth-child(even){background:#141719}
 .token-watchlist-table tbody tr:hover{background:#1c2226}
 .token-watchlist-table .watch-star{width:30px;padding-left:3px;padding-right:3px}

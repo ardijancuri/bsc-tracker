@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Check, Copy, Search } from 'lucide-react';
 import { FollowButton, useWatchlist } from './Intelligence';
 import { useTokenTranslation } from './TokenName';
@@ -39,9 +39,14 @@ function WatchContractAddress({ address }: { address: string }) {
 }
 
 function WatchTokenRow({ token, period, onChart }: { token: WatchEntry; period: WatchPeriod; onChart: (chart: TokenChart) => void }) {
+  const navigate = useNavigate();
   const translation = useTokenTranslation(token);
   const name = token.symbol || token.name || shortAddress(token.address);
-  return <tr>
+  return <tr onClick={event => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey ||
+      (event.target as Element).closest('a,button,input,select,textarea,[role="button"]')) return;
+    navigate(`/token/${token.address}`);
+  }}>
     <td className="watch-star"><FollowButton kind="token" address={token.address} label={token.name || token.symbol} /></td>
     <td className="watch-token-name"><Link to={`/token/${token.address}`} title={token.name || name}>
       <span className="token-avatar"><span>{name.slice(0, 1)}</span>{token.logoUrl && <img src={token.logoUrl} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden'; }} />}</span>
