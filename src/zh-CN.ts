@@ -57,6 +57,7 @@ export const chinese: Record<string, string> = {
   'Token not found': '未找到代币', 'No tracked KOL has traded this contract yet.': '暂无已跟踪 KOL 交易过此合约。',
   'KOLs · 24h': '24 小时 KOL 数', '24h KOL volume': '24 小时 KOL 成交额', 'KOL trades': 'KOL 交易',
   'Recent activity in this token': '此代币的最新动态', 'KOLs trading it': '交易此代币的 KOL',
+  'Load more KOLs': '加载更多 KOL',
   'No tracked trades yet': '暂无已跟踪交易', 'New KOL trades in this token will appear here automatically.': '此代币的新 KOL 交易会自动显示在这里。',
   'Unknown': '未知', 'Copy {label}': '复制{label}', '{label} copied': '已复制{label}', 'Copied': '已复制', 'Copy failed': '复制失败',
   'KOL wallet address': 'KOL 钱包地址', 'Token contract address': '代币合约地址', 'View token on GMGN': '在 GMGN 查看代币',

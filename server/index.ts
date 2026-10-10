@@ -145,7 +145,7 @@ app.get<{ Params: { address: string } }>('/api/tokens/:address', async request =
   const [token, trades, kols] = await Promise.all([
     pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE v.address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} GROUP BY v.address`, [key]),
     pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY t.timestamp DESC,t.id DESC LIMIT 21`, [key]),
-    pool.query(`SELECT DISTINCT ON (k.address) k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt" FROM kols k JOIN trades t ON t.wallet_address=k.address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY k.address,t.timestamp DESC LIMIT 50`, [key]),
+    pool.query(`SELECT DISTINCT ON (k.address) k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt" FROM kols k JOIN trades t ON t.wallet_address=k.address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY k.address,t.timestamp DESC`, [key]),
   ]);
   const tradeRows = trades.rows.slice(0, 20);
   return { token: token.rows[0] ?? null, trades: tradeRows,
