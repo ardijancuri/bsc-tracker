@@ -1,7 +1,7 @@
 import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type { MarketCandle, TokenChart, ChartRange } from '../shared/intelligence.js';
-import { geckoFetch } from './geckoApi.js';
+import { geckoFetch, MarketProviderDeferred, type GeckoPriority } from './geckoApi.js';
 
 export const chartWindows = {
   '24h': { seconds: 86400, timeframe: 'minute', aggregate: 5, resolution: '5m', fresh: 120_000 },
@@ -16,6 +16,11 @@ export const candleWindows = {
   '1d': { seconds: 15_552_000, timeframe: 'day', aggregate: 1, resolution: '1d', fresh: 900_000 },
 } as const;
 export function chartSettings(range: ChartRange) { return range in candleWindows ? candleWindows[range as keyof typeof candleWindows] : chartWindows[range as keyof typeof chartWindows]; }
+export function chartForRange(chart: TokenChart, range: ChartRange, now = Date.now()): TokenChart {
+  const until = Math.floor(now / 1000);
+  const candles = chart.candles.filter(c => c.time >= until - chartSettings(range).seconds && c.time <= until);
+  return { ...chart, period: range, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })) };
+}
 const addressRe = /^0x[0-9a-f]{40}$/;
 const poolRe = /^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 type JsonRequest = (url: URL) => Promise<any>;
@@ -62,10 +67,29 @@ export function selectChartPool(payload: any, address: string): string | null { 
 
 // Public API budget is shared across all users. Coalesce identical jobs and keep
 // cached data visible while queued refreshes run; never turn missing data into candles.
-async function providerRequest(url: URL) {
-  const response = await geckoFetch(url, { priority: 'chart', timeoutMs: 10_000 });
-  if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
-  return response.json();
+type RequestPriority = GeckoPriority | (() => GeckoPriority);
+const upstream = new Map<string, { promise: Promise<any>; priorities: RequestPriority[] }>();
+const discoveries = new Map<string, { value: any; checked: number }>();
+function providerRequest(url: URL, priority: RequestPriority = 'chart'): Promise<any> {
+  const key = url.href;
+  const discovery = url.pathname.endsWith('/pools');
+  const saved = discovery ? discoveries.get(key) : undefined;
+  if (saved && Date.now() - saved.checked < 600_000) return Promise.resolve(saved.value);
+  const existing = upstream.get(key);
+  if (existing) { existing.priorities.push(priority); return existing.promise; }
+  const priorities = [priority];
+  const promise = (async () => {
+    const response = await geckoFetch(url, { priority: () => priorities.some(value => (typeof value === 'function' ? value() : value) === 'chart') ? 'chart' : 'sparkline', timeoutMs: 10_000 });
+    if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
+    const value = await response.json();
+    if (discovery) {
+      if (discoveries.size >= 500) discoveries.delete(discoveries.keys().next().value!);
+      discoveries.set(key, { value, checked: Date.now() });
+    }
+    return value;
+  })().finally(() => upstream.delete(key));
+  upstream.set(key, { promise, priorities });
+  return promise;
 }
 
 export async function fetchMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, request: JsonRequest = providerRequest, now = Date.now()): Promise<TokenChart | null> {
@@ -97,7 +121,8 @@ export async function fetchMarketCandles(address: string, period: ChartRange, po
 
 const cache = new Map<string, TokenChart>();
 const jobs = new Map<string, Promise<TokenChart | null>>();
-const retryAt = new Map<string, number>();
+const priorities = new Map<string, GeckoPriority>();
+const retryAt = new Map<string, { at: number; status: NonNullable<TokenChart['loadStatus']> }>();
 const cacheDirectory = process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts');
 function finerCachedChart(address: string, range: ChartRange): TokenChart | null {
   const settings = chartSettings(range), step = resolutionSeconds[settings.resolution];
@@ -129,28 +154,36 @@ async function loadCached(key: string, address: string, period: ChartRange) {
   } catch { return null; }
 }
 
-export async function currentMarketChart(address: string, range: ChartRange): Promise<{ chart: TokenChart | null; pending: boolean }> {
+export async function currentMarketChart(address: string, range: ChartRange): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
-  const period = range === '5m' ? '24h' : range === '1h' ? '30d' : range;
+  const period = range === '5m' ? '24h' : range === '1h' || range === '7d' ? '30d' : range;
   const key = `${address}-${period}`;
+  const interactive = range in candleWindows;
+  // Promote an existing watchlist job when the user opens its full chart.
+  if (interactive && jobs.has(key)) priorities.set(key, 'chart');
   const saved = await loadCached(key, address, period);
-  const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < chartSettings(period).fresh;
-  if (fresh) return { chart: saved, pending: false };
+  const lifetime = interactive ? chartSettings(period).fresh : Math.max(300_000, chartSettings(period).fresh);
+  const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
+  if (fresh) return { chart: chartForRange(saved, range), pending: false };
   let job = jobs.get(key);
-  if (!job && Date.now() >= (retryAt.get(key) || 0) && jobs.size < 32) {
+  const interactiveJobs = [...priorities.values()].filter(priority => priority === 'chart').length;
+  if (!job && Date.now() >= (retryAt.get(key)?.at || 0) && (jobs.size < 32 || interactive && interactiveJobs < 8)) {
+    priorities.set(key, interactive ? 'chart' : 'sparkline');
+    const request = (url: URL) => providerRequest(url, () => priorities.get(key) ?? 'sparkline');
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
         let result: TokenChart | null;
-        try { result = await fetchMarketCandles(address, period, poolAddress); }
+        try { result = await fetchMarketCandles(address, period, poolAddress, request); }
         catch (error) {
           // Discovery cannot fix a timeout, 429 or a provider cooldown.
           if (!poolAddress || !(error instanceof Error) || !/request failed: (404|422)$/.test(error.message)) throw error;
-          result = await fetchMarketCandles(address, period, undefined);
+          result = await fetchMarketCandles(address, period, undefined, request);
         }
-        if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined);
-        if (!result) { retryAt.set(key, Date.now() + 300_000); return null; }
+        if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined, request);
+        if (!result) { retryAt.set(key, { at: Date.now() + 300_000, status: 'no_history' }); return null; }
+        retryAt.delete(key);
         if (cache.size >= 500) cache.delete(cache.keys().next().value!);
         cache.set(key, result);
         try {
@@ -160,19 +193,30 @@ export async function currentMarketChart(address: string, range: ChartRange): Pr
           await rename(temporary, path.join(cacheDirectory, `${key}.json`));
         } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
         return result;
-      } catch (error) { console.warn('[token-chart]', address, period, error instanceof Error ? error.message : 'Refresh failed'); retryAt.set(key, Date.now() + 60_000); return null; }
-      finally { jobs.delete(key); }
+      } catch (error) {
+        const deferred = error instanceof MarketProviderDeferred;
+        if (!deferred) console.warn('[token-chart]', address, period, error instanceof Error ? error.message : 'Refresh failed');
+        retryAt.set(key, { at: Date.now() + (deferred ? error.retryAfterMs : 30_000),
+          status: deferred ? error.reason === 'rate_limited' ? 'rate_limited' : 'queued' : 'provider_error' });
+        return null;
+      }
+      finally { jobs.delete(key); priorities.delete(key); }
     })();
     jobs.set(key, job);
   }
   const available = saved ?? (range in candleWindows ? finerCachedChart(address, range) : null);
-  if (available) return { chart: { ...available, stale: true }, pending: !!job };
+  const state = () => {
+    const retry = retryAt.get(key);
+    return { loadStatus: jobs.has(key) || !retry || retry.at <= Date.now() ? 'queued' as const : retry.status,
+      retryAfterMs: jobs.has(key) || !retry ? 3000 : Math.max(1000, retry.at - Date.now()) };
+  };
+  if (available) return { chart: chartForRange({ ...available, stale: true }, range), pending: !!job, ...state() };
   if (job) {
     const result = await new Promise<TokenChart | null>(resolve => {
-      const timer = setTimeout(() => resolve(null), 6500);
+      const timer = setTimeout(() => resolve(null), 1000);
       void job!.then(chart => { clearTimeout(timer); resolve(chart); });
     });
-    if (result) return { chart: result, pending: false };
+    if (result) return { chart: chartForRange(result, range), pending: false };
   }
-  return { chart: null, pending: jobs.has(key) };
+  return { chart: null, pending: jobs.has(key), ...state() };
 }

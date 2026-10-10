@@ -1,6 +1,7 @@
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { TokenMarketPanel } from './TokenMarketPanel';
+import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -156,7 +157,7 @@ function WatchlistBanner() {
   return <nav className="watchlist-banner" aria-label={t('Watchlist tokens')}>
     <div className="watchlist-banner-inner">
       <Link className="watchlist-banner-shortcut" to="/watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
-      <div className="watchlist-banner-tokens" tabIndex={0} aria-label={t('Watchlist tokens')}>
+      <WatchlistMarquee enabled={tokens.length > 0} label={t('Watchlist tokens')}>
         {tokens.map(token => {
           return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} title={token.name || token.symbol || token.address}>
             <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
@@ -167,7 +168,7 @@ function WatchlistBanner() {
           </Link>;
         })}
         {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}
-      </div>
+      </WatchlistMarquee>
     </div>
   </nav>;
 }

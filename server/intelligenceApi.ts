@@ -116,11 +116,12 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const result = await currentMarketChart(address, selected);
-    reply.header('Cache-Control', 'public, max-age=15');
+    reply.header('Cache-Control', result.pending || result.loadStatus ? 'no-store' : 'public, max-age=15');
+    const loading = { loadStatus: result.loadStatus, retryAfterMs: result.retryAfterMs };
     const marketCapSupply = known.rows[0].supply ?? null;
-    if (result.chart) return { ...result.chart, period: selected, marketCapSupply, pending: result.pending };
+    if (result.chart) return { ...result.chart, period: selected, marketCapSupply, pending: result.pending, ...loading };
     if (interval !== undefined) return { address, period: selected, candles: [], points: [], source: 'unavailable',
-      updatedAt: null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false };
+      updatedAt: null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false, ...loading };
     const history = await pool.query(`SELECT t.timestamp,t.price_usd::text AS "priceUsd" FROM trades t
       JOIN kols k ON k.address=t.wallet_address AND k.is_tracked
       WHERE t.token_address=$1 AND t.block_number IS NOT NULL AND t.price_usd>0
@@ -130,7 +131,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const quote = known.rows[0];
     if (!points.length && Number(quote.price) > 0) points.push({ timestamp: quote.updated || new Date().toISOString(), priceUsd: quote.price });
     return { address, period: selected, candles: [], points, source: points.length > 1 ? 'recorded' : points.length ? 'quote' : 'unavailable',
-      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false };
+      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false, ...loading };
   });
   app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/market', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);

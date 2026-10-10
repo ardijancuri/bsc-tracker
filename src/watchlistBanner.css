@@ -1,8 +1,12 @@
 .watchlist-banner { background: #0b0e11; border-top: 1px solid #20262b; border-bottom: 1px solid #20262b; min-width: 0; }
 .watchlist-banner-inner { display: flex; align-items: center; max-width: 1800px; height: 28px; margin: 0 auto; padding: 0 28px; min-width: 0; }
 .watchlist-banner-shortcut { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; height: 20px; padding-right: 8px; margin-right: 6px; color: var(--yellow); font-size: 11px; font-weight: 700; }
-.watchlist-banner-tokens { display: flex; align-items: center; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
-.watchlist-banner-tokens::-webkit-scrollbar { display: none; }
+.watchlist-banner-tokens { display: flex; align-items: center; flex: 1; min-width: 0; height: 100%; overflow: clip; }
+.watchlist-banner-track { display: flex; align-items: center; flex: none; width: max-content; height: 100%; }
+.watchlist-banner-group { display: flex; align-items: center; flex: none; width: max-content; height: 100%; }
+.watchlist-banner-copy { display: none; }
+.watchlist-banner-tokens[data-overflow=true] .watchlist-banner-copy { display: flex; }
+.watchlist-banner-tokens[data-overflow=true] .watchlist-banner-track { will-change: transform; }
 .watchlist-banner-token { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 100%; padding: 0 8px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; transition: background-color .15s ease; }
 .watchlist-banner-token:hover { background: #171d21; }
 .watchlist-banner-token > strong { max-width: 130px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 700; color: #e9edf1; }

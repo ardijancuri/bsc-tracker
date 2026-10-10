@@ -19,6 +19,8 @@ export interface TokenChart {
   updatedAt: string | null; resolution: string; poolAddress?: string; pending: boolean; stale: boolean;
   marketCapSupply?: string | null;
   partialHistory?: boolean;
+  loadStatus?: 'queued' | 'rate_limited' | 'provider_error' | 'no_history';
+  retryAfterMs?: number;
 }
 export const watchPeriods = ['24h', '7d', '30d'] as const;
 export type WatchPeriod = typeof watchPeriods[number];

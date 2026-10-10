@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateCandles, fetchMarketCandles, parseCandles, selectChartPool, selectChartPools } from './tokenChart.js';
+import { aggregateCandles, chartForRange, fetchMarketCandles, parseCandles, selectChartPool, selectChartPools } from './tokenChart.js';
 
 const address = '0x13920fe6467e9e3c852b8d365a036c995f0f7777';
 const pool = '0xfd55be774ea18067bd06a6aed49fb1cc4ad966e9';
@@ -7,6 +7,15 @@ const other = '0xbaaf1d8434c42f2bea01a997e849ba9254d09905';
 const poolRow = (address: string, token: string, liquidity: number) => ({ attributes: { address, reserve_in_usd: liquidity }, relationships: { quote_token: { data: { id: `bsc_${token}` } } } });
 
 describe('market chart data', () => {
+  it('clips shared hourly history to the requested watchlist window', () => {
+    const now = 2000000000;
+    const candle = (time: number) => ({ time, open: 1, high: 2, low: .5, close: 1.5, volume: 10 });
+    const result = chartForRange({ address, period: '30d', resolution: '1h', source: 'geckoterminal', updatedAt: null, stale: false, pending: false,
+      candles: [candle(now - 10 * 86400), candle(now - 86400), candle(now + 3600)], points: [] }, '7d', now * 1000);
+    expect(result.period).toBe('7d');
+    expect(result.candles.map(c => c.time)).toEqual([now - 86400]);
+    expect(result.points).toHaveLength(1);
+  });
   it('groups genuine finer candles into UTC buckets with correct OHLC and dollar volume', () => {
     const result = aggregateCandles([
       { time: 120, open: 3, high: 5, low: 2, close: 4, volume: 30 },

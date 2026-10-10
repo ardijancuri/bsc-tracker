@@ -9,6 +9,16 @@ const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
 const render = () => renderToStaticMarkup(<TokenPriceChart address={address} interval="5m" />);
 
 describe('market cap candle chart', () => {
+  it.each([
+    ['queued', 'Waiting for market data…'],
+    ['rate_limited', 'Market provider cooling down. Retrying automatically…'],
+    ['provider_error', 'Market provider unavailable. Retrying automatically…'],
+  ] as const)('explains %s without falsely claiming that candles do not exist', (loadStatus, message) => {
+    state.chart = { address, period: '1m', source: 'unavailable', candles: [], points: [], pending: false, stale: false, updatedAt: null, resolution: '1m', loadStatus, retryAfterMs: 30_000 };
+    const html = render();
+    expect(html).toContain(message);
+    expect(html).not.toContain('Candle data unavailable');
+  });
   it('keeps missing OHLC history empty rather than showing a recorded-price line', () => {
     state.chart = { address, period: '5m', source: 'recorded', candles: [], points: [{ timestamp: '2026-10-10T00:00:00Z', priceUsd: '1' }], pending: true, stale: false, updatedAt: null, resolution: '5m' };
     const html = render();

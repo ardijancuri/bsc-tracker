@@ -17,7 +17,12 @@ export function TokenPriceChart({ address, interval }: { address: string; interv
   const [hover, setHover] = useState<MarketCandle | null>(null);
   const marketCandles = marketCapCandles(data?.candles ?? [], data?.marketCapSupply);
   const last = hover ?? marketCandles.at(-1);
-  const status = error ? 'Market chart unavailable' : !data || data.pending ? 'Loading candles…' : data.candles.length && !marketCandles.length ? 'Market cap data unavailable' : 'Candle data unavailable';
+  const status = error ? 'Market chart unavailable' : !data ? 'Loading candles…'
+    : data.candles.length && !marketCandles.length ? 'Market cap data unavailable'
+    : data.loadStatus === 'rate_limited' ? 'Market provider cooling down. Retrying automatically…'
+    : data.loadStatus === 'provider_error' ? 'Market provider unavailable. Retrying automatically…'
+    : data.loadStatus === 'queued' ? 'Waiting for market data…'
+    : data.pending ? 'Loading candles…' : 'Candle data unavailable';
 
   useEffect(() => {
     if (!container.current) return;

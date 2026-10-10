@@ -36,4 +36,14 @@ describe('token chart API intervals', () => {
       expect(mocks.query).toHaveBeenCalledTimes(1);
     } finally { await app.close(); }
   });
+  it('keeps provider cooldowns distinguishable from missing history and prevents caching a loading response', async () => {
+    const app = Fastify(); registerIntelligenceRoutes(app);
+    mocks.query.mockResolvedValue({ rows: [{ supply: '1000000000' }] });
+    mocks.currentMarketChart.mockResolvedValue({ chart: null, pending: false, loadStatus: 'rate_limited', retryAfterMs: 120_000 });
+    try {
+      const response = await app.inject(`/api/tokens/${address}/chart?interval=1m`);
+      expect(response.json()).toMatchObject({ candles: [], loadStatus: 'rate_limited', retryAfterMs: 120_000 });
+      expect(response.headers['cache-control']).toBe('no-store');
+    } finally { await app.close(); }
+  });
 });

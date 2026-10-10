@@ -7,7 +7,7 @@ const requests = new Map<string, Promise<TokenChart>>();
 async function chartRequest(address: string, period: ChartRange) {
   const key = `${address}-${period}`;
   const cached = saved.get(key);
-  if (cached && Date.now() - cached.checked < 10_000) return cached.chart;
+  if (cached && Date.now() - cached.checked < (cached.chart.pending || cached.chart.loadStatus ? 1000 : 10_000)) return cached.chart;
   let request = requests.get(key);
   if (!request) {
     const parameter = candleIntervals.includes(period as CandleInterval) ? 'interval' : 'period';
@@ -29,18 +29,29 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
   useEffect(() => {
     if (!address || !enabled) return;
     let stopped = false;
+    let refreshing = false;
     let timer: number;
+    const isVisible = () => document.visibilityState !== 'hidden';
     const refresh = async () => {
+      if (stopped || refreshing || !isVisible()) return;
+      refreshing = true;
       let delay = 30_000;
       try {
         const value = await chartRequest(address, period);
         if (!stopped) { setResult({ key, chart: value }); setError(false); }
-        if (value.pending) delay = 8000;
+        if (value.retryAfterMs) delay = Math.max(1000, Math.min(value.retryAfterMs, 600_000));
+        else if (value.pending) delay = 3000;
       } catch { if (!stopped) setError(true); }
-      if (!stopped) timer = window.setTimeout(() => void refresh(), delay);
+      refreshing = false;
+      if (!stopped && isVisible()) timer = window.setTimeout(() => void refresh(), delay);
     };
+    const visibilityChanged = () => {
+      window.clearTimeout(timer);
+      if (isVisible()) void refresh();
+    };
+    document.addEventListener('visibilitychange', visibilityChanged);
     void refresh();
-    return () => { stopped = true; window.clearTimeout(timer); };
+    return () => { stopped = true; window.clearTimeout(timer); document.removeEventListener('visibilitychange', visibilityChanged); };
   }, [address, period, key, enabled]);
   return { chart, error };
 }
@@ -49,12 +60,12 @@ export function useChartVisibility() {
   const ref = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
-    if (!ref.current || visible) return;
+    if (!ref.current) return;
     const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) { setVisible(true); observer.disconnect(); }
+      setVisible(entries.some(entry => entry.isIntersecting));
     }, { rootMargin: '80px' });
     observer.observe(ref.current);
     return () => observer.disconnect();
-  }, [visible]);
+  }, []);
   return { ref, visible };
 }

@@ -15,7 +15,7 @@ export function TokenMarketPanel({ address, identity }: { address: string; ident
   const [interval, setInterval] = useState<CandleInterval>('5m');
   const [market, setMarket] = useState<Market | null>(null);
   const [error, setError] = useState(false);
-  const { chart } = useTokenChart(address, period);
+  const { chart } = useTokenChart(address, interval === '5m' ? '5m' : period);
   useEffect(() => {
     let cancelled = false;
     setMarket(null); setError(false);
