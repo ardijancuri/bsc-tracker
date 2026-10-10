@@ -3,9 +3,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
 import { watchlistMarket } from './watchlistMarket.js';
-import { chartWindows, currentMarketChart } from './tokenChart.js';
+import { chartSettings, currentMarketChart } from './tokenChart.js';
 import { nonStockTokenSql } from './stockToken.js';
-import { defaultPreferences, signalKinds, watchPeriods, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
+import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
 export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -103,28 +103,34 @@ export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.sta
 
 export function registerIntelligenceRoutes(app: FastifyInstance) {
   // Market history is independent of which KOL wallets happened to trade.
-  app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/chart', async (request, reply) => {
+  app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string } }>('/api/tokens/:address/chart', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
-    const period = request.query.period ?? '24h';
-    if (!parsed.success || !watchPeriods.includes(period as WatchPeriod)) return reply.code(400).send({ error: 'Invalid token or period' });
-    const address = parsed.data, selected = period as WatchPeriod;
-    const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated
+    const interval = request.query.interval;
+    const period = interval ?? request.query.period ?? '24h';
+    if (!parsed.success || !(interval === undefined ? watchPeriods.includes(period as WatchPeriod) : candleIntervals.includes(interval as typeof candleIntervals[number]))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
+    const address = parsed.data, selected = period as ChartRange;
+    const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
+      CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
+        THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END AS supply
       FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND EXISTS (
         SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const result = await currentMarketChart(address, selected);
     reply.header('Cache-Control', 'public, max-age=15');
-    if (result.chart) return { ...result.chart, pending: result.pending };
+    const marketCapSupply = known.rows[0].supply ?? null;
+    if (result.chart) return { ...result.chart, period: selected, marketCapSupply, pending: result.pending };
+    if (interval !== undefined) return { address, period: selected, candles: [], points: [], source: 'unavailable',
+      updatedAt: null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false };
     const history = await pool.query(`SELECT t.timestamp,t.price_usd::text AS "priceUsd" FROM trades t
       JOIN kols k ON k.address=t.wallet_address AND k.is_tracked
       WHERE t.token_address=$1 AND t.block_number IS NOT NULL AND t.price_usd>0
         AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()
-      ORDER BY t.timestamp DESC,t.id DESC LIMIT 1000`, [address, chartWindows[selected].seconds]);
+      ORDER BY t.timestamp DESC,t.id DESC LIMIT 1000`, [address, chartSettings(selected).seconds]);
     const points = history.rows.reverse();
     const quote = known.rows[0];
     if (!points.length && Number(quote.price) > 0) points.push({ timestamp: quote.updated || new Date().toISOString(), priceUsd: quote.price });
     return { address, period: selected, candles: [], points, source: points.length > 1 ? 'recorded' : points.length ? 'quote' : 'unavailable',
-      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartWindows[selected].resolution, pending: result.pending, stale: false };
+      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false };
   });
   app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/market', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);

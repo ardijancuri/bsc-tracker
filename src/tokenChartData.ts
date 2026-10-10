@@ -1,4 +1,12 @@
-import type { TokenChart } from '../shared/intelligence';
+import type { MarketCandle, TokenChart } from '../shared/intelligence';
+
+// All OHLC values use current on-chain token supply; USD volume stays unchanged.
+export function marketCapCandles(candles: MarketCandle[], supply: string | null | undefined): MarketCandle[] {
+  const units = Number(supply);
+  if (!Number.isFinite(units) || units <= 0) return [];
+  return candles.map(c => ({ ...c, open: c.open * units, high: c.high * units, low: c.low * units, close: c.close * units }))
+    .filter(c => [c.open, c.high, c.low, c.close].every(value => Number.isFinite(value) && value > 0));
+}
 
 export function marketChartChanges(chart: TokenChart | null | undefined, now = Date.now()) {
   if (chart?.source !== 'geckoterminal' || !chart.candles.length) return null;

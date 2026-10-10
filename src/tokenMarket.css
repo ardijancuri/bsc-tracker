@@ -1,16 +1,17 @@
 .token-market-panel{margin-bottom:30px}
 .token-market-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
 .token-market-toolbar h2{margin:0;font-size:16px;font-weight:700}
+.candle-interval-tabs{display:flex;align-items:center;gap:4px;flex-shrink:0}
+.candle-interval-tabs button{border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted);padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer}
+.candle-interval-tabs button:hover{color:#fff;border-color:var(--line)}
+.candle-interval-tabs button[aria-selected=true]{color:#fff;border-color:var(--line);background:#171d21}
 .token-market-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:20px;margin-bottom:18px;font-variant-numeric:tabular-nums}
 .token-market-stats>div{display:flex;flex-direction:column;gap:7px;min-width:0}
 .token-market-stats>div>span{color:var(--muted);font-size:12px}
 .token-market-stats strong{font-size:17px;font-weight:700}
 .token-price-chart{position:relative;min-width:0}
 .price-chart-controls,.price-chart-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:11px}
-.price-chart-controls>div,.price-chart-footer>span:last-child{display:flex;align-items:center;gap:6px}
-.price-chart-controls button{padding:5px 9px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
-.price-chart-controls button:not(:disabled):hover,.price-chart-controls button[aria-pressed=true]{border-color:var(--line);color:#fff;background:#171d21}
-.price-chart-controls button:disabled{opacity:.45;cursor:default}
+.price-chart-footer>span:last-child{display:flex;align-items:center;gap:6px}
 .price-chart-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;min-height:38px;padding:8px 0;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .price-chart-legend b{color:#e9edf1;font-weight:600}
 .price-chart-canvas{height:340px;width:100%;min-width:0}
@@ -21,4 +22,4 @@
 .watch-sparkline-host{display:inline-block;width:100%;vertical-align:middle;line-height:0}
 @media(max-width:800px){.token-market-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.token-market-toolbar{gap:10px}.token-market-stats strong{font-size:16px}}
 @media(max-width:800px){.price-chart-canvas{height:290px}.price-chart-legend{font-size:10px;gap:5px 10px}.price-chart-controls{gap:8px}}
-@media(max-width:400px){.token-market-toolbar h2{font-size:14px}.token-market-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.price-chart-controls button{padding:5px 7px}}
+@media(max-width:400px){.token-market-toolbar h2{font-size:14px}.token-market-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.candle-interval-tabs{gap:2px}.candle-interval-tabs button{padding:7px 9px}}

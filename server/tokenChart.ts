@@ -1,6 +1,6 @@
 import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
-import type { MarketCandle, TokenChart, WatchPeriod } from '../shared/intelligence.js';
+import type { MarketCandle, TokenChart, ChartRange } from '../shared/intelligence.js';
 import { geckoFetch } from './geckoApi.js';
 
 export const chartWindows = {
@@ -8,9 +8,34 @@ export const chartWindows = {
   '7d': { seconds: 604800, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 300_000 },
   '30d': { seconds: 2592000, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 600_000 },
 } as const;
+export const candleWindows = {
+  '1m': { seconds: 60_000, timeframe: 'minute', aggregate: 1, resolution: '1m', fresh: 60_000 },
+  '5m': chartWindows['24h'],
+  '1h': chartWindows['30d'],
+  '4h': { seconds: 7_776_000, timeframe: 'hour', aggregate: 4, resolution: '4h', fresh: 600_000 },
+  '1d': { seconds: 15_552_000, timeframe: 'day', aggregate: 1, resolution: '1d', fresh: 900_000 },
+} as const;
+export function chartSettings(range: ChartRange) { return range in candleWindows ? candleWindows[range as keyof typeof candleWindows] : chartWindows[range as keyof typeof chartWindows]; }
 const addressRe = /^0x[0-9a-f]{40}$/;
 const poolRe = /^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 type JsonRequest = (url: URL) => Promise<any>;
+const resolutionSeconds: Record<string, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+
+// Combine real finer candles; never split a coarse candle into invented prices.
+export function aggregateCandles(candles: MarketCandle[], seconds: number): MarketCandle[] {
+  const buckets = new Map<number, MarketCandle>();
+  for (const candle of [...candles].sort((a, b) => a.time - b.time)) {
+    const time = Math.floor(candle.time / seconds) * seconds;
+    const bucket = buckets.get(time);
+    if (!bucket) buckets.set(time, { ...candle, time });
+    else { bucket.high = Math.max(bucket.high, candle.high); bucket.low = Math.min(bucket.low, candle.low); bucket.close = candle.close; bucket.volume += candle.volume; }
+  }
+  const result = [...buckets.values()];
+  // A truncated history may begin halfway through a closed bucket. Omit that
+  // bucket rather than presenting an incomplete historical open/high/low.
+  if (result.length > 1 && Math.min(...candles.map(c => c.time)) > result[0].time) result.shift();
+  return result;
+}
 
 export function parseCandles(rows: unknown, since: number, until: number): MarketCandle[] {
   if (!Array.isArray(rows)) return [];
@@ -43,9 +68,9 @@ async function providerRequest(url: URL) {
   return response.json();
 }
 
-export async function fetchMarketCandles(address: string, period: WatchPeriod, poolAddress: string | undefined, request: JsonRequest = providerRequest, now = Date.now()): Promise<TokenChart | null> {
+export async function fetchMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, request: JsonRequest = providerRequest, now = Date.now()): Promise<TokenChart | null> {
   if (!addressRe.test(address) || poolAddress && !poolRe.test(poolAddress)) throw new Error('Invalid chart address');
-  const settings = chartWindows[period];
+  const settings = chartSettings(period);
   const pools = poolAddress ? [poolAddress] : selectChartPools(await request(new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/pools`)), address);
   for (const pool of pools) {
     const url = new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/pools/${pool}/ohlcv/${settings.timeframe}`);
@@ -74,7 +99,19 @@ const cache = new Map<string, TokenChart>();
 const jobs = new Map<string, Promise<TokenChart | null>>();
 const retryAt = new Map<string, number>();
 const cacheDirectory = process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts');
-async function loadCached(key: string, address: string, period: WatchPeriod) {
+function finerCachedChart(address: string, range: ChartRange): TokenChart | null {
+  const settings = chartSettings(range), step = resolutionSeconds[settings.resolution];
+  const candidates = [...cache.values()].filter(c => c.address === address && resolutionSeconds[c.resolution] < step && c.candles.length)
+    .sort((a, b) => b.candles.at(-1)!.time - a.candles.at(-1)!.time || Date.parse(b.updatedAt!) - Date.parse(a.updatedAt!));
+  const source = candidates[0];
+  if (!source) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const candles = aggregateCandles(source.candles.filter(c => c.time >= now - settings.seconds && c.time <= now), step);
+  if (!candles.length) return null;
+  return { ...source, period: range, resolution: settings.resolution, candles,
+    points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })), stale: true, partialHistory: true };
+}
+async function loadCached(key: string, address: string, period: ChartRange) {
   if (cache.has(key)) return cache.get(key)!;
   try {
     const raw = await readFile(path.join(cacheDirectory, `${key}.json`), 'utf8');
@@ -82,7 +119,8 @@ async function loadCached(key: string, address: string, period: WatchPeriod) {
     const value = JSON.parse(raw) as TokenChart;
     if (value.address !== address || value.period !== period || value.source !== 'geckoterminal' || !Number.isFinite(Date.parse(value.updatedAt || ''))) return null;
     const now = Math.floor(Date.now() / 1000);
-    const candles = parseCandles(value.candles?.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]), now - chartWindows[period].seconds, now);
+    if (value.resolution !== chartSettings(period).resolution) return null;
+    const candles = parseCandles(value.candles?.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]), now - chartSettings(period).seconds, now);
     if (!candles.length) return null;
     value.candles = candles;
     value.points = candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) }));
@@ -91,10 +129,13 @@ async function loadCached(key: string, address: string, period: WatchPeriod) {
   } catch { return null; }
 }
 
-export async function currentMarketChart(address: string, period: WatchPeriod): Promise<{ chart: TokenChart | null; pending: boolean }> {
+export async function currentMarketChart(address: string, range: ChartRange): Promise<{ chart: TokenChart | null; pending: boolean }> {
+  // These intervals are identical to existing watchlist requests. Reuse their
+  // cache and in-flight jobs rather than spending another provider request.
+  const period = range === '5m' ? '24h' : range === '1h' ? '30d' : range;
   const key = `${address}-${period}`;
   const saved = await loadCached(key, address, period);
-  const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < chartWindows[period].fresh;
+  const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < chartSettings(period).fresh;
   if (fresh) return { chart: saved, pending: false };
   let job = jobs.get(key);
   if (!job && Date.now() >= (retryAt.get(key) || 0) && jobs.size < 32) {
@@ -124,7 +165,8 @@ export async function currentMarketChart(address: string, period: WatchPeriod): 
     })();
     jobs.set(key, job);
   }
-  if (saved) return { chart: { ...saved, stale: true }, pending: !!job };
+  const available = saved ?? (range in candleWindows ? finerCachedChart(address, range) : null);
+  if (available) return { chart: { ...available, stale: true }, pending: !!job };
   if (job) {
     const result = await new Promise<TokenChart | null>(resolve => {
       const timer = setTimeout(() => resolve(null), 6500);

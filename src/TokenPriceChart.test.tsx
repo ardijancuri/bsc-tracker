@@ -6,25 +6,33 @@ import { TokenPriceChart } from './TokenPriceChart';
 const state = vi.hoisted(() => ({ chart: null as TokenChart | null }));
 vi.mock('./useTokenChart', () => ({ useTokenChart: () => ({ chart: state.chart, error: false }) }));
 const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
-const render = () => renderToStaticMarkup(<TokenPriceChart address={address} period="24h" />);
+const render = () => renderToStaticMarkup(<TokenPriceChart address={address} interval="5m" />);
 
-describe('chart mode controls', () => {
-  it('selects the actual line fallback and explains pending candle data', () => {
-    state.chart = { address, period: '24h', source: 'recorded', candles: [], points: [{ timestamp: '2026-10-10T00:00:00Z', priceUsd: '1' }], pending: true, stale: false, updatedAt: null, resolution: '5m' };
+describe('market cap candle chart', () => {
+  it('keeps missing OHLC history empty rather than showing a recorded-price line', () => {
+    state.chart = { address, period: '5m', source: 'recorded', candles: [], points: [{ timestamp: '2026-10-10T00:00:00Z', priceUsd: '1' }], pending: true, stale: false, updatedAt: null, resolution: '5m' };
     const html = render();
-    expect(html).toMatch(/disabled=""[^>]*aria-pressed="false"[^>]*>Candles/);
-    expect(html).toMatch(/aria-pressed="true"[^>]*>Line/);
     expect(html).toContain('Loading candles…');
+    expect(html).toContain('0 candles');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('USD 1');
   });
-  it('enables and selects candles when real OHLC history arrives', () => {
-    state.chart = { address, period: '24h', source: 'geckoterminal', candles: [{ time: 1791586800, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m' };
-    expect(render()).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Candles/);
-    expect(render()).not.toContain('disabled=""');
-  });
-  it('offers the live chart without pretending missing data is candlesticks', () => {
-    state.chart = { address, period: '24h', source: 'recorded', candles: [], points: [{ timestamp: '2026-10-10T00:00:00Z', priceUsd: '1' }], pending: false, stale: false, updatedAt: null, resolution: '5m' };
+  it('shows market cap OHLC instead of token prices, without changing dollar volume', () => {
+    state.chart = { address, period: '5m', source: 'geckoterminal', candles: [{ time: 1791586800, open: .001, high: .002, low: .0005, close: .0015, volume: 10 }], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m', marketCapSupply: '1000000000' };
     const html = render();
-    expect(html).toContain('Candle data unavailable');
+    expect(html).toContain('Market cap <b>$1.5M</b>');
+    expect(html).toContain('O <b>$1M</b>');
+    expect(html).toContain('H <b>$2M</b>');
+    expect(html).toContain('L <b>$500K</b>');
+    expect(html).toContain('Volume <b>$10</b>');
+    expect(html).not.toContain('>Line<');
+    expect(html).not.toContain('>Reset<');
+  });
+  it('explains unavailable supply and offers the live chart', () => {
+    state.chart = { address, period: '5m', source: 'geckoterminal', candles: [{ time: 1791586800, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m', marketCapSupply: null };
+    const html = render();
+    expect(html).toContain('Market cap data unavailable');
     expect(html).toContain(`https://gmgn.ai/bsc/token/${address}`);
+    expect(html).not.toContain('$1.50');
   });
 });

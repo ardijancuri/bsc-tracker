@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchMarketCandles, parseCandles, selectChartPool, selectChartPools } from './tokenChart.js';
+import { aggregateCandles, fetchMarketCandles, parseCandles, selectChartPool, selectChartPools } from './tokenChart.js';
 
 const address = '0x13920fe6467e9e3c852b8d365a036c995f0f7777';
 const pool = '0xfd55be774ea18067bd06a6aed49fb1cc4ad966e9';
@@ -7,6 +7,38 @@ const other = '0xbaaf1d8434c42f2bea01a997e849ba9254d09905';
 const poolRow = (address: string, token: string, liquidity: number) => ({ attributes: { address, reserve_in_usd: liquidity }, relationships: { quote_token: { data: { id: `bsc_${token}` } } } });
 
 describe('market chart data', () => {
+  it('groups genuine finer candles into UTC buckets with correct OHLC and dollar volume', () => {
+    const result = aggregateCandles([
+      { time: 120, open: 3, high: 5, low: 2, close: 4, volume: 30 },
+      { time: 0, open: 1, high: 3, low: .5, close: 2, volume: 10 },
+      { time: 60, open: 2, high: 4, low: 1, close: 3, volume: 20 },
+      { time: 300, open: 4, high: 6, low: 3, close: 5, volume: 5 },
+    ], 300);
+    expect(result).toEqual([
+      { time: 0, open: 1, high: 5, low: .5, close: 4, volume: 60 },
+      { time: 300, open: 4, high: 6, low: 3, close: 5, volume: 5 },
+    ]);
+    expect(aggregateCandles([], 300)).toEqual([]);
+  });
+  it('omits the first incomplete historical bucket when cached history starts mid-candle', () => {
+    expect(aggregateCandles([
+      { time: 60, open: 1, high: 2, low: .5, close: 1, volume: 10 },
+      { time: 300, open: 1, high: 2, low: .5, close: 1, volume: 20 },
+    ], 300).map(c => c.time)).toEqual([300]);
+  });
+  it.each([
+    ['1m', 'minute', '1', 60], ['5m', 'minute', '5', 300],
+    ['1h', 'hour', '1', 3600], ['4h', 'hour', '4', 14400], ['1d', 'day', '1', 86400],
+  ] as const)('requests real %s candles at the selected interval', async (interval, timeframe, aggregate, step) => {
+    const now = 2000000000;
+    const result = await fetchMarketCandles(address, interval, pool, async url => {
+      expect(url.pathname).toContain(`/ohlcv/${timeframe}`);
+      expect(url.searchParams.get('aggregate')).toBe(aggregate);
+      return { data: { attributes: { ohlcv_list: [[now - step, 1, 2, .5, 1.5, 20]] } } };
+    }, now * 1000);
+    expect(result?.resolution).toBe(interval);
+    expect(result?.candles).toHaveLength(1);
+  });
   it('sorts candles chronologically and discards invalid, future, out-of-window and impossible OHLC values', () => {
     expect(parseCandles([
       [200, 2, 4, 1, 3, 50], [100, 1, 2, .5, 1.5, 20],

@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import type { TokenChart, WatchPeriod } from '../shared/intelligence';
+import { candleIntervals, type TokenChart, type ChartRange, type CandleInterval } from '../shared/intelligence';
 import { api } from './lib';
 
 const saved = new Map<string, { chart: TokenChart; checked: number }>();
 const requests = new Map<string, Promise<TokenChart>>();
-async function chartRequest(address: string, period: WatchPeriod) {
+async function chartRequest(address: string, period: ChartRange) {
   const key = `${address}-${period}`;
   const cached = saved.get(key);
   if (cached && Date.now() - cached.checked < 10_000) return cached.chart;
   let request = requests.get(key);
   if (!request) {
-    request = api<TokenChart>(`/api/tokens/${address}/chart?period=${period}`).then(chart => {
+    const parameter = candleIntervals.includes(period as CandleInterval) ? 'interval' : 'period';
+    request = api<TokenChart>(`/api/tokens/${address}/chart?${parameter}=${period}`).then(chart => {
       if (saved.size > 500) saved.delete(saved.keys().next().value!);
       saved.set(key, { chart, checked: Date.now() });
       return chart;
@@ -20,7 +21,7 @@ async function chartRequest(address: string, period: WatchPeriod) {
   return request;
 }
 
-export function useTokenChart(address: string | undefined, period: WatchPeriod, enabled = true) {
+export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true) {
   const key = `${address}-${period}`;
   const [result, setResult] = useState<{ key: string; chart: TokenChart } | null>(null);
   const [error, setError] = useState(false);

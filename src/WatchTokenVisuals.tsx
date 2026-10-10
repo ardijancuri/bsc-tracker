@@ -16,11 +16,11 @@ export function PriceChange({ value }: { value?: string | null }) {
     {Number.isFinite(number) ? `${number > 0 ? '+' : ''}${new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 2 }).format(number)}%` : '—'}
   </span>;
 }
-export function WatchTokenChange({ token }: { token: WatchEntry }) {
+export function WatchTokenChange({ token, period = '24h' }: { token: WatchEntry; period?: WatchPeriod }) {
   const { ref, visible } = useChartVisibility();
-  const { chart } = useTokenChart(token.address, '24h', visible);
-  const change = marketChartChanges(chart)?.periodChange ?? token.change24h;
-  return <span ref={ref} title={t('24h price change')}><PriceChange value={change} /></span>;
+  const { chart } = useTokenChart(token.address, period, visible);
+  const change = marketChartChanges(chart)?.periodChange ?? (period === '24h' ? token.change24h : null);
+  return <span ref={ref} title={t(period === '7d' ? '1 week price change' : '24h price change')}><PriceChange value={change} /></span>;
 }
 export function sparklineGeometry(points: WatchPricePoint[]) {
   const samples = points.map(p => ({ time: Date.parse(p.timestamp), price: Number(p.priceUsd) }))

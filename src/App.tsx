@@ -162,8 +162,8 @@ function WatchlistBanner() {
             <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
             <strong>{token.symbol || token.name || shortAddress(token.address)}</strong>
             <span className="watchlist-banner-cap" title={t('Market cap')}>MC <WatchMarketValue value={token.marketCapUsd} /></span>
-            <WatchTokenChange token={token} />
-            <WatchSparkline address={token.address} priceUsd={token.priceUsd} points={token.priceHistory} />
+            <WatchTokenChange token={token} period="7d" />
+            <WatchSparkline address={token.address} priceUsd={token.priceUsd} period="7d" label="Token price chart · 1 week" />
           </Link>;
         })}
         {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}

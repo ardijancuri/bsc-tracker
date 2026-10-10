@@ -14,12 +14,17 @@ export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuye
 export interface WatchPricePoint { timestamp: string; priceUsd: string }
 export interface MarketCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface TokenChart {
-  address: string; period: WatchPeriod; candles: MarketCandle[]; points: WatchPricePoint[];
+  address: string; period: ChartRange; candles: MarketCandle[]; points: WatchPricePoint[];
   source: 'geckoterminal' | 'recorded' | 'quote' | 'unavailable';
   updatedAt: string | null; resolution: string; poolAddress?: string; pending: boolean; stale: boolean;
+  marketCapSupply?: string | null;
+  partialHistory?: boolean;
 }
 export const watchPeriods = ['24h', '7d', '30d'] as const;
 export type WatchPeriod = typeof watchPeriods[number];
+export const candleIntervals = ['1m', '5m', '1h', '4h', '1d'] as const;
+export type CandleInterval = typeof candleIntervals[number];
+export type ChartRange = WatchPeriod | CandleInterval;
 export interface WatchEntry {
   kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null;
   avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null;
