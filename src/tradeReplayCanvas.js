@@ -896,10 +896,10 @@ export class ReplayCanvas {
         ctx.drawImage(this.brandIcon, 7, 4, 114, 120,
           right - iconWidth, detailRow - detailHeight / 2, iconWidth, detailHeight);
       } catch {
-        rowText('b/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
+        rowText('k/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
       }
     } else {
-      rowText('b/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
+      rowText('k/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
     }
   }
 
@@ -1256,17 +1256,19 @@ export class ReplayCanvas {
     if (this.brandWordmark?.naturalWidth > 0) {
       try {
         ctx.save();
-        // Crop away the SVG's gold icon, then tint only its exact wordmark path
-        // black for contrast against the solid gold canvas frame.
+        // Use the complete outlined wordmark without stretching its lettering.
+        // Tint it black for contrast against the solid gold canvas frame.
         ctx.filter = 'brightness(0)';
-        ctx.drawImage(this.brandWordmark, 410, 60, 770, 225, 49, 1214, 375, 110);
+        const width = 440;
+        const height = width * this.brandWordmark.naturalHeight / this.brandWordmark.naturalWidth;
+        ctx.drawImage(this.brandWordmark, 49, 1293 - height, width, height);
         ctx.restore();
         return;
       } catch {
         ctx.restore();
       }
     }
-    text(ctx, 'bscan', 49, 1293, `850 76px ${FONT}`, '#0c0e11');
+    text(ctx, 'kollens', 49, 1293, fitFont(ctx, 'kollens', 440, 76, 55, 850), '#0c0e11');
   }
 }
 

@@ -20,7 +20,7 @@ export function tradeReplayXIntent(data: TradeReplayData): string {
   const wallet = data.kol.address.trim().toLowerCase();
   const page = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://bscan.fun/kol/${wallet}` : 'https://bscan.fun/';
   const query = new URLSearchParams({
-    text: `${names.kol}'s ${names.token} trade replay, tracked with bscan.`,
+    text: `${names.kol}'s ${names.token} trade replay, tracked with kollens.`,
     url: page,
   });
   return `https://x.com/intent/post?${query.toString()}`;
@@ -41,7 +41,7 @@ export async function shareTradeReplayFile(file: File, data: TradeReplayData): P
   const names = replayNames(data);
   await navigator.share({
     files: [file],
-    title: `${names.kol} · ${names.token} | bscan`,
-    text: `${names.kol}'s ${names.token} trade replay, tracked with bscan.`,
+    title: `${names.kol} · ${names.token} | kollens`,
+    text: `${names.kol}'s ${names.token} trade replay, tracked with kollens.`,
   });
 }

@@ -16,7 +16,7 @@ export function supportedReplayFormat(): string | null {
 }
 
 export function replayFileName(name: string, mime: string) {
-  const clean = name.replace(/[^a-z0-9-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 90).toLowerCase() || 'bscan';
+  const clean = name.replace(/[^a-z0-9-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 90).toLowerCase() || 'kollens';
   return `${clean}-trade-replay.${mime.startsWith('video/mp4') ? 'mp4' : 'webm'}`;
 }
 

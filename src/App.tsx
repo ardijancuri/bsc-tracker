@@ -123,7 +123,7 @@ function SearchDialog({ close }: { close: () => void }) {
   }, [query]);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, [close]);
   const go = (path: string) => { navigate(path); close(); };
-  return <div className="dialog-scrim" onMouseDown={close}><div className="search-dialog" role="dialog" aria-modal="true" aria-label={t("Search bscan")} onMouseDown={event => event.stopPropagation()}>
+  return <div className="dialog-scrim" onMouseDown={close}><div className="search-dialog" role="dialog" aria-modal="true" aria-label={t("Search kollens")} onMouseDown={event => event.stopPropagation()}>
     <div className="search-input-row"><Search size={20} /><input autoFocus placeholder={t("Search KOL, wallet, token, or contract")} value={query} onChange={event => setQuery(event.target.value)} /><button className="icon-button" aria-label={t("Close search")} onClick={close}><X size={18} /></button></div>
     <div className="search-results">{!query && <p className="search-hint">{t("Search tracked KOL wallets and tokens on BNB Smart Chain.")}</p>}
       {results.kols.length > 0 && <><span className="eyebrow">{t("KOLs")}</span>{results.kols.map(kol => <button className="search-result" key={kol.address} onClick={() => go(`/kol/${kol.address}`)}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></button>)}</>}
@@ -138,15 +138,15 @@ function Header({ overview }: { overview: Overview }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === '/' && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); setSearchOpen(true); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, []);
   return <><header className="site-header"><div className="header-inner">
-    <Link className="brand" to="/trades"><img className="brand-logo" src="/bscan-fingerprint-logo.svg?v=2" alt="bscan" width="103" height="30" /></Link>
+    <Link className="brand" to="/trades"><img className="brand-logo" src="/kollens-logo.svg" alt="kollens" width="142" height="30" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
-      <a className="mobile-social-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('bscan on X')}</a>
+      <a className="mobile-social-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
     <div className="header-social">
       <span className="bnb-price" title={overview.bnbPriceAt ? t('Chainlink BNB/USD updated {time}', { time: localDate(overview.bnbPriceAt) }) : t("BNB/USD price unavailable")}><span>BNB</span><strong>{isFresh(overview.bnbPriceAt, 2 * 60 * 60_000) ? compact(overview.bnbPriceUsd, true) : '—'}</strong></span>
-      <a className="header-x-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer" aria-label={t("bscan on X")} title={t("bscan on X")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg></a>
+      <a className="header-x-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer" aria-label={t("kollens on X")} title={t("kollens on X")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg></a>
     </div>
     <div className="header-right"><LanguageSelect /><span className="chain-label"><ChainLogo /><span>{t("On BNB Chain")}</span></span><button className="header-search" onClick={() => setSearchOpen(true)} aria-label={t("Search")}><Search size={18} /><span>{t("Search")}</span><kbd>/</kbd></button><button className="mobile-menu icon-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label={t("Toggle menu")}><Menu size={21} /></button></div>
   </div></header>{searchOpen && <SearchDialog close={() => setSearchOpen(false)} />}</>;
@@ -205,14 +205,14 @@ function TradeTape({ overview }: { overview: Overview }) {
     <section className="trades-faq" aria-labelledby="trades-faq-title">
       <h2 id="trades-faq-title">{t("FAQs")}</h2>
       <div className="faq-list">
-        <details className="faq-item" name="trades-faq"><summary>{t("What does bscan track?")}</summary><p>{t("bscan shows token trades from a curated list of KOL wallets on BNB Smart Chain.")}</p></details>
+        <details className="faq-item" name="trades-faq"><summary>{t("What does kollens track?")}</summary><p>{t("kollens shows token trades from a curated list of KOL wallets on BNB Smart Chain.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("How often do new trades appear?")}</summary><p>{t("The feed updates automatically as newly indexed trades become available.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What can I find in the token tracker?")}</summary><p>{t("Browse tokens traded by tracked KOLs, grouped by market cap. Open a token to see its recent KOL trades and the wallets trading it.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What does a KOL profile show?")}</summary><p>{t("Each tracked wallet has a profile with its last 24 hours of trades, traded tokens, and realized profit from positions bought and sold in that window.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("It ranks tracked positions by realized USD profit over the last 24 hours. Sales without enough priced purchases in that window are excluded. A dash means there are no fully priced completed positions yet.")}</p></details>
       </div>
     </section>
-    <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from bscan.")}</p></div><a href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer">@bscanfun <ExternalLink size={15} /></a></section>
+    <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from kollens.")}</p></div><a href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer">@bscanfun <ExternalLink size={15} /></a></section>
   </div>;
 }
 
@@ -382,7 +382,7 @@ function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
 export default function App() {
   const [language] = useLanguage();
   const { pathname } = useLocation();
-  useEffect(() => { document.documentElement.lang = language; if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) document.title = t('bscan — BSC KOL tracker'); }, [language, pathname]);
+  useEffect(() => { document.documentElement.lang = language; if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) document.title = t('kollens — BSC KOL tracker'); }, [language, pathname]);
   const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <WatchlistProvider>
     <Header overview={overview} />
@@ -400,7 +400,7 @@ export default function App() {
       <Route path="*" element={<Navigate to="/trades" replace />} />
     </Routes></main>
     <footer className="footer">
-      <div><span className="footer-brand"><img src="/bscan-fingerprint-icon.svg" alt="" width="18" height="18" /><span>bscan</span></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
+      <div><span className="footer-brand"><img className="footer-logo" src="/kollens-logo.svg" alt="kollens" width="104" height="22" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
   </WatchlistProvider>;

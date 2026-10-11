@@ -63,7 +63,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const tokenName = data.token.symbol ?? t('Token');
   const wallet = data.kol.address.trim().toLowerCase();
   const replayUrl = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://bscan.fun/kol/${wallet}` : 'https://bscan.fun/';
-  const telegramUrl = `https://t.me/share/url?${new URLSearchParams({ url: replayUrl, text: `${kolName}'s ${tokenName} trade replay, tracked with bscan.` })}`;
+  const telegramUrl = `https://t.me/share/url?${new URLSearchParams({ url: replayUrl, text: `${kolName}'s ${tokenName} trade replay, tracked with kollens.` })}`;
 
   const paintPreview = useCallback((renderer: ReplayCanvas) => {
     const visible = canvas.current;
@@ -197,7 +197,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           <input className="trade-replay-seek" aria-label={t('Replay position')} type="range" min="0" max="1000" value={Math.round(seek * 1000)} disabled={!ready || exporting} onChange={event => { const next = Number(event.target.value) / 1000; setPlaying(false); progress.current = next; setSeek(next); if (player.current) { player.current.render(next); paintPreview(player.current); } }} />
         </div>
         <div className="trade-replay-share-panel">
-          <div className="trade-replay-heading"><span className="trade-replay-eyebrow">bscan</span><h2>{t('Share trade')}</h2><p>{kolName} <span>·</span> {tokenName}</p></div>
+          <div className="trade-replay-heading"><span className="trade-replay-eyebrow">kollens</span><h2>{t('Share trade')}</h2><p>{kolName} <span>·</span> {tokenName}</p></div>
           <div className="trade-replay-actions">
             <button type="button" disabled={!imageAvailable} onClick={() => void saveImage()}><ImageIcon size={16} /> {t('Save image')}</button>
             <button type="button" disabled={!file || exporting} onClick={download}><Film size={16} /> {t('Save video')}</button>

@@ -26,7 +26,7 @@ describe('replay X draft', () => {
     expect(intent.origin).toBe('https://x.com');
     expect(intent.pathname).toBe('/intent/post');
     expect(intent.searchParams.get('url')).toBe('https://bscan.fun/kol/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
-    expect(intent.searchParams.get('text')).toBe("Tavern's SAFU trade replay, tracked with bscan.");
+    expect(intent.searchParams.get('text')).toBe("Tavern's SAFU trade replay, tracked with kollens.");
     expect([...intent.searchParams.keys()]).toEqual(['text', 'url']);
   });
 
@@ -35,7 +35,7 @@ describe('replay X draft', () => {
     data.kol.name = '  旺柴\n & ? trader  ';
     data.token.symbol = 'GM + #1 = %';
     const intent = new URL(tradeReplayXIntent(data));
-    expect(intent.searchParams.get('text')).toBe("旺柴 & ? trader's GM + #1 = % trade replay, tracked with bscan.");
+    expect(intent.searchParams.get('text')).toBe("旺柴 & ? trader's GM + #1 = % trade replay, tracked with kollens.");
     expect(intent.hash).toBe('');
     expect([...intent.searchParams.keys()]).toEqual(['text', 'url']);
   });
@@ -46,7 +46,7 @@ describe('replay X draft', () => {
     data.token.symbol = 'A'.repeat(120);
     data.kol.address = '0x1234?redirect=https://other.example/';
     const intent = new URL(tradeReplayXIntent(data));
-    expect(intent.searchParams.get('text')).toBe(`${'🐢'.repeat(50)}'s ${'A'.repeat(50)} trade replay, tracked with bscan.`);
+    expect(intent.searchParams.get('text')).toBe(`${'🐢'.repeat(50)}'s ${'A'.repeat(50)} trade replay, tracked with kollens.`);
     expect(intent.searchParams.get('url')).toBe('https://bscan.fun/');
   });
 
@@ -55,7 +55,7 @@ describe('replay X draft', () => {
     data.kol.name = '   ';
     data.token.symbol = null;
     data.token.name = null;
-    expect(new URL(tradeReplayXIntent(data)).searchParams.get('text')).toBe("KOL's Token trade replay, tracked with bscan.");
+    expect(new URL(tradeReplayXIntent(data)).searchParams.get('text')).toBe("KOL's Token trade replay, tracked with kollens.");
   });
 });
 
@@ -82,7 +82,7 @@ describe('native replay file sharing', () => {
     await shareTradeReplayFile(file, replay());
     expect(canShare).toHaveBeenCalledWith({ files: [file] });
     expect(share).toHaveBeenCalledOnce();
-    expect(share).toHaveBeenCalledWith({ files: [file], title: 'Tavern · SAFU | bscan', text: "Tavern's SAFU trade replay, tracked with bscan." });
+    expect(share).toHaveBeenCalledWith({ files: [file], title: 'Tavern · SAFU | kollens', text: "Tavern's SAFU trade replay, tracked with kollens." });
     expect(share.mock.calls[0][0].files[0]).toBe(file);
     expect(share.mock.calls[0][0]).not.toHaveProperty('url');
   });
