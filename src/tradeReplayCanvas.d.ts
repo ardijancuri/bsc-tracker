@@ -6,7 +6,8 @@ export interface ReplaySnapshot {
   currentPrice: number; currentEventIndex: number; status: string;
 }
 export interface ReplayViewport {
-  time: number; startTime: number; endTime: number; spanTime: number; yMin: number; yMax: number;
+  time: number; startTime: number; endTime: number; spanTime: number;
+  startQ: number; endQ: number; yMin: number; yMax: number;
 }
 export interface ReplayMarkerPosition {
   index: number; ts: number; q: number; x: number; y: number;
@@ -22,8 +23,10 @@ export class ReplayCanvas {
   chartProgress(progress: number): number;
   timeAt(progress: number): number;
   valueAtTime(time: number): { priceUsd: number; marketCapUsd: number };
+  valueAtStory(progress: number): { priceUsd: number; marketCapUsd: number };
   viewportAt(progress: number): ReplayViewport;
   markerPosition(index: number, progress: number): ReplayMarkerPosition | null;
+  visibleLine(progress: number, viewport?: ReplayViewport): { ts: number; q: number; cap: number; x: number; y: number }[];
   snapshot(progress: number): ReplaySnapshot;
   render(progress: number): void;
 }

@@ -1,6 +1,7 @@
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
+import type { ReplayMarketChart } from '../shared/replayChart';
 
 export interface ReplayTrade {
   id: string;
@@ -37,6 +38,36 @@ export interface TradeReplayData {
 }
 
 export type ReplayActivity = KolTokenActivity;
+
+/** A finer observed history can replace the preview's five-minute samples;
+ * it never changes the selected wallet, executions, or accounting snapshot. */
+export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarketChart, now = Date.now()): TradeReplayData {
+  if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || chart.source === 'unavailable'
+    || chart.partialHistory || !['30s', '1m'].includes(chart.resolution) || !data.trades.length) return data;
+  const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
+  const byTime = new Map<number, TradeReplayData['chart']['points'][number]>();
+  for (const point of chart.points) {
+    const time = Date.parse(point.timestamp), price = replayNumber(point.priceUsd);
+    if (Number.isFinite(time) && time <= now && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
+  }
+  const points = [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point);
+  const first = Date.parse(data.trades[0].timestamp), last = Date.parse(data.trades.at(-1)!.timestamp);
+  if (!points.length || Date.parse(points[0].timestamp) > first || Date.parse(points.at(-1)!.timestamp) < last) return data;
+  for (const time of [first, last]) {
+    const after = points.findIndex(point => Date.parse(point.timestamp) >= time);
+    if (after > 0 && Date.parse(points[after].timestamp) !== time) {
+      const before = points[after - 1], next = points[after];
+      const fraction = (time - Date.parse(before.timestamp)) / (Date.parse(next.timestamp) - Date.parse(before.timestamp));
+      const price = before.priceUsd + (next.priceUsd - before.priceUsd) * fraction;
+      points.splice(after, 0, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
+    }
+  }
+  const start = points.findIndex(point => Date.parse(point.timestamp) === first);
+  const end = points.findIndex(point => Date.parse(point.timestamp) === last);
+  if (start < 0 || end < start) return data;
+  const source = chart.source === 'gmgn' ? 'GMGN historical samples' : 'GeckoTerminal historical samples';
+  return { ...data, chart: { points: points.slice(Math.max(0, start - 1), end + 1), marketCapSupply: supply, resolution: chart.resolution, source }, source: { ...data.source, chart: source } };
+}
 
 export function replayNumber(value: unknown, allowZero = false): number | null {
   if (value == null || value === '' || typeof value === 'boolean') return null;

@@ -1,8 +1,16 @@
 import type { ReplayCanvas } from './tradeReplayCanvas';
 
 const formats = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+const frameRate = 30;
+const bitrate = 8_000_000;
+
+function hasIndexedEncoder() {
+  return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
+}
 
 export function supportedReplayFormat(): string | null {
+  // The encoder's actual codec is selected asynchronously at export time.
+  if (hasIndexedEncoder()) return 'video/mp4';
   if (typeof MediaRecorder === 'undefined' || typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.captureStream) return null;
   return formats.find(type => MediaRecorder.isTypeSupported(type)) ?? null;
 }
@@ -12,11 +20,87 @@ export function replayFileName(name: string, mime: string) {
   return `${clean}-trade-replay.${mime.startsWith('video/mp4') ? 'mp4' : 'webm'}`;
 }
 
-/** Record the same deterministic canvas used by preview. The caller owns cancellation. */
+function cancelled() { return new DOMException('Video export cancelled.', 'AbortError'); }
+
+/** Encode every canvas frame at the handoff generator's fixed timestamps. */
 export async function recordTradeReplay(player: ReplayCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<File> {
+  if (signal.aborted) throw cancelled();
+  if (hasIndexedEncoder()) return encodeIndexedReplay(player, name, signal, onProgress);
+  return recordLiveReplay(player, name, signal, onProgress);
+}
+
+async function encodeIndexedReplay(player: ReplayCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<File> {
+  type Bunny = typeof import('mediabunny');
+  let output: InstanceType<Bunny['Output']> | undefined;
+  let video: InstanceType<Bunny['CanvasSource']> | undefined;
+  let cancelOutput: Promise<void> | undefined;
+  const lifecycle = new AbortController();
+  const abort = () => lifecycle.abort(cancelled());
+  signal.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(() => lifecycle.abort(new Error('Video encoding timed out. Try sharing the trade again.')), 120_000);
+  // Race each encoder operation, including capability checks and finalization,
+  // so cancellation still responds if a browser encoder stops resolving work.
+  const wait = <T>(operation: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+    const stop = () => reject(lifecycle.signal.reason);
+    if (lifecycle.signal.aborted) { operation.catch(() => {}); stop(); return; }
+    lifecycle.signal.addEventListener('abort', stop, { once: true });
+    operation.then(value => { lifecycle.signal.removeEventListener('abort', stop); resolve(value); }, error => {
+      lifecycle.signal.removeEventListener('abort', stop); reject(error);
+    });
+  });
+  const dispose = () => {
+    if (output && output.state !== 'finalized' && output.state !== 'canceled' && !cancelOutput) {
+      cancelOutput = output.cancel().catch(() => {});
+    }
+  };
+  lifecycle.signal.addEventListener('abort', dispose, { once: true });
+  try {
+    if (signal.aborted) abort();
+    const { BufferTarget, CanvasSource, Mp4OutputFormat, Output, Quality,
+      WebMOutputFormat, getFirstEncodableVideoCodec } = await wait(import('mediabunny'));
+    const quality = new Quality({ bitrate });
+    const options = { width: player.canvas.width, height: player.canvas.height, frameRate, quality };
+    let codec = await wait(getFirstEncodableVideoCodec(['avc'], options));
+    let format;
+    if (codec) format = new Mp4OutputFormat();
+    else {
+      codec = await wait(getFirstEncodableVideoCodec(['vp9', 'vp8'], options));
+      if (!codec) throw new Error('This browser cannot encode the replay. Try Chrome, Edge, or Safari.');
+      format = new WebMOutputFormat();
+    }
+    const target = new BufferTarget();
+    output = new Output({ format, target });
+    video = new CanvasSource(player.canvas, { codec, quality });
+    output.addVideoTrack(video, { frameRate });
+    await wait(output.start());
+    const frameCount = Math.max(2, Math.round(player.getDuration() * frameRate));
+    for (let index = 0; index < frameCount; index += 1) {
+      if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
+      const progress = index / (frameCount - 1);
+      player.render(progress);
+      await wait(video.add(index / frameRate, 1 / frameRate, index % (frameRate * 2) === 0 ? { keyFrame: true } : undefined));
+      onProgress?.(progress);
+    }
+    video.close();
+    await wait(output.finalize());
+    if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
+    if (!target.buffer?.byteLength) throw new Error('The video file was empty. Try sharing the trade again.');
+    const blob = new Blob([target.buffer], { type: format.mimeType });
+    return new File([blob], replayFileName(name, blob.type), { type: blob.type });
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener('abort', abort);
+    lifecycle.signal.removeEventListener('abort', dispose);
+    dispose();
+    try { video?.close(); } catch { /* A source that never started is disposed by output.cancel(). */ }
+  }
+}
+
+/** Compatibility path for browsers without WebCodecs. */
+async function recordLiveReplay(player: ReplayCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<File> {
   const mime = supportedReplayFormat();
   if (!mime) throw new Error('Video recording is unavailable in this browser. Try Chrome, Edge, or Safari.');
-  if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
+  if (signal.aborted) throw cancelled();
   if (document.visibilityState === 'hidden') throw new Error('Keep this tab visible while exporting the video.');
   let stream: MediaStream | null = null;
   let recorder: MediaRecorder | null = null;
@@ -25,8 +109,8 @@ export async function recordTradeReplay(player: ReplayCanvas, name: string, sign
   let visibilityListener: (() => void) | undefined;
   try {
     player.render(0);
-    stream = player.canvas.captureStream(30);
-    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+    stream = player.canvas.captureStream(frameRate);
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
     const activeRecorder = recorder;
     const chunks: Blob[] = [];
     const blob = await new Promise<Blob>((resolve, reject) => {

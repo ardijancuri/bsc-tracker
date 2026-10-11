@@ -142,15 +142,15 @@ function canvasStub(drawn?: string[], dashes?: number[][]): HTMLCanvasElement {
 }
 
 describe('replay renderer accounting and chart', () => {
-  it('shows cash profit after a reconciled closed trade and preserves sampled line rather than execution-route prices', async () => {
+  it('shows cash profit after a reconciled closed trade and adds exact fill anchors to the sampled recap', async () => {
     const data = prepareTradeReplayData(activity(), chart, position, now)!;
     const renderer = new ReplayCanvas(canvasStub()); await renderer.setData(data);
     expect(renderer.snapshot(1).pnl).toBeCloseTo(400);
     expect(renderer.snapshot(1).roi).toBeCloseTo(4);
-    expect(renderer.snapshot(1).currentCap).toBeCloseTo(3800);
+    expect(renderer.snapshot(1).currentCap).toBeCloseTo(5000);
     const internals = renderer as unknown as { plotPoints: { priceUsd: number; kind: string }[] };
-    expect(internals.plotPoints.every(point => point.kind === 'market')).toBe(true);
-    expect(internals.plotPoints.some(point => point.priceUsd === 5)).toBe(false);
+    expect(internals.plotPoints.some(point => point.kind === 'market')).toBe(true);
+    expect(internals.plotPoints.some(point => point.kind === 'fill' && point.priceUsd === 5)).toBe(true);
   });
   it('withholds P&L for a stale balance even when observed swaps net to zero', async () => {
     const data = prepareTradeReplayData(activity(), chart, null, now)!;
