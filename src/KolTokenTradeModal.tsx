@@ -36,6 +36,9 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const intervalChosen = useRef(false);
   const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
+  const transactionList = useRef<HTMLDivElement>(null);
+  const fittedPageSize = useRef(6);
   const positions = usePositions('kol', kol.address, [token.address]);
   const { chart } = useTokenChart(token.address, interval);
   const replay = useMemo(() => activity ? prepareTradeReplayData(activity, chart, positions.get(token.address)) : null, [activity, chart, positions, token.address]);
@@ -73,11 +76,30 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   }, [kol.address, token.address, refresh]);
 
   const trades = useMemo(() => (activity?.trades ?? []).filter(trade => side === 'all' || trade.side === side), [activity, side]);
-  const pageCount = Math.max(1, Math.ceil(trades.length / 8));
+  const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const summary = activity?.summary;
   const profit = summary?.realizedProfitUsd;
   const profitClass = profit == null ? '' : Number(profit) >= 0 ? 'positive' : 'negative';
+
+  useEffect(() => {
+    const element = transactionList.current;
+    if (!element) return;
+    const observer = new ResizeObserver(entries => {
+      const height = entries[0]?.contentRect.height ?? 0;
+      // Sharing keeps the trades mounted but hidden; retain its fitted page size.
+      if (height <= 0) return;
+      const next = Math.max(1, Math.min(6, Math.floor(height / 44)));
+      const previous = fittedPageSize.current;
+      if (next !== previous) {
+        fittedPageSize.current = next;
+        setPage(value => Math.floor(value * previous / next));
+        setPageSize(next);
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [error, Boolean(activity), trades.length > 0]);
 
   return createPortal(<dialog ref={dialog} className="kol-trade-modal" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); if (shareSnapshot) backToTrades(); else onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose(); } }}>
     <header className="kol-trade-modal-header">
@@ -99,8 +121,8 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
         {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
-          <div className="kol-trade-transactions">{trades.slice(currentPage * 8, currentPage * 8 + 8).map(trade => <TradeReceipt key={trade.id} trade={trade} />)}</div>
-          {pageCount > 1 && <div className="kol-trade-pagination"><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label={t('Previous trades')}><ChevronLeft size={15} /></button><span>{t('{page} of {pages}', { page: currentPage + 1, pages: pageCount })}</span><button type="button" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label={t('Next trades')}><ChevronRight size={15} /></button></div>}
+          <div ref={transactionList} className="kol-trade-transactions">{trades.slice(currentPage * pageSize, currentPage * pageSize + pageSize).map(trade => <TradeReceipt key={trade.id} trade={trade} />)}</div>
+          <nav className="kol-trade-pagination" aria-label={t('Transaction pagination')}><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label={t('Previous trades')}><ChevronLeft size={15} /></button><span aria-live="polite">{t('{page} of {pages}', { page: currentPage + 1, pages: pageCount })}</span><button type="button" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label={t('Next trades')}><ChevronRight size={15} /></button></nav>
         </>}
       </aside>
     </div>
@@ -110,7 +132,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
 function TradeReceipt({ trade }: { trade: KolTokenTrade }) {
   const amount = trade.valuationStatus === 'valued' ? trade.amountUsd : null;
   const valuationNote = trade.valuationStatus === 'shared_quote' ? t('Transaction spend could not be allocated to this token') : amount == null ? t('Trade valuation unavailable') : undefined;
-  return <a className="kol-trade-receipt" href={`https://bscscan.com/tx/${trade.txHash}`} target="_blank" rel="noopener noreferrer" title={t('View {side} transaction on BscScan', { side: t(trade.side) })}>
-    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{trade.realizedProfitUsd != null ? <b className={Number(trade.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(trade.realizedProfitUsd, true)}</b> : shortAddress(trade.txHash)} <ExternalLink size={10} /></span></span>
-  </a>;
+  return <div className="kol-trade-receipt">
+    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{trade.realizedProfitUsd != null ? <b className={Number(trade.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(trade.realizedProfitUsd, true)}</b> : shortAddress(trade.txHash)}</span></span>
+  </div>;
 }
