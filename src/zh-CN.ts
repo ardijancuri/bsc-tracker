@@ -181,7 +181,7 @@ export const chinese: Record<string, string> = {
   'View {side} transaction on BscScan': '在BscScan查看{side}交易', 'at {value} MCAP': '市值{value}', 'Loading trade details…': '正在加载交易详情…',
   'Share video': '分享视频', 'Share trade replay': '分享交易回放', '15.5 seconds': '15.5秒', 'Close video preview': '关闭视频预览',
   'Animated trade recap preview': '交易动态回顾预览', 'Preparing preview…': '正在准备预览…', 'Pause replay': '暂停回放', 'Play replay': '播放回放', 'Replay position': '回放进度',
-  'Historical samples form the line; B/S markers show actual execution prices.': '折线来自历史采样；B/S标记显示实际成交价格。',
+  'B/S marks each trade’s time on the market line. Tooltips show recorded execution values.': 'B/S在市场折线上标记每笔交易的时间。提示框显示已记录的成交数据。',
   'Recorded fills only; market history does not cover these trades.': '仅显示已记录成交；市场历史未覆盖这些交易。',
   'Replay pacing prioritizes readable trades. Estimated FDV uses reported supply; P&L excludes gas.': '回放节奏便于阅读交易。估算FDV使用已报告供应量；盈亏不含Gas费用。',
   'Open-position values are hidden until trades match a fresh wallet balance. Verified indexed realized profit can still be shown.': '交易与最新钱包余额匹配前不显示持仓估值；仍可显示已验证索引交易的已实现盈亏。',

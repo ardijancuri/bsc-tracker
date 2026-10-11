@@ -63,6 +63,36 @@ function replayOrder(a: KolTokenActivity['trades'][number], b: KolTokenActivity[
   return (left < right ? -1 : left > right ? 1 : 0) || (a.transactionIndex ?? 0) - (b.transactionIndex ?? 0) || a.id.localeCompare(b.id);
 }
 
+/** Candle extrema have no exact intrabar timestamps, so a replay only samples
+ * their actual opening boundary and completed closing boundaries. */
+function completedCandleRun(chart: TokenChart, firstTrade: number, lastTrade: number, now: number) {
+  const intervalSeconds: Record<string, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+  const seconds = intervalSeconds[chart.resolution] ?? intervalSeconds[chart.period];
+  if (!seconds) return null;
+  const byTime = new Map<number, TokenChart['candles'][number]>();
+  for (const candle of chart.candles) {
+    if (!Number.isFinite(candle.time) || !Number.isInteger(candle.time) || candle.time < 0
+      || !replayNumber(candle.open) || !replayNumber(candle.close)
+      || (candle.time + seconds) * 1000 > now) continue;
+    byTime.set(candle.time, candle);
+  }
+  const candles = [...byTime.values()].sort((a, b) => a.time - b.time);
+  if (!candles.length) return null;
+  // Missing intervals must not be bridged as if the market had been observed.
+  // An earlier or later gap is harmless when one contiguous run covers all fills.
+  let start = 0;
+  for (let end = 0; end < candles.length; end += 1) {
+    const runEnds = end === candles.length - 1 || candles[end + 1].time !== candles[end].time + seconds;
+    if (!runEnds) continue;
+    if ((!Number.isFinite(firstTrade) || candles[start].time * 1000 <= firstTrade)
+      && (!Number.isFinite(lastTrade) || (candles[end].time + seconds) * 1000 >= lastTrade)) {
+      return { candles: candles.slice(start, end + 1), seconds };
+    }
+    start = end + 1;
+  }
+  return null;
+}
+
 /** Only a fresh, independently checked balance can authorize the replay's rolling gross P&L. */
 export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenChart | null, position?: Position | null, now = Date.now()): TradeReplayData | null {
   const { kol, token } = activity;
@@ -73,7 +103,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   const trades = activity.trades.filter(trade => {
     if (seen.has(trade.id) || trade.walletAddress.toLowerCase() !== kol.address.toLowerCase()
       || trade.tokenAddress.toLowerCase() !== token.address.toLowerCase()
-      || !['buy', 'sell'].includes(trade.side) || !Number.isFinite(Date.parse(trade.timestamp))) return false;
+      || !['buy', 'sell'].includes(trade.side) || !Number.isFinite(Date.parse(trade.timestamp)) || Date.parse(trade.timestamp) > now) return false;
     seen.add(trade.id);
     return true;
   }).sort(replayOrder).map((trade): ReplayTrade => {
@@ -96,11 +126,10 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     // The app's convenience points place candle closes at their opening times.
     // Use the underlying completed candles for the replay's exact event timeline.
     if (selectedChart.candles.length) {
-      const intervalSeconds: Record<string, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
-      const resolution = intervalSeconds[selectedChart.resolution] ?? intervalSeconds[selectedChart.period];
-      if (resolution) for (const [index, candle] of selectedChart.candles.entries()) {
+      const run = completedCandleRun(selectedChart, Date.parse(trades[0]?.timestamp ?? ''), Date.parse(trades.at(-1)?.timestamp ?? ''), now);
+      if (run) for (const [index, candle] of run.candles.entries()) {
         if (index === 0) addPoint(candle.time * 1000, candle.open);
-        if ((candle.time + resolution) * 1000 <= now) addPoint((candle.time + resolution) * 1000, candle.close);
+        addPoint((candle.time + run.seconds) * 1000, candle.close);
       }
     } else for (const point of selectedChart.points) addPoint(Date.parse(point.timestamp), point.priceUsd);
   }
@@ -108,8 +137,10 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   // Recent-only charts must never be extrapolated backward as historical prices.
   if (trades.length && (Date.parse(points[0]?.timestamp ?? '') > Date.parse(trades[0].timestamp)
     || Date.parse(points.at(-1)?.timestamp ?? '') < Date.parse(trades.at(-1)!.timestamp))) points = [];
-  // Freeze a closed replay at its last event with the interpolated market sample,
-  // rather than a later quote or that event's execution route.
+  // Bound every trade recap to its recorded events, including an unknown or
+  // currently open wallet. Hours of later market history are not part of the
+  // selected KOL's trade sequence. Endpoints use the sampled market line;
+  // execution route prices remain separate from it.
   if (points.length && trades.length) {
     for (const timestamp of [trades[0].timestamp, trades.at(-1)!.timestamp]) {
       const time = Date.parse(timestamp);
@@ -121,6 +152,12 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
         points.splice(after, 0, { timestamp, priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
       }
     }
+    const first = points.findIndex(point => Date.parse(point.timestamp) === Date.parse(trades[0].timestamp));
+    const last = points.findIndex(point => Date.parse(point.timestamp) === Date.parse(trades.at(-1)!.timestamp));
+    // One prior genuine sample gives the chart context without adding a long
+    // lead-in or inventing a price before the available history begins.
+    if (first >= 0 && last >= first) points = points.slice(Math.max(0, first - 1), last + 1);
+    else points = [];
   }
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
   const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()

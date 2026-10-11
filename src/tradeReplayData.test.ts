@@ -85,6 +85,48 @@ describe('trade replay factual boundary', () => {
     const data = prepareTradeReplayData(activity(), recent, position, now)!;
     expect(data.chart.points).toEqual([]); expect(data.source.chart).toBe('Recorded fills');
   });
+  it('orders completed candles and preserves closing timestamps independently of response order', () => {
+    const data = prepareTradeReplayData(activity(), { ...chart, candles: [...chart.candles].reverse() }, position, now)!;
+    expect(data.chart.points.map(point => [point.timestamp, point.priceUsd])).toEqual([
+      ['2026-10-11T10:00:00.000Z', 2], ['2026-10-11T10:01:00Z', 2.2],
+      ['2026-10-11T10:05:00.000Z', 3], ['2026-10-11T10:09:00Z', 3.8],
+    ]);
+  });
+  it('uses an explicit fill-only replay when a missing interval separates the selected trades', () => {
+    const payload = activity(); payload.trades[1].timestamp = '2026-10-11T10:14:00Z';
+    const missing = { ...chart, candles: [chart.candles[0], { ...chart.candles[1], time: chart.candles[1].time + 300 }] };
+    const data = prepareTradeReplayData(payload, missing, position, now)!;
+    expect(data.chart.points).toEqual([]); expect(data.source.chart).toBe('Recorded fills');
+    expect(data.trades).toHaveLength(2);
+  });
+  it('keeps a contiguous selected trade window when unrelated older or later candles are separated by gaps', () => {
+    const other = { ...chart.candles[0], time: chart.candles[0].time - 3600, open: 99, close: 100 };
+    const later = { ...other, time: chart.candles[1].time + 3600 };
+    const data = prepareTradeReplayData(activity(), { ...chart, candles: [later, chart.candles[1], other, chart.candles[0]] }, null, now)!;
+    expect(data.source.chart).toBe('Historical market samples');
+    expect(data.chart.points.some(point => point.priceUsd >= 99)).toBe(false);
+    expect(data.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:09:00Z');
+  });
+  it('ends open and unknown-balance recaps at the final recorded trade rather than a later market quote', () => {
+    const later = { ...chart.candles[1], time: chart.candles[1].time + 300, close: 50 };
+    for (const selectedPosition of [null, { ...position, status: 'Holding' as const, balance: '50' }]) {
+      const data = prepareTradeReplayData(activity(), { ...chart, candles: [...chart.candles, later] }, selectedPosition, now)!;
+      expect(data.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:09:00Z');
+      expect(data.chart.points.at(-1)?.priceUsd).toBeCloseTo(3.8);
+      expect(data.chart.points.every(point => Date.parse(point.timestamp) <= Date.parse(data.trades.at(-1)!.timestamp))).toBe(true);
+    }
+  });
+  it('does not use an unfinished candle close to project a market price through the latest fill', () => {
+    const current = Date.parse('2026-10-11T10:09:30Z');
+    const data = prepareTradeReplayData(activity(), chart, { ...position, checkedAt: new Date(current).toISOString() }, current)!;
+    expect(data.chart.points).toEqual([]); expect(data.source.chart).toBe('Recorded fills');
+  });
+  it('rejects future executions and withholds complete accounting for rejected records', () => {
+    const payload = activity(); payload.trades[1].timestamp = new Date(now + 1000).toISOString();
+    const data = prepareTradeReplayData(payload, chart, position, now)!;
+    expect(data.trades.map(trade => trade.id)).toEqual(['b']);
+    expect(data.position.tradesComplete).toBe(false); expect(data.position.tradeFlowMatched).toBe(false);
+  });
   it('uses codec-appropriate extensions and safe bounded file names', () => {
     expect(replayFileName('Trader / TOKEN', 'video/mp4')).toBe('trader-token-trade-replay.mp4');
     expect(replayFileName('Trader / TOKEN', 'video/webm;codecs=vp9')).toBe('trader-token-trade-replay.webm');
