@@ -18,12 +18,12 @@ export function useTokenTranslation(token: TokenNameData) {
   return useSyncExternalStore<TokenTranslation | null>(entry.subscribe, entry.getSnapshot);
 }
 
-export function TokenName({ token, addressSubtitle = false }: { token: TokenNameData; addressSubtitle?: boolean }) {
+export function TokenName({ token, addressSubtitle = false, hideAddress = false }: { token: TokenNameData; addressSubtitle?: boolean; hideAddress?: boolean }) {
   const translation = useTokenTranslation(token);
   const primary = token.symbol || token.name || t('Unknown');
   const secondary = token.name && token.name !== primary && (!addressSubtitle || /\p{Script=Han}/u.test(token.name)) ? token.name : shortAddress(token.address);
   const translatedLine = translation?.englishName && <span className="token-translation" lang="en" title={`${t('Automatic English translation')}: ${translation.englishName}`}>{translation.englishName}</span>;
   // When only the full name is Chinese, keep its translation next to that name.
   const translateSecondary = !/\p{Script=Han}/u.test(primary) && /\p{Script=Han}/u.test(secondary);
-  return <span className="identity-copy"><strong title={primary}>{primary}</strong>{!translateSecondary && translatedLine}<small className={translateSecondary ? 'token-source-name' : undefined} title={secondary}>{secondary}</small>{translateSecondary && translatedLine}</span>;
+  return <span className="identity-copy"><strong title={primary}>{primary}</strong>{!translateSecondary && translatedLine}{(!hideAddress || secondary !== shortAddress(token.address)) && <small className={translateSecondary ? 'token-source-name' : undefined} title={secondary}>{secondary}</small>}{translateSecondary && translatedLine}</span>;
 }

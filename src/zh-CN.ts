@@ -170,7 +170,7 @@ export const chinese: Record<string, string> = {
   'Token trades': '代币交易', 'Token chart and trades': '代币图表与交易', 'Trade details': '交易详情',
   'Close trade details': '关闭交易详情', 'Open token page': '打开代币页面', 'Chart interval': 'K线周期',
   'B / S marks this KOL’s buys and sells. Numbers group trades in the same candle.': 'B / S 标记此KOL的买卖。同一根K线上的交易按数量合并。',
-  'Realized P&L': '已实现盈亏', 'Transaction pagination': '交易分页',
+  'Realized P&L': '已实现盈亏', 'Transaction pagination': '交易分页', 'MCAP': '市值',
   'Quantity-weighted average using current verified token supply': '按数量加权，使用当前已验证的代币供应量计算平均值',
   'Avg buy MCAP': '平均买入市值', 'Avg sell MCAP': '平均卖出市值',
   'Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.': '显示{total}笔已索引交易中的最新{count}笔，完整合计暂不可用。',
