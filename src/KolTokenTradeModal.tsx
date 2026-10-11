@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Share2, X } from 'lucide-react';
 import { candleIntervals, type CandleInterval } from '../shared/intelligence';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
@@ -12,6 +12,7 @@ import { TokenPriceChart } from './TokenPriceChart';
 import { useTokenChart } from './useTokenChart';
 import { intervalForTrades } from './kolTradeChartData';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
+import type { TradeReplayData } from './tradeReplayData';
 import './tokenMarket.css';
 import './kolTokenTradeModal.css';
 
@@ -26,6 +27,8 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   useLanguage();
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const shareTrigger = useRef<HTMLButtonElement>(null);
+  const [shareSnapshot, setShareSnapshot] = useState<TradeReplayData | null>(null);
   const [activity, setActivity] = useState<KolTokenActivity | null>(null);
   const [error, setError] = useState(false);
   const [refresh, setRefresh] = useState(0);
@@ -37,6 +40,10 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const { chart } = useTokenChart(token.address, interval);
   const replay = useMemo(() => activity ? prepareTradeReplayData(activity, chart, positions.get(token.address)) : null, [activity, chart, positions, token.address]);
   const retry = useCallback(() => { setError(false); setRefresh(value => value + 1); }, []);
+  const backToTrades = useCallback(() => {
+    setShareSnapshot(null);
+    requestAnimationFrame(() => shareTrigger.current?.focus());
+  }, []);
 
   useEffect(() => {
     const element = dialog.current;
@@ -72,20 +79,20 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const profit = summary?.realizedProfitUsd;
   const profitClass = profit == null ? '' : Number(profit) >= 0 ? 'positive' : 'negative';
 
-  return createPortal(<dialog ref={dialog} className="kol-trade-modal" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); if (!dialog.current?.querySelector('.trade-replay-dialog')) onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose(); } }}>
+  return createPortal(<dialog ref={dialog} className="kol-trade-modal" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); if (shareSnapshot) backToTrades(); else onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose(); } }}>
     <header className="kol-trade-modal-header">
-      <div className="kol-trade-modal-title" id={titleId}>{kolIdentity}<span>{t('Token trades')}</span></div>
-      <div className="kol-trade-modal-actions"><TradeReplayShare data={replay} /><button type="button" className="kol-trade-close" onClick={onClose} aria-label={t('Close trade details')} autoFocus><X size={19} /></button></div>
+      <div className="kol-trade-modal-title" id={titleId}>{shareSnapshot && <button type="button" className="kol-trade-back" onClick={backToTrades}><ArrowLeft size={16} /> {t('Back')}</button>}{kolIdentity}</div>
+      <div className="kol-trade-modal-actions">{!shareSnapshot && <button ref={shareTrigger} className="trade-replay-trigger" type="button" disabled={!replay?.trades.length} onClick={() => { if (replay) setShareSnapshot(replay); }}><Share2 size={15} /> {t('Share trade')}</button>}<button type="button" className="kol-trade-close" onClick={onClose} aria-label={t('Close trade details')} autoFocus><X size={19} /></button></div>
     </header>
-    <div className="kol-trade-modal-body">
+    {shareSnapshot && <TradeReplayShare data={shareSnapshot} />}
+    <div className="kol-trade-modal-body" hidden={Boolean(shareSnapshot)}>
       <section className="kol-trade-market" aria-label={t('Token chart and trades')}>
         <div className="kol-trade-token-header"><div><div className="kol-trade-token-identity">{tokenIdentity}<FollowButton kind="token" address={token.address} label={token.symbol} /></div><div className="kol-trade-contract">{tokenAddress}<Link to={`/token/${token.address}`} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link></div></div><div className="kol-trade-current-cap"><span>{t('Market cap')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div>
         <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} onClick={() => { intervalChosen.current = true; setInterval(value); }}>{value}</button>)}</div></div>
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
-        <p className="kol-trade-chart-note">{t('B / S marks this KOL’s buys and sells. Numbers group trades in the same candle.')}</p>
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
-        <div className="kol-trade-profit"><span>{t('Realized P&L')}</span><strong className={profitClass}>{money(profit, true)}</strong><span className="kol-trade-accounting-note">{t('Indexed history · Gas excluded')}</span></div>
+        <div className="kol-trade-profit"><span>{t('Realized P&L')}</span><strong className={profitClass}>{money(profit, true)}</strong></div>
         <dl className="kol-trade-summary"><div><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
         {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
         {activity && activity.coverage.complete && profit == null && <p className="kol-trade-coverage">{t('Profit is unavailable where trade prices or purchase costs are missing.')}</p>}

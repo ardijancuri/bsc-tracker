@@ -56,6 +56,9 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     let resizeFrame = 0;
     const observer = new ResizeObserver(entries => {
       const nextWidth = entries[0]?.contentRect.width ?? width;
+      // The trade modal keeps its chart mounted while the sharing view is open.
+      // Retain the last visible width so hiding/restoring it does not refit a pan.
+      if (nextWidth <= 0) return;
       if (Math.abs(nextWidth - width) > 1 && focusTrades && tradeRange.current) {
         cancelAnimationFrame(resizeFrame);
         resizeFrame = requestAnimationFrame(() => { if (tradeRange.current) instance.timeScale().setVisibleLogicalRange(tradeRange.current); });

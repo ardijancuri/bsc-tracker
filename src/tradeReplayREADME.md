@@ -1,6 +1,6 @@
 # Integrated trade replay
 
-`TradeReplayShare` captures the selected KOL/token activity when **Share trade** opens the dialog. It automatically prepares and exports the video; there is no separate generation button. The two-column dialog uses bscan's existing Manrope typography and colors, with the preview and replay controls on the left and image/video saving and sharing on the right. On mobile it becomes a single scrolling column.
+`KolTokenTradeModal` captures the selected KOL/token activity when **Share trade** switches its existing native dialog to the sharing view. `TradeReplayShare` renders inline content and automatically prepares and exports the video; there is no nested dialog, extra backdrop or separate generation button. The shared header retains the KOL identity and Close control. Back or Escape returns to the chart and trades, preserving filters and pagination; closing the modal leaves the KOL page. Returning or closing aborts the share session. The two-column view uses bscan's existing Manrope typography and colors, with the preview and replay controls on the left and image/video saving and sharing on the right. On mobile it becomes a single scrolling column.
 
 The canvas drawing implementation and brand art are adapted from the user's newer `bscan-trade-replay-handoff (2)/bscan-trade-replay` folder. The supplied Downloads folder remains unchanged. The 1080 × 1350 card uses the supplied header, dotted chart, curved gold line, B/S circles, results panel, fingerprint pattern and gold brand footer. The UTC/pacing/gas footer line is removed.
 

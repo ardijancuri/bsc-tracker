@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ArrowLeft, Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, Send, Share2, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, Send, Share2 } from 'lucide-react';
 import ReplayCanvas from './tradeReplayCanvas';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
@@ -40,20 +40,9 @@ function replayImage(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-export default function TradeReplayShare({ data, disabled = false }: { data: TradeReplayData | null; disabled?: boolean; compact?: boolean }) {
-  const [snapshot, setSnapshot] = useState<TradeReplayData | null>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const close = useCallback(() => { setSnapshot(null); requestAnimationFrame(() => trigger.current?.focus()); }, []);
-  return <>
-    <button ref={trigger} className="trade-replay-trigger" type="button" disabled={disabled || !data?.trades.length} onClick={() => setSnapshot(data)}><Share2 size={15} /> {t('Share trade')}</button>
-    {snapshot && <ReplayDialog data={snapshot} onClose={close} />}
-  </>;
-}
-
-function ReplayDialog({ data, onClose }: { data: TradeReplayData; onClose: () => void }) {
-  const titleId = useId();
+export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const dialog = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLElement>(null);
   const player = useRef<ReplayCanvas | null>(null);
   const progress = useRef(0);
   const frame = useRef(0);
@@ -116,20 +105,8 @@ function ReplayDialog({ data, onClose }: { data: TradeReplayData; onClose: () =>
   }, [data, kolName, tokenName, paintPreview]);
 
   useEffect(() => {
-    dialog.current?.focus();
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); onClose(); }
-      if (event.key === 'Tab') {
-        const controls = dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),a[href]');
-        if (!controls?.length) return;
-        const first = controls[0], last = controls[controls.length - 1];
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
-    };
-    document.addEventListener('keydown', keyboard, true);
-    return () => document.removeEventListener('keydown', keyboard, true);
-  }, [onClose]);
+    content.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (!playing || !ready || exporting || !player.current) return;
@@ -213,17 +190,14 @@ function ReplayDialog({ data, onClose }: { data: TradeReplayData; onClose: () =>
   const mp4 = file?.type.split(';')[0] === 'video/mp4';
   const fileShareAvailable = file ? shareableTradeReplay(file) : false;
   const imageAvailable = ready && !exporting && !imagePending;
-  return <div className="trade-replay-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <div ref={dialog} className="trade-replay-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <div className="trade-replay-top"><button className="trade-replay-back" type="button" onClick={onClose}><ArrowLeft size={17} /> {t('Back')}</button><button className="trade-replay-close" type="button" aria-label={t('Close video preview')} onClick={onClose}><X size={19} /></button></div>
-      <div className="trade-replay-content">
+  return <section ref={content} className="trade-replay-content" aria-label={t('Share trade')} tabIndex={-1}>
         <div className="trade-replay-player">
           <div className="trade-replay-preview"><canvas ref={canvas} aria-label={t('Animated trade recap preview')} />{!ready && <span>{t(error ? 'Preview unavailable' : 'Preparing trade…')}</span>}</div>
           <div className="trade-replay-playback"><button type="button" disabled={!ready || exporting} aria-label={t(playing ? 'Pause replay' : 'Play replay')} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={13} /> : <Play size={13} />} {t('Replay trade')}</button><span>1x</span></div>
           <input className="trade-replay-seek" aria-label={t('Replay position')} type="range" min="0" max="1000" value={Math.round(seek * 1000)} disabled={!ready || exporting} onChange={event => { const next = Number(event.target.value) / 1000; setPlaying(false); progress.current = next; setSeek(next); if (player.current) { player.current.render(next); paintPreview(player.current); } }} />
         </div>
         <div className="trade-replay-share-panel">
-          <div className="trade-replay-heading"><span className="trade-replay-eyebrow">bscan</span><h2 id={titleId}>{t('Share trade')}</h2><p>{kolName} <span>·</span> {tokenName}</p></div>
+          <div className="trade-replay-heading"><span className="trade-replay-eyebrow">bscan</span><h2>{t('Share trade')}</h2><p>{kolName} <span>·</span> {tokenName}</p></div>
           <div className="trade-replay-actions">
             <button type="button" disabled={!imageAvailable} onClick={() => void saveImage()}><ImageIcon size={16} /> {t('Save image')}</button>
             <button type="button" disabled={!file || exporting} onClick={download}><Film size={16} /> {t('Save video')}</button>
@@ -243,7 +217,5 @@ function ReplayDialog({ data, onClose }: { data: TradeReplayData; onClose: () =>
             {error && <p className="trade-replay-error" role="alert">{error}</p>}
           </div>
         </div>
-      </div>
-    </div>
-  </div>;
+  </section>;
 }
