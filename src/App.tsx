@@ -138,15 +138,15 @@ function Header({ overview }: { overview: Overview }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === '/' && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); setSearchOpen(true); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, []);
   return <><header className="site-header"><div className="header-inner">
-    <Link className="brand" to="/trades"><img className="brand-logo" src="/kollens-logo.svg" alt="kollens" width="142" height="30" /></Link>
+    <Link className="brand" to="/trades"><img className="brand-logo" src="/kollens-header-logo.svg" alt="kollens" width="131" height="30" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
-      <a className="mobile-social-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
+      <a className="mobile-social-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
     <div className="header-social">
       <span className="bnb-price" title={overview.bnbPriceAt ? t('Chainlink BNB/USD updated {time}', { time: localDate(overview.bnbPriceAt) }) : t("BNB/USD price unavailable")}><span>BNB</span><strong>{isFresh(overview.bnbPriceAt, 2 * 60 * 60_000) ? compact(overview.bnbPriceUsd, true) : '—'}</strong></span>
-      <a className="header-x-link" href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer" aria-label={t("kollens on X")} title={t("kollens on X")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg></a>
+      <a className="header-x-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer" aria-label={t("kollens on X")} title={t("kollens on X")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg></a>
     </div>
     <div className="header-right"><LanguageSelect /><span className="chain-label"><ChainLogo /><span>{t("On BNB Chain")}</span></span><button className="header-search" onClick={() => setSearchOpen(true)} aria-label={t("Search")}><Search size={18} /><span>{t("Search")}</span><kbd>/</kbd></button><button className="mobile-menu icon-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label={t("Toggle menu")}><Menu size={21} /></button></div>
   </div></header>{searchOpen && <SearchDialog close={() => setSearchOpen(false)} />}</>;
@@ -212,7 +212,7 @@ function TradeTape({ overview }: { overview: Overview }) {
         <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("It ranks tracked positions by realized USD profit over the last 24 hours. Sales without enough priced purchases in that window are excluded. A dash means there are no fully priced completed positions yet.")}</p></details>
       </div>
     </section>
-    <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from kollens.")}</p></div><a href="https://x.com/bscanfun" target="_blank" rel="noopener noreferrer">@bscanfun <ExternalLink size={15} /></a></section>
+    <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from kollens.")}</p></div><a href="https://x.com/kollens" target="_blank" rel="noopener noreferrer">@kollens <ExternalLink size={15} /></a></section>
   </div>;
 }
 
