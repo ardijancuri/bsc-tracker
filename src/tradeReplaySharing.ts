@@ -18,7 +18,7 @@ function replayNames(data: TradeReplayData) {
 export function tradeReplayXIntent(data: TradeReplayData): string {
   const names = replayNames(data);
   const wallet = data.kol.address.trim().toLowerCase();
-  const page = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://bscan.fun/kol/${wallet}` : 'https://bscan.fun/';
+  const page = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://kollens.com/kol/${wallet}` : 'https://kollens.com/';
   const query = new URLSearchParams({
     text: `${names.kol}'s ${names.token} trade replay, tracked with kollens.`,
     url: page,

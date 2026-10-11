@@ -62,7 +62,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const kolName = data.kol.name ?? 'KOL';
   const tokenName = data.token.symbol ?? t('Token');
   const wallet = data.kol.address.trim().toLowerCase();
-  const replayUrl = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://bscan.fun/kol/${wallet}` : 'https://bscan.fun/';
+  const replayUrl = /^0x[0-9a-f]{40}$/.test(wallet) ? `https://kollens.com/kol/${wallet}` : 'https://kollens.com/';
   const telegramUrl = `https://t.me/share/url?${new URLSearchParams({ url: replayUrl, text: `${kolName}'s ${tokenName} trade replay, tracked with kollens.` })}`;
 
   const paintPreview = useCallback((renderer: ReplayCanvas) => {

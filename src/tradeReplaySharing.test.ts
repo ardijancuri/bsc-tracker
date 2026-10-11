@@ -25,7 +25,7 @@ describe('replay X draft', () => {
     const intent = new URL(tradeReplayXIntent(replay()));
     expect(intent.origin).toBe('https://x.com');
     expect(intent.pathname).toBe('/intent/post');
-    expect(intent.searchParams.get('url')).toBe('https://bscan.fun/kol/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
+    expect(intent.searchParams.get('url')).toBe('https://kollens.com/kol/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
     expect(intent.searchParams.get('text')).toBe("Tavern's SAFU trade replay, tracked with kollens.");
     expect([...intent.searchParams.keys()]).toEqual(['text', 'url']);
   });
@@ -47,7 +47,7 @@ describe('replay X draft', () => {
     data.kol.address = '0x1234?redirect=https://other.example/';
     const intent = new URL(tradeReplayXIntent(data));
     expect(intent.searchParams.get('text')).toBe(`${'🐢'.repeat(50)}'s ${'A'.repeat(50)} trade replay, tracked with kollens.`);
-    expect(intent.searchParams.get('url')).toBe('https://bscan.fun/');
+    expect(intent.searchParams.get('url')).toBe('https://kollens.com/');
   });
 
   it('uses neutral labels when display names are missing', () => {

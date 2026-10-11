@@ -19,7 +19,7 @@ import { reserveGeckoSlot } from './geckoApi.js';
 
 if (!/^\/bscan_intelligence_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_intelligence_test database');
 process.env.NODE_ENV = 'production';
-process.env.PUBLIC_APP_URL = 'https://bscan.fun';
+process.env.PUBLIC_APP_URL = 'https://kollens.com';
 const token = `0x${'1'.repeat(40)}`, flapToken = `0x${'2'.repeat(40)}`, unsupported = `0x${'3'.repeat(40)}`, pair = `0x${'4'.repeat(40)}`;
 const poolId = `0x${'5'.repeat(64)}`, outsider = `0x${'6'.repeat(40)}`, unit = 10n ** 36n;
 const hash = (height: number) => `0x${height.toString(16).padStart(64, '0')}`;
@@ -145,7 +145,7 @@ try {
   assert.equal((await app.inject('/api/signals?limit=3')).json().nextCursor, null, 'Hidden signals do not create phantom pages');
   assert.equal((await app.inject(`/api/kols/${wallets[0]}/positions?tokens=${stock}`)).json().items.length, 0);
   await pool.query('DELETE FROM radar_signals WHERE id=$1', [stockSignal]);
-  const headers = { origin: 'https://bscan.fun' };
+  const headers = { origin: 'https://kollens.com' };
   const put = (cookie: string | undefined, payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/watchlist', headers: { ...headers, ...(cookie ? { cookie } : {}) }, payload });
   const first = await put(undefined, { items: [{ kind: 'token', address: token }] }); assert.equal(first.statusCode, 200);
   const cookieA = String(first.headers['set-cookie']).split(';')[0]; assert.match(String(first.headers['set-cookie']), /HttpOnly; SameSite=Strict.*Secure/);

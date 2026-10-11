@@ -18,7 +18,7 @@ type Session = { id: string; preferences: typeof defaultPreferences };
 const attempts = new Map<string, { count: number; until: number }>();
 function mutationAllowed(request: FastifyRequest, reply: FastifyReply) {
   const origin = request.headers.origin;
-  const expected = new URL(process.env.PUBLIC_APP_URL || 'https://bscan.fun').origin;
+  const expected = new URL(process.env.PUBLIC_APP_URL || 'https://kollens.com').origin;
   const development = process.env.NODE_ENV !== 'production' && origin === `${request.protocol}://${request.headers.host}`;
   if (origin !== expected && !development) { reply.code(403).send({ error: 'Request origin rejected' }); return false; }
   const now = Date.now();
