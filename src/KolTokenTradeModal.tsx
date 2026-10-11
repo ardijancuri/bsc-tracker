@@ -1,0 +1,109 @@
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
+import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, X } from 'lucide-react';
+import { candleIntervals, type CandleInterval } from '../shared/intelligence';
+import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
+import type { Kol, Token } from './types';
+import { FollowButton, usePositions } from './Intelligence';
+import { getLocale, localDate, t, useLanguage } from './i18n';
+import { compact, shortAddress } from './lib';
+import { TokenPriceChart } from './TokenPriceChart';
+import { useTokenChart } from './useTokenChart';
+import { intervalForTrades } from './kolTradeChartData';
+import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
+import './tokenMarket.css';
+import './kolTokenTradeModal.css';
+
+function money(value: string | null | undefined, signed = false) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  return new Intl.NumberFormat(getLocale(), { style: 'currency', currency: 'USD', maximumFractionDigits: 2, signDisplay: signed ? 'exceptZero' : 'auto' }).format(Number(value));
+}
+
+export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdentity, tokenAddress, onClose }: {
+  kol: Kol; token: Token; kolIdentity: ReactNode; tokenIdentity: ReactNode; tokenAddress: ReactNode; onClose: () => void;
+}) {
+  useLanguage();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const [activity, setActivity] = useState<KolTokenActivity | null>(null);
+  const [error, setError] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [interval, setInterval] = useState<CandleInterval>(() => intervalForTrades(token.lastTradeAt, token.lastTradeAt));
+  const intervalChosen = useRef(false);
+  const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
+  const [page, setPage] = useState(0);
+  const positions = usePositions('kol', kol.address, [token.address]);
+  const { chart } = useTokenChart(token.address, interval);
+  const replay = useMemo(() => activity ? prepareTradeReplayData(activity, chart, positions.get(token.address)) : null, [activity, chart, positions, token.address]);
+  const retry = useCallback(() => { setError(false); setRefresh(value => value + 1); }, []);
+
+  useEffect(() => {
+    const element = dialog.current;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    element?.showModal();
+    return () => { element?.close(); document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    void fetch(`/api/kols/${encodeURIComponent(kol.address)}/tokens/${encodeURIComponent(token.address)}/activity`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('Trade history unavailable');
+        const result: KolTokenActivity = await response.json();
+        if (result.kol.address.toLowerCase() !== kol.address.toLowerCase() || result.token.address.toLowerCase() !== token.address.toLowerCase()) throw new Error('Trade history mismatch');
+        if (active) {
+          setActivity(result); setError(false);
+          if (!intervalChosen.current) { setInterval(intervalForTrades(result.summary.firstTradeAt, result.summary.lastTradeAt)); intervalChosen.current = true; }
+        }
+      }).catch(() => { if (active) setError(true); })
+      .finally(() => window.clearTimeout(timeout));
+    return () => { active = false; controller.abort(); window.clearTimeout(timeout); };
+  }, [kol.address, token.address, refresh]);
+
+  const trades = useMemo(() => (activity?.trades ?? []).filter(trade => side === 'all' || trade.side === side), [activity, side]);
+  const pageCount = Math.max(1, Math.ceil(trades.length / 8));
+  const currentPage = Math.min(page, pageCount - 1);
+  const summary = activity?.summary;
+  const profit = summary?.realizedProfitUsd;
+  const profitClass = profit == null ? '' : Number(profit) >= 0 ? 'positive' : 'negative';
+
+  return createPortal(<dialog ref={dialog} className="kol-trade-modal" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); if (!dialog.current?.querySelector('.trade-replay-dialog')) onClose(); }} onClick={event => { if (event.target === event.currentTarget) { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose(); } }}>
+    <header className="kol-trade-modal-header">
+      <div className="kol-trade-modal-title" id={titleId}>{kolIdentity}<span>{t('Token trades')}</span></div>
+      <div className="kol-trade-modal-actions"><TradeReplayShare data={replay} /><button type="button" className="kol-trade-close" onClick={onClose} aria-label={t('Close trade details')} autoFocus><X size={19} /></button></div>
+    </header>
+    <div className="kol-trade-modal-body">
+      <section className="kol-trade-market" aria-label={t('Token chart and trades')}>
+        <div className="kol-trade-token-header"><div><div className="kol-trade-token-identity">{tokenIdentity}<FollowButton kind="token" address={token.address} label={token.symbol} /></div><div className="kol-trade-contract">{tokenAddress}<Link to={`/token/${token.address}`} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link></div></div><div className="kol-trade-current-cap"><span>{t('Market cap')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div>
+        <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} onClick={() => { intervalChosen.current = true; setInterval(value); }}>{value}</button>)}</div></div>
+        <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
+        <p className="kol-trade-chart-note">{t('B / S marks this KOL’s buys and sells. Numbers group trades in the same candle.')}</p>
+      </section>
+      <aside className="kol-trade-details" aria-label={t('Trade details')}>
+        <div className="kol-trade-profit"><span>{t('Realized P&L')}</span><strong className={profitClass}>{money(profit, true)}</strong><span className="kol-trade-accounting-note">{t('Indexed history · Gas excluded')}</span></div>
+        <dl className="kol-trade-summary"><div><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
+        {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
+        {activity && activity.coverage.complete && profit == null && <p className="kol-trade-coverage">{t('Profit is unavailable where trade prices or purchase costs are missing.')}</p>}
+        <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
+        <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
+        {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
+          <div className="kol-trade-transactions">{trades.slice(currentPage * 8, currentPage * 8 + 8).map(trade => <TradeReceipt key={trade.id} trade={trade} />)}</div>
+          {pageCount > 1 && <div className="kol-trade-pagination"><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label={t('Previous trades')}><ChevronLeft size={15} /></button><span>{t('{page} of {pages}', { page: currentPage + 1, pages: pageCount })}</span><button type="button" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label={t('Next trades')}><ChevronRight size={15} /></button></div>}
+        </>}
+      </aside>
+    </div>
+  </dialog>, document.body);
+}
+
+function TradeReceipt({ trade }: { trade: KolTokenTrade }) {
+  const amount = trade.valuationStatus === 'valued' ? trade.amountUsd : null;
+  const valuationNote = trade.valuationStatus === 'shared_quote' ? t('Transaction spend could not be allocated to this token') : amount == null ? t('Trade valuation unavailable') : undefined;
+  return <a className="kol-trade-receipt" href={`https://bscscan.com/tx/${trade.txHash}`} target="_blank" rel="noopener noreferrer" title={t('View {side} transaction on BscScan', { side: t(trade.side) })}>
+    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{trade.realizedProfitUsd != null ? <b className={Number(trade.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(trade.realizedProfitUsd, true)}</b> : shortAddress(trade.txHash)} <ExternalLink size={10} /></span></span>
+  </a>;
+}

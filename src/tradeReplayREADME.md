@@ -1,0 +1,11 @@
+# Integrated trade replay
+
+`TradeReplayShare` captures the selected KOL/token activity and chart when its Share video button opens. The branded canvas is adapted from the user-supplied `bscan-trade-replay/public/replay-canvas.js` and its original SVG brand art. The source folder in Downloads is unchanged.
+
+`prepareTradeReplayData(activity, chart, position)` filters the exact wallet and token, sorts fills, preserves missing amounts, converts completed candle closes to interval-end timestamps, and uses only explicitly reported supply. The market line uses samples, with interpolation at replay boundaries; execution-price markers do not change that path. Incomplete market coverage uses a visibly labelled recorded-fill line. Inter-event spacing is paced for readability; tooltip timestamps remain UTC source times.
+
+Rolling gross P&L is available only when complete priced quantities reconcile against a separately checked wallet balance no more than three minutes old. Missing, stale, transferred, or incomplete flow is withheld. A fill-only open replay cannot mark remaining inventory from historical fills. A reconciled closed replay can show cash proceeds minus investment. When gross P&L is unavailable, an explicitly labelled **realized P&L** can use the backend's validated cumulative FIFO sale results, provided indexed coverage and its full realized summary are complete. Realized return uses known recorded investment; it does not value open holdings or assert a checked current balance. The supplied sample's Tavern/SAFU amounts are not embedded in production code.
+
+The same deterministic renderer drives preview and `captureStream(30)` recording at 1080 × 1350 for 15.5 seconds. `MediaRecorder` produces supported MP4 or explicitly labelled WebM. The generated file is offered through a separate download/share click to preserve a fresh user gesture. Cancelling, closing, unmounting, recorder failures, hidden tabs, and timeouts release capture tracks and frame scheduling. Same-origin image loading prevents a cross-origin logo or avatar from tainting export; unavailable artwork uses initials.
+
+The JavaScript renderer retains the handoff drawing implementation; its TypeScript declaration defines the integration boundary. Data and recording lifecycle tests are in `tradeReplayData.test.ts` and `tradeReplayExport.test.ts`.

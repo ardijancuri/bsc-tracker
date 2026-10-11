@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { CandlestickSeries, ColorType, HistogramSeries, createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
+import { CandlestickSeries, ColorType, HistogramSeries, createChart, createSeriesMarkers, type IChartApi, type ISeriesApi, type ISeriesMarkersPluginApi, type Time, type UTCTimestamp } from 'lightweight-charts';
 import type { CandleInterval, MarketCandle } from '../shared/intelligence';
 import { getLocale, t } from './i18n';
 import { compact } from './lib';
 import { marketCapCandles } from './tokenChartData';
 import { useTokenChart } from './useTokenChart';
+import { kolTradeMarkers, tradeVisibleRange, type ChartTrade } from './kolTradeChartData';
 
-export function TokenPriceChart({ address, interval }: { address: string; interval: CandleInterval }) {
+export function TokenPriceChart({ address, interval, trades, focusTrades = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean }) {
   const { chart: data, error } = useTokenChart(address, interval);
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volume = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const candleLookup = useRef(new Map<number, MarketCandle>());
   const fitted = useRef<string | null>(null);
+  const tradeRange = useRef<{ from: number; to: number } | null>(null);
   const [hover, setHover] = useState<MarketCandle | null>(null);
   const marketCandles = marketCapCandles(data?.candles ?? [], data?.marketCapSupply);
   const last = hover ?? marketCandles.at(-1);
@@ -27,6 +30,7 @@ export function TokenPriceChart({ address, interval }: { address: string; interv
   useEffect(() => {
     if (!container.current) return;
     fitted.current = null;
+    tradeRange.current = null;
     candleLookup.current.clear();
     const instance = createChart(container.current, {
       autoSize: true,
@@ -43,24 +47,39 @@ export function TokenPriceChart({ address, interval }: { address: string; interv
       upColor: '#39cb8f', downColor: '#f1767a', borderVisible: false, wickUpColor: '#39cb8f', wickDownColor: '#f1767a',
       priceFormat: { type: 'custom', minMove: .01, formatter: (value: number) => compact(value, true) },
     });
+    markers.current = createSeriesMarkers(candles.current);
     volume.current = instance.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false }, 1);
-    instance.panes()[1].setHeight(65);
+    instance.panes()[0].setStretchFactor(.84);
+    instance.panes()[1].setStretchFactor(.16);
     instance.subscribeCrosshairMove(event => setHover(typeof event.time === 'number' ? candleLookup.current.get(event.time) ?? null : null));
-    return () => { instance.remove(); chart.current = null; candles.current = null; volume.current = null; };
-  }, [address, interval]);
+    let width = container.current.clientWidth;
+    let resizeFrame = 0;
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = entries[0]?.contentRect.width ?? width;
+      if (Math.abs(nextWidth - width) > 1 && focusTrades && tradeRange.current) {
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = requestAnimationFrame(() => { if (tradeRange.current) instance.timeScale().setVisibleLogicalRange(tradeRange.current); });
+      }
+      width = nextWidth;
+    });
+    observer.observe(container.current);
+    return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); markers.current?.detach(); markers.current = null; instance.remove(); chart.current = null; candles.current = null; volume.current = null; };
+  }, [address, interval, focusTrades]);
 
   useEffect(() => {
     if (!chart.current || !candles.current || !volume.current) return;
     candleLookup.current = new Map(marketCandles.map(c => [c.time, c]));
     candles.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
     volume.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#39cb8f70' : '#f1767a70' })));
-    const history = data?.partialHistory ? 'partial' : 'full';
+    markers.current?.setMarkers(kolTradeMarkers(marketCandles, trades ?? [], interval).map(marker => ({ ...marker, time: marker.time as UTCTimestamp })));
+    const history = `${data?.partialHistory ? 'partial' : 'full'}:${focusTrades ? `${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}` : ''}`;
     if (fitted.current !== history && marketCandles.length) {
       const end = marketCandles.length - 1;
-      chart.current.timeScale().setVisibleLogicalRange({ from: Math.max(0, end - 149), to: end + 3 });
+      tradeRange.current = focusTrades ? tradeVisibleRange(marketCandles, trades ?? [], interval) : null;
+      chart.current.timeScale().setVisibleLogicalRange(tradeRange.current || { from: Math.max(0, end - 149), to: end + 3 });
       fitted.current = history;
     }
-  }, [data, address, interval]);
+  }, [data, address, interval, trades, focusTrades]);
 
   return <div className="token-price-chart">
     <div className="price-chart-legend" aria-live="off" title={t('Calculated using current token supply')}>

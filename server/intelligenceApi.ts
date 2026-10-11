@@ -7,6 +7,7 @@ import { chartSettings, currentMarketChart } from './tokenChart.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
+import { registerKolTokenTradesRoutes } from './kolTokenTradesApi.js';
 export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
@@ -102,6 +103,7 @@ export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.sta
   l.liquidity_usd AS "liquidityUsd",l.liquidity_baseline_usd AS "liquidityBaselineUsd",l.liquidity_baseline_at AS "liquidityBaselineAt",l.liquidity_at AS "liquidityAt",l.checked_at AS "checkedAt"`;
 
 export function registerIntelligenceRoutes(app: FastifyInstance) {
+  registerKolTokenTradesRoutes(app);
   // Market history is independent of which KOL wallets happened to trade.
   app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string } }>('/api/tokens/:address/chart', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
