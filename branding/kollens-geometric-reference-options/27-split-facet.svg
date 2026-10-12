@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
-  <title>Kollens Split Facet</title>
-  <desc>A clipped spine and two broad opposing prism wings use 45-degree cuts, with equal 8-unit vertical and horizontal gaps.</desc>
-  <polygon points="12,38 40,10 40,118 12,118"/>
-  <polygon points="48,42 80,10 118,10 118,20 78,60 48,60"/>
-  <polygon points="48,68 78,68 118,108 118,118 80,118 48,86"/>
-</svg>

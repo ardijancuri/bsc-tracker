@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <title>kollens Diagonal Cut</title>
-  <desc>Three bold polygon planes, with an exact 45-degree rising slab and two equal perpendicular negative-space cuts.</desc>
-  <g fill="#F9C932">
-    <polygon id="28-upper-facet" points="14,14 68.393398282,14 14,68.393398282"/>
-    <polygon id="28-diagonal-slab" points="14,79 79,14 114,14 114,24 24,114 14,114"/>
-    <polygon id="28-lower-facet" points="34.606601718,114 74.303300859,74.303300859 114,114"/>
-  </g>
-</svg>

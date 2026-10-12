@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Kollens Folded K aperture icon</title>
-  <g fill="#f9c932">
-    <path d="M32 30 C10 48 10 80 32 98 Q35 101 33 95 C25 76 25 52 33 33 Q35 27 32 30 Z"/>
-    <path d="M49 24 Q50 17 56 16 C70 13 87 18 98 27 Q100 30 96 33 L82 45 Q79 48 75 45 C58 40 45 50 44 58 L38 57 Q39 39 49 24 Z"/>
-    <path d="M104 40 Q108 36 110 42 C118 57 118 71 110 86 Q108 92 104 88 L86 75 Q83 73 86 69 C89 65 89 61 86 57 Q83 54 86 52 Z"/>
-    <path d="M49 24 Q50 17 56 16 C70 13 87 18 98 27 Q100 30 96 33 L82 45 Q79 48 75 45 C58 40 45 50 44 58 L38 57 Q39 39 49 24 Z" transform="translate(0 128) scale(1 -1)"/>
-  </g>
-</svg>

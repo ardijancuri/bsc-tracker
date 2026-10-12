@@ -1,0 +1,81 @@
+{
+  "image": "kollens-launch-post.png",
+  "caption": "launch-post.txt",
+  "width": 1600,
+  "height": 900,
+  "generationRoute": "Built-in ImageGen edited background; exact native SVG logo, Manrope glyph outlines, preserved token artwork, data-driven sparklines and market-cap values composited with Sharp.",
+  "approvedLogo": "sources/kollens-logo.svg",
+  "approvedLogoSha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c",
+  "logoWidth": 320,
+  "background": "key-visual-source.png",
+  "prompt": "generation-prompt.md",
+  "revision": "Repair the broken right-side lens seam and its diagonal continuation; reduce the exact native logo from 360px to 320px.",
+  "font": {
+    "family": "Manrope",
+    "source": "Bundled app @fontsource/manrope Latin WOFF weights 400/600/700/800",
+    "rendering": "Fontkit glyph outlines in SVG, no system fallback"
+  },
+  "marketData": "market-data.json",
+  "marketCapSnapshotAt": "2026-10-12T16:13:31.115Z",
+  "period": "7d",
+  "tokens": [
+    {
+      "name": "WangChai",
+      "address": "0x14f6a94909c407854390aa2d2462a3095d317777",
+      "source": "sources/wangchai.png",
+      "marketCapUsd": 16017512,
+      "displayedMarketCap": "$16.02M",
+      "chartSource": "coinmarketcap",
+      "chartPoints": 168,
+      "chartUpdatedAt": "2026-10-12T16:20:05.604Z",
+      "chartRetrievedAt": "2026-10-12T16:20:06.278Z",
+      "chartFirst": [
+        1791219600,
+        0.011174347226520836
+      ],
+      "chartLast": [
+        1791820800,
+        0.016039850979910404
+      ]
+    },
+    {
+      "name": "SAFU",
+      "address": "0xdd806e436dda5588bf54061c11590c77ddc87777",
+      "source": "sources/safu.png",
+      "marketCapUsd": 794754,
+      "displayedMarketCap": "$794.8K",
+      "chartSource": "coinmarketcap",
+      "chartPoints": 47,
+      "chartUpdatedAt": "2026-10-12T16:02:30.153Z",
+      "chartRetrievedAt": "2026-10-12T16:13:31.115Z",
+      "chartFirst": [
+        1791655200,
+        0.00020552377091871227
+      ],
+      "chartLast": [
+        1791820800,
+        0.0007923024196587261
+      ]
+    },
+    {
+      "name": "GM",
+      "address": "0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "source": "sources/gm.png",
+      "marketCapUsd": 1453951,
+      "displayedMarketCap": "$1.45M",
+      "chartSource": "coinmarketcap",
+      "chartPoints": 168,
+      "chartUpdatedAt": "2026-10-12T16:02:22.928Z",
+      "chartRetrievedAt": "2026-10-12T16:13:31.115Z",
+      "chartFirst": [
+        1791219600,
+        0.0022123562996626454
+      ],
+      "chartLast": [
+        1791820800,
+        0.001458961900583778
+      ]
+    }
+  ],
+  "dataNote": "Market caps are a point-in-time snapshot from Kollens token market endpoints. Sparklines use actual available candle closes over the 7d period, normalized to each token’s chart range. Direction controls green/red. No invented price movements."
+}

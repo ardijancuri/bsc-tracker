@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Kollens optic with three square layers</title>
-  <g fill="none" stroke="#f9c932" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M112 44 V32 A16 16 0 0 0 96 16 H32 A16 16 0 0 0 16 32 V96 A16 16 0 0 0 32 112 H96 A16 16 0 0 0 112 96 V84"/>
-    <path d="M40 70 V80 A8 8 0 0 0 48 88 H80 A8 8 0 0 0 88 80 V48 A8 8 0 0 0 80 40 H63"/>
-  </g>
-  <rect x="57" y="57" width="14" height="14" rx="3" fill="#f9c932"/>
-</svg>

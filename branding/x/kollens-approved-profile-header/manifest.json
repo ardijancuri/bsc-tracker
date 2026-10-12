@@ -1,0 +1,39 @@
+{
+  "name": "Kollens X profile and header",
+  "rendering": "Native SVG rendering; original letter and K paths are preserved with uniform scaling.",
+  "background": "#000000",
+  "icon": "#F9C932",
+  "lettering": "#FFFFFF",
+  "sources": [
+    {
+      "path": "public/kollens-logo-yellow.svg",
+      "sha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c"
+    },
+    {
+      "path": "public/kollens-icon-yellow.svg",
+      "sha256": "d669b396e3c8f794a7298b6e8c488a9079d666aab156ae28cc77539e3400f340"
+    }
+  ],
+  "platformReference": "https://help.x.com/en/managing-your-account/how-to-customize-your-profile",
+  "safeZones": "Profile K is centered inside the circular crop. Header content remains in the central band, clear of the lower-left avatar overlap.",
+  "exports": [
+    {
+      "name": "kollens-x-profile-400.png",
+      "width": 400,
+      "height": 400,
+      "bytes": 4083
+    },
+    {
+      "name": "kollens-x-profile-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 15521
+    },
+    {
+      "name": "kollens-x-header-1500x500.png",
+      "width": 1500,
+      "height": 500,
+      "bytes": 16033
+    }
+  ]
+}

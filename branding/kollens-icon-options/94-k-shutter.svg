@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="#F9C932">
-  <title>K Shutter — kollens</title>
-  <desc>Three optical bands form a K with a clear angular opening.</desc>
-  <path d="M24 10H39Q44 10 44 15V113Q44 118 39 118H24Q12 118 12 106V22Q12 10 24 10Z"/>
-  <path d="M85 10H110Q118 10 118 18Q118 21 115 24L78 59Q76 61 74 60L53 48Q50 46 53 43L82 12Q83 10 85 10Z"/>
-  <path d="M85 118H110Q118 118 118 110Q118 107 115 104L78 69Q76 67 74 68L53 80Q50 82 53 85L82 116Q83 118 85 118Z"/>
-</svg>

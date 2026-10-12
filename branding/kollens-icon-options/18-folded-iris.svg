@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Kollens folded iris icon</title>
-  <g fill="none" stroke="#f9c932" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M72 17 H86 Q111 17 111 42 V52 L89 36"/>
-    <path d="M72 17 H86 Q111 17 111 42 V52 L89 36" transform="rotate(90 64 64)"/>
-    <path d="M72 17 H86 Q111 17 111 42 V52 L89 36" transform="rotate(180 64 64)"/>
-    <path d="M72 17 H86 Q111 17 111 42 V52 L89 36" transform="rotate(270 64 64)"/>
-  </g>
-</svg>

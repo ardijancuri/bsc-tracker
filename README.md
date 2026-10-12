@@ -4,7 +4,7 @@ Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handl
 
 ## Brand assets
 
-The approved source logo is preserved in `branding/kollens-approved/source.svg`. The white/yellow variants in `public/kollens-logo-{white,yellow}.svg` and `public/kollens-icon-{white,yellow}.svg` are the build's canonical assets. The app's header and footer both use all-white logos. `npm run brand:export` regenerates the SVG/PNG/ICO favicons, touch icon, trade replay artwork and native-path fallbacks, social preview images and legacy public brand aliases. Artwork URLs are versioned to avoid stale browser and social caches. The export runs before every production build.
+The approved source logo is preserved in `branding/kollens-approved/source.svg`. The white/yellow variants in `public/kollens-logo-{white,yellow}.svg` and `public/kollens-icon-{white,yellow}.svg` are the build's canonical assets. The app's header and footer both use the all-white logo directly. `npm run brand:export` regenerates only the favicons, touch icon, trade replay artwork and native-path fallbacks, and the website's social preview. Artwork URLs are versioned to avoid stale browser and social caches. The export runs before every production build. Final X assets are listed in `branding/README.md`.
 
 ## Pages
 

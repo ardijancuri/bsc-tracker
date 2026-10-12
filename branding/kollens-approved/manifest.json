@@ -1,5 +1,11 @@
 {
   "source": "source.svg",
+  "canonicalAssets": [
+    "../../public/kollens-logo-white.svg",
+    "../../public/kollens-logo-yellow.svg",
+    "../../public/kollens-icon-white.svg",
+    "../../public/kollens-icon-yellow.svg"
+  ],
   "method": "Exact supplied SVG outlines; only whitespace crop, uniform scaling, and requested colors",
   "glyphCount": 7,
   "sourceInkBounds": [

@@ -1296,7 +1296,7 @@ export class ReplayCanvas {
   drawFooter(ctx) {
     const width = 330;
     const height = width * BRAND_WORDMARK_PATHS.height / BRAND_WORDMARK_PATHS.width;
-    text(ctx, 'kollens.com', 49 + width + 30, 1293 - height / 2, `600 26px ${FONT}`, '#0c0e11', 'left', 'middle');
+    text(ctx, 'kollens.com', WIDTH - 49, 1293 - height / 2, `600 30px ${FONT}`, '#0c0e11', 'right', 'middle');
     if (this.brandWordmark?.naturalWidth > 0) {
       try {
         ctx.save();

@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
-  <title>Kollens Offset Planes</title>
-  <desc>A broad rising diagonal slab sits between two clipped opposing facets. Parallel 45-degree boundaries form equal 11.314-unit gaps.</desc>
-  <polygon points="12,12 60,12 24,48 12,48"/>
-  <polygon points="12,76 76,12 112,12 48,76"/>
-  <polygon points="60,80 82,58 118,94 118,118 98,118"/>
-</svg>

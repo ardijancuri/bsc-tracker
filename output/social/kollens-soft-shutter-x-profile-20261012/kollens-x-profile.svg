@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="#0b0e11"/><svg x="128" y="128" width="768" height="768" viewBox="0 0 128 128"><g fill="none" stroke="#f9c932" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M64 17 A47 47 0 0 1 95.45 29.07 L81 52"/>
-    <path d="M64 17 A47 47 0 0 1 95.45 29.07 L81 52" transform="rotate(72 64 64)"/>
-    <path d="M64 17 A47 47 0 0 1 95.45 29.07 L81 52" transform="rotate(144 64 64)"/>
-    <path d="M64 17 A47 47 0 0 1 95.45 29.07 L81 52" transform="rotate(216 64 64)"/>
-    <path d="M64 17 A47 47 0 0 1 95.45 29.07 L81 52" transform="rotate(288 64 64)"/>
-  </g></svg></svg>

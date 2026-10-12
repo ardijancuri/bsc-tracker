@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
-  <title>Watch Mark</title>
-  <desc>Mark the tokens and wallet activity you want to keep watching.</desc>
-  <g fill="#F9C932">
-    <path d="M24 10L104 50L92 63L40 47V84L30 91Z"/>
-    <path d="M48 59L85 83L93 118L48 85Z"/>
-  </g>
-</svg>

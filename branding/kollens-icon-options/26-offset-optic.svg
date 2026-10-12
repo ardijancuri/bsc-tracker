@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Kollens offset optic icon</title>
-  <g fill="none" stroke="#f9c932" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M98.5 31.5 A47.5 47.5 0 1 0 109.5 78" stroke-width="14"/>
-    <path d="M39 71 A27 27 0 1 0 62 37" stroke-width="13"/>
-  </g>
-  <circle cx="64" cy="64" r="7" fill="#f9c932"/>
-</svg>

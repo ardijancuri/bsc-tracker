@@ -1,16 +1,17 @@
-# bscan fingerprint branding
+# Current Kollens brand files
 
-The app uses the selected Wallet Fingerprint logo and white bscan wordmark.
+## App branding
 
-- `bscan-option-4-wallet-fingerprint.png`: original horizontal logo reference.
-- `x/wallet-fingerprint-x-profile.png`: original fingerprint reference used for icon exports.
-- `x/wallet-fingerprint-x-header.png`: original X header reference.
-- `x/wallet-fingerprint-x-profile-black.png` and `x/wallet-fingerprint-x-header-black.png`: X assets with verified RGB (0, 0, 0) background regions.
-- `x/black-background-prompts.md`: built-in imagegen edit prompts and PNG export notes.
+- Original supplied vector: `kollens-approved/source.svg`.
+- Source preparation: `kollens-approved/prepare-source.py`; writes the four canonical white/yellow SVG variants into `public/`.
+- Canonical variants: `../public/kollens-logo-white.svg`, `../public/kollens-logo-yellow.svg`, `../public/kollens-icon-white.svg`, `../public/kollens-icon-yellow.svg`.
+- Build exporter: `../scripts/export-app-brand.mjs`; creates the website favicons, touch icon, social preview and replay artwork/fallback paths.
 
-Run `node scripts/export-fingerprint-brand.mjs` to reproduce the production assets in `public/`.
-The app lockup has an approximately 8px optical gap at its desktop header size.
-The favicon has a transparent background and a larger, centered fingerprint with 4px vertical padding on a 128px canvas.
-Its SVG alpha mask removes the original charcoal background while preserving the exact selected ridge shapes. Both SVG and PNG favicon formats are exported.
+## Final X assets
 
-An imagegen background-extraction attempt was rejected because it introduced artifacts in the gaps. The final favicon uses the original reference through the SVG alpha mask instead of the altered image.
+- Profile: `x/kollens-approved-profile-header/kollens-x-profile-400.png` (upload), plus the 1024px master and editable SVG.
+- Header: `x/kollens-approved-profile-header/kollens-x-header-1500x500.png`, plus its editable SVG.
+- Launch post: `x/kollens-launch-approved-20261012-v5/kollens-launch-post.png`.
+- Launch copy: `x/kollens-launch-approved-20261012-v5/launch-post.txt`.
+
+Each final X folder includes its export script and source/provenance files. Superseded logo experiments, X image revisions, proof screenshots, duplicate packs and legacy BScan aliases have been removed. Token images and KOL avatars used by the app are kept in place.
