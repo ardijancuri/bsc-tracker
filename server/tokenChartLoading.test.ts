@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), mkdir: vi.fn(), rename: vi.fn() }));
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), cmc: vi.fn(), cmcRequest: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), mkdir: vi.fn(), rename: vi.fn() }));
 vi.mock('node:fs/promises', () => ({ readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir, rename: mocks.rename }));
 vi.mock('./geckoApi.js', async importOriginal => ({ ...await importOriginal<typeof import('./geckoApi.js')>(), geckoFetch: mocks.fetch }));
+vi.mock('./cmcChart.js', () => ({ fetchCmcMarketCandles: mocks.cmc, cmcRequest: mocks.cmcRequest }));
 const address = '0x13920fe6467e9e3c852b8d365a036c995f0f7777';
 const poolAddress = '0xfd55be774ea18067bd06a6aed49fb1cc4ad966e9';
 const now = 2000000000;
@@ -12,10 +13,12 @@ const response = (value: unknown) => ({ ok: true, json: async () => value });
 
 beforeEach(() => {
   vi.resetModules(); vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now * 1000);
+  vi.stubEnv('GMGN_API_KEY', '');
+  mocks.cmc.mockResolvedValue(null);
   mocks.readFile.mockRejectedValue(new Error('No disk cache'));
   mocks.fetch.mockImplementation(async (url: URL) => response(url.pathname.endsWith('/pools') ? pools : history));
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('candle loading and shared cache', () => {
   it('distinguishes a provider cooldown from missing 5m history and respects its remaining duration', async () => {

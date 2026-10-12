@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ReplayMarketChart } from '../shared/replayChart.js';
 import { pool } from './db.js';
 import { geckoFetch } from './geckoApi.js';
+import { gmgnRequest } from './gmgnApi.js';
 import { parseCandles, selectChartPools } from './tokenChart.js';
 import { nonStockTokenSql } from './stockToken.js';
 
@@ -33,24 +34,8 @@ function withinBudget<T>(operation: Promise<T>, signal: AbortSignal): Promise<T>
   });
 }
 
-let gmgnNextAt = 0;
-let gmgnPausedUntil = 0;
 async function requestGmgn(url: URL, signal: AbortSignal, headers?: Record<string, string>) {
-  if (Date.now() < gmgnPausedUntil) throw new Error('Replay market provider cooling down');
-  const dispatchAt = Math.max(Date.now(), gmgnNextAt);
-  gmgnNextAt = dispatchAt + 1000;
-  const delay = dispatchAt - Date.now();
-  if (delay > 0) await withinBudget(new Promise(resolve => setTimeout(resolve, delay)), signal);
-  if (Date.now() < gmgnPausedUntil) throw new Error('Replay market provider cooling down');
-  const response = await fetch(url, { headers: { Accept: 'application/json', ...headers },
-    signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]) });
-  const body = await response.json();
-  if (response.status === 429 || Number(body?.code) === 429) {
-    const reset = Number(response.headers.get('X-RateLimit-Reset') ?? body?.reset_at) * 1000;
-    gmgnPausedUntil = Math.min(Date.now() + 600_000, Math.max(Date.now() + 60_000, Number.isFinite(reset) ? reset : 0));
-  }
-  if (!response.ok) throw new ReplayMarketHttpError(response.status);
-  return body;
+  return gmgnRequest(url, { apiKey: headers?.['X-APIKEY'] ?? '', signal, priority: 'chart', weight: 2 });
 }
 
 const requestGecko: JsonRequest = async (url, signal) => {

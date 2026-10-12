@@ -4,6 +4,10 @@ import { registerIntelligenceRoutes } from './intelligenceApi.js';
 const mocks = vi.hoisted(() => ({ query: vi.fn(), currentMarketChart: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
 vi.mock('./tokenChart.js', async importOriginal => ({ ...await importOriginal<typeof import('./tokenChart.js')>(), currentMarketChart: mocks.currentMarketChart }));
+vi.mock('./tokenSupply.js', () => ({ tokenSupplyRequests: { start: (_address: string, metadata: { supply?: string | null }) => {
+  const snapshot = () => ({ supply: metadata.supply ?? null, checkedAt: null, pending: false });
+  return { snapshot, settle: async () => snapshot() };
+} } }));
 const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
 afterEach(() => vi.resetAllMocks());
 

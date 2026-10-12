@@ -41,7 +41,8 @@ export function WatchSparkline({ points = [], label = 'Token price chart', addre
   const callback = useRef(onChart); callback.current = onChart;
   useEffect(() => { if (chart?.points.length) callback.current?.(chart); }, [chart]);
   const graph = sparklineGeometry(chart?.points.length ? chart.points : points);
-  const description = graph ? `${t(label)} · ${t(chart?.source === 'geckoterminal' ? 'Market candles' : 'Recorded trades')}` : t(Number(priceUsd) > 0 || chart?.points.length ? 'Latest available quote' : 'Loading market chart…');
+  const marketSource = chart && ['geckoterminal', 'gmgn', 'coinmarketcap'].includes(chart.source);
+  const description = graph ? `${t(label)} · ${t(marketSource ? 'Market candles' : 'Recorded trades')}` : t(Number(priceUsd) > 0 || chart?.points.length ? 'Latest available quote' : 'Loading market chart…');
   return <span className="watch-sparkline-host" ref={ref} title={description}>
     <svg className={`watch-sparkline ${graph?.change ? graph.change > 0 ? 'positive' : 'negative' : 'watch-neutral'}`} viewBox="0 0 120 40" role="img" aria-label={description}>
       <title>{description}</title>{graph ? <path d={graph.path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /> : <><path d="M3 20H117" fill="none" stroke="currentColor" strokeWidth="1" strokeDasharray="3 5" />{(Number(priceUsd) > 0 || chart?.points.length) && <circle cx="60" cy="20" r="2.5" fill="currentColor" />}</>}

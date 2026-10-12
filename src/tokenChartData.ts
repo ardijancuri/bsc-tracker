@@ -9,7 +9,7 @@ export function marketCapCandles(candles: MarketCandle[], supply: string | null 
 }
 
 export function marketChartChanges(chart: TokenChart | null | undefined, now = Date.now()) {
-  if (chart?.source !== 'geckoterminal' || !chart.candles.length) return null;
+  if (!chart || !['geckoterminal', 'gmgn', 'coinmarketcap'].includes(chart.source) || !chart.candles.length) return null;
   const candles = chart.candles, last = candles.at(-1)!;
   const baseline = [...candles].reverse().find(c => c.time <= now / 1000 - 3600);
   const change = (before: number) => String((last.close / before - 1) * 100);

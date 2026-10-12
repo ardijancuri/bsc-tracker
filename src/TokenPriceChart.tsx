@@ -18,9 +18,11 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
   const fitted = useRef<string | null>(null);
   const tradeRange = useRef<{ from: number; to: number } | null>(null);
   const [hover, setHover] = useState<MarketCandle | null>(null);
+  const showVolume = data?.volumeCurrency !== 'unknown';
   const marketCandles = marketCapCandles(data?.candles ?? [], data?.marketCapSupply);
   const last = hover ?? marketCandles.at(-1);
   const status = error ? 'Market chart unavailable' : !data ? 'Loading candles…'
+    : data.candles.length && !marketCandles.length && (data.supplyPending || data.pending) ? 'Loading market cap…'
     : data.candles.length && !marketCandles.length ? 'Market cap data unavailable'
     : data.loadStatus === 'rate_limited' ? 'Market provider cooling down. Retrying automatically…'
     : data.loadStatus === 'provider_error' ? 'Market provider unavailable. Retrying automatically…'
@@ -48,9 +50,11 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       priceFormat: { type: 'custom', minMove: .01, formatter: (value: number) => compact(value, true) },
     });
     markers.current = createSeriesMarkers(candles.current);
-    volume.current = instance.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false }, 1);
-    instance.panes()[0].setStretchFactor(.84);
-    instance.panes()[1].setStretchFactor(.16);
+    if (showVolume) {
+      volume.current = instance.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false }, 1);
+      instance.panes()[0].setStretchFactor(.84);
+      instance.panes()[1].setStretchFactor(.16);
+    }
     instance.subscribeCrosshairMove(event => setHover(typeof event.time === 'number' ? candleLookup.current.get(event.time) ?? null : null));
     let width = container.current.clientWidth;
     let resizeFrame = 0;
@@ -67,13 +71,13 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     });
     observer.observe(container.current);
     return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); markers.current?.detach(); markers.current = null; instance.remove(); chart.current = null; candles.current = null; volume.current = null; };
-  }, [address, interval, focusTrades]);
+  }, [address, interval, focusTrades, showVolume]);
 
   useEffect(() => {
-    if (!chart.current || !candles.current || !volume.current) return;
+    if (!chart.current || !candles.current) return;
     candleLookup.current = new Map(marketCandles.map(c => [c.time, c]));
     candles.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
-    volume.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#39cb8f70' : '#f1767a70' })));
+    volume.current?.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#39cb8f70' : '#f1767a70' })));
     markers.current?.setMarkers(kolTradeMarkers(marketCandles, trades ?? [], interval).map(marker => ({ ...marker, time: marker.time as UTCTimestamp })));
     const history = `${data?.partialHistory ? 'partial' : 'full'}:${focusTrades ? `${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}` : ''}`;
     if (fitted.current !== history && marketCandles.length) {
@@ -86,7 +90,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
 
   return <div className="token-price-chart">
     <div className="price-chart-legend" aria-live="off" title={t('Calculated using current token supply')}>
-      {last ? <><span>{t('Market cap')} <b>{compact(last.close, true)}</b></span><span>O <b>{compact(last.open, true)}</b></span><span>H <b>{compact(last.high, true)}</b></span><span>L <b>{compact(last.low, true)}</b></span><span>C <b>{compact(last.close, true)}</b></span><span>{t('Volume')} <b>{compact(last.volume, true)}</b></span></> : <span>{t('Market cap')} —</span>}
+      {last ? <><span>{t('Market cap')} <b>{compact(last.close, true)}</b></span><span>O <b>{compact(last.open, true)}</b></span><span>H <b>{compact(last.high, true)}</b></span><span>L <b>{compact(last.low, true)}</b></span><span>C <b>{compact(last.close, true)}</b></span>{showVolume && <span>{t('Volume')} <b>{compact(last.volume, true)}</b></span>}</> : <span>{t('Market cap')} —</span>}
       {data?.stale && <span>{t('Cached')}</span>}
       {hover && <span>{new Date(hover.time * 1000).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</span>}
     </div>

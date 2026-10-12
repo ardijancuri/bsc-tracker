@@ -1,6 +1,7 @@
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { TokenMarketPanel } from './TokenMarketPanel';
+import { preloadTokenChart } from './useTokenChart';
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
@@ -340,6 +341,7 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
 
 function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const address = window.location.pathname.split('/').pop() || '';
+  useEffect(() => { preloadTokenChart(address); }, [address]);
   const [kolPage, setKolPage] = useState({ address, visibleCount: 15 });
   const visibleKolCount = kolPage.address === address ? kolPage.visibleCount : 15;
   const positions = usePositions('token', address);

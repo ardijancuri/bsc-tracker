@@ -1,7 +1,10 @@
 import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { MarketCandle, TokenChart, ChartRange } from '../shared/intelligence.js';
 import { geckoFetch, MarketProviderDeferred, type GeckoPriority } from './geckoApi.js';
+import { gmgnRequest } from './gmgnApi.js';
+import { cmcRequest, fetchCmcMarketCandles, type CmcJsonRequest } from './cmcChart.js';
 
 export const chartWindows = {
   '24h': { seconds: 86400, timeframe: 'minute', aggregate: 5, resolution: '5m', fresh: 120_000 },
@@ -118,6 +121,74 @@ export async function fetchMarketCandles(address: string, period: ChartRange, po
   return null;
 }
 
+/** GMGN amount is USD turnover; volume is token units and must not enter dollar-volume totals. */
+export function parseGmgnCandles(rows: unknown, since: number, until: number): MarketCandle[] {
+  if (!Array.isArray(rows)) return [];
+  return parseCandles(rows.slice(0, 1000).map(row => {
+    const rawTime = row?.time;
+    const time = rawTime == null || rawTime === '' || typeof rawTime === 'boolean' ? NaN : Number(rawTime);
+    return [time >= 1e12 ? time / 1000 : time, row?.open, row?.high, row?.low, row?.close, row?.amount];
+  }), since, until);
+}
+
+type GmgnJsonRequest = (url: URL, signal: AbortSignal, headers: Record<string, string>) => Promise<any>;
+export async function fetchGmgnMarketCandles(address: string, period: ChartRange, apiKey: string,
+  request: GmgnJsonRequest = (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal }), now = Date.now(), signal = AbortSignal.timeout(20_000)): Promise<TokenChart | null> {
+  if (!addressRe.test(address)) throw new Error('Invalid chart address');
+  if (!apiKey.trim()) throw new Error('GMGN API key is not configured');
+  const settings = chartSettings(period), until = Math.floor(now / 1000), since = Math.max(0, until - settings.seconds);
+  const url = new URL('https://openapi.gmgn.ai/v1/market/token_kline');
+  for (const [key, value] of Object.entries({ chain: 'bsc', address, resolution: settings.resolution,
+    from: since * 1000, to: now, timestamp: until, client_id: randomUUID() })) url.searchParams.set(key, String(value));
+  const body = await request(url, signal, { 'X-APIKEY': apiKey.trim() });
+  if (body?.code !== 0) throw new Error('GMGN returned an invalid chart response');
+  const candles = parseGmgnCandles(Array.isArray(body?.data) ? body.data : body?.data?.list, since, until);
+  if (!candles.length) return null;
+  return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
+    source: 'gmgn', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, pending: false, stale: false };
+}
+
+export async function fetchPreferredMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, options: {
+  gmgnKey?: string; gmgnRequest?: GmgnJsonRequest; cmcRequest?: CmcJsonRequest; geckoRequest?: JsonRequest; saved?: TokenChart | null; now?: number; signal?: AbortSignal;
+} = {}): Promise<TokenChart | null> {
+  if (options.gmgnKey?.trim()) {
+    try {
+      const chart = await fetchGmgnMarketCandles(address, period, options.gmgnKey, options.gmgnRequest, options.now, options.signal);
+      if (chart) return chart;
+      // A transient provider gap must not erase retained genuine history.
+      if (options.saved?.candles.length) throw new Error('GMGN chart history temporarily unavailable');
+    } catch (error) {
+      // Keep stale data on screen instead of spending the public provider's scarce
+      // allowance every time a configured provider is busy or cooling down.
+      if (options.saved?.candles.length || options.signal?.aborted) throw error;
+    }
+  }
+  let primaryError: unknown;
+  try {
+    const chart = await fetchCmcMarketCandles(address, period, options.cmcRequest, options.now, options.signal);
+    if (chart) return chart;
+    if (options.saved?.candles.length) throw new Error('CoinMarketCap chart history temporarily unavailable');
+  } catch (error) {
+    // Retain genuine cached history during an outage. Only cold charts need to
+    // spend another provider's allowance to obtain their first samples.
+    if (options.saved?.candles.length || options.signal?.aborted) throw error;
+    primaryError = error;
+  }
+  try {
+    let result: TokenChart | null;
+    try { result = await fetchMarketCandles(address, period, poolAddress, options.geckoRequest, options.now); }
+    catch (error) {
+      if (!poolAddress || !(error instanceof Error) || !/request failed: (404|422)$/.test(error.message)) throw error;
+      result = await fetchMarketCandles(address, period, undefined, options.geckoRequest, options.now);
+    }
+    if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined, options.geckoRequest, options.now);
+    if (!result && primaryError) throw primaryError;
+    return result;
+  } catch (error) {
+    throw primaryError instanceof MarketProviderDeferred ? primaryError : error;
+  }
+}
+
 const cache = new Map<string, TokenChart>();
 const jobs = new Map<string, Promise<TokenChart | null>>();
 const priorities = new Map<string, GeckoPriority>();
@@ -136,17 +207,23 @@ function finerCachedChart(address: string, range: ChartRange): TokenChart | null
     points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })), stale: true, partialHistory: true };
 }
 async function loadCached(key: string, address: string, period: ChartRange) {
-  if (cache.has(key)) return cache.get(key)!;
+  const memory = cache.get(key);
+  if (memory) {
+    const current = chartForRange(memory, period);
+    if (current.candles.length) { cache.set(key, current); return current; }
+    cache.delete(key);
+  }
   try {
     const raw = await readFile(path.join(cacheDirectory, `${key}.json`), 'utf8');
     if (raw.length > 400_000) return null;
     const value = JSON.parse(raw) as TokenChart;
-    if (value.address !== address || value.period !== period || value.source !== 'geckoterminal' || !Number.isFinite(Date.parse(value.updatedAt || ''))) return null;
+    if (value.address !== address || value.period !== period || !['geckoterminal', 'gmgn', 'coinmarketcap'].includes(value.source) || !Number.isFinite(Date.parse(value.updatedAt || ''))) return null;
     const now = Math.floor(Date.now() / 1000);
     if (value.resolution !== chartSettings(period).resolution) return null;
     const candles = parseCandles(value.candles?.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]), now - chartSettings(period).seconds, now);
     if (!candles.length) return null;
     value.candles = candles;
+    if (value.source === 'coinmarketcap') value.volumeCurrency = 'unknown';
     value.points = candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) }));
     cache.set(key, value);
     return value;
@@ -173,14 +250,12 @@ export async function currentMarketChart(address: string, range: ChartRange): Pr
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
-        let result: TokenChart | null;
-        try { result = await fetchMarketCandles(address, period, poolAddress, request); }
-        catch (error) {
-          // Discovery cannot fix a timeout, 429 or a provider cooldown.
-          if (!poolAddress || !(error instanceof Error) || !/request failed: (404|422)$/.test(error.message)) throw error;
-          result = await fetchMarketCandles(address, period, undefined, request);
-        }
-        if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined, request);
+        const result = await fetchPreferredMarketCandles(address, period, poolAddress, {
+          gmgnKey: process.env.GMGN_API_KEY, saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
+          cmcRequest: (url, signal) => cmcRequest(url, { signal, priority: () => priorities.get(key) ?? 'sparkline' }),
+          gmgnRequest: (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal,
+            priority: () => priorities.get(key) ?? 'sparkline' }),
+        });
         if (!result) { retryAt.set(key, { at: Date.now() + 300_000, status: 'no_history' }); return null; }
         retryAt.delete(key);
         if (cache.size >= 500) cache.delete(cache.keys().next().value!);

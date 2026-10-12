@@ -15,9 +15,12 @@ export interface WatchPricePoint { timestamp: string; priceUsd: string }
 export interface MarketCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface TokenChart {
   address: string; period: ChartRange; candles: MarketCandle[]; points: WatchPricePoint[];
-  source: 'geckoterminal' | 'recorded' | 'quote' | 'unavailable';
+  source: 'gmgn' | 'coinmarketcap' | 'geckoterminal' | 'recorded' | 'quote' | 'unavailable';
   updatedAt: string | null; resolution: string; poolAddress?: string; pending: boolean; stale: boolean;
   marketCapSupply?: string | null;
+  supplyCheckedAt?: string | null;
+  supplyPending?: boolean;
+  volumeCurrency?: 'usd' | 'unknown';
   partialHistory?: boolean;
   loadStatus?: 'queued' | 'rate_limited' | 'provider_error' | 'no_history';
   retryAfterMs?: number;

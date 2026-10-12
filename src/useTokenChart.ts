@@ -1,31 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { candleIntervals, type TokenChart, type ChartRange, type CandleInterval } from '../shared/intelligence';
-import { api } from './lib';
+import type { TokenChart, ChartRange } from '../shared/intelligence';
+import { createTokenChartRequests } from './tokenChartRequest';
 
-const saved = new Map<string, { chart: TokenChart; checked: number }>();
-const requests = new Map<string, Promise<TokenChart>>();
-async function chartRequest(address: string, period: ChartRange) {
-  const key = `${address}-${period}`;
-  const cached = saved.get(key);
-  if (cached && Date.now() - cached.checked < (cached.chart.pending || cached.chart.loadStatus ? 1000 : 10_000)) return cached.chart;
-  let request = requests.get(key);
-  if (!request) {
-    const parameter = candleIntervals.includes(period as CandleInterval) ? 'interval' : 'period';
-    request = api<TokenChart>(`/api/tokens/${address}/chart?${parameter}=${period}`).then(chart => {
-      if (saved.size > 500) saved.delete(saved.keys().next().value!);
-      saved.set(key, { chart, checked: Date.now() });
-      return chart;
-    }).finally(() => requests.delete(key));
-    requests.set(key, request);
-  }
-  return request;
+const charts = createTokenChartRequests();
+
+export function preloadTokenChart(address: string, period: ChartRange = '5m') {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return;
+  void charts.request(address, period).catch(() => { /* The mounted chart handles retry and error display. */ });
 }
 
 export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true) {
   const key = `${address}-${period}`;
   const [result, setResult] = useState<{ key: string; chart: TokenChart } | null>(null);
   const [error, setError] = useState(false);
-  const chart = result?.key === key ? result.chart : saved.get(key)?.chart ?? null;
+  const chart = result?.key === key ? result.chart : address ? charts.peek(address, period) : null;
   useEffect(() => {
     if (!address || !enabled) return;
     let stopped = false;
@@ -37,7 +25,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       refreshing = true;
       let delay = 30_000;
       try {
-        const value = await chartRequest(address, period);
+        const value = await charts.request(address, period);
         if (!stopped) { setResult({ key, chart: value }); setError(false); }
         if (value.retryAfterMs) delay = Math.max(1000, Math.min(value.retryAfterMs, 600_000));
         else if (value.pending) delay = 3000;

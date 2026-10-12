@@ -8,6 +8,7 @@ import { nonStockTokenSql } from './stockToken.js';
 import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
 import { registerKolTokenTradesRoutes } from './kolTokenTradesApi.js';
+import { tokenSupplyRequests } from './tokenSupply.js';
 export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
@@ -112,18 +113,22 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (!parsed.success || !(interval === undefined ? watchPeriods.includes(period as WatchPeriod) : candleIntervals.includes(interval as typeof candleIntervals[number]))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
     const address = parsed.data, selected = period as ChartRange;
     const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
-      CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
-        THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END AS supply
+      v.total_supply_raw::text AS "rawSupply",v.decimals,v.supply_checked_at AS "supplyCheckedAt"
       FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND EXISTS (
         SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
-    const result = await currentMarketChart(address, selected);
-    reply.header('Cache-Control', result.pending || result.loadStatus ? 'no-store' : 'public, max-age=15');
-    const loading = { loadStatus: result.loadStatus, retryAfterMs: result.retryAfterMs };
-    const marketCapSupply = known.rows[0].supply ?? null;
-    if (result.chart) return { ...result.chart, period: selected, marketCapSupply, pending: result.pending, ...loading };
+    const supplyRequest = tokenSupplyRequests.start(address, known.rows[0]);
+    const [result] = await Promise.all([currentMarketChart(address, selected), supplyRequest.settle()]);
+    const supply = supplyRequest.snapshot();
+    const pending = result.pending || supply.pending;
+    reply.header('Cache-Control', pending || result.loadStatus || !supply.supply ? 'no-store' : 'public, max-age=15');
+    const loading = { loadStatus: result.loadStatus ?? (supply.pending ? 'queued' : !supply.supply ? 'provider_error' : undefined),
+      retryAfterMs: supply.supply ? result.retryAfterMs : Math.min(result.retryAfterMs ?? Infinity, supply.retryAfterMs ?? 3000) };
+    const marketCapSupply = supply.supply;
+    const supplyDetails = { marketCapSupply, supplyCheckedAt: supply.checkedAt, supplyPending: supply.pending };
+    if (result.chart) return { ...result.chart, period: selected, ...supplyDetails, pending, ...loading };
     if (interval !== undefined) return { address, period: selected, candles: [], points: [], source: 'unavailable',
-      updatedAt: null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false, ...loading };
+      updatedAt: null, resolution: chartSettings(selected).resolution, ...supplyDetails, pending, stale: false, ...loading };
     const history = await pool.query(`SELECT t.timestamp,t.price_usd::text AS "priceUsd" FROM trades t
       JOIN kols k ON k.address=t.wallet_address AND k.is_tracked
       WHERE t.token_address=$1 AND t.block_number IS NOT NULL AND t.price_usd>0
@@ -133,7 +138,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const quote = known.rows[0];
     if (!points.length && Number(quote.price) > 0) points.push({ timestamp: quote.updated || new Date().toISOString(), priceUsd: quote.price });
     return { address, period: selected, candles: [], points, source: points.length > 1 ? 'recorded' : points.length ? 'quote' : 'unavailable',
-      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, marketCapSupply, pending: result.pending, stale: false, ...loading };
+      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, ...supplyDetails, pending, stale: false, ...loading };
   });
   app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/market', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);

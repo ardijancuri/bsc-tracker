@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { gmgnRequest } from './gmgnApi.js';
 
 export type GmgnProfit = {
   walletAddress: string;
@@ -42,14 +43,10 @@ export async function fetchGmgnProfits(wallets: string[], period: GmgnProfit['pe
   const url = new URL('https://openapi.gmgn.ai/v1/user/wallet_profits');
   url.searchParams.set('timestamp', String(Math.floor(Date.now() / 1000)));
   url.searchParams.set('client_id', randomUUID());
-  const response = await fetch(url, {
+  const envelope = await gmgnRequest(url, {
+    apiKey, weight: 3, priority: 'metadata',
     method: 'POST',
-    headers: { 'X-APIKEY': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chain: 'bsc', period, wallet_addresses: wallets }),
-    signal: AbortSignal.timeout(20_000),
+    body: { chain: 'bsc', period, wallet_addresses: wallets },
   });
-  if (!response.ok) throw new Error(`GMGN profit request failed: HTTP ${response.status}`);
-  const envelope = await response.json() as { code?: number; data?: unknown };
-  if (envelope.code !== 0) throw new Error(`GMGN profit request failed: code ${envelope.code ?? 'unknown'}`);
   return parseGmgnProfits(envelope.data, wallets, period);
 }
