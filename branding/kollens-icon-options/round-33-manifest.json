@@ -1,0 +1,50 @@
+[
+  {
+    "stem": "106-trade-circuit",
+    "title": "Trade Circuit",
+    "caption": "A sharp path traces a KOL wallet’s activity.",
+    "meaning": "An angular route represents tracing transactions through a tracked KOL wallet.",
+    "svg": "106-trade-circuit.svg",
+    "png": "106-trade-circuit.png",
+    "header": "106-trade-circuit-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Angular and filled abstract KOL tracking marks"
+  },
+  {
+    "stem": "107-cohort",
+    "title": "Cohort",
+    "caption": "Several KOLs form one shared view of a token.",
+    "meaning": "Three connected facets represent grouping KOL activity around the same token.",
+    "svg": "107-cohort.svg",
+    "png": "107-cohort.png",
+    "header": "107-cohort-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Angular and filled abstract KOL tracking marks"
+  },
+  {
+    "stem": "108-split-signal",
+    "title": "Split Signal",
+    "caption": "A trade signal cuts through the market noise.",
+    "meaning": "The interrupted block represents spotting a new trade signal in the activity feed.",
+    "svg": "108-split-signal.svg",
+    "png": "108-split-signal.png",
+    "header": "108-split-signal-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Angular and filled abstract KOL tracking marks"
+  },
+  {
+    "stem": "109-cross-track",
+    "title": "Cross Track",
+    "caption": "Intersecting tracks reveal shared KOL activity.",
+    "meaning": "Intersecting paths represent comparing KOL wallets and finding shared token activity.",
+    "svg": "109-cross-track.svg",
+    "png": "109-cross-track.png",
+    "header": "109-cross-track-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Angular and filled abstract KOL tracking marks"
+  }
+]

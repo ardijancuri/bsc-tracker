@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: premium brand icon for kollens, a BNB Chain app that observes KOL influencer wallets, live trades, token watchlists and onchain market performance.
+Primary request: Direction 85 — VANTAGE. Create an original minimal abstract scout or observant owl-mask mark. Use one compact confident silhouette with two broad angular curved negative-space cuts as watchful optical views, and a subtle downward transition at the center. The two cuts must be broad and clean with no pupils or dots. Suggest an observant intelligence through abstract geometry only, without a literal cartoon bird, beak, feathers, or round owl eyes. The finished mark should feel like a premium proprietary geometric brand emblem with beautiful balanced proportions, not a stock mascot.
+Style/medium: flat single-color vector-friendly logo, clean defined edges, confident substantial widths, selective smoothly rounded corners, wide clean negative spaces. Elegant small-size clarity at 32px. One visually unified silhouette.
+Composition/framing: one isolated centered icon on a square 1024 by 1024 canvas, compact balanced width and height, occupying approximately 60 percent of the canvas width, ample transparent margin. A restrained broad upper contour and subtle blunt center descent. No tall crown-like peaks.
+Color palette: only flat solid exact yellow #F9C932 for the entire mark.
+Scene/backdrop: genuinely transparent background with preserved alpha.
+Text: none, no wordmark, letters, numbers, labels, or text.
+Constraints: single icon only, no layout, sheet, grid, collage, variants, enclosing circle, enclosing frame, or decorative badge. This is a new original concept; do not make a literal single Signal Eye icon or crown.
+Avoid: round pupils, dots, circles, cartoon bird details, beak, feathers, literal single eye outline, letter inside a lens, camera, shutter, wallet, crown, arrow, fingerprints, nested rings, focus brackets, generic sparkle, gradients, glow, shading, 3D, shadows, texture, watermark.

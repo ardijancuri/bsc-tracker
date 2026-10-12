@@ -890,11 +890,9 @@ export class ReplayCanvas {
     rowText(status, left + pillWidth / 2, detailRow, statusFont, statusText, 'center');
     if (this.brandIcon?.naturalWidth > 0) {
       try {
-        // The supplied SVG's icon occupies this rectangle inside its viewBox.
-        // Crop its transparent padding so the visible edge meets the date.
-        const iconWidth = detailHeight * 114 / 120;
-        ctx.drawImage(this.brandIcon, 7, 4, 114, 120,
-          right - iconWidth, detailRow - detailHeight / 2, iconWidth, detailHeight);
+        // Use the complete native icon viewBox, matching the app's brand mark.
+        ctx.drawImage(this.brandIcon,
+          right - detailHeight, detailRow - detailHeight / 2, detailHeight, detailHeight);
       } catch {
         rowText('k/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
       }
@@ -1256,7 +1254,7 @@ export class ReplayCanvas {
     if (this.brandWordmark?.naturalWidth > 0) {
       try {
         ctx.save();
-        // Use the complete outlined wordmark without stretching its lettering.
+        // Keep only the app wordmark in the footer, with its native proportions.
         // Tint it black for contrast against the solid gold canvas frame.
         ctx.filter = 'brightness(0)';
         const width = 440;

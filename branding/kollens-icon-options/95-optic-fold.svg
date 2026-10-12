@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Optic Fold</title>
+  <desc>A folded optical ribbon combines the trader and token views in one lens.</desc>
+  <g fill="#F9C932">
+    <path d="M18 60V34Q18 28 23 25L36 17Q40 14 43 17Q45 19 45 23V38Q45 40 43 41L26 51Q20 55 18 60Z"/>
+    <path d="M18 72Q18 65 23 62L84 25Q87 23 91 23H104Q111 23 111 31Q111 36 106 39L43 77V97Q43 101 45 104Q46 106 44 108L25 99Q18 96 18 88Z"/>
+    <path d="M83 63Q83 61 85 63L106 81Q111 85 111 91V100Q111 104 108 103L88 94Q83 92 83 87Z"/>
+    <path d="M52 85L105 109Q109 111 106 114Q101 118 97 118H76Q73 118 70 116L53 108Q49 106 49 101V86Q49 83 52 85Z"/>
+  </g>
+</svg>

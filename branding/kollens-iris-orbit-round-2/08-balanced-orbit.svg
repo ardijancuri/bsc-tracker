@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
+  <title>Kollens Balanced Orbit</title>
+  <desc>A calm circular envelope and generous round opening with two broad swept crescents. One path is repeated by exactly 180 degrees.</desc>
+  <defs><path id="08-balanced-orbit-crescent" d="M 92.559425 69.035797 A 29 29 0 0 0 38.885263 49.5 C 37.145263 52.513768 7.62741 65.813707 8.213097 59.119278 A 56 56 0 0 1 118.091846 49.506133 C 119.83111 55.997155 91.955129 72.462928 92.559425 69.035797 Z"/></defs>
+  <g transform="rotate(45 64 64)">
+    <use href="#08-balanced-orbit-crescent"/>
+    <use href="#08-balanced-orbit-crescent" transform="rotate(180 64 64)"/>
+  </g>
+</svg>

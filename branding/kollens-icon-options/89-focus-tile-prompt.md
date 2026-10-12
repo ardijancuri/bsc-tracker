@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: premium brand logo icon for kollens, KOL + Lens, an app observing KOL influencer wallets and onchain market activity.
+Primary request: Direction 89 — FOCUS TILE. Design one substantial connected rounded-square or squircle solid emblem with one broad angular optical negative-space cut entering from its right edge. This cut has exactly one mouth at the right edge, proceeds diagonally into the tile, then makes a controlled angled transition and ends inside the tile with a softly rounded terminal. Keep the cut unbranched. The remaining gold body must stay fully connected as one solid piece. The silhouette can subtly echo the structural rhythm of K without showing any full literal letter. Aim for a distinctive premium technology mark with a sense of looking through an optical opening.
+Style/medium: flat constant single-color vector-friendly logo; clean precise geometry, rounded outside corners and rounded inside cut corners, broad substantial proportions, minimal shape count, polished clarity at 32px.
+Composition/framing: one centered isolated icon on a square 1024 by 1024 canvas, with generous genuine transparent margin. Compact balanced rounded-square form occupying approximately 60 percent of canvas width.
+Color palette: only exact flat constant #F9C932.
+Scene/backdrop: genuinely transparent background with preserved alpha.
+Text: none.
+Critical constraints: EXACTLY ONE CONNECTED SOLID GOLD BODY. Exactly one broad unbranched negative-space cut with only one edge opening. The cut must not detach any gold triangle or wedge. No separate center piece or floating insert. No triangle in the cut. No C-shaped surrounding form with a separate arrow or play-triangle. No literal letter inside a box. Keep every gold part physically joined by broad substantial connections.
+Avoid: detached or isolated triangles, arrowheads, play buttons, full letter, circle, pupil, dot, concentric rings, camera, shutter, literal eye, wallet, crown, arrow, ring frames, thin outline border, gradients, glow, texture, shadows, lighting effects, 3D, words, labels, typography, collage, grid, watermark.

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens split K with a lens in its lower arm</title>
+  <g transform="translate(-3.5 0)">
+  <g fill="none" stroke="#f9c932" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 24 V60 L54 31"/>
+    <path d="M25 104 L104 25"/>
+    <path d="M58 101 A26 26 0 0 1 110 101"/>
+  </g>
+  <circle cx="84" cy="101" r="8" fill="#f9c932"/>
+  </g>
+</svg>

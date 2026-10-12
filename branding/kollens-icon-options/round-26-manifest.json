@@ -1,0 +1,46 @@
+[
+  {
+    "stem": "78-signal-eye",
+    "title": "Signal Eye",
+    "source": "78-signal-eye-generated.png",
+    "svg": "78-signal-eye.svg",
+    "png": "78-signal-eye.png",
+    "header": "78-signal-eye-header.svg",
+    "components": 3,
+    "contours": 3,
+    "color": "#F9C932"
+  },
+  {
+    "stem": "79-wallet-marker",
+    "title": "Wallet Marker",
+    "source": "79-wallet-marker-repaired.png",
+    "svg": "79-wallet-marker.svg",
+    "png": "79-wallet-marker.png",
+    "header": "79-wallet-marker-header.svg",
+    "components": 1,
+    "contours": 2,
+    "color": "#F9C932"
+  },
+  {
+    "stem": "80-trade-trace",
+    "title": "Trade Trace",
+    "source": "80-trade-trace-generated.png",
+    "svg": "80-trade-trace.svg",
+    "png": "80-trade-trace.png",
+    "header": "80-trade-trace-header.svg",
+    "components": 1,
+    "contours": 1,
+    "color": "#F9C932"
+  },
+  {
+    "stem": "81-kol-crest",
+    "title": "KOL Crest",
+    "source": "81-kol-crest-generated.png",
+    "svg": "81-kol-crest.svg",
+    "png": "81-kol-crest.png",
+    "header": "81-kol-crest-header.svg",
+    "components": 1,
+    "contours": 1,
+    "color": "#F9C932"
+  }
+]

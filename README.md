@@ -2,6 +2,10 @@
 
 Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handles in `server/roster.json` were normalized from the user-supplied GMGN KOL CSV. The app tracks exactly this roster and needs no GMGN API key. Names, handles, and wallet addresses are data supplied by the roster; kollens does not independently verify identity ownership.
 
+## Brand assets
+
+`public/kollens-header-logo.svg` is the source for the app's brand icon. `npm run brand:export` regenerates the footer logo, SVG/PNG/ICO favicons, touch icon, trade replay icon, social preview images and legacy public brand aliases. It also versions artwork URLs to avoid stale browser and social caches. The export runs before every production build.
+
 ## Pages
 
 - `/trades` — observed swaps initiated by tracked wallets, with filters and BscScan links

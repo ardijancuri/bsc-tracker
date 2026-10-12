@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens open lens icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M97.94 30.06 A48 48 0 1 0 110.36 76.42"/>
+    <circle cx="64" cy="64" r="22"/>
+  </g>
+  <circle cx="64" cy="64" r="6" fill="#f9c932"/>
+  <circle cx="109.93" cy="50.56" r="6.5" fill="#f9c932"/>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens forked K shutter icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <g>
+      <path d="M41 23 A47 47 0 0 1 104 40 L80 53"/>
+      <path d="M64 17 L48 40"/>
+    </g>
+    <g transform="rotate(120 64 64)">
+      <path d="M41 23 A47 47 0 0 1 104 40 L80 53"/>
+      <path d="M64 17 L48 40"/>
+    </g>
+    <g transform="rotate(240 64 64)">
+      <path d="M41 23 A47 47 0 0 1 104 40 L80 53"/>
+      <path d="M64 17 L48 40"/>
+    </g>
+  </g>
+</svg>

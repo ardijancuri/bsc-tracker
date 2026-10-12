@@ -1,0 +1,28 @@
+{
+  "generator": "built-in imagegen",
+  "transparentBackground": true,
+  "prompts": [
+    {
+      "file": "sources/01-soft-aperture.png",
+      "mode": "edit",
+      "reference": "../kollns-logo-exploration/01-aperture-k.png",
+      "prompt": "Use case: logo-brand.\nAsset type: single icon-only aperture logo exploration for the app kollens.\nInput image: edit target, existing gold three-blade aperture logo.\nPrimary edit request: Preserve the overall circular, flowing three-blade aperture character and gold palette. Completely remove ALL of the central K, all letter-like diagonals, stem and monogram geometry. Replace the middle with a clean round optical opening surrounded by three equal broad swept blades at exactly 120 degrees. The aperture blades alone are the whole mark; no outer ring.\nGeometry: extremely structured, equal blade repetition, consistent gaps, smooth curve radii, balanced circular outline. Generous round opening, calm broad shapes with no wobbly or handdrawn contours or pointed irregular hooks.\nFinal output: SINGLE ICON ONLY, absolutely no wordmark or any text. Isolate the flat #F9C932 icon on a genuinely transparent background. Square composition, centered icon around 60% canvas width with generous transparent margins. Crisp geometric vector-like edges and solid uniform color.\nAvoid: texture, grain, gradients, emboss, mockups, shadows, coin signs, letters, nodes, background color or any lettering."
+    },
+    {
+      "file": "sources/02-focus-iris.png",
+      "mode": "generate",
+      "prompt": "Use case: logo-brand.\nAsset type: standalone icon exploration for kollens, a crypto KOL tracking and optical intelligence product.\nPrimary request: create one fresh compact FOCUS IRIS lens-aperture logo constructed from FOUR identical broad curved geometric blades rotated exactly 90 degrees around a common center, with a clear rounded-square negative-space opening. Each blade has a smooth circular outer shoulder and one calm inward curve. The shape reads as a shutter and a subtle focus frame at once; the entire silhouette is softly square rather than round, with stable fourfold symmetry, equal blades, equal clean gaps, and no letter-like diagonal or monogram.\nSingle icon only. No wordmark, no letters, no text, no K, no hidden letter.\nStyle: a precise polished geometric vector-like brand symbol, broad filled shapes that remain legible at 24 pixels, crisp clean edges. Flat exact gold #F9C932.\nBackground: genuinely transparent alpha background, preserve full transparency; no backdrop.\nComposition: square image, centered icon occupying around 60% of the canvas width with generous transparent margins.\nAvoid: textures, grain, gradients, lighting, embossing, mockups, shadows, camera outlines, coins, arrows, letters, people, fine circuitry, extra elements, watermarks."
+    },
+    {
+      "file": "sources/03-optical-prism.png",
+      "mode": "generate",
+      "prompt": "Use case: logo-brand\nAsset type: single brand icon exploration for kollens, a crypto KOL tracking and optical intelligence product.\nDirection: OPTICAL PRISM. Create a compact rounded diamond silhouette, a solid gold optical body split into two carefully balanced curved lobes by one diagonal lens-shaped negative opening. The aperture in the center is a smooth generous almond on a rising 45-degree diagonal. Two identical antipodal lobes, exact 180-degree rotational symmetry, broad mass, mathematically controlled clean curves and even edge clearance. Feels like seeing through data and refracting a signal.\nStyle: absolutely crisp flat geometric vector-like logo. Single solid flat gold #F9C932 only, perfectly uniform fill.\nComposition: square, centered single icon around 60% of canvas width, generous empty transparent margins.\nBackground: genuinely fully transparent alpha, no backdrop.\nConstraints: SINGLE ICON ONLY, no wordmark or text or letters. Broad shapes clearly legible at 24 pixels. The opening is purely optical and geometric, no monogram or letter geometry, no cuts that form K, no hook or stem. The silhouette has precise controlled structure and symmetry.\nAvoid: every letter or number, K shapes, texture, grain, gradients, lighting, embossing, 3D, mockups, shadows, coins, camera icon, nodes, charts, fine circuitry, additional symbols, decorative marks."
+    },
+    {
+      "file": "sources/04-orbit-lens.png",
+      "mode": "generate",
+      "prompt": "Use case: logo-brand.\nAsset type: original single icon-only optical tracking logo exploration for kollens.\nPrimary request: Create an original compact optical tracking mark consisting of two broad smooth interwoven crescents around one clear central circular negative opening. An offset orbital sweep gives the mark directional flow. Twofold exact 180-degree symmetry: two identical gently curved crescents. The outer silhouette is a calm rounded oval rotated slightly 45 degrees, with a round center. Crossing areas are clean and even. Strong broad compact shape that reads clearly at 24px.\nStyle/medium: crisp structural geometric vector-like edges, exact flat gold #F9C932 throughout.\nComposition/framing: SINGLE ICON ONLY, centered in square canvas around 60% canvas width, generous genuinely transparent margins and background.\nConstraints: no K or letters, no small dots, no arrow, no literal Saturn planet or eye. No texture, grain, gradients, shadows, 3D, mockups, frames, text, people or coins. Truly transparent background."
+    }
+  ],
+  "finalVectorNote": "Source rasters are preserved as concept provenance. Deliverable SVGs use controlled native geometry, exact flat gold, and repeated shapes with rotational symmetry. The app's existing native kollens wordmark is used in lockups."
+}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens wallet lens icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M104 39 H42 Q19 39 19 62 V88 Q19 108 39 108 H93 Q112 108 112 89 V52 Q112 39 99 39"/>
+    <path d="M23 48 V36 Q23 23 37 20 L84 13 Q98 11 102 27 L105 39"/>
+    <circle cx="65" cy="75" r="15" stroke-width="12"/>
+  </g>
+  <circle cx="65" cy="75" r="4.5" fill="#f9c932"/>
+</svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>kollens Focus Iris</title>
+  <desc>Four equal curved aperture blades with exact quarter-turn symmetry.</desc>
+  <defs>
+    <path id="blade" d="M 8 57 V 40 C 8 22.326888 22.326888 8 40 8 H 54 C 74 8 86 24 82 48 C 81.633333 50.2 79.8 51 78.4 49.2 C 75.6 45.6 74 44 70 44 H 66 C 43 44 13 32 10.5 56 C 10.322917 57.7 8 58.7 8 57 Z"/>
+  </defs>
+  <g fill="#F9C932">
+    <use href="#blade"/>
+    <use href="#blade" transform="rotate(90 64 64)"/>
+    <use href="#blade" transform="rotate(180 64 64)"/>
+    <use href="#blade" transform="rotate(270 64 64)"/>
+  </g>
+</svg>

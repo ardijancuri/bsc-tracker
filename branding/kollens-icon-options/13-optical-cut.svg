@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens optical cut icon</title>
+  <defs>
+    <mask id="optical-cut" x="8" y="8" width="112" height="112" maskUnits="userSpaceOnUse" style="mask-type:luminance">
+      <rect x="8" y="8" width="112" height="112" fill="#fff"/>
+      <ellipse cx="64" cy="64" rx="29" ry="15" transform="rotate(-35 64 64)" fill="#000"/>
+      <path d="M85 49 L113 29" fill="none" stroke="#000" stroke-width="10" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <path d="M52 17 Q64 5 76 17 L111 52 Q123 64 111 76 L76 111 Q64 123 52 111 L17 76 Q5 64 17 52 Z" fill="#f9c932" mask="url(#optical-cut)"/>
+</svg>

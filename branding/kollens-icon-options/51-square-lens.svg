@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens square lens with defined rounded corners</title>
+  <g fill="none" stroke="#f9c932" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M112 44 V36 A20 20 0 0 0 92 16 H36 A20 20 0 0 0 16 36 V92 A20 20 0 0 0 36 112 H92 A20 20 0 0 0 112 92 V84"/>
+    <path d="M40.930 70.615 A24 24 0 1 0 62.326 40.058"/>
+  </g>
+  <circle cx="64" cy="64" r="7" fill="#f9c932"/>
+</svg>

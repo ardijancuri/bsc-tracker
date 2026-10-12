@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: standalone premium abstract brand icon for kollens, tracking KOL wallets and token trading activity.
+Meaning decided before design: Separate KOL wallet signals gather into one view of token activity.
+Primary request: create CLUSTER SIGNAL as a FLAT FRONTAL filled abstract symbol. The previous attempt failed because it looked like a cube assembled from isometric faces. Correct that specific defect: no cube, no isometric faces, no perspective. Do not reproduce that attempt.
+Subject: exactly TWO substantial custom polygonal plates that gather into a compact unified irregular silhouette. A deliberate broad offset negative-space cut between the two plates is the signature. Think of an original planar tessellation on a square grid: horizontal, vertical, and 45-degree edges ONLY, with one or two asymmetric clipped corners. No 30-degree diagonals, hexagons, pyramids, or triangular roof caps. The plates must have unequal contours but balanced visual weight and a shared geometric rhythm. Make the result feel like several signals brought into one view through precise grouping.
+Style/medium: premium minimal flat filled logo, sharp edges, straight lines, extremely clean geometry, confident broad solids, generous consistent channel width, elegant proportion, distinctive 32px silhouette. This is an abstract icon, not lettering or a diagram.
+Composition/framing: one isolated centered icon, square canvas, about half the canvas width, generous genuine alpha-transparent padding, no words, labels, examples, collage, or layout.
+Color palette: only one perfectly uniform solid yellow #F9C932; truly transparent background and channel.
+Constraints: two large planar polygons only. Clean contours without tiny clutter. Grouping and aggregation as the internal logic. No gradients, shading, glow, texture, speckles, shadow, bevel, or 3D.
+Avoid: Y or branching fork, ordinary cube, isometric logo, nested rings, spiral, lens, eye, X, N/C/F/K letterforms, monogram, arrows, star, bars or bar chart, generic UI or network icon, dots, enclosing frame, badge, watermark, words.

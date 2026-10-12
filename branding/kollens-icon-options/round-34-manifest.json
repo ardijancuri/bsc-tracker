@@ -1,0 +1,46 @@
+[
+  {
+    "stem": "110-wallet-wake",
+    "title": "Wallet Wake",
+    "caption": "A tracked wallet leaves a visible trail of activity.",
+    "meaning": "The trail imprint represents the activity left behind by a tracked KOL wallet.",
+    "svg": "110-wallet-wake.svg",
+    "png": "110-wallet-wake.png",
+    "header": "110-wallet-wake-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "111-cluster-signal",
+    "title": "Cluster Signal",
+    "caption": "KOL signals gather into one view of token activity.",
+    "meaning": "The grouped sections represent separate KOL wallet signals gathered around one token.",
+    "svg": "111-cluster-signal.svg",
+    "png": "111-cluster-signal.png",
+    "header": "111-cluster-signal-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "112-watch-mark",
+    "title": "Watch Mark",
+    "caption": "Keep the tokens you select in view.",
+    "meaning": "The abstract marker represents the tokens saved to your watchlist.",
+    "svg": "112-watch-mark.svg",
+    "png": "112-watch-mark.png",
+    "header": "112-watch-mark-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "113-chain-thread",
+    "title": "Chain Thread",
+    "caption": "Follow the link between a wallet and its token trades.",
+    "meaning": "The linked thread connects a tracked wallet to the tokens it trades.",
+    "svg": "113-chain-thread.svg",
+    "png": "113-chain-thread.png",
+    "header": "113-chain-thread-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  }
+]

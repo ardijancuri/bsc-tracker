@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens rounded square layers with 50 percent bottom-left corners</title>
+  <g fill="none" stroke="#f9c932" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M112 44 V32 A16 16 0 0 0 96 16 H32 A16 16 0 0 0 16 32 V64 A48 48 0 0 0 64 112 H96 A16 16 0 0 0 112 96 V84"/>
+    <path d="M40.930 70.615 A24 24 0 0 0 64 88 H75 A13 13 0 0 0 88 75 V53 A13 13 0 0 0 75 40 H63"/>
+  </g>
+  <path d="M61 57 H67 A4 4 0 0 1 71 61 V67 A4 4 0 0 1 67 71 H64 A7 7 0 0 1 57 64 V61 A4 4 0 0 1 61 57 Z" fill="#f9c932"/>
+</svg>

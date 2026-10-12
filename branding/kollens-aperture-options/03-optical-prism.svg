@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Kollens optical prism icon">
+  <title>Kollens optical prism</title>
+  <desc>A rounded diamond with a closed diagonal almond opening. Exact 180 degree rotational symmetry.</desc>
+  <path fill="#F9C932" fill-rule="evenodd" transform="rotate(-45 64 64)" d="M36 20H92A16 16 0 0 1 108 36V92A16 16 0 0 1 92 108H36A16 16 0 0 1 20 92V36A16 16 0 0 1 36 20Z M30 64Q64 36 98 64Q64 92 30 64Z"/>
+</svg>

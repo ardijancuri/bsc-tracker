@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens KOL focus icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M45 16 H37 Q16 16 16 37 V45"/>
+    <path d="M83 16 H91 Q112 16 112 37 V45"/>
+    <path d="M16 83 V91 Q16 112 37 112 H45"/>
+    <path d="M112 83 V91 Q112 112 91 112 H83"/>
+    <path d="M41 88 C47 65 81 65 87 88"/>
+  </g>
+  <circle cx="64" cy="48" r="12" fill="#f9c932"/>
+</svg>

@@ -1,0 +1,50 @@
+[
+  {
+    "stem": "102-trade-trail",
+    "title": "Trade Trail",
+    "caption": "Follow a KOL through a sequence of trades.",
+    "meaning": "A continuous path represents following a KOL through their trading history.",
+    "svg": "102-trade-trail.svg",
+    "png": "102-trade-trail.png",
+    "header": "102-trade-trail-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Abstract symbols tied to KOL tracking"
+  },
+  {
+    "stem": "103-confluence",
+    "title": "Confluence",
+    "caption": "Several KOL routes meet around one token.",
+    "meaning": "Three routes converge, representing several KOLs trading the same token.",
+    "svg": "103-confluence.svg",
+    "png": "103-confluence.png",
+    "header": "103-confluence-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Abstract symbols tied to KOL tracking"
+  },
+  {
+    "stem": "104-activity-stream",
+    "title": "Activity Stream",
+    "caption": "Live wallet activity flows into one feed.",
+    "meaning": "Repeated flowing lines represent the live stream of tracked wallet activity.",
+    "svg": "104-activity-stream.svg",
+    "png": "104-activity-stream.png",
+    "header": "104-activity-stream-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Abstract symbols tied to KOL tracking"
+  },
+  {
+    "stem": "105-paired-tracks",
+    "title": "Paired Tracks",
+    "caption": "Compare the activity of tracked KOL wallets.",
+    "meaning": "Two paired paths represent comparing activity across KOL wallets.",
+    "svg": "105-paired-tracks.svg",
+    "png": "105-paired-tracks.png",
+    "header": "105-paired-tracks-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "direction": "Abstract symbols tied to KOL tracking"
+  }
+]

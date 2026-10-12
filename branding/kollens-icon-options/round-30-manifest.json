@@ -1,0 +1,46 @@
+[
+  {
+    "stem": "94-k-shutter",
+    "title": "K Shutter",
+    "caption": "Optical blades form the K in KOL + Lens.",
+    "meaning": "The K is formed by optical blades: focus on KOL activity.",
+    "svg": "94-k-shutter.svg",
+    "png": "94-k-shutter.png",
+    "header": "94-k-shutter-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "95-optic-fold",
+    "title": "Optic Fold",
+    "caption": "One optical ribbon combines trader and token views.",
+    "meaning": "A folded optical ribbon combines the trader and token views in one lens.",
+    "svg": "95-optic-fold.svg",
+    "png": "95-optic-fold.png",
+    "header": "95-optic-fold-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "96-twin-focus",
+    "title": "Twin Focus",
+    "caption": "Two optical surfaces bring wallet and token into focus.",
+    "meaning": "Two optical surfaces bring the KOL wallet and token activity into the same focus.",
+    "svg": "96-twin-focus.svg",
+    "png": "96-twin-focus.png",
+    "header": "96-twin-focus-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  },
+  {
+    "stem": "97-signal-loop",
+    "title": "Signal Loop",
+    "caption": "A continuous path follows KOL activity over time.",
+    "meaning": "A continuous optical path represents following a KOL’s activity over time.",
+    "svg": "97-signal-loop.svg",
+    "png": "97-signal-loop.png",
+    "header": "97-signal-loop-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen with native SVG refinement"
+  }
+]

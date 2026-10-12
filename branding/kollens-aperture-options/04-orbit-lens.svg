@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
+  <title>Kollens Orbit Lens</title>
+  <desc>Two identical swept crescents rotated by 180 degrees around a circular optical opening.</desc>
+  <defs>
+    <path id="orbit-crescent" d="M 87.635386 68.167556 A 24 24 0 0 0 43.215390 52 C 41.775390 54.494153 3.600796 65.619381 4.228318 59.642213 A 60 50 0 0 1 121.955550 51.059048 C 123.819047 56.854603 87.135279 71.003802 87.635386 68.167556 Z"/>
+  </defs>
+  <g transform="rotate(45 64 64)">
+    <use href="#orbit-crescent"/>
+    <use href="#orbit-crescent" transform="rotate(180 64 64)"/>
+  </g>
+</svg>

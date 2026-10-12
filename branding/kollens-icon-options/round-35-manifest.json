@@ -1,0 +1,50 @@
+[
+  {
+    "stem": "114-hex-focus",
+    "title": "Hex Focus",
+    "caption": "A clear focus window within a connected chain.",
+    "meaning": "Three linked sections form a geometric lens for viewing KOL activity.",
+    "svg": "114-hex-focus.svg",
+    "png": "114-hex-focus.png",
+    "header": "114-hex-focus-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "reference": "https://www.bnbchain.org/en/brand-guidelines"
+  },
+  {
+    "stem": "115-chain-lens",
+    "title": "Chain Lens",
+    "caption": "A wallet and its token trades stay connected.",
+    "meaning": "Two linked cells represent the connection between a KOL wallet and its token trades.",
+    "svg": "115-chain-lens.svg",
+    "png": "115-chain-lens.png",
+    "header": "115-chain-lens-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "reference": "https://www.bnbchain.org/en/brand-guidelines"
+  },
+  {
+    "stem": "116-signal-mesh",
+    "title": "Signal Mesh",
+    "caption": "Tracked wallet signals come together in one view.",
+    "meaning": "Three connected cells represent KOL activity brought together in one view.",
+    "svg": "116-signal-mesh.svg",
+    "png": "116-signal-mesh.png",
+    "header": "116-signal-mesh-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "reference": "https://www.bnbchain.org/en/brand-guidelines"
+  },
+  {
+    "stem": "117-focus-grid",
+    "title": "Focus Grid",
+    "caption": "A focused window supported by a tracking network.",
+    "meaning": "A modular frame represents keeping one wallet in focus within the wider activity network.",
+    "svg": "117-focus-grid.svg",
+    "png": "117-focus-grid.png",
+    "header": "117-focus-grid-header.svg",
+    "color": "#F9C932",
+    "medium": "Native SVG vector concepts",
+    "reference": "https://www.bnbchain.org/en/brand-guidelines"
+  }
+]

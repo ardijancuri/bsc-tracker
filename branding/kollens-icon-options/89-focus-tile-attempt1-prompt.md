@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: premium brand logo icon for kollens, KOL + Lens, an app observing KOL influencer wallets, live trades, token watchlists and onchain market performance on BNB Chain.
+Primary request: Direction 89 — FOCUS TILE. Create an original bold rounded-square or squircle emblem as one substantial solid form, with one wide angular negative-space optical cut subtly implying a K in the silhouette. The cut must open through one edge of the solid tile, giving a sense of looking through an optical opening. Design the negative-space cut as one clean purposeful channel rather than a complete letter. The result should feel like a distinctive premium technology brand mark with minimal defined geometry and balanced optical proportions.
+Style/medium: flat solid vector-friendly logo, clean controlled geometry, broad confident widths, rounded inside and outside corners, low shape count, generous clear negative space, polished and readable at 32px.
+Composition/framing: one isolated centered icon on a square 1024 by 1024 canvas, with ample real transparent margin. Compact rounded-square silhouette occupying approximately 60 percent of the canvas width. One solid cut tile, no separate letter, no thin outline, no frame around an internal symbol. Single result only, no sheet, grid, variants, labels, or collage.
+Color palette: only exact constant flat yellow #F9C932 for every visible part of the emblem. Absolutely no color variation or shading.
+Scene/backdrop: genuinely transparent background with preserved alpha.
+Text: none. No wordmark, words, numbers, labels, or typography.
+Constraints: one wide angular negative-space optical cut opening at one edge; subtle incomplete K suggestion; broad strokes; rounded inner and outer corners; substantial solid emblem.
+Avoid: full literal letter, letter placed inside a box or lens, circle, pupil, dot, concentric rings, camera, shutter, literal eye, wallet, crown, arrow, earlier ring-frame motifs, thin border, decorative extra pieces, gradients, glow, texture, shadows, lighting effects, 3D, watermark.

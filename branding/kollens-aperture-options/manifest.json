@@ -1,0 +1,28 @@
+{
+  "brand": "kollens",
+  "color": "#F9C932",
+  "background": "#101113",
+  "production": "Built-in ImageGen concept explorations followed by clean native SVG reconstructions.",
+  "variants": [
+    {
+      "id": "01-soft-aperture",
+      "name": "Soft aperture",
+      "summary": "Three repeated swept blades around a circular optical opening."
+    },
+    {
+      "id": "02-focus-iris",
+      "name": "Focus iris",
+      "summary": "Four repeated curved blades with a softly square silhouette."
+    },
+    {
+      "id": "03-optical-prism",
+      "name": "Optical prism",
+      "summary": "A rounded diamond containing a diagonal almond-shaped opening."
+    },
+    {
+      "id": "04-orbit-lens",
+      "name": "Orbit lens",
+      "summary": "Two repeated curved lobes around a clear optical opening."
+    }
+  ]
+}

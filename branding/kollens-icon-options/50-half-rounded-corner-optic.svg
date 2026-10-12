@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens square optic with a 50 percent bottom-left corner</title>
+  <g fill="none" stroke="#f9c932" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M102.042 25.958 A34 34 0 0 0 78 16 H50 A34 34 0 0 0 16 50 V64 A48 48 0 0 0 64 112 H78 A34 34 0 0 0 111.871 80.963"/>
+    <path d="M40.930 70.615 A24 24 0 0 0 64 88 H78 A10 10 0 0 0 88 78 V50 A10 10 0 0 0 78 40 H63"/>
+  </g>
+  <circle cx="64" cy="64" r="7" fill="#f9c932"/>
+</svg>

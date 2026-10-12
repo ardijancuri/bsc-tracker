@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens K ribbon iris icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+    <g><path d="M41 23 Q70 8 96 32 Q102 39 104 46 Q92 47 80 53"/><path d="M76 19 Q72 32 64 44"/></g>
+    <g transform="rotate(120 64 64)"><path d="M41 23 Q70 8 96 32 Q102 39 104 46 Q92 47 80 53"/><path d="M76 19 Q72 32 64 44"/></g>
+    <g transform="rotate(240 64 64)"><path d="M41 23 Q70 8 96 32 Q102 39 104 46 Q92 47 80 53"/><path d="M76 19 Q72 32 64 44"/></g>
+  </g>
+</svg>

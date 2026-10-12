@@ -1,0 +1,4 @@
+Use case: precise-object-edit
+Edit target: the provided Wallet Marker logo image.
+Primary request: Clean up ONLY rendering quality. Preserve the exact main silhouette, scale, position, integrated right-side bookmark fold/notch, corner shapes, and cutout geometry. Make every interior part of the gold mark a perfectly uniform flat solid #F9C932 fill. Make the background and all negative-space cutouts truly completely transparent with smoothly antialiased clean vector-like edges. Remove all speckles, gold scraps, streaks, texture, uneven alpha and color variations from the negative spaces and solid fill. The result should look like a precise professional flat logo export.
+Constraints: preserve the logo design and silhouette. No words, letters, numbers, extra shapes, gradients, shadows, outlines or 3D. Transparent background. One centered isolated logo.

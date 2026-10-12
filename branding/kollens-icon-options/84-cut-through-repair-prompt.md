@@ -1,0 +1,7 @@
+Use case: precise-object-edit
+Edit target: the provided Cut Through logo image.
+Primary request: Fix one small-size readability defect. Preserve the current outer silhouette, top-left upright region, top-right folded band, lower region, large central triangular aperture, overall scale and position. Widen ONLY the upper diagonal negative-space cut between the top-left upright region and the top-right folded band into a clean consistent open gap measuring roughly 5–6 percent of the total icon width. This generous diagonal gap must fully separate those two folded regions and stay plainly visible at 32 pixels. The gap must run through the entire current diagonal seam, with precise parallel edges, a smooth clean end, and genuinely transparent negative space.
+Style/medium: flat one-color vector-friendly geometric logo. Maintain broad robust gold planes, selectively rounded corners and balanced proportions.
+Color palette: preserve one uniform gold #F9C932; preserve genuine transparency throughout the background and aperture.
+Constraints: change only the width and cleanliness of the upper diagonal cut, with minimal necessary inward edge movement. Preserve every other shape, particularly the large central aperture and outer silhouette. Remove stray raster flecks within the widened gap. One centered isolated icon.
+Avoid: narrowing the gap, joining the separated regions, new cutouts, extra objects, circles, dots, letters or text, frame, badge, gradients, shading, shadows, 3D, outlines, texture, added colors or watermark.

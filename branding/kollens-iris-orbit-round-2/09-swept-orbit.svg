@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
+  <title>Kollens Swept Orbit</title>
+  <desc>A directional diagonal oval with two broad curved crescents and a round optical opening. One path is repeated by exactly 180 degrees.</desc>
+  <defs><path id="09-swept-orbit-crescent" d="M 91.727506 67.896847 A 28 28 0 0 0 41.935699 46.761479 C 39.867076 49.409195 -2.466311 64.637009 -1.638445 59.505276 A 66 43 0 0 1 128.997312 56.533128 C 130.372605 61.614736 91.259884 71.224148 91.727506 67.896847 Z"/></defs>
+  <g transform="rotate(45 64 64)">
+    <use href="#09-swept-orbit-crescent"/>
+    <use href="#09-swept-orbit-crescent" transform="rotate(180 64 64)"/>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+Use case: logo-brand
+Asset type: premium brand symbol for kollens, a product tracking KOL influencer wallets and their onchain trading activity.
+Meaning decided before design: A tracked wallet leaves a trail of activity that kollens makes visible.
+Primary request: Direction 110 — WALLET WAKE. Invent a genuinely new distinctive abstract trail or imprint symbol, as a professional brand designer. Use a few confident filled geometric forms with precise sharp edges and a signature negative-space channel. A substantial asymmetric imprint form is accompanied by two closely related offset wake fragments, suggesting an activity trail left by something being tracked. Give the forms a purposeful proprietary construction: broad grounded masses, a precisely stepped negative channel, and clean optical spacing. The mark should have an unmistakable custom silhouette while avoiding recognizable stock symbol categories. This is a brand identity mark, not a dashboard icon.
+Style/medium: polished flat solid vector-friendly identity; strong filled forms, sharp straight edges, restrained geometry, controlled composition, defined negative space, no thin linework or soft rounded loop forms. Three principal filled forms at most. Clear and balanced at 32px.
+Composition/framing: one compact isolated centered icon on a 1024 by 1024 square canvas, approximately 60 percent canvas width with generous genuine transparent margin. One symbol only, no variants, collage, labels or text.
+Color palette: exact constant flat solid yellow #F9C932 only, no variation.
+Scene/backdrop: genuine transparent background with preserved alpha.
+Text: none. No words, letters, numbers, labels, or typography.
+Constraints: fresh abstract trail/imprint; a few broad filled geometric forms; precise sharp edges; distinctive stepped negative-space channel; offset wake fragments; coherent balanced brand silhouette. Do not turn the fragments into rising chart bars or a directional arrow.
+Avoid: lens, circular aperture, letter, eye, cube, arrow, star, X, C, N, Y, number 2, spiral, graph, chart bars, UI pictogram, literal wallet, chevrons, staircase arrow, generic stacked parallelograms, rounded line-only design, thin strokes, enclosing badge, gradients, textures, glow, shadows, shading, lighting effects, 3D, watermark.

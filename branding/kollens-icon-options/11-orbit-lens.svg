@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Kollens orbit lens icon</title>
+  <g fill="none" stroke="#f9c932" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M51.66 106.69 A51 44 0 1 1 76.34 106.69" transform="rotate(-35 64 64)"/>
+    <circle cx="64" cy="64" r="22"/>
+  </g>
+  <circle cx="64" cy="64" r="7" fill="#f9c932"/>
+</svg>

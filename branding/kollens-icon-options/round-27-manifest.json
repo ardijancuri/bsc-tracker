@@ -1,0 +1,50 @@
+[
+  {
+    "stem": "82-refraction",
+    "title": "Refraction",
+    "meaning": "An optical K that splits the view into two refracted paths.",
+    "source": "82-refraction-generated.png",
+    "svg": "82-refraction.svg",
+    "png": "82-refraction.png",
+    "header": "82-refraction-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen",
+    "finish": "Native geometric vector refinement from the generated concept"
+  },
+  {
+    "stem": "83-paired-view",
+    "title": "Paired View",
+    "meaning": "Two interlocking views connect wallet activity with token movement.",
+    "source": "83-paired-view-generated.png",
+    "svg": "83-paired-view.svg",
+    "png": "83-paired-view.png",
+    "header": "83-paired-view-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen",
+    "finish": "Native geometric vector refinement from the generated concept"
+  },
+  {
+    "stem": "84-cut-through",
+    "title": "Cut Through",
+    "meaning": "A folded K opens a clear aperture through market noise.",
+    "source": "84-cut-through-repaired.png",
+    "svg": "84-cut-through.svg",
+    "png": "84-cut-through.png",
+    "header": "84-cut-through-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen",
+    "finish": "Native geometric vector refinement from the generated concept"
+  },
+  {
+    "stem": "85-vantage",
+    "title": "Vantage",
+    "meaning": "An abstract observer mask represents watching onchain activity.",
+    "source": "85-vantage-generated.png",
+    "svg": "85-vantage.svg",
+    "png": "85-vantage.png",
+    "header": "85-vantage-header.svg",
+    "color": "#F9C932",
+    "generationMode": "built-in ImageGen",
+    "finish": "Native geometric vector refinement from the generated concept"
+  }
+]

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
+  <title>Kollens Split Optic</title>
+  <desc>Two quiet broad semicircular optic lobes separated by even horizontal optical cuts. One path is repeated by exactly 180 degrees.</desc>
+  <defs><path id="10-split-optic-crescent" d="M 90.589809 59.311499 A 27 27 0 0 0 37.410191 59.311499 C 36.847571 62.502276 8.317062 55.023987 10.169345 48.564308 A 56 56 0 0 1 117.830655 48.564308 C 119.682938 55.023987 91.152429 62.502276 90.589809 59.311499 Z"/></defs>
+  <g transform="rotate(0 64 64)">
+    <use href="#10-split-optic-crescent"/>
+    <use href="#10-split-optic-crescent" transform="rotate(180 64 64)"/>
+  </g>
+</svg>

@@ -1,0 +1,38 @@
+{
+  "title": "Kollens Soft Shutter X profile image",
+  "source": "public/kollens-icon.svg",
+  "sourceSha256": "d82893bf69a7e1f47c448aec9fdbb70611fc4b8b4ad19598f68f4fa5f820154b",
+  "iconOption": "25 · Soft Shutter",
+  "provenance": "Deterministic rendering of the existing app SVG. Original paths, rotations, stroke widths and proportions preserved. No AI redrawing.",
+  "gold": "#F9C932",
+  "background": "#0B0E11",
+  "composition": {
+    "canvas": 1024,
+    "iconViewBox": 128,
+    "iconBox": 768,
+    "iconOffset": 128,
+    "circularCropSafe": true
+  },
+  "platformRequirements": {
+    "recommendedSize": "400×400",
+    "maxFileBytes": 2000000,
+    "checkedOn": "2026-10-12",
+    "source": "https://help.x.com/en/managing-your-account/common-issues-when-uploading-profile-photo"
+  },
+  "files": [
+    {
+      "name": "kollens-x-profile.png",
+      "width": 400,
+      "height": 400,
+      "format": "PNG",
+      "bytes": 12416
+    },
+    {
+      "name": "kollens-x-profile-master.png",
+      "width": 1024,
+      "height": 1024,
+      "format": "PNG",
+      "bytes": 44745
+    }
+  ]
+}

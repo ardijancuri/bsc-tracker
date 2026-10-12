@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: standalone premium app symbol for kollens, a BNB Chain platform tracking KOL wallets and the tokens they trade.
+Meaning, decided before design: Separate KOL wallet signals gather into one view of token activity.
+Primary request: invent an entirely new filled abstract mark named CLUSTER SIGNAL. Its internal logic is grouping and aggregation, translated into a memorable custom emblem rather than a literal illustration.
+Subject: a compact dense group of two or three substantial planar geometric sections with clean sharp edges. The planes align into one coherent asymmetric but balanced silhouette, and a single deliberate angular negative-space signature cut reveals their relationship. Invent a refined custom tessellation, using confident broad filled polygons, staggered exterior corners, controlled straight edges, and generous consistent negative gaps. The parts should feel drawn together into one unified view. Keep the emblem flat and frontal, without isometric construction or perspective.
+Style/medium: premium minimal filled vector-style brand symbol; sharp-edged straight-line geometry, elegant proportions, crisp exact joins, two or three shapes at most, no thin outlines, no tiny details. Strong beautiful silhouette and legible separation at 32px.
+Composition/framing: exactly one isolated centered icon on a square canvas, about half the canvas width, ample genuinely transparent padding, no labels, text, layout, alternatives, or collage.
+Color palette: one uniform flat solid yellow #F9C932. Genuine alpha-transparent background and negative-space cut.
+Constraints: new concept, no image references. Grouping and aggregation must be the formal logic. Avoid arbitrary ornament. No gradients, shading, highlights, glow, texture, particles, speckles, shadows, bevels, or 3D.
+Avoid: Y-shaped forks, ordinary cube, nested rings, spirals, lens, eye, simple X, N/C/F/K letterforms, monograms, arrows, stars, bar charts, generic UI pictograms, generic network or node icons, circular dots, badges, enclosing frames, words, labels, watermark.

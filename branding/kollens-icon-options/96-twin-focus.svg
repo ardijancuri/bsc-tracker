@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="1024" height="1024" fill="#F9C932">
+  <title>Twin Focus — kollens</title>
+  <desc>Two convex optical surfaces bring KOL wallet and token activity into one diamond-shaped focus.</desc>
+  <path d="M40 18C46 10 54 10 61 17C71 28 81 40 88 50C94 58 98 63 97 68L91 68L64 41L41 64C38 67 38 70 40 74C29 77 20 79 14 74C10 70 11 63 15 56L40 18Z"/>
+  <path transform="rotate(180 64 64)" d="M40 18C46 10 54 10 61 17C71 28 81 40 88 50C94 58 98 63 97 68L91 68L64 41L41 64C38 67 38 70 40 74C29 77 20 79 14 74C10 70 11 63 15 56L40 18Z"/>
+</svg>
