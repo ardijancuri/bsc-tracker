@@ -36,7 +36,7 @@ export function PrivacyPolicyPage() {
 
     <section><h2>{t("Retention and your choices")}</h2><p>{t("We keep indexed public blockchain data and roster information while they are needed to run the service. Operational logs are kept only as long as needed for service and security purposes. You may ask us about access, correction, or removal of off-chain profile information, or object to its use. Public blockchain records cannot be changed by kollens. Depending on where you live, you may also have a right to complain to a privacy regulator.")}</p></section>
 
-    <section><h2>{t("Contact and changes")}</h2><p>{t("For privacy questions or requests, email")}{' '}<a href="mailto:contact@bscan.fun">contact@bscan.fun</a>{t(". We may update this policy as the service changes; the date above shows the latest version.")}</p></section>
+    <section><h2>{t("Contact and changes")}</h2><p>{t("For privacy questions or requests, email")}{' '}<a href="mailto:contact@kollens.com">contact@kollens.com</a>{t(". We may update this policy as the service changes; the date above shows the latest version.")}</p></section>
   </LegalLayout>;
 }
 
