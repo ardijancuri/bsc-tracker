@@ -28,7 +28,7 @@ main { min-height: 0; flex: 1; }
 .footer-brand img { display: block; width: 18px; height: 18px; border-radius: 0; background: transparent; }
 .footer-brand > span { background: transparent; }
 .footer-brand:has(.footer-logo) { flex-shrink: 0; }
-.footer-brand .footer-logo { width: auto; height: 22px; flex-shrink: 0; }
+.footer-brand .footer-logo { width: auto; height: 12px; flex-shrink: 0; }
 .header-divider { display: none; }
 .main-nav { gap: 23px; }
 .main-nav a { font-size: 14px; border-bottom: 0; }
@@ -325,7 +325,7 @@ main { min-height: 0; flex: 1; }
   .footer > div { display: flex; gap: 5px; }
   .footer-brand { font-size: 12px; gap: 3px; }
   .footer-brand img { width: 14px; height: 14px; }
-  .footer-brand .footer-logo { width: auto; height: 18px; }
+  .footer-brand .footer-logo { width: auto; height: 10px; }
   .footer-legal { gap: 6px; }
   .trades-faq { margin-top: 42px; }
   .trades-follow { align-items: center; flex-direction: row; gap: 12px; padding: 18px 14px; }

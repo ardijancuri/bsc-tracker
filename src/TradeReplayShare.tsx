@@ -32,6 +32,11 @@ async function replayMarketData(data: TradeReplayData, signal: AbortSignal) {
   }
 }
 
+async function loadReplayFonts() {
+  if (!document.fonts) return;
+  await Promise.all([400, 500, 600, 700, 800].map(weight => document.fonts.load(`${weight} 16px Manrope`)));
+}
+
 function replayImage(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     try {
@@ -82,7 +87,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
     const renderer = new ReplayCanvas(document.createElement('canvas'));
     const session = startReplaySession({
       prepare: async signal => {
-        const [selected] = await Promise.all([replayMarketData(data, signal), document.fonts?.ready ?? Promise.resolve()]);
+        const [selected] = await Promise.all([replayMarketData(data, signal), loadReplayFonts()]);
         if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
         await renderer.setData(selected);
       },

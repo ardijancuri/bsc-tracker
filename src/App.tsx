@@ -404,7 +404,7 @@ export default function App() {
       <Route path="*" element={<Navigate to="/trades" replace />} />
     </Routes></main>
     <footer className="footer">
-      <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="105" height="22" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
+      <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="57" height="12" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
   </WatchlistProvider>;

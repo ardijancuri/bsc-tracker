@@ -15,7 +15,7 @@ const HEIGHT = 1350;
 const DURATION = 15.5;
 const MINUTE = 60_000;
 const PLAYHEAD_FRACTION = 0.64;
-const FONT = 'Inter, "SF Pro Display", "Helvetica Neue", Arial, sans-serif';
+const FONT = 'Manrope, system-ui, sans-serif';
 
 const COLOR = {
   frame: '#f0b90b',
@@ -1048,7 +1048,7 @@ export class ReplayCanvas {
     const capText = hasQuote ? this.capMode ? money(state.currentCap, 0, true) : this.priceText(state.currentCap) : '—';
     fillRound(ctx, 844, currentY - 29, 188, 58, 14, COLOR.gold, 'rgba(255,221,97,0.65)', 2);
     text(ctx, capText, 938, currentY + 1, fitFont(ctx, capText, 170, 33, 25, 750), '#18150b', 'center', 'middle');
-    text(ctx, this.capMode ? 'FDV' : 'USD PRICE', 939, currentY + 62, `550 21px ${FONT}`, COLOR.dim, 'center');
+    text(ctx, this.capMode ? 'MCAP' : 'USD PRICE', 939, currentY + 62, `550 21px ${FONT}`, COLOR.dim, 'center');
 
     for (const tick of this.axisTicks) {
       const x = xAtProgress(tick.q);
@@ -1215,7 +1215,7 @@ export class ReplayCanvas {
     }).format(trade.ts);
     text(ctx, `${isBuy ? 'BUY' : 'SELL'} · ${time} UTC`, rect.x + 20, rect.y + 30, `650 20px ${FONT}`, '#c6bfae');
     const amount = trade.amountUsd > 0 ? `${isBuy ? '+' : '−'} ${money(trade.amountUsd, 2, trade.amountUsd >= 1000)}` : '—';
-    const cap = this.capMode && trade.marketCapUsd > 0 ? `${money(trade.marketCapUsd, 1, true)} FDV` : trade.priceUsd > 0 ? this.priceText(trade.priceUsd) : 'Price unavailable';
+    const cap = this.capMode && trade.marketCapUsd > 0 ? `${money(trade.marketCapUsd, 1, true)} MCAP` : trade.priceUsd > 0 ? this.priceText(trade.priceUsd) : 'Price unavailable';
     text(ctx, amount, rect.x + 20, rect.y + 71, fitFont(ctx, amount, 166, 29, 21, 750), isBuy ? COLOR.green : COLOR.red);
     text(ctx, cap, rect.x + rect.width - 18, rect.y + 70, fitFont(ctx, cap, 150, 23, 17, 600), '#c8c0af', 'right');
     ctx.restore();
@@ -1296,10 +1296,11 @@ export class ReplayCanvas {
   drawFooter(ctx) {
     const width = 330;
     const height = width * BRAND_WORDMARK_PATHS.height / BRAND_WORDMARK_PATHS.width;
+    text(ctx, 'kollens.com', 49 + width + 30, 1293 - height / 2, `600 26px ${FONT}`, '#0c0e11', 'left', 'middle');
     if (this.brandWordmark?.naturalWidth > 0) {
       try {
         ctx.save();
-        // Keep only the app wordmark in the footer, with its native proportions.
+        // Keep the app wordmark at its native proportions beside the URL.
         // Tint it black for contrast against the solid gold canvas frame.
         ctx.filter = 'brightness(0)';
         ctx.drawImage(this.brandWordmark, 49, 1293 - height, width, height);
