@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>kollens Aperture Crystal</title>
+  <desc>Three equal solid optical facets in a regular hexagonal prism, with a clear equilateral triangular aperture and equal radial cuts.</desc>
+  <defs>
+    <path id="20-aperture-crystal-facet" d="M 67 11.732050808 L 110.765371804 37 L 110.765371804 87.535898385 L 84.382685902 72.303847577 L 67 42.196152423 Z"/>
+  </defs>
+  <g fill="#F9C932">
+    <use href="#20-aperture-crystal-facet"/>
+    <use href="#20-aperture-crystal-facet" transform="rotate(120 64 64)"/>
+    <use href="#20-aperture-crystal-facet" transform="rotate(240 64 64)"/>
+  </g>
+</svg>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <title>Kollens Pointed Shutter</title>
+  <desc>Five identical filled blades preserve the curved outer shoulder while the inner legs taper to a chiseled angular cut. One blade repeats at exact 72-degree intervals.</desc>
+  <defs><path id="13-pointed-shutter-blade" d="M64 9 A55 55 0 0 1 100.802183 23.126035 L105.16 29.5 L83.5 57 L75.5 51.5 L90.095532 35.016185 A39 39 0 0 0 64 25 Z"/></defs>
+  <g fill="#F9C932">
+    <use href="#13-pointed-shutter-blade" transform="rotate(0 64 64)"/>
+    <use href="#13-pointed-shutter-blade" transform="rotate(72 64 64)"/>
+    <use href="#13-pointed-shutter-blade" transform="rotate(144 64 64)"/>
+    <use href="#13-pointed-shutter-blade" transform="rotate(216 64 64)"/>
+    <use href="#13-pointed-shutter-blade" transform="rotate(288 64 64)"/>
+  </g>
+</svg>

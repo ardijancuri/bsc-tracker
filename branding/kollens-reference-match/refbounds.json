@@ -1,0 +1,175 @@
+{
+  "source": "C:/Users/PC/AppData/Local/Temp/codex-clipboard-34604d7a-bcf2-4742-8ad8-3af1e265d21e.png",
+  "sourceSize": [
+    1916,
+    821
+  ],
+  "threshold": 128,
+  "bounds": [
+    282,
+    260,
+    1638,
+    535
+  ],
+  "inkSize": [
+    1357,
+    276
+  ],
+  "nativeHeight": 42,
+  "nativeWidth": 206.5,
+  "aspect": 4.916666666666667,
+  "padding": 4,
+  "potrace": {
+    "version": "2.1.8",
+    "alphaMax": 1,
+    "optTolerance": 0.15,
+    "turdSize": 2
+  },
+  "glyphs": [
+    {
+      "label": 1,
+      "area": 56079,
+      "bounds": [
+        282,
+        260,
+        544,
+        529
+      ],
+      "width": 263,
+      "height": 270,
+      "letter": "K",
+      "id": "glyph-k",
+      "offset": [
+        -4,
+        -4
+      ],
+      "contours": 1
+    },
+    {
+      "label": 4,
+      "area": 30467,
+      "bounds": [
+        557,
+        320,
+        787,
+        533
+      ],
+      "width": 231,
+      "height": 214,
+      "letter": "o",
+      "id": "glyph-1-o",
+      "offset": [
+        271,
+        56
+      ],
+      "contours": 2
+    },
+    {
+      "label": 2,
+      "area": 18088,
+      "bounds": [
+        804,
+        260,
+        870,
+        529
+      ],
+      "width": 67,
+      "height": 270,
+      "letter": "l",
+      "id": "glyph-2-l",
+      "offset": [
+        518,
+        -4
+      ],
+      "contours": 1
+    },
+    {
+      "label": 3,
+      "area": 18089,
+      "bounds": [
+        895,
+        260,
+        961,
+        529
+      ],
+      "width": 67,
+      "height": 270,
+      "letter": "l",
+      "id": "glyph-3-l",
+      "offset": [
+        609,
+        -4
+      ],
+      "contours": 1
+    },
+    {
+      "label": 6,
+      "area": 32503,
+      "bounds": [
+        976,
+        321,
+        1208,
+        534
+      ],
+      "width": 233,
+      "height": 214,
+      "letter": "e",
+      "id": "glyph-4-e",
+      "offset": [
+        690,
+        57
+      ],
+      "contours": 2
+    },
+    {
+      "label": 7,
+      "area": 30251,
+      "bounds": [
+        1223,
+        324,
+        1435,
+        529
+      ],
+      "width": 213,
+      "height": 206,
+      "letter": "n",
+      "id": "glyph-5-n",
+      "offset": [
+        937,
+        60
+      ],
+      "contours": 1
+    },
+    {
+      "label": 5,
+      "area": 27666,
+      "bounds": [
+        1449,
+        320,
+        1638,
+        535
+      ],
+      "width": 190,
+      "height": 216,
+      "letter": "s",
+      "id": "glyph-6-s",
+      "offset": [
+        1163,
+        56
+      ],
+      "contours": 1
+    }
+  ],
+  "validation": {
+    "foregroundComponents": 7,
+    "intersectionOverUnion": 0.9957363868924352,
+    "pixelMismatchCount": 910,
+    "mismatchFraction": 0.004263613107564868
+  },
+  "files": [
+    "prototype-white.svg",
+    "prototype-gold-accent.svg",
+    "prototype-k-white.svg",
+    "prototype-k-yellow.svg"
+  ]
+}

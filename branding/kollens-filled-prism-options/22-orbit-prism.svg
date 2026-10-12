@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Kollens orbit prism icon">
+  <title>Kollens Orbit Prism</title>
+  <desc>Two antipodal solid prism faces surround an exact twenty-six-unit circular lens with equal six-unit interlocking cuts. Outer shoulders have four-unit circular fillets. Exact one-hundred-eighty-degree rotational symmetry.</desc>
+  <defs>
+    <path id="prism22-face" d="M62 11.154700538379252A4 4 0 0 1 66 11.154700538379252L84 21.547005383792516V47.38675227416385A26 26 0 0 0 38 64V88.39230484541326L22 79.15470053837925A4 4 0 0 1 20 75.6905989232415V37.712812921102035A4 4 0 0 1 22 34.248711305964285L62 11.154700538379252Z"/>
+  </defs>
+  <g fill="#F9C932">
+    <use href="#prism22-face"/>
+    <use href="#prism22-face" transform="rotate(180 64 64)"/>
+  </g>
+</svg>

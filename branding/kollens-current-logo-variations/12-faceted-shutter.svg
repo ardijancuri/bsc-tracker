@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <title>Kollens Faceted Shutter</title>
+  <desc>The current five-blade shutter arrangement with a two-facet outer shoulder and sharp diagonal inner legs. One blade repeats at exact 72-degree intervals.</desc>
+  <defs><path id="12-faceted-shutter-blade" d="M64 17 L81 20 L95.45 29.07 L81 52"/></defs>
+  <g fill="none" stroke="#F9C932" stroke-width="16" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3">
+    <use href="#12-faceted-shutter-blade" transform="rotate(0 64 64)"/>
+    <use href="#12-faceted-shutter-blade" transform="rotate(72 64 64)"/>
+    <use href="#12-faceted-shutter-blade" transform="rotate(144 64 64)"/>
+    <use href="#12-faceted-shutter-blade" transform="rotate(216 64 64)"/>
+    <use href="#12-faceted-shutter-blade" transform="rotate(288 64 64)"/>
+  </g>
+</svg>

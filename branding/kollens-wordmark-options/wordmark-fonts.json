@@ -1,0 +1,486 @@
+{
+  "brand": "kollens",
+  "construction": "Unmodified local font glyphs outlined as SVG paths",
+  "options": [
+    {
+      "id": 23,
+      "slug": "clean-manrope",
+      "text": "kollens",
+      "letterCount": 7,
+      "typeface": "Manrope",
+      "weight": 700,
+      "trackingEm": -0.02,
+      "fontFile": "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\node_modules\\@fontsource\\manrope\\files\\manrope-latin-700-normal.woff",
+      "unitsPerEm": 2000,
+      "kerning": "GPOS kern",
+      "pairAdjustments": [
+        {
+          "pair": "ko",
+          "positioningFontUnits": [
+            0,
+            0,
+            -20,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ol",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ll",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "le",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "en",
+          "positioningFontUnits": [
+            0,
+            0,
+            -30,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ns",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "glyphNames": [
+        "k",
+        "o",
+        "l",
+        "l",
+        "e",
+        "n",
+        "s"
+      ],
+      "originalGlyphOutlines": true,
+      "fill": "#F3F5F6",
+      "transparent": true,
+      "paddingFractionOfInkHeight": 0.02,
+      "width": 535.302564,
+      "height": 128.0,
+      "viewBox": [
+        0,
+        0,
+        535.302564,
+        128.0
+      ],
+      "inkBoundsFontUnits": [
+        138.0,
+        -30.0,
+        6602.0,
+        1470.0
+      ],
+      "file": "23-clean-manrope.svg"
+    },
+    {
+      "id": 24,
+      "slug": "geometric-gothic",
+      "text": "kollens",
+      "letterCount": 7,
+      "typeface": "Century Gothic",
+      "weight": 700,
+      "trackingEm": -0.015,
+      "fontFile": "C:\\Windows\\Fonts\\GOTHICB.TTF",
+      "unitsPerEm": 2048,
+      "kerning": "font advances; no kerning table",
+      "pairAdjustments": [
+        {
+          "pair": "ko",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ol",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ll",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "le",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "en",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ns",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "glyphNames": [
+        "k",
+        "o",
+        "l",
+        "l",
+        "e",
+        "n",
+        "s"
+      ],
+      "originalGlyphOutlines": true,
+      "fill": "#F3F5F6",
+      "transparent": true,
+      "paddingFractionOfInkHeight": 0.02,
+      "width": 527.413462,
+      "height": 128.0,
+      "viewBox": [
+        0,
+        0,
+        527.413462,
+        128.0
+      ],
+      "inkBoundsFontUnits": [
+        140.0,
+        -28.0,
+        6660.68,
+        1508.0
+      ],
+      "file": "24-geometric-gothic.svg"
+    },
+    {
+      "id": 25,
+      "slug": "airy-manrope",
+      "text": "kollens",
+      "letterCount": 7,
+      "typeface": "Manrope",
+      "weight": 600,
+      "trackingEm": 0.015,
+      "fontFile": "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\node_modules\\@fontsource\\manrope\\files\\manrope-latin-600-normal.woff",
+      "unitsPerEm": 2000,
+      "kerning": "GPOS kern",
+      "pairAdjustments": [
+        {
+          "pair": "ko",
+          "positioningFontUnits": [
+            0,
+            0,
+            -20,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ol",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ll",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "le",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "en",
+          "positioningFontUnits": [
+            0,
+            0,
+            -30,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ns",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "glyphNames": [
+        "k",
+        "o",
+        "l",
+        "l",
+        "e",
+        "n",
+        "s"
+      ],
+      "originalGlyphOutlines": true,
+      "fill": "#F3F5F6",
+      "transparent": true,
+      "paddingFractionOfInkHeight": 0.02,
+      "width": 557.128205,
+      "height": 128.0,
+      "viewBox": [
+        0,
+        0,
+        557.128205,
+        128.0
+      ],
+      "inkBoundsFontUnits": [
+        139.0,
+        -30.0,
+        6869.0,
+        1470.0
+      ],
+      "file": "25-airy-manrope.svg"
+    },
+    {
+      "id": 26,
+      "slug": "compact-segoe",
+      "text": "kollens",
+      "letterCount": 7,
+      "typeface": "Segoe UI",
+      "weight": 700,
+      "trackingEm": -0.01,
+      "fontFile": "C:\\Windows\\Fonts\\segoeuib.ttf",
+      "unitsPerEm": 2048,
+      "kerning": "GPOS kern",
+      "pairAdjustments": [
+        {
+          "pair": "ko",
+          "positioningFontUnits": [
+            0,
+            0,
+            -29,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ol",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ll",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "le",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "en",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "pair": "ns",
+          "positioningFontUnits": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "glyphNames": [
+        "k",
+        "o",
+        "l",
+        "l",
+        "e",
+        "n",
+        "s"
+      ],
+      "originalGlyphOutlines": true,
+      "fill": "#F3F5F6",
+      "transparent": true,
+      "paddingFractionOfInkHeight": 0.02,
+      "width": 522.079369,
+      "height": 128.0,
+      "viewBox": [
+        0,
+        0,
+        522.079369,
+        128.0
+      ],
+      "inkBoundsFontUnits": [
+        133.0,
+        -25.0,
+        6608.120000000001,
+        1516.0
+      ],
+      "file": "26-compact-segoe.svg"
+    }
+  ]
+}

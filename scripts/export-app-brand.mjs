@@ -1,4 +1,4 @@
-// The current header is the source of truth for every app brand mark.
+// The approved white/yellow SVG variants are the source for all app branding.
 import {createHash} from 'node:crypto';
 import {readFile,writeFile as saveFile} from 'node:fs/promises';
 import sharp from 'sharp';
@@ -13,23 +13,28 @@ async function writeFile(destination,value) {
   }
   await saveFile(destination,expected);
 }
-const header = await readFile(file('public/kollens-header-logo.svg'),'utf8');
-const iconMatch = header.match(/<svg\b(?=[^>]*viewBox="0 0 128 128")[^>]*>([\s\S]*?)<\/svg>/);
-if(!iconMatch) throw new Error('The header must contain a native 128 × 128 icon.');
-const iconInner = iconMatch[1].trim();
-const icon = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="kollens">${iconInner}</svg>\n`;
-const wordmark = (await readFile(file('public/kollens-wordmark.svg'),'utf8'))
-  .replace(/^<svg[^>]*>/,'').replace(/<\/svg>\s*$/,'');
-const logo = `<svg xmlns="http://www.w3.org/2000/svg" width="198.488" height="42" viewBox="0 0 198.488 42"><svg x="0" y="0" width="42" height="42" viewBox="0 0 128 128">${iconInner}</svg><svg x="53" y="4" width="145.488" height="34" viewBox="0 0 145.488 34">${wordmark}</svg></svg>\n`;
-const footerLogo = `<svg xmlns="http://www.w3.org/2000/svg" width="169.3904" height="42" viewBox="0 0 169.3904 42"><svg x="0" y="0" width="42" height="42" viewBox="0 0 128 128">${iconInner}</svg><svg x="53" y="7.4" width="116.3904" height="27.2" viewBox="0 0 145.488 34">${wordmark}</svg></svg>\n`;
-const version = createHash('sha256').update(header+footerLogo).digest('hex').slice(0,10);
+const [header,logo,whiteIcon,icon] = await Promise.all([
+  'public/kollens-logo-white.svg','public/kollens-logo-yellow.svg',
+  'public/kollens-icon-white.svg','public/kollens-icon-yellow.svg',
+].map(name=>readFile(file(name),'utf8')));
+const dimensions = svg => {
+  const values = svg.match(/\bviewBox="([^"]+)"/)?.[1].trim().split(/\s+/).map(Number);
+  if(!values || values.length!==4 || values.some(value=>!Number.isFinite(value)) || values[0]!==0 || values[1]!==0 || values[2]<=0 || values[3]<=0) throw new Error('Brand SVGs need a normalized positive viewBox.');
+  return {width:values[2],height:values[3]};
+};
+const logoSize = dimensions(logo);
+const iconSize = dimensions(icon);
+if(iconSize.width!==128 || iconSize.height!==128) throw new Error('The approved K icon must be 128 × 128.');
+const version = createHash('sha256').update(header+logo+whiteIcon+icon).digest('hex').slice(0,10);
 const iconPng = size => sharp(Buffer.from(icon),{density:72*size/128}).resize(size,size).png().toBuffer();
 const icon128 = await iconPng(128);
 const icon256 = await iconPng(256);
 
+for(const name of ['public/kollens-header-logo.svg','public/kollens-wordmark.svg','src/tradeReplayWordmark.svg']) await writeFile(file(name),header);
 for(const name of ['public/kollens-icon.svg','public/favicon.svg','public/bscan-fingerprint-icon.svg','src/tradeReplayIcon.svg']) await writeFile(file(name),icon);
-await writeFile(file('src/tradeReplayWordmark.svg'),`<svg xmlns="http://www.w3.org/2000/svg" width="145.488" height="34" viewBox="0 0 145.488 34">${wordmark}</svg>\n`);
-for(const name of ['public/kollens-logo.svg','public/bscan-fingerprint-logo.svg']) await writeFile(file(name),footerLogo);
+for(const name of ['public/kollens-logo.svg','public/bscan-fingerprint-logo.svg']) await writeFile(file(name),logo);
+for(const [name,svg] of [['white',header],['yellow',logo]]) await writeFile(file(`public/kollens-logo-${name}.png`),await sharp(Buffer.from(svg),{density:576}).resize({height:336}).png().toBuffer());
+for(const [name,svg] of [['white',whiteIcon],['yellow',icon]]) await writeFile(file(`public/kollens-icon-${name}.png`),await sharp(Buffer.from(svg),{density:576}).resize(1024,1024).png().toBuffer());
 for(const name of ['public/kollens-icon.png','public/bscan-icon.png']) await writeFile(file(name),icon128);
 for(const name of ['public/kollens-touch-icon.png','public/bscan-mark.png']) await writeFile(file(name),icon256);
 await writeFile(file('public/bscan-mark-small.webp'),await sharp(await iconPng(80)).webp({lossless:true}).toBuffer());
@@ -52,7 +57,8 @@ for(let i=0;i<icoSizes.length;i++) {
 }
 await writeFile(file('public/favicon.ico'),Buffer.concat([icoDirectory,...icoImages]));
 
-const socialSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500"><rect width="1500" height="500" fill="#0b0e11"/><g transform="translate(402.646 176.5) scale(3.5)">${logo.trim()}</g></svg>\n`;
+const socialScale = 3.5;
+const socialSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500"><rect width="1500" height="500" fill="#0b0e11"/><g transform="translate(${(1500-logoSize.width*socialScale)/2} ${(500-logoSize.height*socialScale)/2}) scale(${socialScale})">${logo.trim()}</g></svg>\n`;
 await writeFile(file('public/social/kollens-header.svg'),socialSvg);
 const socialPng = await sharp(Buffer.from(socialSvg)).png().toBuffer();
 for(const name of ['public/social/kollens-header.png','public/social/bscan-x-header.png','public/x-header.png']) await writeFile(file(name),socialPng);
@@ -61,7 +67,7 @@ const profile = await sharp({create:{width:1254,height:1254,channels:4,backgroun
 for(const name of ['public/social/kollens-profile.png','public/social/bscan-x-profile.png','public/x-profile.png']) await writeFile(file(name),profile);
 
 // A new URL forces browsers and social previews to request changed artwork.
-const generated = `// Generated by scripts/export-app-brand.mjs from the header logo.\nexport const BRAND_HEADER_LOGO_SRC = '/kollens-header-logo.svg?v=${version}';\nexport const BRAND_LOGO_SRC = '/kollens-logo.svg?v=${version}';\n`;
+const generated = `// Generated by scripts/export-app-brand.mjs from the approved SVG variants.\nexport const BRAND_HEADER_LOGO_SRC = '/kollens-header-logo.svg?v=${version}';\nexport const BRAND_LOGO_SRC = '/kollens-logo.svg?v=${version}';\n`;
 await writeFile(file('src/brandAssets.ts'),generated);
 let html = await readFile(file('index.html'),'utf8');
 if(!html.includes('href="/favicon.ico')) html = html.replace('    <link rel="icon"', '    <link rel="shortcut icon" href="/favicon.ico" />\n    <link rel="icon"');
@@ -71,4 +77,41 @@ for(const url of ['/favicon.ico','/favicon-32x32.png','/kollens-icon.png','/koll
   html = html.replace(new RegExp(`${escaped}(?:\\?v=[^"\\s]*)?`,'g'),`${url}?v=${version}`);
 }
 await writeFile(file('index.html'),html);
-console.log(`Exported header icon ${version}: footer, favicons, touch icon, replay icon and wordmark, social artwork and legacy brand aliases.`);
+// Canvas fallbacks use the same native paths when an image has not loaded.
+const transforms = value => {
+  const result = [];
+  const remainder = (value || '').replace(/(translate|scale)\(([^)]*)\)/g,(_,kind,args)=>{
+    const numbers = args.trim().split(/[ ,]+/).map(Number);
+    if(numbers.some(value=>!Number.isFinite(value))) throw new Error('Invalid brand transform.');
+    result.push([kind,...numbers]); return '';
+  }).trim();
+  if(remainder) throw new Error('Unsupported brand transform.');
+  return result;
+};
+const commands = value => {
+  const tokens = value.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)/g) || [];
+  const counts = {M:2,L:2,H:1,V:1,C:6,Q:4,Z:0};
+  const result = [];
+  let index = 0;
+  let repeated = null;
+  while(index<tokens.length) {
+    const op = /^[a-zA-Z]$/.test(tokens[index]) ? tokens[index++] : repeated;
+    if(!(op in counts)) throw new Error(`Unsupported brand path command: ${op}`);
+    const values = tokens.slice(index,index+counts[op]).map(Number);
+    if(values.length!==counts[op] || values.some(value=>!Number.isFinite(value))) throw new Error('Invalid brand path.');
+    result.push([op,...values]); index+=counts[op];
+    repeated = op==='M'?'L':op==='Z'?null:op;
+  }
+  return result;
+};
+const canvasMark = svg => {
+  const groups = [...svg.matchAll(/<g\b([^>]*)>/g)];
+  if(groups.length>1) throw new Error('Canvas brand fallbacks support one parent group.');
+  const parent = groups[0]?.[1].match(/\btransform="([^"]*)"/)?.[1];
+  return {...dimensions(svg),transforms:transforms(parent),paths:[...svg.matchAll(/<path\b([^>]*)\/?>/g)].map(([,attributes])=>({
+    transforms:transforms(attributes.match(/\btransform="([^"]*)"/)?.[1]),
+    commands:commands(attributes.match(/\bd="([^"]+)"/)?.[1] || ''),
+  }))};
+};
+await writeFile(file('src/tradeReplayBrandPaths.js'),`// Generated from the approved logo and K icon by scripts/export-app-brand.mjs.\nexport const BRAND_ICON_PATHS = ${JSON.stringify(canvasMark(icon))};\nexport const BRAND_WORDMARK_PATHS = ${JSON.stringify(canvasMark(header))};\n`);
+console.log(`Exported approved K branding ${version}: header, footer, favicons, touch icon, replay artwork and fallbacks, social assets and legacy aliases.`);

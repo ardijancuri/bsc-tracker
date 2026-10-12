@@ -1,0 +1,34 @@
+{
+  "brand": "kollens",
+  "style": "Typography only; original font glyphs, no icon or decorative letter changes.",
+  "background": "#101113",
+  "white": "#F3F5F6",
+  "gold": "#F9C932",
+  "method": "Real local font glyphs outlined as portable native SVG paths, with font kerning and deliberate tracking.",
+  "variants": [
+    {
+      "id": "23-clean-manrope",
+      "number": 23,
+      "name": "Clean",
+      "face": "Manrope 700"
+    },
+    {
+      "id": "24-geometric-gothic",
+      "number": 24,
+      "name": "Geometric",
+      "face": "Century Gothic Bold"
+    },
+    {
+      "id": "25-airy-manrope",
+      "number": 25,
+      "name": "Airy",
+      "face": "Manrope 600"
+    },
+    {
+      "id": "26-compact-segoe",
+      "number": 26,
+      "name": "Compact",
+      "face": "Segoe UI Bold"
+    }
+  ]
+}

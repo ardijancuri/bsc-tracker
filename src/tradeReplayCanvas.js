@@ -8,6 +8,8 @@
  * the same result.
  */
 
+import { BRAND_ICON_PATHS, BRAND_WORDMARK_PATHS } from './tradeReplayBrandPaths';
+
 const WIDTH = 1080;
 const HEIGHT = 1350;
 const DURATION = 15.5;
@@ -81,6 +83,47 @@ function text(ctx, value, x, y, font, color, align = 'left', baseline = 'alphabe
   ctx.textBaseline = baseline;
   ctx.fillStyle = color;
   ctx.fillText(String(value), x, y);
+}
+
+function drawBrandMark(ctx, mark, x, y, width, height, color) {
+  const transform = values => {
+    for (const [kind, a, b] of values) {
+      if (kind === 'translate') ctx.translate(a, b ?? 0);
+      else ctx.scale(a, b ?? a);
+    }
+  };
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(width / mark.width, height / mark.height);
+  transform(mark.transforms);
+  ctx.fillStyle = color;
+  for (const path of mark.paths) {
+    ctx.save();
+    transform(path.transforms);
+    ctx.beginPath();
+    let px = 0, py = 0, startX = 0, startY = 0;
+    for (const [op, ...values] of path.commands) {
+      if (op === 'M') {
+        [px, py] = values; [startX, startY] = values;
+        ctx.moveTo(px, py);
+      } else if (op === 'L') {
+        [px, py] = values; ctx.lineTo(px, py);
+      } else if (op === 'H') {
+        px = values[0]; ctx.lineTo(px, py);
+      } else if (op === 'V') {
+        py = values[0]; ctx.lineTo(px, py);
+      } else if (op === 'C') {
+        ctx.bezierCurveTo(...values); [px, py] = values.slice(4);
+      } else if (op === 'Q') {
+        ctx.quadraticCurveTo(...values); [px, py] = values.slice(2);
+      } else {
+        ctx.closePath(); px = startX; py = startY;
+      }
+    }
+    ctx.fill('evenodd');
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 function fitFont(ctx, value, maxWidth, size, minSize, weight = 700) {
@@ -894,10 +937,10 @@ export class ReplayCanvas {
         ctx.drawImage(this.brandIcon,
           right - detailHeight, detailRow - detailHeight / 2, detailHeight, detailHeight);
       } catch {
-        rowText('k/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
+        drawBrandMark(ctx, BRAND_ICON_PATHS, right - detailHeight, detailRow - detailHeight / 2, detailHeight, detailHeight, '#F9C932');
       }
     } else {
-      rowText('k/', right, detailRow, `800 36px ${FONT}`, '#8b877d', 'right');
+      drawBrandMark(ctx, BRAND_ICON_PATHS, right - detailHeight, detailRow - detailHeight / 2, detailHeight, detailHeight, '#F9C932');
     }
   }
 
@@ -1251,14 +1294,14 @@ export class ReplayCanvas {
   }
 
   drawFooter(ctx) {
+    const width = 330;
+    const height = width * BRAND_WORDMARK_PATHS.height / BRAND_WORDMARK_PATHS.width;
     if (this.brandWordmark?.naturalWidth > 0) {
       try {
         ctx.save();
         // Keep only the app wordmark in the footer, with its native proportions.
         // Tint it black for contrast against the solid gold canvas frame.
         ctx.filter = 'brightness(0)';
-        const width = 440;
-        const height = width * this.brandWordmark.naturalHeight / this.brandWordmark.naturalWidth;
         ctx.drawImage(this.brandWordmark, 49, 1293 - height, width, height);
         ctx.restore();
         return;
@@ -1266,7 +1309,7 @@ export class ReplayCanvas {
         ctx.restore();
       }
     }
-    text(ctx, 'kollens', 49, 1293, fitFont(ctx, 'kollens', 440, 76, 55, 850), '#0c0e11');
+    drawBrandMark(ctx, BRAND_WORDMARK_PATHS, 49, 1293 - height, width, height, '#0c0e11');
   }
 }
 

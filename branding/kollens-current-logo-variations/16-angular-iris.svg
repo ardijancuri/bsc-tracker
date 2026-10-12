@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>kollens Angular Iris</title>
+  <desc>Five identical faceted aperture blades with sharp end cuts and a pentagonal optical counter.</desc>
+  <defs>
+    <path id="16-angular-iris-blade" d="M 64 10 L 85 15 L 103 30 L 87 54 L 74 46 L 85 29 L 64 26 Z" fill="#F9C932"/>
+  </defs>
+  <g>
+    <use href="#16-angular-iris-blade"/>
+    <use href="#16-angular-iris-blade" transform="rotate(72 64 64)"/>
+    <use href="#16-angular-iris-blade" transform="rotate(144 64 64)"/>
+    <use href="#16-angular-iris-blade" transform="rotate(216 64 64)"/>
+    <use href="#16-angular-iris-blade" transform="rotate(288 64 64)"/>
+  </g>
+</svg>

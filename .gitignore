@@ -6,6 +6,7 @@ dist-server/
 !.env.example
 coverage/
 .cache/
+__pycache__/
 *.log
 bscan-deploy.tar.gz
 output/*.tar.gz

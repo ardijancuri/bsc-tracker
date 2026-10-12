@@ -1,0 +1,24 @@
+{
+  "brand": "Kollens",
+  "requestedFont": "Vanelle Regular",
+  "fontStatus": "Awaiting the exact OTF or TTF file; not installed locally and no official free/trial download found",
+  "officialFontSource": "https://www.myfonts.com/collections/vanelle-font-alpercakici/",
+  "completed": [
+    { "file": "kollens-icon-white.svg", "color": "#FFFFFF", "viewBox": [0, 0, 128, 128] },
+    { "file": "kollens-icon-yellow.svg", "color": "#F9C932", "viewBox": [0, 0, 128, 128] }
+  ],
+  "pending": [
+    "Full logo SVG using Vanelle Regular, all white",
+    "Full logo SVG using Vanelle Regular, yellow K and white lettering",
+    "Apply the all-white full logo to the local app header and verify it"
+  ],
+  "iconSource": "../kollens-integrated-k/37-integrated-k-symbol.svg",
+  "headerIntegration": {
+    "asset": "public/kollens-header-logo.svg",
+    "reference": "src/brandAssets.ts",
+    "desktopHeight": 30,
+    "tabletHeight": 26,
+    "mobileHeight": 24,
+    "note": "The existing brand exporter requires a nested 128-square icon; preserve compatibility or make header export independent before building."
+  }
+}

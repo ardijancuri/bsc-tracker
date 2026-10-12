@@ -1,0 +1,24 @@
+{
+  "generation_mode": "built-in Image Gen",
+  "concept": "28-diagonal-cut",
+  "source_filename": "sources/28-diagonal-cut.png",
+  "source_path": "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-options\\sources\\28-diagonal-cut.png",
+  "input_images": [
+    {
+      "image": 1,
+      "role": "style reference, not edit target",
+      "path": "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-dfe6a88d-8fee-4dcd-9a8d-0ab0191c1d69.webp"
+    },
+    {
+      "image": 2,
+      "role": "style reference, not edit target",
+      "path": "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-8092d39e-16d2-4f3e-ad74-74ad343fb560.png"
+    },
+    {
+      "image": 3,
+      "role": "style reference, not edit target",
+      "path": "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-76f3447a-87bc-40cb-91dc-ac516bf0d79b.png"
+    }
+  ],
+  "prompt": "Use case: logo-brand.\nAsset type: a new minimal bold geometric icon for kollens.\nInput images: Images 1, 2, and 3 are STYLE REFERENCES ONLY, not edit targets. Learn their strong solid straight-edge polygon planes, restrained negative-space construction, and abstract K character. Create an original silhouette rather than directly tracing any reference.\nDirection: DIAGONAL CUT. A compact three-piece K-inspired mark constructed from one broad rising 45-degree diagonal slab, one upper-left geometric facet, and one lower-right geometric facet. Exactly THREE filled polygon pieces. Deliberate open negative-space cuts, equal visual widths, crisp controlled 45-degree slopes, coherent optical weight. Slightly more solid and compact than the second reference, broad enough to retain the cuts at 24 pixels.\nColor and composition: flat exact gold #F9C932 on a plain near-black charcoal #101113 background, square canvas, a single centered icon approximately 60% of canvas width with generous outer margins.\nNo text, wordmark, TM, extra elements, outlines, curves, circles, 3D, gradients, grain, textures, lighting, shadows, mockups or watermark. Precision-first geometric logo design with three simple filled planes and clean sharp edges."
+}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="#F9C932">
+  <title>Kollens Arc Focus</title>
+  <desc>Four broad circular facets form an optical K with a taller curved left shoulder, a small lower facet, and two mirrored refracting wings. Six-unit central gaps keep the facets separate.</desc>
+  <defs><path id="arc-focus-wing" d="M58 60 V53 A45.816667 45.816667 0 0 0 88 10 H118 A60 60 0 0 1 58 60 Z"/></defs>
+  <path d="M12 10 H24 A28 28 0 0 1 52 38 V60 A46 46 0 0 0 12 83.284367 Z"/>
+  <path d="M12 90 H22 A30 30 0 0 1 52 120 H40 A28 28 0 0 1 12 92 Z"/>
+  <use href="#arc-focus-wing"/>
+  <use href="#arc-focus-wing" transform="translate(0 126) scale(1 -1)"/>
+</svg>

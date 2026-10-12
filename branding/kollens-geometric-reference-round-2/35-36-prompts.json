@@ -1,0 +1,24 @@
+{
+  "mode": "built-in-imagegen",
+  "referenceRole": "Style and construction references only; not edit targets",
+  "references": [
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-1.png",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-2.jpg",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-3.jpg",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-4.webp"
+  ],
+  "options": [
+    {
+      "id": 35,
+      "name": "Soft Split",
+      "source": "sources/35-soft-split.png",
+      "prompt": "Use case: logo-brand.\nAsset type: new bold minimal geometric icon for kollens.\nInput images: Images 1, 2, 3 and 4 are STYLE AND CONSTRUCTION REFERENCES ONLY, not edit targets. Take inspiration from broad filled optical planes, separated K geometry and controlled rounding; create a new silhouette, never trace any supplied mark. Do not reproduce reference text, watermarks or TM.\nDirection 35: SOFT SPLIT. A bold three-piece K consisting of a clipped or tapered upright spine and two big upper/lower right wings. Few solid planes, balanced compact and softly rectangular structure. Generous controlled outer corner fillets, but clear sharp diagonal cut edges. Separate the pieces with consistent generous six-unit negative gaps on a 128-unit grid; no point contacts. Keep the main vertical stem substantial and the wings broad, with a precise horizontal middle gap. Exact matched upper/lower wing proportions, mathematically stable and visually balanced original silhouette.\nComposition: one centered icon, about 60% of a square canvas width, plain flat charcoal #101113 background, generous margins. Icon only: no text, no wordmark, no extra elements.\nMedium/color: absolutely clean crisp vector-like filled shape logo, one perfectly uniform solid gold #F9C932.\nAvoid: tiny details, frames, dots, fine lines, gradients, grain, texture, glow, lighting, shadows, 3D, mockups, labels, watermarks, TM, replicas of the supplied marks."
+    },
+    {
+      "id": 36,
+      "name": "Round Facet",
+      "source": "sources/36-round-facet.png",
+      "prompt": "Use case: logo-brand.\nAsset type: new bold minimal geometric icon for kollens.\nInput images: Images 1, 2, 3 and 4 are STYLE AND CONSTRUCTION REFERENCES ONLY, not edit targets. Use the circular optical construction of image 1 and chunky few-facet logic of image 4 as inspiration for an original new silhouette. Do not trace or reproduce any supplied mark, watermark, text or TM.\nDirection 36: ROUND FACET. Three or four substantial filled circular-quarter / prismatic facets arranged as a geometric K. A bold rounded inside shoulder and a single repeated cut-plane rhythm. Very clearly rounder than a standard three-polygon K: large circular outer shoulders, generous smooth counter curves and heavy shared masses create a lens-friendly optical silhouette. Each component has a simple precisely defined circular arc combined with a clean straight cut. Solid compact masses, one consistent angular cut rhythm, controlled tangent joins, deliberate broad negative space, equal gaps of at least six units on a 128-unit grid, no touching tips. Distinct optical curved K rather than a conventional block-letter glyph. No frame, no dots, no tiny details.\nComposition: one centered single icon at around 60% of square canvas width on a plain flat charcoal #101113 background. Generous margins. Icon only: no wordmark or text, no extra elements.\nMedium/color: perfectly flat gold #F9C932 only, absolutely crisp clean vector-like edges and uniform fills.\nAvoid: generic camera, eye outline, concentric bullseye, thin outlines, tiny cuts, gradients, grain, texture, glow, lighting, shadows, 3D, mockups, labels, watermarks, TM, any exact replica of the references."
+    }
+  ]
+}

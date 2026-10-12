@@ -1,0 +1,37 @@
+{
+  "brand": "kollens",
+  "gold": "#F9C932",
+  "background": "#101113",
+  "method": "Built-in ImageGen using three user-supplied style references, followed by exact native polygon reconstructions.",
+  "references": [
+    "references/reference-1.webp",
+    "references/reference-2.png",
+    "references/reference-3.png"
+  ],
+  "variants": [
+    {
+      "id": "27-split-facet",
+      "number": 27,
+      "name": "Split facet",
+      "summary": "A clipped spine and two bold separated prism wings."
+    },
+    {
+      "id": "28-diagonal-cut",
+      "number": 28,
+      "name": "Diagonal cut",
+      "summary": "A strong rising diagonal with two angular facets."
+    },
+    {
+      "id": "29-folded-block",
+      "number": 29,
+      "name": "Folded block",
+      "summary": "Broad folded wings and a stable angular rail."
+    },
+    {
+      "id": "30-offset-planes",
+      "number": 30,
+      "name": "Offset planes",
+      "summary": "Staggered solid planes with strong angular negative space."
+    }
+  ]
+}

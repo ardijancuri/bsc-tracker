@@ -1,0 +1,13 @@
+{
+  "mode": "built-in-imagegen",
+  "id": 29,
+  "name": "Folded Block",
+  "source": "sources/29-folded-block.png",
+  "prompt": "Use case: logo-brand.\nAsset type: one new geometric icon exploration for kollens, a crypto KOL and wallet tracking product with a lens/optical identity.\nInput images: Images 1, 2 and 3 are STYLE REFERENCES ONLY, not edit targets. Use their bold, minimal, filled polygon design language as inspiration; create a new silhouette without tracing any reference.\nDirection 29: FOLDED BLOCK. A compact angular K-inspired folding-lens mark, with one broad left rail or block and two strongly filled upper and lower right wings. A clear horizontal middle cut and precise chiseled outer wing ends suggest two folded optical planes. Stable squared structure with controlled shared alignments, three or four simple chunky filled polygons. Open negative gaps at least six units wide on a 128-unit icon grid; no point contacts or touching tips. Equal clean cut clearances and a compact original outline. Flat geometry, crisp chiseled corners, coherent angles and broad masses that read clearly at 24 pixels.\nComposition: square plain charcoal #101113 canvas. One centered icon at around 60% canvas width, generous margins. SINGLE ICON ONLY: no text, no TM, no wordmark, no extra elements.\nColor and medium: perfectly uniform solid flat gold #F9C932 on plain charcoal. Extremely clean vector-like filled polygon brand mark.\nAvoid: curves, circles, rounded corners, gradients, grain, texture, lighting, glow, shadows, 3D, mockups, outlines, extra ornament, tiny cuts, intricate construction, exact copies of any reference.",
+  "referenceRole": "style references only",
+  "references": [
+    "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-dfe6a88d-8fee-4dcd-9a8d-0ab0191c1d69.webp",
+    "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-8092d39e-16d2-4f3e-ad74-74ad343fb560.png",
+    "C:\\Users\\PC\\AppData\\Local\\Temp\\codex-clipboard-76f3447a-87bc-40cb-91dc-ac516bf0d79b.png"
+  ]
+}

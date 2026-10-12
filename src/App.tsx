@@ -141,7 +141,7 @@ function Header({ overview }: { overview: Overview }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === '/' && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); setSearchOpen(true); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, []);
   return <><header className="site-header"><div className="header-inner">
-    <Link className="brand" to="/trades"><img className="brand-logo" src={BRAND_HEADER_LOGO_SRC} alt="kollens" width="131" height="30" /></Link>
+    <Link className="brand" to="/trades"><img className="brand-logo" src={BRAND_HEADER_LOGO_SRC} alt="kollens" width="105" height="22" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
@@ -404,7 +404,7 @@ export default function App() {
       <Route path="*" element={<Navigate to="/trades" replace />} />
     </Routes></main>
     <footer className="footer">
-      <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="89" height="22" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
+      <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="105" height="22" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
   </WatchlistProvider>;

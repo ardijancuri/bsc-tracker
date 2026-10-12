@@ -1,0 +1,47 @@
+{
+  "generator": "built-in imagegen",
+  "finalMethod": "Precise native SVG reconstruction and deterministic wordmark compositing",
+  "promptFiles": [
+    "17-18-prompts.json",
+    "19-20-prompts.json",
+    "21-22-prompts.json"
+  ],
+  "concepts": [
+    {
+      "id": 17,
+      "source": "sources/17-lens-prism.png",
+      "svg": "17-lens-prism.svg",
+      "prompt": "Use case: logo-brand.\nAsset type: single icon-only filled prism logo exploration for kollens, a crypto KOL and wallet tracking platform whose name evokes a lens.\nPrimary request: An original LENS PRISM mark: a strong solid clipped diamond or hexagonal prism body containing one generous diagonal almond-shaped optical void. Crisp planar facets and controlled small corner fillets. Its visual meaning is reading signals through a lens. An asymmetric faceted outer cut gives it distinctive personality, with an optically balanced silhouette.\nStyle/medium: precise flat vector-like fintech brand icon. Exact flat gold #F9C932 on plain solid charcoal #101113.\nComposition: one bold icon only, centered around 60% of square canvas width with generous margins. Few facets, generous gold mass, strong clear optical void, highly recognizable at 24px.\nConstraints: no text, letters, wordmark, K monogram, arrow, eye illustration, camera, nodes, tiny dots, 3D shading, cube, light illustration, gradients, lighting, texture, grain, glow, shadows, mockups or frames. One clean flat gold silhouette with one diagonal optical opening."
+    },
+    {
+      "id": 18,
+      "source": "sources/18-refracted-focus.png",
+      "svg": "18-refracted-focus.svg",
+      "prompt": "Use case: logo-brand.\nAsset type: single icon-only filled prism logo exploration for kollens, a crypto KOL and wallet tracking platform whose name evokes optical focus.\nPrimary request: An original REFRACTED FOCUS mark: a compact solid triangular or diamond prism body with one clean negative-space light-beam cut entering from one side and splitting into two short refracted cuts exiting in opposite directions. Optical refraction symbolizes tracking multiple on-chain signals. Use a single bold connected gold silhouette with just a few generous clean cuts and ample solid gold mass.\nStyle/medium: precise flat vector-like fintech brand icon, strong geometric construction and controlled crisp corners. Exact flat gold #F9C932 on plain solid charcoal #101113.\nComposition: one icon only, centered around 60% of a square canvas width, generous margins, clear simple negative-space cut, highly recognizable at 24px.\nConstraints: avoid A, K and Y monograms, all letters and text, arrows, nodes, tiny dots, literal eye or camera, 3D shading, cube or light illustration. No gradients, lighting, texture, grain, glow, shadows, mockups or frames. The cut must appear as optical refraction inside a compact filled prism, with no separate lines outside the mark."
+    },
+    {
+      "name": "19-shared-lens",
+      "source_filename": "sources/19-shared-lens.png",
+      "source_path": "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-filled-prism-options\\sources\\19-shared-lens.png",
+      "prompt": "Use case: logo-brand.\nAsset type: new standalone brand icon exploration for kollens, a crypto KOL and wallet tracking intelligence product connecting onchain data with lens optics.\nCreate ONE bold centered filled geometric icon called SHARED LENS. A compact unified solid faceted prism or hexagonal body contains TWO linked lens-shaped negative-space openings. The two openings suggest connected KOL wallets seen through shared optics. Use deliberate mirrored or exact antipodal symmetry, generous clear openings, and very few clean cuts. The icon should read as one coherent gold mass with two optical windows, not two loose rings.\nStyle: precise contemporary geometric vector-like logo, broad solid faces, clean crisp edges, flat exact gold #F9C932. Single icon around 60% of a square canvas width with generous plain near-black charcoal #101113 background.\nNo wordmark or any text, no lettering, no hidden K, no tiny letter counters, no person drawing, no Mastercard rings. No gradient, texture, grain, lighting, glow, shadows, mockups, 3D shading, camera outline, coins, circuitry, extra elements or watermark.\nKeep the silhouette and two optical openings recognizable at 24 pixels and suitable for reconstruction as precise native vector geometry."
+    },
+    {
+      "name": "20-aperture-crystal",
+      "source_filename": "sources/20-aperture-crystal.png",
+      "source_path": "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-filled-prism-options\\sources\\20-aperture-crystal.png",
+      "prompt": "Use case: logo-brand.\nAsset type: new standalone brand icon exploration for kollens, a crypto KOL and wallet tracking intelligence product using optical intelligence.\nCreate ONE original APERTURE CRYSTAL icon. A filled regular hexagonal crystal is divided by THREE precise optical facet cuts gathering around a clear central triangular negative-space aperture. Design three broad solid gold faces with exact threefold rotational symmetry. The few clean cuts should suggest a three-facet shutter and refracting prism in one coherent compact symbol, with generous visible central opening and controlled equal spacing. Flat vector geometry, strong filled silhouette, recognizable at 24 pixels.\nStyle: crisp polished vector-like logo, flat exact gold #F9C932, sharp deliberate facets, no fine outlines. One centered icon around 60% of a square canvas width with generous plain near-black charcoal #101113 background.\nSingle icon only: no wordmark, no text, no letters, no hidden K, no arrows, no cube logo, no 3D shading, no optical ray diagrams. No gradients, texture, grain, lighting, glow, shadows, mockups, camera outline, coins, circuitry, extra elements, or watermark.\nMake all three facets structurally equal and geometrically precise, with a clean central triangular aperture and few clear cuts, suitable for analytic native SVG reconstruction."
+    },
+    {
+      "id": 21,
+      "name": "Focus Facets",
+      "source": "sources/21-focus-facets.png",
+      "prompt": "Use case: logo-brand.\nAsset type: single icon exploration for kollens, a crypto KOL and wallet tracking product with an optical intelligence / lens identity.\nDirection 21: FOCUS FACETS. Create a solid clipped-square prism body with four broad filled facets, separated by a few clean optical cuts gathering around one generous central rounded-diamond window. The overall mark has subtle focus-frame character but is a substantial filled symbol, never an outlined reticle. Exact fourfold rotation symmetry. Crisp clipped angular outer edges with small controlled corner fillets, smooth circular or Bézier curves for the central optical window and internal counter cuts. Compact, stable, precisely constructed geometry, large solid masses and balanced even clearances. Broad facets, few clear cuts; clear at 24 pixels.\nComposition: a square canvas with plain flat charcoal #101113 background; one gold icon centered, around 60% canvas width, generous margins. ONE ICON ONLY. No text, no letters, no wordmark or extra elements.\nColor/style: only perfectly flat solid gold #F9C932 on flat charcoal, absolutely crisp vector-like edges and uniform fills, professional geometric brand identity.\nAvoid: K or any letter geometry, outlines, reticle, camera, wireframe, gradients, grain, texture, lighting, glow, shadows, 3D, cube, mockup, labels, border, extra ornament."
+    },
+    {
+      "id": 22,
+      "name": "Orbit Prism",
+      "source": "sources/22-orbit-prism.png",
+      "prompt": "Use case: logo-brand.\nAsset type: single icon exploration for kollens, a crypto KOL and wallet tracking product with an optical intelligence / lens identity.\nDirection 22: ORBIT PRISM. Create two interlocking SOLID faceted prism faces forming a compact rising diagonal capsule or hexagon around one clear circular optical opening. Broad filled gold lobes, simple flat faces, prismatic angular shoulders with small precisely controlled corner fillets. The lobes suggest an orbital connection and tracking around a lens. Exact 180-degree rotational symmetry and clean mathematically balanced cuts. Strong solid mass with a few clear negative-space cuts. The opening is a generous clear circle and the surrounding outer outline is a compact angular diagonal capsule. Precisely structured original brand mark, clearly legible at 24 pixels.\nComposition: square canvas with plain flat charcoal #101113 background, single gold icon centered at around 60% of canvas width, generous margins. SINGLE ICON ONLY, no letters, no text, no wordmark, no extra elements.\nColor/style: perfectly flat gold #F9C932 only, uniform fills and crisp vector-like geometric edges on plain charcoal.\nAvoid: K or any letter geometry, generic chainlink, bullseye, magnifier, camera, coin, 3D cube, outlined or wireframe logo, gradients, grain, texture, lighting, glow, shadows, 3D rendering, mockups, labels, extra ornaments."
+    }
+  ]
+}

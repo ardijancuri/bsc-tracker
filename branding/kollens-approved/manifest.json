@@ -1,0 +1,30 @@
+{
+  "source": "source.svg",
+  "method": "Exact supplied SVG outlines; only whitespace crop, uniform scaling, and requested colors",
+  "glyphCount": 7,
+  "sourceInkBounds": [
+    391.56999999999994,
+    1400.81,
+    2108.43708408142,
+    1759.1946621118625
+  ],
+  "KBounds": [
+    391.56999999999994,
+    1410.5300000000002,
+    711.79,
+    1754.18
+  ],
+  "logoSize": [
+    201.2039720296748,
+    42
+  ],
+  "iconSize": [
+    128,
+    128
+  ],
+  "iconInkHeight": 108,
+  "colors": {
+    "white": "#FFFFFF",
+    "yellow": "#F9C932"
+  }
+}

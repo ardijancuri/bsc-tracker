@@ -1,0 +1,24 @@
+{
+  "mode": "built-in imagegen",
+  "references": [
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-1.png",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-2.jpg",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-3.jpg",
+    "C:\\Users\\PC\\Documents\\ChatGPT\\kolscan-bnb\\branding\\kollens-geometric-reference-round-2\\references\\reference-4.webp"
+  ],
+  "role": "Style and construction references, not edit targets.",
+  "concepts": [
+    {
+      "id": 31,
+      "source": "sources/31-arc-focus.png",
+      "svg": "31-arc-focus.svg",
+      "prompt": "Use case: logo-brand.\nAsset type: new original icon-only geometric optical K brand exploration for kollens.\nInput images: all four are STYLE and construction references, not edit targets or exact tracing. Reference 1 suggests curved red optical K facets; reference 2 suggests a bold triangle and chevron; reference 3 suggests segmented rounded folding geometry; reference 4 suggests three broad rounded facets. Use their bold geometric optical rhythm, broad masses, and curved or straight cuts as inspiration while developing an original new shape. Do not edit any supplied image or remove its watermark.\nPrimary request: ARC FOCUS. A bold K-like optic formed from three or four broad circular or quarter-circle facets with clean curved internal cuts, strong shared alignment, and a clear lens/refraction feeling. Original proportions and circle geometry. A minimal mark with few large solid masses, balanced open negative space, and controlled generous gaps. No frame or outer circle.\nStyle/medium: clean perfectly flat filled vector-like fintech logo, exact gold #F9C932 on plain flat charcoal #101113.\nComposition: square single icon centered around 60% canvas width, generous margins, strong compact silhouette readable at 24px.\nConstraints: no wordmark, text, TM, watermark, tiny marks, gradients, grain, texture, lighting, shadows, 3D or mockups. Curves and corner rounding are allowed. No literal camera or eye illustration."
+    },
+    {
+      "id": 32,
+      "source": "sources/32-curved-fold.png",
+      "svg": "32-curved-fold.svg",
+      "prompt": "Use case: logo-brand.\nAsset type: new original icon-only geometric optical K brand exploration for kollens.\nInput images: all four are STYLE and construction references, not edit targets or exact tracing. Reference 1 suggests curved red optical K facets; reference 2 suggests a bold triangle and chevron; reference 3 suggests segmented rounded folding geometry; reference 4 suggests broad rounded facets. Use their optical curves, broad masses, and clear cut rhythm as inspiration while creating a new original mark. Do not edit supplied images or remove their watermarks.\nPrimary request: CURVED FOLD. Two broad curved folding wings and a compact segmented left spine make a balanced flowing K-like mark. The upper and lower wings use matching mirrored geometry, gently curved optical shoulders, and clear internal folds. More compact, square and calm than an elongated optical K. Three or four large solid masses, consistent generous gaps at every meeting, no point contacts. Soft optical curves with a strong robust silhouette.\nStyle/medium: precise perfectly flat filled vector-like fintech icon, exact gold #F9C932 on plain flat charcoal #101113.\nComposition: square single icon centered around 60% canvas width with generous margins, readable at 24px.\nConstraints: no outer frame or circle, wordmark, text, TM, watermark, tiny marks, gradients, grain, texture, lighting, shadows, 3D or mockups. Curves and corner rounding are allowed. No literal eye or camera illustration."
+    }
+  ]
+}

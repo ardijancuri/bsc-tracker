@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>kollens Bold Shutter</title>
+  <desc>A compact fivefold shutter with broad circular shoulders, flat end cuts, and crisp beveled bends.</desc>
+  <defs>
+    <path id="14-bold-shutter-blade" d="M 64 19 A 45 45 0 0 1 94.110877 30.558484 L 83.5 51.8" fill="none" stroke="#F9C932" stroke-width="18" stroke-linecap="butt" stroke-linejoin="bevel"/>
+  </defs>
+  <g>
+    <use href="#14-bold-shutter-blade"/>
+    <use href="#14-bold-shutter-blade" transform="rotate(72 64 64)"/>
+    <use href="#14-bold-shutter-blade" transform="rotate(144 64 64)"/>
+    <use href="#14-bold-shutter-blade" transform="rotate(216 64 64)"/>
+    <use href="#14-bold-shutter-blade" transform="rotate(288 64 64)"/>
+  </g>
+</svg>

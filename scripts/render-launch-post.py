@@ -1,4 +1,4 @@
-"""Render the minimal bscan launch card with the original header wordmark."""
+"""Render the launch card with the approved full logo and K icon."""
 
 from pathlib import Path
 
@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output" / "social"
 SOURCE = OUT / "bscan-launch-background.png"
 TARGET = OUT / "bscan-launch-post.png"
-HEADER = ROOT / "public" / "social" / "bscan-x-header.png"
+LOGO = ROOT / "public" / "kollens-logo-yellow.png"
 ICON = ROOT / "public" / "bscan-mark.png"
 FONT_DIR = Path("C:/Windows/Fonts")
 REGULAR = FONT_DIR / "segoeui.ttf"
@@ -34,9 +34,8 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     image = Image.open(SOURCE).convert("RGBA")
 
-    # Reuse the gold wordmark from the existing X header to preserve its exact letterforms.
-    wordmark = gold_cutout(Image.open(HEADER).convert("RGB").crop((560, 158, 915, 256)))
-    wordmark = wordmark.resize((550, 152), Image.Resampling.LANCZOS)
+    wordmark = Image.open(LOGO).convert("RGBA")
+    wordmark = wordmark.resize((550, round(550 * wordmark.height / wordmark.width)), Image.Resampling.LANCZOS)
     image.alpha_composite(wordmark, (105, 215))
 
     icon = gold_cutout(Image.open(ICON))

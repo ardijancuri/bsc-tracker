@@ -1,0 +1,74 @@
+{
+  "name": "34 Equal Weight Flow Chevron",
+  "gold": "#F9C932",
+  "transparent": true,
+  "viewBox": [
+    0,
+    0,
+    128,
+    128
+  ],
+  "commonPerpendicularWidth": 20,
+  "curveRadii": {
+    "center": 12,
+    "inner": 2,
+    "outer": 22,
+    "radialBand": 20
+  },
+  "terminalCuts": {
+    "top": 14,
+    "bottom": 114,
+    "orientation": "horizontal"
+  },
+  "leftFold": {
+    "verticalStemWidth": 20,
+    "diagonalBandWidth": 20,
+    "vertex": [
+      22,
+      55
+    ],
+    "center": [
+      34,
+      26.029437252
+    ],
+    "turnDegrees": 135,
+    "horizontalMirrorAxis": 64,
+    "diagonalBoundarySums": [
+      62.857864376,
+      91.142135624
+    ]
+  },
+  "rightFold": {
+    "upperBandWidth": 20,
+    "lowerBandWidth": 20,
+    "vertex": [
+      52,
+      64
+    ],
+    "center": [
+      68.970562748,
+      64
+    ],
+    "turnDegrees": 90,
+    "diagonalBoundarySums": [
+      101.857864376,
+      130.142135624
+    ]
+  },
+  "minimumParallelGap": 7.577164466,
+  "bounds": [
+    12,
+    14,
+    116.142135624,
+    114
+  ],
+  "construction": "Filled SVG paths with exact parallel offsets and concentric circular arcs; no strokes, filters, or embedded raster",
+  "previous": {
+    "file": "../kollens-geometric-reference-round-2/34-flow-chevron.svg",
+    "leftVerticalWidth": 15,
+    "leftDiagonalWidth": 15.414213562,
+    "rightDiagonalWidth": 22.627416998,
+    "rightInnerRadius": 6,
+    "rightOuterRadius": 8
+  }
+}

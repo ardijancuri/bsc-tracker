@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-label="Kollens equal weight flow chevron icon">
+  <title>Kollens Equal Weight Flow Chevron</title>
+  <desc>Three filled folded bands share a perpendicular width of twenty units. Every circular bend has concentric two-unit inner and twenty-two-unit outer radii. Mirrored left facets and horizontal terminal cuts preserve the original flow chevron construction.</desc>
+  <defs><path id="flow34-even-left" d="M 12 14 H 32 V 26.029437252 A 2 2 0 0 0 35.414213562 27.443650814 L 48.857864376 14 H 77.142135624 L 49.556349186 41.585786438 A 22 22 0 0 1 12 26.029437252 Z"/></defs>
+  <g fill="#F9C932">
+    <use href="#flow34-even-left"/>
+    <use href="#flow34-even-left" transform="translate(0 128) scale(1 -1)"/>
+    <path id="flow34-even-right" d="M 87.857864376 14 H 116.142135624 L 67.556349186 62.585786438 A 2 2 0 0 0 67.556349186 65.414213562 L 116.142135624 114 H 87.857864376 L 53.414213562 79.556349186 A 22 22 0 0 1 53.414213562 48.443650814 Z"/>
+  </g>
+</svg>
