@@ -204,7 +204,7 @@ describe('replay renderer accounting and chart', () => {
     expect(drawn.some(value => /^\$0(?:\.0+)?$/.test(value))).toBe(false);
     expect(dashes).not.toContainEqual([12, 13]);
   });
-  it('shows separately labelled backend realized profit with an unknown balance while keeping gross P&L withheld', async () => {
+  it('shows unlabeled total recorded profit while keeping wallet-verified gross P&L withheld', async () => {
     const payload = activity(); payload.summary.realizedProfitUsd = '400'; payload.trades[1].cumulativeRealizedProfitUsd = '400';
     const drawn: string[] = [], renderer = new ReplayCanvas(canvasStub(drawn));
     await renderer.setData(prepareTradeReplayData(payload, chart, { ...position, checkedAt: new Date(now - 200000).toISOString() }, now)!);
@@ -212,7 +212,10 @@ describe('replay renderer accounting and chart', () => {
     expect(renderer.snapshot(1).pnl).toBeNull(); expect(renderer.snapshot(1).realizedPnl).toBe(400);
     expect(renderer.snapshot(1).realizedRoi).toBe(4);
     drawn.length = 0; renderer.render(1);
-    expect(drawn).toContain('REALIZED P&L'); expect(drawn).toContain('+$400.00'); expect(drawn).toContain('RECORDED TRADES');
+    expect(drawn).not.toContain('TOTAL P&L'); expect(drawn).not.toContain('Realized'); expect(drawn).not.toContain('Unrealized');
+    expect(drawn).toContain('+$400.00');
+    expect(drawn).toContain('('); expect(drawn).toContain('▲ '); expect(drawn).toContain('400.00%'); expect(drawn).toContain(')');
+    expect(drawn).toContain('Closed');
     expect(drawn).not.toContain('UNKNOWN');
   });
   it('uses cumulative realized results per revealed sale, including negative profits', async () => {

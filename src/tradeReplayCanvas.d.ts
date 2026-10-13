@@ -3,7 +3,9 @@ export interface ReplaySnapshot {
   time: string | null; invested: number | null; proceeds: number | null; holdings: number | null;
   pnl: number | null; roi: number | null; avgEntryCap: number | null; currentCap: number;
   realizedPnl: number | null; realizedRoi: number | null;
-  currentPrice: number; currentEventIndex: number; status: string;
+  remainingCostBasis: number | null; unrealizedPnl: number | null;
+  totalPnl: number | null; totalRoi: number | null;
+  currentPrice: number; currentEventIndex: number; status: string; recordedStatus: string;
 }
 export interface ReplayViewport {
   time: number; startTime: number; endTime: number; spanTime: number;

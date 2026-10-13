@@ -229,4 +229,5 @@ export const chinese: Record<string, string> = {
   'Reload the page to reconnect, then open this token again.': '请重新加载页面以恢复连接，然后再次打开此代币。',
   'Preparing the token chart and trades.': '正在准备代币图表与交易记录。',
   'Reload page': '重新加载页面',
+  'Total P&L includes unrealized profit at the replay price. Estimates use recorded trades; transfers and gas are excluded.': '总盈亏包含按回放价格计算的未实现盈亏。估算基于已记录交易，不包含转账与Gas费用。',
 };

@@ -90,7 +90,7 @@ async function replay(payload = data()) {
   return { renderer, motion: renderer as ReplayCanvas & MotionMethods };
 }
 
-const activeX = 42 + 772 * .64;
+const activeX = 42 + 772 * .74;
 
 describe('handoff replay canvas geometry', () => {
   it('paces simultaneous fills separately while retaining every exact execution timestamp', async () => {

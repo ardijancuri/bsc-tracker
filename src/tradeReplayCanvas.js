@@ -14,7 +14,7 @@ const WIDTH = 1080;
 const HEIGHT = 1350;
 const DURATION = 15.5;
 const MINUTE = 60_000;
-const PLAYHEAD_FRACTION = 0.64;
+const PLAYHEAD_FRACTION = 0.74;
 const FONT = 'Manrope, system-ui, sans-serif';
 
 const COLOR = {
@@ -83,6 +83,23 @@ function text(ctx, value, x, y, font, color, align = 'left', baseline = 'alphabe
   ctx.textBaseline = baseline;
   ctx.fillStyle = color;
   ctx.fillText(String(value), x, y);
+}
+
+function textBounds(ctx, value, font) {
+  ctx.font = font;
+  ctx.textBaseline = 'alphabetic';
+  const metrics = ctx.measureText(value);
+  const size = Number(/([\d.]+)px/.exec(font)?.[1]) || 0;
+  return {
+    ascent: finite(metrics.actualBoundingBoxAscent, size * 0.75),
+    descent: finite(metrics.actualBoundingBoxDescent, size * 0.2),
+  };
+}
+
+function displayedProfit(state) {
+  return state.totalPnl !== null
+    ? { pnl: state.totalPnl, roi: state.totalRoi }
+    : { pnl: state.pnl, roi: state.roi };
 }
 
 function drawBrandMark(ctx, mark, x, y, width, height, color) {
@@ -810,7 +827,8 @@ export class ReplayCanvas {
   snapshot(progress) {
     if (!this.data) return {
       time: null, invested: 0, proceeds: 0, holdings: 0, pnl: 0, roi: 0, realizedPnl: null, realizedRoi: null,
-      avgEntryCap: 0, currentCap: 0, currentPrice: 0, currentEventIndex: -1, status: 'Waiting',
+      remainingCostBasis: null, unrealizedPnl: null, totalPnl: null, totalRoi: null,
+      avgEntryCap: 0, currentCap: 0, currentPrice: 0, currentEventIndex: -1, status: 'Waiting', recordedStatus: 'Waiting',
     };
     const p = clamp(finite(progress), 0, 1);
     const ts = this.timeAt(p);
@@ -852,10 +870,31 @@ export class ReplayCanvas {
     const pnl = partialHistory || !accountingReady || !marketQuoteAvailable || !investedKnown || !proceedsKnown || !quantitiesKnown ? null : proceeds + holdings * currentPrice - invested;
     const roi = pnl === null ? null : invested > 0 ? pnl / invested : 0;
     const realizedRoi = realizedPnl !== null && investedKnown && invested > 0 ? realizedPnl / invested : null;
+    // These estimates describe the remaining recorded trade lots, independently
+    // of today's wallet balance. Backend cumulative FIFO profit removes exactly
+    // the sold lots' cost, avoiding double-counting gains after partial exits.
+    const recordedAccountingReady = currentEventIndex >= 0 && !partialHistory
+      && this.data.source?.tradesComplete === true && position?.tradesComplete === true
+      && pricedFills && investedKnown && proceedsKnown && quantitiesKnown && realizedPnl !== null;
+    const rawBasis = recordedAccountingReady ? invested - proceeds + realizedPnl : NaN;
+    const basisTolerance = Math.max(Number.MIN_VALUE, Math.max(invested, proceeds, Math.abs(realizedPnl ?? 0)) * 1e-10);
+    const validBasis = Number.isFinite(rawBasis) && rawBasis >= -basisTolerance
+      && (holdings !== 0 || Math.abs(rawBasis) <= basisTolerance);
+    const remainingCostBasis = validBasis ? Math.abs(rawBasis) <= basisTolerance ? 0 : rawBasis : null;
+    const markedValue = holdings === 0 ? 0 : holdings * currentPrice;
+    const unrealizedPnl = remainingCostBasis !== null && marketQuoteAvailable
+      && (holdings === 0 || Number.isFinite(currentPrice) && currentPrice > 0) && Number.isFinite(markedValue)
+      ? markedValue - remainingCostBasis : null;
+    const combinedPnl = unrealizedPnl !== null && realizedPnl !== null ? realizedPnl + unrealizedPnl : NaN;
+    const totalPnl = Number.isFinite(combinedPnl) ? combinedPnl : null;
+    const totalRoi = totalPnl === null ? null : invested > 0 ? totalPnl / invested : 0;
     const avgEntryCap = investedKnown && quantitiesKnown && boughtTokens > 0 && this.supply ? invested / boughtTokens * this.supply : null;
     let status = partialHistory || !quantitiesKnown ? 'Partial history'
       : currentEventIndex < 0 ? 'Waiting'
       : holdings > Math.max(Number.MIN_VALUE, boughtTokens * 1e-10) ? 'Open' : 'Closed';
+    const recordedStatus = currentEventIndex < 0 ? 'Waiting'
+      : partialHistory || !quantitiesKnown || this.data.source?.tradesComplete !== true || position?.tradesComplete !== true ? 'Unknown'
+      : status;
     // The replay animates observed swaps, but its ending label reflects the
     // wallet balance checked at generation time. Transfers can make those two
     // views differ, so an unavailable balance is never called closed.
@@ -865,7 +904,8 @@ export class ReplayCanvas {
     }
     return {
       time: new Date(ts).toISOString(), invested: investedKnown ? invested : null, proceeds: proceedsKnown ? proceeds : null, holdings: quantitiesKnown ? holdings : null, pnl, roi,
-      avgEntryCap, currentCap, currentPrice, currentEventIndex, status, realizedPnl, realizedRoi,
+      avgEntryCap, currentCap, currentPrice, currentEventIndex, status, recordedStatus, realizedPnl, realizedRoi,
+      remainingCostBasis, unrealizedPnl, totalPnl, totalRoi,
     };
   }
 
@@ -923,14 +963,21 @@ export class ReplayCanvas {
     rowText(shownName, left, titleRow, nameFont, COLOR.white);
     rowText(date, right, titleRow, dateFont, '#8b877d', 'right');
 
-    const status = state.status === 'Unknown' ? 'RECORDED TRADES' : state.status.toUpperCase();
-    const statusFill = state.status === 'Open' ? '#3b3214' : state.status === 'Closed' || state.status === 'Unknown' ? '#272721' : '#312820';
-    const statusText = state.status === 'Open' ? COLOR.goldBright : '#c4bda7';
-    const statusFont = `750 25px ${FONT}`;
-    ctx.font = statusFont;
-    const pillWidth = ctx.measureText(status).width + 36;
-    fillRound(ctx, left, detailRow - detailHeight / 2, pillWidth, detailHeight, 11, statusFill);
-    rowText(status, left + pillWidth / 2, detailRow, statusFont, statusText, 'center');
+    const ending = state.currentEventIndex === this.trades.length - 1;
+    // Prefer a checked ending balance, then the complete recorded position.
+    // Withhold the badge when neither can establish an open or closed position.
+    const status = ending && (state.status === 'Open' || state.status === 'Closed')
+      ? state.status : state.recordedStatus;
+    if (status === 'Open' || status === 'Closed') {
+      const isOpen = status === 'Open';
+      const statusFill = isOpen ? '#3b3214' : '#272721';
+      const statusText = isOpen ? COLOR.goldBright : '#c4bda7';
+      const statusFont = `750 25px ${FONT}`;
+      ctx.font = statusFont;
+      const pillWidth = ctx.measureText(status).width + 36;
+      fillRound(ctx, left, detailRow - detailHeight / 2, pillWidth, detailHeight, 11, statusFill);
+      rowText(status, left + pillWidth / 2, detailRow, statusFont, statusText, 'center');
+    }
     if (this.brandIcon?.naturalWidth > 0) {
       try {
         // Use the complete native icon viewBox, matching the app's brand mark.
@@ -945,6 +992,9 @@ export class ReplayCanvas {
   }
 
   drawChart(ctx, progress, state) {
+    const { pnl } = displayedProfit(state);
+    const chartColor = pnl === null ? COLOR.gold : pnl >= 0 ? COLOR.green : COLOR.red;
+    const chartRgb = pnl === null ? '240,185,11' : pnl >= 0 ? '22,199,132' : '246,70,93';
     const chartProgress = this.chartProgress(progress);
     const cameraRange = this.cameraAt(chartProgress);
     const left = 42;
@@ -988,9 +1038,9 @@ export class ReplayCanvas {
       ctx.clip();
       if (!this.fillOnly) {
         const area = ctx.createLinearGradient(0, top, 0, bottom);
-        area.addColorStop(0, 'rgba(240,185,11,0.18)');
-        area.addColorStop(0.68, 'rgba(240,185,11,0.055)');
-        area.addColorStop(1, 'rgba(240,185,11,0)');
+        area.addColorStop(0, `rgba(${chartRgb},0.18)`);
+        area.addColorStop(0.68, `rgba(${chartRgb},0.055)`);
+        area.addColorStop(1, `rgba(${chartRgb},0)`);
         this.traceLine(ctx, pathPoints);
         ctx.lineTo(pathPoints.at(-1).x, bottom + 10);
         ctx.lineTo(pathPoints[0].x, bottom + 10);
@@ -999,10 +1049,10 @@ export class ReplayCanvas {
         ctx.fill();
       }
       ctx.save();
-      ctx.shadowColor = 'rgba(240,185,11,0.38)';
+      ctx.shadowColor = `rgba(${chartRgb},0.38)`;
       ctx.shadowBlur = 13;
       this.traceLine(ctx, pathPoints);
-      ctx.strokeStyle = COLOR.gold;
+      ctx.strokeStyle = chartColor;
       ctx.lineWidth = 8;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -1013,7 +1063,7 @@ export class ReplayCanvas {
           if (point.x > xAtProgress(chartProgress) + 1) continue;
           ctx.beginPath();
           ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = COLOR.goldBright;
+          ctx.fillStyle = chartColor;
           ctx.fill();
         }
       }
@@ -1025,7 +1075,7 @@ export class ReplayCanvas {
     ctx.beginPath();
     ctx.moveTo(37, currentY);
     ctx.lineTo(828, currentY);
-    ctx.strokeStyle = 'rgba(240,185,11,0.42)';
+    ctx.strokeStyle = `rgba(${chartRgb},0.42)`;
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.setLineDash([]);
@@ -1035,7 +1085,7 @@ export class ReplayCanvas {
     if (pathPoints.length) {
       ctx.beginPath();
       ctx.arc(activeX, currentY, this.fillOnly ? 5 : 4, 0, Math.PI * 2);
-      ctx.fillStyle = this.fillOnly ? COLOR.goldBright : COLOR.gold;
+      ctx.fillStyle = chartColor;
       ctx.fill();
     }
 
@@ -1230,45 +1280,65 @@ export class ReplayCanvas {
     // this panel a 44px radius and the same bottom-corner center on both paths.
     fillRound(ctx, x, y, width, height, 44, COLOR.panel, COLOR.panelEdge, 2);
 
-    const tokenName = shortName(this.data.token.symbol || this.data.token.name || 'TOKEN', 16);
-    const tokenText = tokenName.toUpperCase();
-    const headingWidth = this.logo ? 37 + 13 + this.measure(ctx, tokenText, `650 34px ${FONT}`) : this.measure(ctx, tokenText, `650 34px ${FONT}`);
+    const tokenText = shortName(this.data.token.symbol || this.data.token.name || 'TOKEN', 24);
+    const tokenFont = fitFont(ctx, tokenText, 760, 44, 30, 650);
+    const tokenWidth = this.measure(ctx, tokenText, tokenFont);
+    const iconSize = 58;
+    const iconGap = 16;
+    const headingWidth = iconSize + iconGap + tokenWidth;
     const headingX = 540 - headingWidth / 2;
-    if (this.logo) imageCircle(ctx, this.logo, headingX + 18, 798, 19, initials(tokenName), '#967614');
-    text(ctx, tokenText, headingX + (this.logo ? 50 : 0), 809, fitFont(ctx, tokenText, 690, 34, 25, 650), COLOR.white);
+    imageCircle(ctx, this.logo, headingX + iconSize / 2, 797, iconSize / 2, initials(tokenText), '#967614');
+    text(ctx, tokenText, headingX + iconSize + iconGap, 797, tokenFont, COLOR.white, 'left', 'middle');
 
     ctx.beginPath();
     ctx.setLineDash([3, 11]);
-    ctx.moveTo(425, 839);
-    ctx.lineTo(655, 839);
+    ctx.moveTo(headingX + iconSize + iconGap, 839);
+    ctx.lineTo(headingX + headingWidth, 839);
     ctx.strokeStyle = '#625a42';
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const realizedFallback = state.pnl === null && state.realizedPnl !== null;
-    const shownPnl = realizedFallback ? state.realizedPnl : state.pnl;
-    const shownRoi = realizedFallback ? state.realizedRoi : state.roi;
+    const { pnl: shownPnl, roi: shownRoi } = displayedProfit(state);
     const unavailable = shownPnl === null;
     const positive = !unavailable && shownPnl >= 0;
-    const result = unavailable ? 'P&L unavailable' : state.currentEventIndex < 0 ? '$0.00' : resultMoney(shownPnl);
+    const result = unavailable ? '—' : state.currentEventIndex < 0 ? '$0.00' : resultMoney(shownPnl);
     const pnlColor = unavailable ? COLOR.white : positive ? COLOR.green : COLOR.red;
-    text(ctx, realizedFallback ? 'REALIZED P&L' : state.status === 'Open' ? 'EST. GROSS P&L' : 'GROSS P&L', 76, 884, `650 18px ${FONT}`, COLOR.muted);
-    text(ctx, result, 75, 956, fitFont(ctx, result, 660, 76, 49, 720), pnlColor);
-
-    const roiText = shownRoi === null ? '—' : `${shownRoi >= 0 ? '▲' : '▼'} ${percentage(shownRoi)}`;
-    text(ctx, realizedFallback ? 'REALIZED RETURN' : 'RETURN', 1003, 884, `650 18px ${FONT}`, COLOR.muted, 'right');
-    text(ctx, roiText, 1003, 946, fitFont(ctx, roiText, 285, 36, 24, 650), shownRoi === null ? COLOR.white : shownRoi >= 0 ? COLOR.green : COLOR.red, 'right');
+    const resultFont = fitFont(ctx, result, 620, 78, 50, 720);
+    const resultWidth = this.measure(ctx, result, resultFont);
+    const roiText = shownRoi === null ? '' : `(${shownRoi >= 0 ? '▲' : '▼'} ${percentage(shownRoi)})`;
+    const roiInset = 6;
+    const roiFont = fitFont(ctx, roiText, 260 - roiInset * 2, 36, 26, 650);
+    const roiSize = Number(/([\d.]+)px/.exec(roiFont)?.[1]) || 36;
+    const roiParts = roiText ? [
+      { text: '(', color: COLOR.muted, scale: 0.86, paddingAfter: roiInset },
+      { text: `${shownRoi >= 0 ? '▲' : '▼'} `, color: shownRoi >= 0 ? COLOR.green : COLOR.red, scale: 0.78, paddingAfter: 0 },
+      { text: percentage(shownRoi), color: COLOR.white, scale: 1, paddingAfter: roiInset },
+      { text: ')', color: COLOR.muted, scale: 0.86, paddingAfter: 0 },
+    ].map(part => {
+      const font = `650 ${(roiSize * part.scale).toFixed(1)}px ${FONT}`;
+      return { ...part, font, width: this.measure(ctx, part.text, font), bounds: textBounds(ctx, part.text, font) };
+    }) : [];
+    const roiWidth = roiParts.reduce((sum, part) => sum + part.width + part.paddingAfter, 0);
+    const profitGap = roiText ? 28 : 0;
+    const profitX = 540 - (resultWidth + profitGap + roiWidth) / 2;
+    const resultBounds = textBounds(ctx, result, resultFont);
+    text(ctx, result, profitX, 907 + (resultBounds.ascent - resultBounds.descent) / 2, resultFont, pnlColor);
+    let roiX = profitX + resultWidth + profitGap;
+    for (const part of roiParts) {
+      text(ctx, part.text, roiX, 907 + (part.bounds.ascent - part.bounds.descent) / 2, part.font, part.color);
+      roiX += part.width + part.paddingAfter;
+    }
 
     ctx.beginPath();
-    ctx.moveTo(x + 1, 989);
-    ctx.lineTo(x + width - 1, 989);
+    ctx.moveTo(x + 1, 978);
+    ctx.lineTo(x + width - 1, 978);
     ctx.strokeStyle = COLOR.panelEdge;
     ctx.lineWidth = 2;
     ctx.stroke();
     for (const divider of [369, 711]) {
       ctx.beginPath();
-      ctx.moveTo(divider, 989);
+      ctx.moveTo(divider, 978);
       ctx.lineTo(divider, y + height - 1);
       ctx.stroke();
     }
@@ -1277,10 +1347,24 @@ export class ReplayCanvas {
       { center: 199, label: 'Invested', value: state.invested !== null ? money(state.invested, 2, true) : '—' },
       { center: 540, label: 'Avg. entry', value: this.capMode && state.avgEntryCap > 0 ? money(state.avgEntryCap, 0, true) : '—' },
       { center: 881, label: 'Current', value: state.currentCap > 0 ? this.capMode ? money(state.currentCap, 0, true) : this.priceText(state.currentCap) : '—' },
-    ];
+    ].map(column => {
+      const labelFont = fitFont(ctx, column.label, 290, 28, 22, 500);
+      const valueFont = fitFont(ctx, column.value, 280, 40, 28, 600);
+      return { ...column, labelFont, valueFont,
+        labelBounds: textBounds(ctx, column.label, labelFont), valueBounds: textBounds(ctx, column.value, valueFont) };
+    });
+    const labelAscent = Math.max(...columns.map(column => column.labelBounds.ascent));
+    const labelDescent = Math.max(...columns.map(column => column.labelBounds.descent));
+    const valueAscent = Math.max(...columns.map(column => column.valueBounds.ascent));
+    const valueDescent = Math.max(...columns.map(column => column.valueBounds.descent));
+    const rowGap = 16;
+    const contentHeight = labelAscent + labelDescent + rowGap + valueAscent + valueDescent;
+    const contentTop = (978 + y + height) / 2 - contentHeight / 2;
+    const labelBaseline = contentTop + labelAscent;
+    const valueBaseline = labelBaseline + labelDescent + rowGap + valueAscent;
     for (const column of columns) {
-      text(ctx, column.label, column.center, 1050, fitFont(ctx, column.label, 290, 28, 22, 500), '#aaa596', 'center');
-      text(ctx, column.value, column.center, 1115, fitFont(ctx, column.value, 280, 40, 28, 600), COLOR.white, 'center');
+      text(ctx, column.label, column.center, labelBaseline, column.labelFont, '#aaa596', 'center');
+      text(ctx, column.value, column.center, valueBaseline, column.valueFont, COLOR.white, 'center');
     }
   }
 
