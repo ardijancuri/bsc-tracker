@@ -2,7 +2,7 @@
   "kol": {
     "address": "0x077b9981bc8a2ca417cea41861111da63266988b",
     "name": "clukz",
-    "avatarUrl": "/branding/x/kollens-feature-series-20261012/shared/replay-avatar.png",
+    "avatarUrl": "/branding/x/kollens-feature-series-20261012-v2/shared/replay-avatar.png",
     "twitter": "clukz",
     "source": "gmgn-csv",
     "lastSeenAt": "2026-10-12T18:36:20+00:00"
@@ -11,7 +11,7 @@
     "address": "0x13920fe6467e9e3c852b8d365a036c995f0f7777",
     "symbol": "GM",
     "name": null,
-    "logoUrl": "/branding/x/kollens-feature-series-20261012/shared/replay-token.png",
+    "logoUrl": "/branding/x/kollens-feature-series-20261012-v2/shared/replay-token.png",
     "priceUsd": 0.0015151914098152433,
     "marketCapUsd": 1361417,
     "marketCapSupply": "1000000000.00000000"

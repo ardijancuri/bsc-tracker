@@ -14,7 +14,17 @@ The logo, gold-and-charcoal palette, and Manrope font follow the approved launch
 
 ## Publishing files
 
-Each numbered folder contains `post.png` and `post.txt`. `posts.md` contains all five captions. `kollens-feature-posts-v2.zip` contains the images, captions, and notes. Every caption fits X's 280-character limit. These files have not been posted to X.
+Use the retained PNG and caption files directly:
+
+| Post | Image | Caption |
+| --- | --- | --- |
+| Live KOL trades | [01-live-trades/post.png](01-live-trades/post.png) | [01-live-trades/post.txt](01-live-trades/post.txt) |
+| Watchlists | [02-watchlists/post.png](02-watchlists/post.png) | [02-watchlists/post.txt](02-watchlists/post.txt) |
+| Token details | [03-token-details/post.png](03-token-details/post.png) | [03-token-details/post.txt](03-token-details/post.txt) |
+| KOL profiles | [04-kol-profiles/post.png](04-kol-profiles/post.png) | [04-kol-profiles/post.txt](04-kol-profiles/post.txt) |
+| Trade replays | [05-trade-replays/post.png](05-trade-replays/post.png) | [05-trade-replays/post.txt](05-trade-replays/post.txt) |
+
+`posts.md` contains all five captions. Every caption fits X's 280-character limit. These files have not been posted to X. The duplicate ZIP upload pack was removed.
 
 ## Source content
 

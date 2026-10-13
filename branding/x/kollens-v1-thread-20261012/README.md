@@ -2,16 +2,16 @@
 
 Six replies to the existing Kollens launch post. Reply 1 introduces V1; replies 2–6 explain each feature. Reply to the previous post each time to keep everything in one continuous thread.
 
-| Reply | Image in ZIP | Caption in ZIP |
+| Reply | Retained image | Caption |
 | --- | --- | --- |
-| 1/6 · V1 overview | `01-kollens-v1.png` | `01-kollens-v1.txt` |
-| 2/6 · Live KOL trades | `02-live-trades.png` | `02-live-trades.txt` |
-| 3/6 · Watchlists | `03-watchlists.png` | `03-watchlists.txt` |
-| 4/6 · Token details | `04-token-details.png` | `04-token-details.txt` |
-| 5/6 · KOL profiles & P&L | `05-kol-profiles.png` | `05-kol-profiles.txt` |
-| 6/6 · Trade replays | `06-trade-replays.png` | `06-trade-replays.txt` |
+| 1/6 · V1 overview | [kollens-v1-overview.png](kollens-v1-overview.png) | [captions/01-v1-overview.txt](captions/01-v1-overview.txt) |
+| 2/6 · Live KOL trades | [01-live-trades/post.png](../kollens-feature-series-20261012-v2/01-live-trades/post.png) | [captions/02-live-trades.txt](captions/02-live-trades.txt) |
+| 3/6 · Watchlists | [02-watchlists/post.png](../kollens-feature-series-20261012-v2/02-watchlists/post.png) | [captions/03-watchlists.txt](captions/03-watchlists.txt) |
+| 4/6 · Token details | [03-token-details/post.png](../kollens-feature-series-20261012-v2/03-token-details/post.png) | [captions/04-token-details.txt](captions/04-token-details.txt) |
+| 5/6 · KOL profiles & P&L | [04-kol-profiles/post.png](../kollens-feature-series-20261012-v2/04-kol-profiles/post.png) | [captions/05-kol-profiles.txt](captions/05-kol-profiles.txt) |
+| 6/6 · Trade replays | [05-trade-replays/post.png](../kollens-feature-series-20261012-v2/05-trade-replays/post.png) | [captions/06-trade-replays.txt](captions/06-trade-replays.txt) |
 
-`thread.md` contains the full copy in posting order. Every reply fits X's 280-character limit. The thread has not been posted to X.
+`thread.md` contains the full copy in posting order. Every reply fits X's 280-character limit. The thread has not been posted to X. Feature images are shared with the retained v2 campaign; the duplicate ZIP upload pack was removed.
 
 ## Overview design
 

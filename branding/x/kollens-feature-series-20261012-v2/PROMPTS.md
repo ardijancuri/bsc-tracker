@@ -102,7 +102,7 @@ Keep invariant: the exact existing perfectly circular glass lens, its center/sca
 
 - Initial native output: C:/Users/PC/.codex/generated_images/01a1316e-1c8e-75a3-923f-b22d34d8e51f/exec-5597a277-b45a-4671-8a64-533e92f6513b.png
 - Selected repaired native output: C:/Users/PC/.codex/generated_images/01a1316e-1c8e-75a3-923f-b22d34d8e51f/exec-33605a52-bcfa-41a6-9924-cd8af9fb9e69.png
-- Saved plate: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/x/kollens-feature-series-20261012/03-token-details/background.png
+- Saved plate: C:/Users/PC/Documents/ChatGPT/kolscan-bnb/branding/x/kollens-feature-series-20261012-v2/03-token-details/background.png
 - Native dimensions: 1672 x 941.
 - Observed selected panel approximate native bounds: x980, y259, width446, height355. At 1600x900 this is approximately x938, y248, width427, height340. The model did not follow the requested panel bounds exactly, so the compositor should align real chart content to the actual panel or cover the panel with its exact dark content panel. Circle remains full and smooth; no foreground content.
 

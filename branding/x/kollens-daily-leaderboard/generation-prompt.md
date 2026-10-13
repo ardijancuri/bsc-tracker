@@ -1,6 +1,6 @@
 # Current daily leaderboard design
 
-Current route: editable native SVG and Sharp. Use the plain black #000000 background, with no app imagery, blur, glow, outer board or enclosing frame. Keep the large centered rows, a smaller logo and kollens.com. Only the first three rows have gold/silver/bronze backgrounds; fourth and fifth are unfilled and borderless. Remove the separate left accent bar from first place. Preserve authentic avatars, exact names and values, and vertically centered P&L amounts. The method and snapshot time stay in the caption and source metadata.
+Current route: editable native SVG and Sharp. Reuse the exact background embedded in `../kollens-market-header/kollens-x-header-centered.svg`: black market grid, muted gray price line and candlesticks at 40% opacity over black. Adapt its canvas to 1600 x 900 and exclude the header's foreground logo and URL. Keep the large centered rows, a smaller logo and kollens.com. Only the first three rows have gold/silver/bronze backgrounds; fourth and fifth are unfilled and borderless. Remove the separate left accent bar from first place. Preserve authentic avatars, exact names and values, and vertically centered P&L amounts. The method and snapshot time stay in the caption and source metadata. This revision was requested on 14 October 2026; it reuses the previous leaderboard snapshot without presenting it as a new ranking.
 
 ## Superseded native background generation
 

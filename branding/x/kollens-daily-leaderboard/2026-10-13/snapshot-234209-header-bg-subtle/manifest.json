@@ -1,0 +1,94 @@
+{
+  "width": 1600,
+  "height": 900,
+  "design": {
+    "layout": "Centered independent row containers; small logo and URL in the header",
+    "rowWidth": 1272,
+    "rowHeight": 168,
+    "rowGap": 24,
+    "rowStart": 224,
+    "avatarSize": 96,
+    "logoWidth": 232,
+    "winnerHighlight": "Stronger gold gradient and thin gold outline; no left accent",
+    "pnlFontSize": 56,
+    "winnerPnlFontSize": 60,
+    "pnlVerticalAlign": "Glyph bounding-box center",
+    "backgroundColor": "#000000",
+    "backgroundStyle": "Exact Kollens X profile header background: black market grid, muted gray price line and candlesticks.",
+    "unhighlightedRowsFill": "none",
+    "outerContainer": false
+  },
+  "backgroundSource": {
+    "style": "Exact Kollens X profile header background: black market grid, muted gray price line and candlesticks.",
+    "source": "branding/x/kollens-market-header/kollens-x-header-centered.svg",
+    "sourceSvgSha256": "9209927322d1105977bec84d701a04434478a9c221800b1e62ab3c41a0103a54",
+    "embeddedPngSha256": "0ca866bc6255a716ccf17156a462573e9e6015a6665a177bb34088093379ed39",
+    "sourceDimensions": [
+      1500,
+      500
+    ],
+    "outputDimensions": [
+      1600,
+      900
+    ],
+    "artworkOpacity": 0.4,
+    "adaptation": "Original embedded background reused without regenerating its artwork; scaled to fill the leaderboard canvas. Header logo and URL are excluded.",
+    "updatedOn": "2026-10-14"
+  },
+  "timeZone": "Europe/Skopje",
+  "date": "2026-10-13",
+  "snapshotAt": "2026-10-13T21:42:09.909Z",
+  "windowStart": "2026-10-12T21:42:09.909Z",
+  "calculatedAt": "2026-10-13T21:40:27.762Z",
+  "sourceUrl": "https://kollens.com/api/leaderboard",
+  "method": "Tracked realized P&L from positions bought and sold in the rolling last 24h; unmatched sales excluded.",
+  "sourceOrderPreserved": true,
+  "leaders": [
+    {
+      "rank": 1,
+      "name": "阿峰_Afeng",
+      "displayedName": "阿峰_Afeng",
+      "handle": "aa_AFeng",
+      "wallet": "0xbf004bff64725914ee36d03b87d6965b0ced4903",
+      "realizedProfitUsd": "9151.791843922543",
+      "displayedPnl": "+$9,151.79",
+      "trades": 625,
+      "matched": 299,
+      "excluded": 32,
+      "avatar": "avatars/01-0xbf004bff64725914ee36d03b87d6965b0ced4903.png"
+    },
+    {
+      "rank": 2,
+      "name": "古月月",
+      "displayedName": "古月月",
+      "handle": "hzjxhcyy",
+      "wallet": "0x877af245c61289b24f0c619a4346cdbc68f1aaac",
+      "realizedProfitUsd": "8418.886144347432",
+      "displayedPnl": "+$8,418.89",
+      "trades": 206,
+      "matched": 57,
+      "excluded": 9,
+      "avatar": "avatars/02-0x877af245c61289b24f0c619a4346cdbc68f1aaac.png"
+    },
+    {
+      "rank": 3,
+      "name": "金狗挖掘机 | 0xDavid",
+      "displayedName": "金狗挖掘机 | 0xDavid",
+      "handle": "HunterOnlyETH",
+      "wallet": "0x7a2363a401b2340c7941dd2eeff0196a5078d2e6",
+      "realizedProfitUsd": "7823.203730814333",
+      "displayedPnl": "+$7,823.20",
+      "trades": 180,
+      "matched": 90,
+      "excluded": 7,
+      "avatar": "avatars/03-0x7a2363a401b2340c7941dd2eeff0196a5078d2e6.png"
+    }
+  ],
+  "font": "Exact Manrope glyph outlines with installed Microsoft YaHei CJK fallback",
+  "logoSha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c",
+  "backgroundSha256": "b12d34f12a2ca09b3c256b090f12fbcc0540abfe7a183c3373aed4272f95a492",
+  "pngSha256": "6ce82ec322ecf027d1ab45398648dab0877e35d34bf1a4fb3cc481f851f16974",
+  "captionWeightedCharacters": 212,
+  "announcement": false,
+  "generationRoute": "Deterministic native SVG template reusing the exact X profile header background, individual row containers and exact logo/font/data/avatar composition using Sharp."
+}
