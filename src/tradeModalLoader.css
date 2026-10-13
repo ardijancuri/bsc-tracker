@@ -1,0 +1,5 @@
+.trade-modal-load-status{position:relative;width:min(420px,100%);padding:30px;background:#171e22;border:1px solid #47545a;border-radius:12px;box-shadow:0 30px 80px #0009}
+.trade-modal-load-status h2{margin:0 28px 12px 0;font-size:16px}
+.trade-modal-load-status p{margin:0;color:#87959b;font-size:12px;line-height:1.6}
+.trade-modal-load-close{position:absolute;top:14px;right:14px;display:grid;place-items:center;padding:6px;background:transparent;border:0;color:#aeb9be;cursor:pointer}
+.trade-modal-load-reload{margin-top:20px;padding:9px 14px;background:#263136;border:1px solid #47545a;border-radius:7px;color:#e9eeef;font-size:12px;font-weight:700;cursor:pointer}

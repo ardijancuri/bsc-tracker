@@ -225,4 +225,8 @@ export const chinese: Record<string, string> = {
   'Video recording failed. Try another supported browser.': '视频录制失败，请尝试其他支持的浏览器。',
   'Video recording timed out. Keep this tab visible and try again.': '视频录制超时，请保持标签页可见后重试。',
   'The replay could not be rendered for export.': '无法渲染回放以导出视频。', 'The video file was empty. Try exporting again.': '视频文件为空，请重新导出。',
+  'Trade details could not load': '无法加载交易详情',
+  'Reload the page to reconnect, then open this token again.': '请重新加载页面以恢复连接，然后再次打开此代币。',
+  'Preparing the token chart and trades.': '正在准备代币图表与交易记录。',
+  'Reload page': '重新加载页面',
 };

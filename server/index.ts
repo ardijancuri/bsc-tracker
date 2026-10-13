@@ -1,5 +1,4 @@
 import Fastify from 'fastify';
-import fastifyStatic from '@fastify/static';
 import { Client } from 'pg';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +11,7 @@ import { lookupTokenWebsite } from './tokenWebsite.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
 import { getTokenTranslation } from './tokenTranslation.js';
 import { registerTradeReplayChartRoutes } from './tradeReplayChart.js';
+import { registerFrontendRoutes } from './frontendRoutes.js';
 
 const app = Fastify({ logger: { redact: ['req.headers.cookie', 'res.headers.set-cookie'] }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -240,11 +240,7 @@ app.get('/api/stream', async (request, reply) => {
   response.on('close', () => { clearInterval(timer); clients.delete(response); });
 });
 
-app.register(fastifyStatic, { root: publicDir, prefix: '/', wildcard: false });
-app.setNotFoundHandler((request, reply) => {
-  if (request.url.startsWith('/api/')) return reply.code(404).send({ error: 'Not found' });
-  return reply.type('text/html').sendFile('index.html');
-});
+await registerFrontendRoutes(app, publicDir, process.env.FRONTEND_ASSET_CACHE_DIR);
 
 async function listenForUpdates() {
   const client = new Client({ connectionString: process.env.DATABASE_URL });

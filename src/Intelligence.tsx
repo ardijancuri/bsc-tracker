@@ -6,6 +6,7 @@ import { api, compact, relativeTime, shortAddress } from './lib';
 import { TokenName } from './TokenName';
 import { WatchTokenDetails } from './WatchTokenVisuals';
 import { tokenChartIntent } from './tokenChartIntent';
+import { subscribeToUpdates } from './updateStream';
 import './tokenWatchlist.css';
 import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
@@ -83,9 +84,8 @@ function useFeatureData<T>(url: string | null, initial: T) {
     let active = true;
     const refresh = () => void api<T>(url).then(data => { if (active) setResult({ url, data, loading: false, error: false }); }).catch(() => { if (active) setResult(current => ({ ...current, url, loading: false, error: true })); });
     setResult({ url, data: initial, error: false, loading: true }); refresh();
-    const timer = window.setInterval(refresh, 30000), events = new EventSource('/api/stream');
-    events.addEventListener('update', refresh);
-    return () => { active = false; window.clearInterval(timer); events.close(); };
+    const timer = window.setInterval(refresh, 30000), unsubscribe = subscribeToUpdates(refresh);
+    return () => { active = false; window.clearInterval(timer); unsubscribe(); };
   }, [url]);
   return result.url === url ? result : { url, data: initial, error: false, loading: true };
 }

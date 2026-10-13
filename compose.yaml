@@ -26,10 +26,12 @@ services:
       DATABASE_URL: postgres://bscan:${BSCAN_DB_PASSWORD}@127.0.0.1:5434/bscan
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://kollens.com}
       TOKEN_CHART_CACHE_DIR: /app/.cache/token-charts
+      FRONTEND_ASSET_CACHE_DIR: /app/.cache/frontend-assets
       GMGN_API_KEY: ${GMGN_CHART_API_KEY:-${GMGN_API_KEY:-}}
       CMC_CHART_MAX_CANDLES: ${CMC_CHART_MAX_CANDLES:-1000}
     volumes:
       - bscan_chartcache:/app/.cache/token-charts
+      - bscan_frontendassets:/app/.cache/frontend-assets
     depends_on:
       db:
         condition: service_healthy
@@ -53,3 +55,4 @@ services:
 volumes:
   bscan_pgdata:
   bscan_chartcache:
+  bscan_frontendassets:
