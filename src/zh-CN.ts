@@ -148,6 +148,7 @@ export const chinese: Record<string, string> = {
   'Latest available quote': '最新可用报价',
   'Loading market chart…': '正在加载市场图表…',
   'Market chart unavailable': '市场图表暂不可用',
+  'Chart refresh failed. Retrying automatically…': '图表刷新失败，将自动重试…',
   'Open live chart': '打开实时图表',
   'Candles': 'K线',
   'Loading candles…': '正在加载K线…',

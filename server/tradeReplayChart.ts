@@ -174,7 +174,7 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
     if (jobs.size >= 2) return unavailable(address, true);
     const job = (async () => {
       let chart: ReplayMarketChart;
-      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_API_KEY?.trim(), signal: AbortSignal.timeout(requestBudgetMs) }) ?? unavailable(address); }
+      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(), signal: AbortSignal.timeout(requestBudgetMs) }) ?? unavailable(address); }
       catch { chart = unavailable(address); }
       if (saved.size >= 250) saved.delete(saved.keys().next().value!);
       saved.set(key, { chart, until: now() + (chart.points.length ? 3_600_000 : 30_000) });

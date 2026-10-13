@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { pool } from './db.js';
-import { MarketProviderDeferred, type GeckoPriority } from './geckoApi.js';
+import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 
 type Priority = GeckoPriority | (() => GeckoPriority);
 type Query = (sql: string, values: unknown[]) => Promise<{ rows: { delay: number }[] }>;
@@ -19,11 +19,10 @@ export function createGmgnQueue<T>() {
   type Entry = { priority: Priority; run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void; signal: AbortSignal; abort: () => void };
   const waiting: Entry[] = [];
   let active = false;
-  const rank = { chart: 0, sparkline: 1, metadata: 2 };
   const dispatch = async () => {
     if (active || !waiting.length) return;
     active = true;
-    waiting.sort((a, b) => rank[priorityOf(a.priority)] - rank[priorityOf(b.priority)]);
+    waiting.sort((a, b) => marketPriorityRank[priorityOf(a.priority)] - marketPriorityRank[priorityOf(b.priority)]);
     const next = waiting.shift()!;
     try { if (next.signal.aborted) throw next.signal.reason; next.resolve(await next.run()); }
     catch (error) { next.reject(error); }
@@ -31,7 +30,9 @@ export function createGmgnQueue<T>() {
   };
   return (priority: Priority, signal: AbortSignal, run: () => Promise<T>): Promise<T> => {
     if (signal.aborted) return Promise.reject(signal.reason);
-    if (waiting.length >= 32 || priorityOf(priority) === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', 1500));
+    const requestedPriority = priorityOf(priority);
+    // Keep eight entries available for charts opened during a prefetch burst.
+    if (waiting.length >= (requestedPriority === 'chart' ? 32 : 24) || requestedPriority === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', 1500));
     return new Promise((resolve, reject) => {
       const entry: Entry = { priority, signal, run, resolve, reject, abort: () => {
         const index = waiting.indexOf(entry);

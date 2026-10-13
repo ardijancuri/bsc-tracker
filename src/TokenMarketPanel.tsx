@@ -3,9 +3,8 @@ import { candleIntervals, defaultCandleInterval, type CandleInterval, type Watch
 import { api, relativeTime } from './lib';
 import { t } from './i18n';
 import { PriceChange, WatchMarketValue } from './WatchTokenVisuals';
-import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
-import { TokenAreaChart } from './TokenAreaChart';
+import { TokenPriceChart } from './TokenPriceChart';
 import './tokenMarket.css';
 
 type Market = { token: WatchEntry | null; period: WatchPeriod };
@@ -15,7 +14,6 @@ export function TokenMarketPanel({ address, identity }: { address: string; ident
   const [interval, setInterval] = useState<CandleInterval>(defaultCandleInterval);
   const [market, setMarket] = useState<Market | null>(null);
   const [error, setError] = useState(false);
-  const { chart, error: chartError } = useTokenChart(address, interval);
   useEffect(() => {
     let cancelled = false;
     setMarket(null); setError(false);
@@ -45,8 +43,8 @@ export function TokenMarketPanel({ address, identity }: { address: string; ident
       {candleIntervals.map(value => <button type="button" role="tab" key={value} id={`token-market-${value}`} aria-selected={interval === value} aria-controls="token-market-details" {...tokenChartIntent(address, value)} onClick={() => setInterval(value)}>{value}</button>)}
     </div></div>
     {error && <p className="profile-more-error" role="alert">{t('Token market data unavailable')}</p>}
-    <div id="token-market-details" role="tabpanel" aria-labelledby={`token-market-${interval}`} aria-busy={!market && !error}>
-      <TokenAreaChart address={address} interval={interval} data={chart} error={chartError} />
+    <div id="token-market-details" role="tabpanel" aria-labelledby={`token-market-${interval}`}>
+      <TokenPriceChart address={address} interval={interval} />
     </div>
   </section>;
 }

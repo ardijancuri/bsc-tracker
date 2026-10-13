@@ -2,7 +2,7 @@ import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { MarketCandle, TokenChart, ChartRange } from '../shared/intelligence.js';
-import { geckoFetch, MarketProviderDeferred, type GeckoPriority } from './geckoApi.js';
+import { geckoFetch, MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 import { gmgnRequest } from './gmgnApi.js';
 import { cmcRequest, fetchCmcMarketCandles, type CmcJsonRequest } from './cmcChart.js';
 
@@ -82,7 +82,8 @@ function providerRequest(url: URL, priority: RequestPriority = 'chart'): Promise
   if (existing) { existing.priorities.push(priority); return existing.promise; }
   const priorities = [priority];
   const promise = (async () => {
-    const response = await geckoFetch(url, { priority: () => priorities.some(value => (typeof value === 'function' ? value() : value) === 'chart') ? 'chart' : 'sparkline', timeoutMs: 10_000 });
+    const response = await geckoFetch(url, { priority: () => priorities.map(value => typeof value === 'function' ? value() : value)
+      .sort((a, b) => marketPriorityRank[a] - marketPriorityRank[b])[0] ?? 'sparkline', timeoutMs: 10_000 });
     if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
     const value = await response.json();
     if (discovery) {
@@ -123,13 +124,13 @@ export async function fetchMarketCandles(address: string, period: ChartRange, po
   return null;
 }
 
-/** GMGN amount is USD turnover; volume is token units and must not enter dollar-volume totals. */
+/** Current BSC OpenAPI uses volume for USD turnover and amount for token units. */
 export function parseGmgnCandles(rows: unknown, since: number, until: number): MarketCandle[] {
   if (!Array.isArray(rows)) return [];
   return parseCandles(rows.slice(0, 1000).map(row => {
     const rawTime = row?.time;
     const time = rawTime == null || rawTime === '' || typeof rawTime === 'boolean' ? NaN : Number(rawTime);
-    return [time >= 1e12 ? time / 1000 : time, row?.open, row?.high, row?.low, row?.close, row?.amount];
+    return [time >= 1e12 ? time / 1000 : time, row?.open, row?.high, row?.low, row?.close, row?.volume];
   }), since, until);
 }
 
@@ -151,35 +152,36 @@ export async function fetchGmgnMarketCandles(address: string, period: ChartRange
   const candles = parseGmgnCandles(Array.isArray(body?.data) ? body.data : body?.data?.list, since, until);
   if (!candles.length) return null;
   return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
-    source: 'gmgn', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, pending: false, stale: false,
+    source: 'gmgn', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, volumeCurrency: 'usd', pending: false, stale: false,
     ...(historySeconds < settings.seconds ? { partialHistory: true } : {}) };
 }
 
 export async function fetchPreferredMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, options: {
   gmgnKey?: string; gmgnRequest?: GmgnJsonRequest; cmcRequest?: CmcJsonRequest; geckoRequest?: JsonRequest; saved?: TokenChart | null; now?: number; signal?: AbortSignal;
 } = {}): Promise<TokenChart | null> {
+  let primaryError: unknown;
   if (options.gmgnKey?.trim()) {
     try {
       const chart = await fetchGmgnMarketCandles(address, period, options.gmgnKey, options.gmgnRequest, options.now, options.signal);
       if (chart) return chart;
       // A transient provider gap must not erase retained genuine history.
-      if (options.saved?.candles.length) throw new Error('GMGN chart history temporarily unavailable');
+      if (options.saved?.source === 'gmgn' && options.saved.candles.length) throw new Error('GMGN chart history temporarily unavailable');
     } catch (error) {
-      // Keep stale data on screen instead of spending the public provider's scarce
-      // allowance every time a configured provider is busy or cooling down.
-      if (options.saved?.candles.length || options.signal?.aborted) throw error;
+      // Retain this provider's genuine history while it cools down. A cache from
+      // a public fallback must still refresh there when GMGN is unavailable.
+      if ((options.saved?.source === 'gmgn' && options.saved.candles.length) || options.signal?.aborted) throw error;
+      primaryError = error;
     }
   }
-  let primaryError: unknown;
   try {
     const chart = await fetchCmcMarketCandles(address, period, options.cmcRequest, options.now, options.signal);
     if (chart) return chart;
-    if (options.saved?.candles.length) throw new Error('CoinMarketCap chart history temporarily unavailable');
+    if (options.saved?.source === 'coinmarketcap' && options.saved.candles.length) throw new Error('CoinMarketCap chart history temporarily unavailable');
   } catch (error) {
-    // Retain genuine cached history during an outage. Only cold charts need to
-    // spend another provider's allowance to obtain their first samples.
-    if (options.saved?.candles.length || options.signal?.aborted) throw error;
-    primaryError = error;
+    // Keep this provider's cached history during its outage. A Gecko-backed
+    // chart can continue to refresh from Gecko without losing its candles.
+    if ((options.saved?.source === 'coinmarketcap' && options.saved.candles.length) || options.signal?.aborted) throw error;
+    if (!primaryError || error instanceof MarketProviderDeferred && !(primaryError instanceof MarketProviderDeferred)) primaryError = error;
   }
   try {
     let result: TokenChart | null;
@@ -190,6 +192,7 @@ export async function fetchPreferredMarketCandles(address: string, period: Chart
     }
     if (!result && poolAddress) result = await fetchMarketCandles(address, period, undefined, options.geckoRequest, options.now);
     if (!result && primaryError) throw primaryError;
+    if (!result && options.saved?.candles.length) throw new Error('Market chart history temporarily unavailable');
     return result;
   } catch (error) {
     throw primaryError instanceof MarketProviderDeferred ? primaryError : error;
@@ -230,7 +233,7 @@ async function loadCached(key: string, address: string, period: ChartRange) {
     const candles = parseCandles(value.candles?.map(c => [c.time, c.open, c.high, c.low, c.close, c.volume]), now - chartSettings(period).seconds, now);
     if (!candles.length) return null;
     value.candles = candles;
-    if (value.source === 'coinmarketcap') value.volumeCurrency = 'unknown';
+    if (value.source === 'coinmarketcap' || value.source === 'gmgn' && value.volumeCurrency !== 'usd') value.volumeCurrency = 'unknown';
     value.points = candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) }));
     cache.set(key, value);
     return value;
@@ -246,28 +249,35 @@ async function persistChart(key: string, chart: TokenChart) {
   } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
 }
 
-export async function currentMarketChart(address: string, range: ChartRange): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
+export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
   const period = range === '5m' ? '24h' : range === '1h' || range === '7d' ? '30d' : range;
   const key = `${address}-${period}`;
-  const interactive = range in candleWindows;
-  // Promote an existing watchlist job when the user opens its full chart.
-  if (interactive && jobs.has(key)) priorities.set(key, 'chart');
+  const requestedPriority = priority ?? (range in candleWindows ? 'chart' : 'sparkline');
+  const interactive = requestedPriority === 'chart';
+  const promote = () => {
+    const existing = priorities.get(key);
+    if (jobs.has(key) && existing && marketPriorityRank[requestedPriority] < marketPriorityRank[existing]) priorities.set(key, requestedPriority);
+  };
+  // Promote the same provider work when the main chart joins a background job.
+  promote();
   const saved = await loadCached(key, address, period);
+  // Another caller may have started the job during the asynchronous cache read.
+  promote();
   const lifetime = interactive ? chartSettings(period).fresh : Math.max(300_000, chartSettings(period).fresh);
   const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
   if (fresh) return { chart: chartForRange(saved, range), pending: false };
   let job = jobs.get(key);
   const interactiveJobs = [...priorities.values()].filter(priority => priority === 'chart').length;
   if (!job && Date.now() >= (retryAt.get(key)?.at || 0) && (jobs.size < 32 || interactive && interactiveJobs < 8)) {
-    priorities.set(key, interactive ? 'chart' : 'sparkline');
+    priorities.set(key, requestedPriority);
     const request = (url: URL) => providerRequest(url, () => priorities.get(key) ?? 'sparkline');
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
         const result = await fetchPreferredMarketCandles(address, period, poolAddress, {
-          gmgnKey: process.env.GMGN_API_KEY, saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
+          gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY, saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
           cmcRequest: (url, signal) => cmcRequest(url, { signal, priority: () => priorities.get(key) ?? 'sparkline' }),
           gmgnRequest: (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal,
             priority: () => priorities.get(key) ?? 'sparkline' }),

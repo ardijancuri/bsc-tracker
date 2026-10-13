@@ -1,5 +1,5 @@
 import { pool } from './db.js';
-import { MarketProviderDeferred, type GeckoPriority } from './geckoApi.js';
+import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 import type { ChartRange, MarketCandle, TokenChart } from '../shared/intelligence.js';
 
 type Priority = GeckoPriority | (() => GeckoPriority);
@@ -121,11 +121,10 @@ export function createCmcQueue<T>() {
   type Entry = { priority: Priority; signal: AbortSignal; run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void; abort: () => void };
   const waiting: Entry[] = [];
   let active = false;
-  const rank = { chart: 0, sparkline: 1, metadata: 2 };
   const dispatch = async () => {
     if (active || !waiting.length) return;
     active = true;
-    waiting.sort((a, b) => rank[priorityOf(a.priority)] - rank[priorityOf(b.priority)]);
+    waiting.sort((a, b) => marketPriorityRank[priorityOf(a.priority)] - marketPriorityRank[priorityOf(b.priority)]);
     const next = waiting.shift()!;
     try { next.signal.throwIfAborted(); next.resolve(await next.run()); }
     catch (error) { next.reject(error); }
@@ -133,8 +132,10 @@ export function createCmcQueue<T>() {
   };
   return (priority: Priority, signal: AbortSignal, run: () => Promise<T>): Promise<T> => {
     if (signal.aborted) return Promise.reject(signal.reason);
-    if (waiting.length >= 24 || priorityOf(priority) === 'sparkline' && waiting.filter(e => priorityOf(e.priority) === 'sparkline').length >= 8 ||
-      priorityOf(priority) === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', spacingMs));
+    const requestedPriority = priorityOf(priority);
+    // Background jobs cannot consume the four entries reserved for main charts.
+    if (waiting.length >= (requestedPriority === 'chart' ? 24 : 20) || requestedPriority === 'sparkline' && waiting.filter(e => priorityOf(e.priority) === 'sparkline').length >= 8 ||
+      requestedPriority === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', spacingMs));
     return new Promise((resolve, reject) => {
       const entry: Entry = { priority, signal, run, resolve, reject, abort: () => {
         const index = waiting.indexOf(entry);
@@ -167,7 +168,7 @@ export function createCmcRequester({ query = (sql, values) => pool.query(sql, va
       const jobSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
       const currentPriority = (): GeckoPriority => {
         const values = [...consumers.values()].map(priorityOf);
-        return values.includes('chart') ? 'chart' : values.includes('sparkline') ? 'sparkline' : 'metadata';
+        return values.sort((a, b) => marketPriorityRank[a] - marketPriorityRank[b])[0] ?? 'metadata';
       };
       const promise = enqueue(currentPriority, jobSignal, async () => {
         if (pausedUntil > now()) throw new MarketProviderDeferred('rate_limited', pausedUntil - now());

@@ -14,6 +14,7 @@ const response = (value: unknown) => ({ ok: true, json: async () => value });
 beforeEach(() => {
   vi.resetModules(); vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now * 1000);
   vi.stubEnv('GMGN_API_KEY', '');
+  vi.stubEnv('GMGN_CHART_API_KEY', '');
   mocks.cmc.mockResolvedValue(null);
   mocks.readFile.mockRejectedValue(new Error('No disk cache'));
   mocks.fetch.mockImplementation(async (url: URL) => response(url.pathname.endsWith('/pools') ? pools : history));

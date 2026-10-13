@@ -18,7 +18,7 @@ export function PriceChange({ value }: { value?: string | null }) {
 }
 export function WatchTokenChange({ token, period = '24h' }: { token: WatchEntry; period?: WatchPeriod }) {
   const { ref, visible } = useChartVisibility();
-  const { chart } = useTokenChart(token.address, period, visible);
+  const { chart } = useTokenChart(token.address, period, visible, 'sparkline');
   const change = marketChartChanges(chart)?.periodChange ?? (period === '24h' ? token.change24h : null);
   return <span ref={ref} title={t(period === '7d' ? '1 week price change' : '24h price change')}><PriceChange value={change} /></span>;
 }
@@ -37,7 +37,7 @@ export function WatchSparkline({ points = [], label = 'Token price chart', addre
   points?: WatchPricePoint[]; label?: string; address?: string; period?: WatchPeriod; priceUsd?: string | null; onChart?: (chart: TokenChart) => void;
 }) {
   const { ref, visible } = useChartVisibility();
-  const { chart } = useTokenChart(address, period, visible);
+  const { chart } = useTokenChart(address, period, visible, 'sparkline');
   const callback = useRef(onChart); callback.current = onChart;
   useEffect(() => { if (chart?.points.length) callback.current?.(chart); }, [chart]);
   const graph = sparklineGeometry(chart?.points.length ? chart.points : points);

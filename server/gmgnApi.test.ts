@@ -43,14 +43,27 @@ describe('GMGN account request budget', () => {
     const order: string[] = [];
     const first = enqueue('sparkline', signal, () => new Promise(resolve => { finish = resolve; }));
     const background = enqueue('sparkline', signal, async () => { order.push('background'); return 2; });
+    const prefetch = enqueue('prefetch', signal, async () => { order.push('prefetch'); return 5; });
     const cancelled = new AbortController(), run = vi.fn(async () => 0);
     const queued = enqueue('chart', cancelled.signal, run);
     const rejection = expect(queued).rejects.toThrow('Cancelled');
     cancelled.abort(new Error('Cancelled'));
     const chart = enqueue('chart', signal, async () => { order.push('chart'); return 3; });
     await expect(enqueue('metadata', signal, async () => 4)).rejects.toBeInstanceOf(MarketProviderDeferred);
-    finish(1); await Promise.all([first, background, chart, rejection]);
-    expect(order).toEqual(['chart', 'background']); expect(run).not.toHaveBeenCalled();
+    finish(1); await Promise.all([first, background, prefetch, chart, rejection]);
+    expect(order).toEqual(['chart', 'prefetch', 'background']); expect(run).not.toHaveBeenCalled();
+  });
+  it('reserves main-chart headroom even when background requests saturate the account queue', async () => {
+    const enqueue = createGmgnQueue<number>(), signal = new AbortController().signal, order: string[] = [];
+    let finish!: (value: number) => void;
+    const first = enqueue('prefetch', signal, () => new Promise(resolve => { finish = resolve; }));
+    const background = Array.from({ length: 24 }, () => enqueue('prefetch', signal, async () => { order.push('background'); return 1; }));
+    await expect(enqueue('prefetch', signal, async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    const selected = Array.from({ length: 8 }, () => enqueue('chart', signal, async () => { order.push('chart'); return 2; }));
+    await expect(enqueue('chart', signal, async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    finish(0); await Promise.all([first, ...background, ...selected]);
+    expect(order.slice(0, 8)).toEqual(Array(8).fill('chart'));
+    expect(order.slice(8)).toEqual(Array(24).fill('background'));
   });
 });
 
@@ -83,9 +96,9 @@ describe('GMGN HTTP adapter', () => {
     expect(fetcher).toHaveBeenCalledOnce();
     expect(query.mock.calls.some(([sql, values]) => sql.startsWith('UPDATE') && values[1] === 120_000)).toBe(true);
   });
-  it('cools down invalid credentials without leaking upstream error text', async () => {
-    const { request, fetcher } = dependencies(Response.json({ message: 'secret-is-private' }, { status: 401 }));
-    await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toThrow('GMGN request failed: HTTP 401');
+  it.each([401, 403])('cools down HTTP %i rejection without leaking upstream error text', async status => {
+    const { request, fetcher } = dependencies(Response.json({ message: 'secret-is-private' }, { status }));
+    await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toThrow(`GMGN request failed: HTTP ${status}`);
     await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toMatchObject({ retryAfterMs: 300_000 });
     expect(fetcher).toHaveBeenCalledOnce();
   });

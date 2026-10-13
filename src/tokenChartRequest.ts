@@ -1,6 +1,8 @@
 import { candleIntervals, type CandleInterval, type ChartRange, type TokenChart } from '../shared/intelligence';
 
 type ChartStorage = Pick<Storage, 'getItem' | 'setItem'>;
+export type TokenChartPriority = 'chart' | 'prefetch' | 'sparkline';
+const priorityOrder: Record<TokenChartPriority, number> = { chart: 0, prefetch: 1, sparkline: 2 };
 const storageKey = 'kollens:market-charts:v1';
 const supplyLifetime = 2 * 86400_000;
 const chartWindows: Record<ChartRange, number> = { '24h': 86400, '7d': 604800, '30d': 2592000, '1m': 86400, '5m': 86400, '1h': 2592000, '4h': 7776000, '1d': 15552000 };
@@ -11,6 +13,12 @@ function browserStorage(): ChartStorage | undefined {
 export function hasFreshChartSupply(chart: TokenChart, now = Date.now()) {
   const units = Number(chart.marketCapSupply), checked = Date.parse(chart.supplyCheckedAt || '');
   return units > 0 && Number.isFinite(units) && Number.isFinite(checked) && checked <= now && now - checked < supplyLifetime;
+}
+
+export function tokenChartNeedsForeground(chart: TokenChart, now = Date.now()) {
+  if (chart.loadStatus && chart.loadStatus !== 'queued') return false;
+  if (chart.candles.length && hasFreshChartSupply(chart, now)) return false;
+  return chart.pending || chart.loadStatus === 'queued';
 }
 
 export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) {
@@ -26,10 +34,27 @@ export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) 
 export function createTokenChartRequests({ fetcher = fetch, now = Date.now, timeoutMs = 12_000, storage = browserStorage() }: {
   fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; storage?: ChartStorage;
 } = {}) {
-  const saved = new Map<string, { chart: TokenChart; checked: number }>();
-  const pending = new Map<string, Promise<TokenChart>>();
+  const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority }>();
+  type PendingChart = { promise: Promise<TokenChart>; priority: TokenChartPriority; generation: number; controller?: AbortController; releaseForeground?: () => void };
+  const pending = new Map<string, PendingChart>();
   const listeners = new Map<string, Set<() => void>>();
   const derived = new Map<string, { source: TokenChart; chart: TokenChart }>();
+  let foregroundLoads = 0;
+  const priorityListeners = new Set<() => void>();
+  const isForegroundLoading = () => foregroundLoads > 0;
+  const holdForeground = () => {
+    if (++foregroundLoads === 1) for (const listener of priorityListeners) listener();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--foregroundLoads === 0) for (const listener of priorityListeners) listener();
+    };
+  };
+  const subscribePriority = (listener: () => void) => {
+    priorityListeners.add(listener);
+    return () => { priorityListeners.delete(listener); };
+  };
   try {
     const raw = storage?.getItem(storageKey);
     const entries = raw && raw.length <= 3_000_000 ? JSON.parse(raw) : [];
@@ -42,7 +67,8 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       const candles = chart.candles.filter(c => Number.isInteger(c.time) && c.time <= now() / 1000 && c.time >= now() / 1000 - windowSeconds &&
         [c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) && Number.isFinite(c.volume) && c.volume >= 0);
       if (!candles.length) continue;
-      saved.set(`${chart.address}-${chart.period}`, { chart: { ...chart, candles, stale: true }, checked: now() - 10_001 });
+      const volumeCurrency = chart.source === 'gmgn' && chart.volumeCurrency !== 'usd' ? 'unknown' : chart.volumeCurrency;
+      saved.set(`${chart.address}-${chart.period}`, { chart: { ...chart, candles, volumeCurrency, stale: true }, checked: now() - 10_001 });
     }
   } catch { /* A restricted browser or invalid cache must not prevent chart loading. */ }
   const persist = () => {
@@ -75,33 +101,59 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     subscribers.add(listener); listeners.set(key, subscribers);
     return () => { subscribers.delete(listener); if (!subscribers.size) listeners.delete(key); };
   };
-  const request = (address: string, range: ChartRange): Promise<TokenChart> => {
+  const request = (address: string, range: ChartRange, priority: TokenChartPriority = 'chart', retry = false): Promise<TokenChart> => {
     const normalized = address.toLowerCase();
     const key = `${normalized}-${range}`;
+    const existing = pending.get(key);
+    if (existing) {
+      if (priorityOrder[priority] < priorityOrder[existing.priority]) {
+        existing.priority = priority;
+        existing.generation++;
+        if (priority === 'chart' && !existing.releaseForeground) existing.releaseForeground = holdForeground();
+        // The server keeps the shared provider job alive and promotes it on this new request.
+        existing.controller?.abort();
+      }
+      return existing.promise;
+    }
     const cached = saved.get(key);
     const cachedChart = peek(normalized, range);
-    const reuseMs = cached?.chart.pending || cached?.chart.loadStatus === 'queued' ? 1000
-      : cached?.chart.loadStatus ? Math.max(1000, Math.min(cached.chart.retryAfterMs ?? 1000, 600_000)) : 10_000;
-    if (cached && now() - cached.checked < reuseMs) {
-      const chart = !cached.chart.pending && cached.chart.loadStatus && cached.chart.retryAfterMs
-        ? { ...cachedChart!, retryAfterMs: Math.max(1000, cached.chart.retryAfterMs - (now() - cached.checked)) } : cachedChart!;
+    const coolingDown = !!cached?.chart.loadStatus && cached.chart.loadStatus !== 'queued' && !!cached.chart.retryAfterMs;
+    const reuseMs = coolingDown ? Math.max(1000, Math.min(cached!.chart.retryAfterMs!, 600_000))
+      : cached?.chart.pending || cached?.chart.loadStatus ? 1000 : 10_000;
+    // Background provider caches have a longer freshness window; mounting must check foreground freshness once.
+    const promoteCached = priority === 'chart' && !!cached?.priority && cached.priority !== 'chart' && !coolingDown;
+    if (cached && !promoteCached && (!retry || coolingDown) && now() - cached.checked < reuseMs) {
+      const chart = coolingDown
+        ? { ...cachedChart!, retryAfterMs: Math.max(1000, cached.chart.retryAfterMs! - (now() - cached.checked)) } : cachedChart!;
       return Promise.resolve(chart);
     }
-    const existing = pending.get(key);
-    if (existing) return existing;
     const parameter = candleIntervals.includes(range as CandleInterval) ? 'interval' : 'period';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const jobState: PendingChart = { promise: undefined!, priority, generation: 0,
+      releaseForeground: priority === 'chart' ? holdForeground() : undefined };
     const job = (async () => {
-      const response = await fetcher(`/api/tokens/${encodeURIComponent(normalized)}/chart?${parameter}=${range}`, {
-        headers: { Accept: 'application/json' }, signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
-      const value = await response.json() as TokenChart;
+      let value: TokenChart;
+      for (;;) {
+        const generation = jobState.generation;
+        const controller = new AbortController();
+        jobState.controller = controller;
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetcher(`/api/tokens/${encodeURIComponent(normalized)}/chart?${parameter}=${range}&priority=${jobState.priority}`, {
+            headers: { Accept: 'application/json' }, signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
+          value = await response.json() as TokenChart;
+          if (generation !== jobState.generation) continue;
+          break;
+        } catch (error) {
+          if (generation !== jobState.generation) continue;
+          throw error;
+        } finally { clearTimeout(timer); }
+      }
       if (value.address?.toLowerCase() !== normalized || value.period !== range || !Array.isArray(value.candles) || !Array.isArray(value.points)) {
         throw new Error('Invalid token chart response');
       }
-      let chart = value;
+      let chart: TokenChart = value.source === 'gmgn' && !value.volumeCurrency ? { ...value, volumeCurrency: 'unknown' } : value;
       if (!value.candles.length && cachedChart?.candles.length && value.loadStatus !== 'no_history' && (value.pending || value.loadStatus)) {
         chart = { ...cachedChart, ...value, candles: cachedChart.candles, points: cachedChart.points,
           source: cachedChart.source, resolution: cachedChart.resolution, updatedAt: cachedChart.updatedAt,
@@ -114,13 +166,14 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         if (previous) chart = { ...chart, marketCapSupply: previous.marketCapSupply, supplyCheckedAt: previous.supplyCheckedAt, stale: true };
       }
       if (saved.size >= 500 && !saved.has(key)) saved.delete(saved.keys().next().value!);
-      saved.set(key, { chart, checked: now() });
+      saved.set(key, { chart, checked: now(), priority: jobState.priority });
       for (const listener of listeners.get(normalized) ?? []) listener();
       persist();
       return chart;
-    })().finally(() => { clearTimeout(timer); pending.delete(key); });
-    pending.set(key, job);
+    })().finally(() => { pending.delete(key); jobState.releaseForeground?.(); });
+    jobState.promise = job;
+    pending.set(key, jobState);
     return job;
   };
-  return { request, peek, subscribe };
+  return { request, peek, subscribe, isForegroundLoading, holdForeground, subscribePriority };
 }

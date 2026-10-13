@@ -6,7 +6,7 @@
   "scripts": {
     "brand:export": "node scripts/export-app-brand.mjs",
     "dev": "vite --host 127.0.0.1",
-    "dev:api": "tsx watch server/index.ts",
+    "dev:api": "node --env-file-if-exists=.env --import tsx --watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",
     "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "start": "node dist-server/index.js",

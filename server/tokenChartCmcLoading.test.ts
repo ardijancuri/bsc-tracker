@@ -12,6 +12,7 @@ const retained = { address, period: '24h', resolution: '5m', source: 'coinmarket
 
 beforeEach(() => {
   vi.resetModules(); vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now); vi.stubEnv('GMGN_API_KEY', '');
+  vi.stubEnv('GMGN_CHART_API_KEY', '');
   mocks.readFile.mockRejectedValue(new Error('No disk cache'));
   mocks.cmc.mockResolvedValue(body);
   mocks.gecko.mockImplementation(async (url: URL) => ({ ok: true, json: async () => url.pathname.endsWith('/pools') ? {

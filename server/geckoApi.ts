@@ -5,7 +5,8 @@ type Query = (sql: string, values: unknown[]) => Promise<{ rows: { delay: number
 // headroom instead of repeatedly putting the whole IP into a 429 cooldown.
 const spacingMs = 6500;
 const budgetKey = 'gecko_api_budget';
-export type GeckoPriority = 'chart' | 'sparkline' | 'metadata';
+export type GeckoPriority = 'chart' | 'prefetch' | 'sparkline' | 'metadata';
+export const marketPriorityRank: Record<GeckoPriority, number> = { chart: 0, prefetch: 1, sparkline: 2, metadata: 3 };
 type Priority = GeckoPriority | (() => GeckoPriority);
 const priorityOf = (priority: Priority) => typeof priority === 'function' ? priority() : priority;
 
@@ -20,17 +21,18 @@ export class MarketProviderDeferred extends Error {
 export function createGeckoQueue<T>() {
   const waiting: { priority: Priority; run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void }[] = [];
   let active = false;
-  const rank = { chart: 0, sparkline: 1, metadata: 2 };
   const dispatch = async () => {
     if (active || !waiting.length) return;
     active = true;
-    waiting.sort((a, b) => rank[priorityOf(a.priority)] - rank[priorityOf(b.priority)]);
+    waiting.sort((a, b) => marketPriorityRank[priorityOf(a.priority)] - marketPriorityRank[priorityOf(b.priority)]);
     const next = waiting.shift()!;
     try { next.resolve(await next.run()); } catch (error) { next.reject(error); }
     finally { active = false; void dispatch(); }
   };
   return (priority: Priority, run: () => Promise<T>): Promise<T> => {
-    if (waiting.length >= 64 || priorityOf(priority) === 'metadata' && (active || waiting.length)) {
+    const requestedPriority = priorityOf(priority);
+    // Reserve eight queue entries so a background burst cannot block a main chart.
+    if (waiting.length >= (requestedPriority === 'chart' ? 64 : 56) || requestedPriority === 'metadata' && (active || waiting.length)) {
       return Promise.reject(new MarketProviderDeferred('busy', spacingMs));
     }
     return new Promise((resolve, reject) => {

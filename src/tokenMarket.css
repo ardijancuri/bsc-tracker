@@ -20,7 +20,7 @@
 .token-market-stats>div>span{color:var(--muted);font-size:12px}
 .token-market-stats strong{font-size:17px;font-weight:700}
 .token-price-chart{position:relative;min-width:0}
-.price-chart-controls,.price-chart-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:11px}
+.price-chart-controls,.price-chart-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;color:var(--muted);font-size:11px}
 .price-chart-footer>span:last-child{display:flex;align-items:center;gap:6px}
 .price-chart-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;min-height:32px;padding:6px 0;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .price-chart-legend b{color:#e9edf1;font-weight:600}
@@ -28,7 +28,12 @@
 .price-chart-footer{padding:10px 0}
 .price-chart-footer a:hover,.price-chart-status a{color:#e9edf1}
 .price-chart-status{position:absolute;top:48%;left:0;right:75px;display:flex;flex-direction:column;align-items:center;gap:12px;color:var(--muted);font-size:12px;pointer-events:none}
-.price-chart-status a{pointer-events:auto}
+.price-chart-status a,.price-chart-status button{pointer-events:auto}
+.price-chart-recovery{display:flex;align-items:center;gap:16px}
+.price-chart-recovery button,.price-chart-footer button{border:1px solid var(--line);border-radius:4px;background:#171d21;color:#e9edf1;padding:5px 10px;font-size:11px;cursor:pointer}
+.price-chart-footer button{margin-left:10px}
+.price-chart-recovery button:disabled,.price-chart-footer button:disabled{opacity:.45;cursor:default}
+.price-chart-recovery button:focus-visible,.price-chart-footer button:focus-visible{outline:2px solid #39cb8f;outline-offset:3px}
 .watch-sparkline-host{display:inline-block;width:100%;vertical-align:middle;line-height:0}
 @media(max-width:1000px){.token-market-summary{grid-template-columns:minmax(160px,200px) minmax(0,1fr);gap:20px}.token-market-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 18px}}
 @media(max-width:800px){.page.token-detail-page{padding-top:18px}.token-page-toolbar{margin-bottom:12px}.token-market-summary{grid-template-columns:1fr;gap:14px}.token-market-toolbar{gap:10px}.token-market-stats>div>span{font-size:11px}.token-market-stats strong{font-size:16px}}

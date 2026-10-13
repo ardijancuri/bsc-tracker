@@ -70,7 +70,7 @@ describe('CMC latest token history', () => {
 
 describe('CMC public request protection', () => {
   it('gives an interactive chart one conservative slot while background charts cannot reserve a backlog', async () => {
-    const priorities = ['chart', 'sparkline', 'metadata'] as const;
+    const priorities = ['chart', 'prefetch', 'sparkline', 'metadata'] as const;
     const keys: unknown[] = [];
     for (const priority of priorities) await reserveCmcSlot(priority, async (_sql, values) => {
       keys.push(values[0]); expect(values.slice(1)).toEqual([6500, priority === 'chart' ? 6500 : 0]); return { rows: [{ delay: 0 }] };
@@ -97,13 +97,26 @@ describe('CMC public request protection', () => {
     const first = enqueue('sparkline', controller.signal, () => new Promise(resolve => { finish = resolve; }));
     const background = enqueue('sparkline', controller.signal, async () => { order.push('background'); return 1; });
     const promoted = enqueue(() => selected, controller.signal, async () => { order.push('selected'); return 2; });
+    const prefetch = enqueue('prefetch', controller.signal, async () => { order.push('prefetch'); return 5; });
     const cancel = new AbortController(), run = vi.fn(async () => 0);
     const abandoned = enqueue('chart', cancel.signal, run), rejection = expect(abandoned).rejects.toThrow('Cancelled');
     cancel.abort(new Error('Cancelled'));
     const others = Array.from({ length: 6 }, () => enqueue('sparkline', controller.signal, async () => 3));
     await expect(enqueue('sparkline', controller.signal, async () => 4)).rejects.toBeInstanceOf(MarketProviderDeferred);
-    selected = 'chart'; finish(0); await Promise.all([first, background, promoted, ...others, rejection]);
-    expect(order).toEqual(['selected', 'background']); expect(run).not.toHaveBeenCalled();
+    selected = 'chart'; finish(0); await Promise.all([first, background, promoted, prefetch, ...others, rejection]);
+    expect(order).toEqual(['selected', 'prefetch', 'background']); expect(run).not.toHaveBeenCalled();
+  });
+  it('reserves main-chart headroom when queued prefetches saturate the public-provider queue', async () => {
+    const enqueue = createCmcQueue<number>(), signal = new AbortController().signal, order: string[] = [];
+    let finish!: (value: number) => void;
+    const first = enqueue('prefetch', signal, () => new Promise(resolve => { finish = resolve; }));
+    const background = Array.from({ length: 20 }, () => enqueue('prefetch', signal, async () => { order.push('background'); return 1; }));
+    await expect(enqueue('prefetch', signal, async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    const selected = Array.from({ length: 4 }, () => enqueue('chart', signal, async () => { order.push('chart'); return 2; }));
+    await expect(enqueue('chart', signal, async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    finish(0); await Promise.all([first, ...background, ...selected]);
+    expect(order.slice(0, 4)).toEqual(Array(4).fill('chart'));
+    expect(order.slice(4)).toEqual(Array(20).fill('background'));
   });
 
   function dependencies(response: () => Response) {
@@ -159,6 +172,25 @@ describe('CMC public request protection', () => {
     controller.abort(new Error('Viewer left')); await rejection;
     finish(Response.json(body())); await expect(two).resolves.toEqual(body());
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('promotes the same queued prefetch when a main chart joins it without dispatching duplicate provider work', async () => {
+    let finish!: (value: Response) => void;
+    const query = vi.fn(async (sql: string) => ({ rows: sql.startsWith('WITH clock') ? [{ delay: 0 }] : [] }));
+    const order: string[] = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockImplementation(async input => { order.push(new URL(String(input)).searchParams.get('job')!); return Response.json(body()); });
+    const request = createCmcRequester({ query, fetcher });
+    const first = request(new URL(url.href + '&job=active'));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const background = request(new URL(url.href + '&job=watchlist'), { priority: 'sparkline' });
+    const prefetch = request(new URL(url.href + '&job=next'), { priority: 'prefetch' });
+    const candidateUrl = new URL(url.href + '&job=selected');
+    const candidate = request(candidateUrl, { priority: 'prefetch' });
+    const selected = request(new URL(candidateUrl), { priority: 'chart' });
+    finish(Response.json(body()));
+    await Promise.all([first, background, prefetch, candidate, selected]);
+    expect(order).toEqual(['selected', 'next', 'watchlist']);
+    expect(fetcher).toHaveBeenCalledTimes(4);
   });
   it('allows a viewer to reopen an abandoned chart without joining its cancelled request', async () => {
     let finish!: (value: Response) => void;

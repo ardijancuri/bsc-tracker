@@ -19,12 +19,13 @@ describe('shared market provider budget', () => {
     let finish!: (value: number) => void;
     const first = enqueue('sparkline', () => new Promise(resolve => { finish = resolve; }));
     const background = enqueue('sparkline', async () => { order.push('background'); return 2; });
+    const prefetch = enqueue('prefetch', async () => { order.push('prefetch'); return 6; });
     const chart = enqueue('chart', async () => { order.push('chart'); return 3; });
     const nextChart = enqueue('chart', async () => { order.push('next chart'); return 4; });
     await expect(enqueue('metadata', async () => 5)).rejects.toBeInstanceOf(MarketProviderDeferred);
     finish(1);
-    await Promise.all([first, background, chart, nextChart]);
-    expect(order).toEqual(['chart', 'next chart', 'background']);
+    await Promise.all([first, background, prefetch, chart, nextChart]);
+    expect(order).toEqual(['chart', 'next chart', 'prefetch', 'background']);
   });
   it('promotes a queued sparkline when its token page is opened', async () => {
     const enqueue = createGeckoQueue<number>();
@@ -37,6 +38,18 @@ describe('shared market provider budget', () => {
     selected = 'chart'; finish(1);
     await Promise.all([first, background, promoted]);
     expect(order).toEqual(['promoted', 'background']);
+  });
+  it('reserves main-chart headroom even when background requests saturate the queue', async () => {
+    const enqueue = createGeckoQueue<number>(), order: string[] = [];
+    let finish!: (value: number) => void;
+    const first = enqueue('prefetch', () => new Promise(resolve => { finish = resolve; }));
+    const background = Array.from({ length: 56 }, () => enqueue('prefetch', async () => { order.push('background'); return 1; }));
+    await expect(enqueue('prefetch', async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    const selected = Array.from({ length: 8 }, () => enqueue('chart', async () => { order.push('chart'); return 2; }));
+    await expect(enqueue('chart', async () => 0)).rejects.toBeInstanceOf(MarketProviderDeferred);
+    finish(0); await Promise.all([first, ...background, ...selected]);
+    expect(order.slice(0, 8)).toEqual(Array(8).fill('chart'));
+    expect(order.slice(8)).toEqual(Array(56).fill('background'));
   });
   it('returns the remaining shared cooldown instead of a generic minute-long failure', async () => {
     let calls = 0;

@@ -106,11 +106,13 @@ export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.sta
 export function registerIntelligenceRoutes(app: FastifyInstance) {
   registerKolTokenTradesRoutes(app);
   // Market history is independent of which KOL wallets happened to trade.
-  app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string } }>('/api/tokens/:address/chart', async (request, reply) => {
+  app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string; priority?: 'chart' | 'prefetch' | 'sparkline' } }>('/api/tokens/:address/chart', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
     const interval = request.query.interval;
     const period = interval ?? request.query.period ?? '24h';
-    if (!parsed.success || !(interval === undefined ? watchPeriods.includes(period as WatchPeriod) : candleIntervals.includes(interval as typeof candleIntervals[number]))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
+    const priority = request.query.priority;
+    if (!parsed.success || !(interval === undefined ? watchPeriods.includes(period as WatchPeriod) : candleIntervals.includes(interval as typeof candleIntervals[number])) ||
+      priority !== undefined && !['chart', 'prefetch', 'sparkline'].includes(priority)) return reply.code(400).send({ error: 'Invalid token or chart interval' });
     const address = parsed.data, selected = period as ChartRange;
     const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
       v.total_supply_raw::text AS "rawSupply",v.decimals,v.supply_checked_at AS "supplyCheckedAt"
@@ -118,7 +120,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const supplyRequest = tokenSupplyRequests.start(address, known.rows[0]);
-    const [result] = await Promise.all([currentMarketChart(address, selected), supplyRequest.settle()]);
+    const [result] = await Promise.all([priority ? currentMarketChart(address, selected, priority) : currentMarketChart(address, selected), supplyRequest.settle()]);
     const supply = supplyRequest.snapshot();
     const pending = result.pending || supply.pending;
     reply.header('Cache-Control', pending || result.loadStatus || !supply.supply ? 'no-store' : 'public, max-age=15');

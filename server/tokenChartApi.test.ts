@@ -30,6 +30,22 @@ describe('token chart API intervals', () => {
       expect(mocks.query).not.toHaveBeenCalled(); expect(mocks.currentMarketChart).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
+  it.each(['chart', 'prefetch', 'sparkline'])('forwards explicit %s priority independently of the selected interval', async priority => {
+    const app = Fastify(); registerIntelligenceRoutes(app);
+    mocks.query.mockResolvedValue({ rows: [{ supply: '1000000000' }] });
+    mocks.currentMarketChart.mockResolvedValue({ chart: null, pending: true });
+    try {
+      expect((await app.inject(`/api/tokens/${address}/chart?interval=1m&priority=${priority}`)).statusCode).toBe(200);
+      expect(mocks.currentMarketChart).toHaveBeenCalledWith(address, '1m', priority);
+    } finally { await app.close(); }
+  });
+  it('rejects an invalid request priority before querying the database or provider', async () => {
+    const app = Fastify(); registerIntelligenceRoutes(app);
+    try {
+      expect((await app.inject(`/api/tokens/${address}/chart?interval=1m&priority=metadata`)).statusCode).toBe(400);
+      expect(mocks.query).not.toHaveBeenCalled(); expect(mocks.currentMarketChart).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   it('does not return sparse trade prices as candles when interval data is pending', async () => {
     const app = Fastify(); registerIntelligenceRoutes(app);
     mocks.query.mockResolvedValue({ rows: [{ supply: null, price: '1' }] });

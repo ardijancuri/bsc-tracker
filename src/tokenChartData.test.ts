@@ -14,6 +14,19 @@ describe('market chart changes', () => {
     for (const supply of [undefined, null, '', '0', '-1', 'NaN', 'Infinity']) expect(marketCapCandles(chart.candles, supply)).toEqual([]);
     expect(marketCapCandles(chart.candles, '1e308')).toEqual([]);
   });
+  it('orders provider candles and keeps the latest valid update per timestamp before rendering', () => {
+    const first = chart.candles[0], second = chart.candles[1];
+    const updated = { ...first, close: 11 };
+    expect(marketCapCandles([second, first, updated], '1')).toEqual([updated, second]);
+  });
+  it('rejects invalid timestamps and impossible OHLC bars that would break the renderer', () => {
+    const candle = chart.candles[0];
+    expect(marketCapCandles([
+      { ...candle, time: NaN }, { ...candle, time: Infinity }, { ...candle, time: -1 }, { ...candle, time: 1.5 },
+      { ...candle, high: 1 }, { ...candle, low: 99 }, { ...candle, open: -1 },
+      candle,
+    ], '1')).toEqual([candle]);
+  });
   it('uses market prices rather than the last KOL transaction for change columns', () => {
     const result = marketChartChanges(chart, 3700_000);
     expect(Number(result?.periodChange)).toBeCloseTo(50);
