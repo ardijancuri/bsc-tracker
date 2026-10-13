@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { candleIntervals, type CandleInterval, type ChartRange } from '../shared/intelligence';
+import { candleIntervals, defaultCandleInterval, type CandleInterval, type ChartRange } from '../shared/intelligence';
 import { createTokenChartRequests, tokenChartRefreshDelay } from './tokenChartRequest';
 
 const charts = createTokenChartRequests();
 
-export function preloadTokenChart(address: string, period: ChartRange = '5m') {
+export function preloadTokenChart(address: string, period: ChartRange = defaultCandleInterval) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return;
   void charts.request(address, period).catch(() => { /* The mounted chart handles retry and error display. */ });
 }

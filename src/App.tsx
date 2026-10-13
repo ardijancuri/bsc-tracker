@@ -4,7 +4,7 @@ import { TokenMarketPanel } from './TokenMarketPanel';
 import { KolTokenRealizedPnl } from './KolTokenRealizedPnl';
 import { preloadTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
-import { intervalForTrades } from './kolTradeChartData';
+import { defaultCandleInterval } from '../shared/intelligence';
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
@@ -225,7 +225,7 @@ function TradeTape({ overview }: { overview: Overview }) {
 
 function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false, walletAddress, onOpen }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null; marketCapInStats?: boolean; walletAddress?: string; onOpen?: () => void }) {
   const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("24h volume")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
-  return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" {...tokenChartIntent(token.address, intervalForTrades(token.lastTradeAt, token.lastTradeAt), preloadKolTokenTradeModal)} onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`} {...tokenChartIntent(token.address)}>{content}</Link>}
+  return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" {...tokenChartIntent(token.address, defaultCandleInterval, preloadKolTokenTradeModal)} onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`} {...tokenChartIntent(token.address)}>{content}</Link>}
     <FollowButton kind="token" address={token.address} label={token.symbol} />
     {recentTrades && recentTrades.length > 0 && <div className="token-card-trades" aria-label={t('Recent {token} trades', { token: token.symbol || t('token') })}>
       {recentTrades.slice(0, 5).map(trade => <div className="token-card-trade" key={trade.id}>

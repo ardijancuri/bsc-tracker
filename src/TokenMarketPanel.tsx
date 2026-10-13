@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { candleIntervals, type CandleInterval, type WatchEntry, type WatchPeriod } from '../shared/intelligence';
+import { candleIntervals, defaultCandleInterval, type CandleInterval, type WatchEntry, type WatchPeriod } from '../shared/intelligence';
 import { api, relativeTime } from './lib';
 import { t } from './i18n';
 import { PriceChange, WatchMarketValue } from './WatchTokenVisuals';
@@ -12,7 +12,7 @@ type Market = { token: WatchEntry | null; period: WatchPeriod };
 
 export function TokenMarketPanel({ address, identity }: { address: string; identity: ReactNode }) {
   const period: WatchPeriod = '24h';
-  const [interval, setInterval] = useState<CandleInterval>('5m');
+  const [interval, setInterval] = useState<CandleInterval>(defaultCandleInterval);
   const [market, setMarket] = useState<Market | null>(null);
   const [error, setError] = useState(false);
   const { chart, error: chartError } = useTokenChart(address, interval);

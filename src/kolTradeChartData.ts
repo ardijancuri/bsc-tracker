@@ -4,14 +4,6 @@ import type { Trade } from './types';
 export type ChartTrade = Pick<Trade, 'id' | 'timestamp' | 'side'>;
 const seconds: Record<CandleInterval, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
 
-export function intervalForTrades(first: string | null, last: string | null, now = Date.now()): CandleInterval {
-  const start = Date.parse(first || last || '');
-  const end = Date.parse(last || first || '');
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return '5m';
-  const age = Math.max(now - start, now - end, end - start);
-  return age < 86400_000 ? '5m' : age < 30 * 86400_000 ? '1h' : age < 90 * 86400_000 ? '4h' : '1d';
-}
-
 // A marker identifies its real candle interval, never a fabricated execution price.
 export function kolTradeMarkers(candles: MarketCandle[], trades: ChartTrade[], interval: CandleInterval) {
   const groups = new Map<string, { time: number; side: 'buy' | 'sell'; count: number }>();

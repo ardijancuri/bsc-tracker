@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { intervalForTrades, kolTradeMarkers, tradeVisibleRange } from './kolTradeChartData';
+import { kolTradeMarkers, tradeVisibleRange } from './kolTradeChartData';
 import type { MarketCandle } from '../shared/intelligence';
 
 const start = Date.parse('2026-10-08T00:00:00Z') / 1000;
@@ -29,14 +29,6 @@ describe('KOL chart trade markers', () => {
 });
 
 describe('KOL chart history selection', () => {
-  const now = Date.parse('2026-10-11T00:00:00Z');
-  it('requests a range that covers older indexed trades', () => {
-    expect(intervalForTrades('2026-10-10T12:00:00Z', null, now)).toBe('5m');
-    expect(intervalForTrades('2026-10-08T00:00:00Z', '2026-10-10T12:00:00Z', now)).toBe('1h');
-    expect(intervalForTrades('2026-08-11T00:00:00Z', null, now)).toBe('4h');
-    expect(intervalForTrades('2026-04-11T00:00:00Z', null, now)).toBe('1d');
-    expect(intervalForTrades(null, null, now)).toBe('5m');
-  });
   it('focuses around actual trades while preserving context and handling missing history', () => {
     const candles = Array.from({ length: 100 }, (_, i) => candle(i * 300));
     expect(tradeVisibleRange(candles, [trade('1', 50 * 300), trade('2', 55 * 300)])).toEqual({ from: 42, to: 75 });

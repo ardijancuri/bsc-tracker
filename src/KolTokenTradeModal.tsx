@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNod
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Share2, X } from 'lucide-react';
-import { candleIntervals, type CandleInterval } from '../shared/intelligence';
+import { candleIntervals, defaultCandleInterval, type CandleInterval } from '../shared/intelligence';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
 import { FollowButton, usePositions } from './Intelligence';
@@ -11,7 +11,6 @@ import { compact, shortAddress } from './lib';
 import { TokenPriceChart } from './TokenPriceChart';
 import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
-import { intervalForTrades } from './kolTradeChartData';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
 import './tokenMarket.css';
@@ -33,8 +32,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const [activity, setActivity] = useState<KolTokenActivity | null>(null);
   const [error, setError] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  const [interval, setInterval] = useState<CandleInterval>(() => intervalForTrades(token.lastTradeAt, token.lastTradeAt));
-  const intervalChosen = useRef(false);
+  const [interval, setInterval] = useState<CandleInterval>(defaultCandleInterval);
   const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(6);
@@ -69,7 +67,6 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         if (result.kol.address.toLowerCase() !== kol.address.toLowerCase() || result.token.address.toLowerCase() !== token.address.toLowerCase()) throw new Error('Trade history mismatch');
         if (active) {
           setActivity(result); setError(false);
-          if (!intervalChosen.current) { setInterval(intervalForTrades(result.summary.firstTradeAt, result.summary.lastTradeAt)); intervalChosen.current = true; }
         }
       }).catch(() => { if (active) setError(true); })
       .finally(() => window.clearTimeout(timeout));
@@ -111,7 +108,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     <div className="kol-trade-modal-body" hidden={Boolean(shareSnapshot)}>
       <section className="kol-trade-market" aria-label={t('Token chart and trades')}>
         <div className="kol-trade-token-header"><div className="kol-trade-token-identity">{tokenIdentity}</div><div className="kol-trade-contract">{tokenAddress}<FollowButton kind="token" address={token.address} label={token.symbol} /><Link to={`/token/${token.address}`} {...tokenChartIntent(token.address)} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link><div className="kol-trade-current-cap" title={t('Market cap')}><span>{t('MCAP')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div></div>
-        <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} {...tokenChartIntent(token.address, value)} onClick={() => { intervalChosen.current = true; setInterval(value); }}>{value}</button>)}</div></div>
+        <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} {...tokenChartIntent(token.address, value)} onClick={() => setInterval(value)}>{value}</button>)}</div></div>
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>

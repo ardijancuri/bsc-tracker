@@ -50,7 +50,7 @@ describe('chart intent preloading', () => {
     vi.advanceTimersByTime(119);
     expect(preloadTokenChart).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(preloadTokenChart).toHaveBeenCalledExactlyOnceWith(address, '5m');
+    expect(preloadTokenChart).toHaveBeenCalledExactlyOnceWith(address, '1m');
   });
 
   it.each(['onFocus', 'onPointerDown'] as const)('warms immediately on %s and cancels its pending hover', event => {
