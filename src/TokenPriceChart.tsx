@@ -9,12 +9,17 @@ import { kolTradeMarkers, tradeVisibleRange, type ChartTrade } from './kolTradeC
 
 type MarketHistoryBounds = { firstTime: number; lastTime: number; count: number };
 
-export function marketHistoryViewport(candles: MarketCandle[], previous: MarketHistoryBounds | null) {
+export function marketHistoryViewport(candles: MarketCandle[], previous: MarketHistoryBounds | null, plotWidth = 1200) {
   if (!candles.length) return null;
   const insertedHistory = previous && (candles[0].time < previous.firstTime ||
     candles.length > previous.count && candles.at(-1)!.time <= previous.lastTime);
   if (previous && !insertedHistory) return null;
-  return { from: -.5, to: candles.length + 2 };
+  // Short histories need empty time on both sides, rather than oversized bars.
+  // Center the real candle group exactly, keeping bars around 12px wide.
+  const minimumSlots = Math.max(40, Math.ceil(Math.max(0, plotWidth) / 12));
+  const span = Math.max(minimumSlots, candles.length + 2.5);
+  const center = (candles.length - 1) / 2;
+  return { from: center - span / 2, to: center + span / 2 };
 }
 
 export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean }) {
@@ -63,7 +68,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       layout: { background: { type: ColorType.Solid, color: '#0b0e11' }, textColor: '#879299', fontFamily: 'Manrope, sans-serif', fontSize: 11, attributionLogo: true },
       grid: { vertLines: { color: '#1b222680' }, horzLines: { color: '#1b222680' } },
       rightPriceScale: { borderColor: '#252d31', scaleMargins: { top: .12, bottom: .08 } },
-      timeScale: { borderColor: '#252d31', timeVisible: interval !== '1d', secondsVisible: false, rightOffset: 3, minBarSpacing: focusTrades ? .5 : .001, enableConflation: !focusTrades },
+      timeScale: { borderColor: '#252d31', timeVisible: interval !== '1d', secondsVisible: false, rightOffset: 3, minBarSpacing: focusTrades ? .5 : .001, enableConflation: !focusTrades, lockVisibleTimeRangeOnResize: !focusTrades },
       localization: { priceFormatter: (value: number) => compact(value, true), locale: getLocale() },
       crosshair: { mode: 0, vertLine: { color: '#69747a' }, horzLine: { color: '#69747a' } },
     });
@@ -106,7 +111,8 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     if (!focusTrades) {
       // Include prepended candles and historical gaps filled between cached
       // windows. Current-candle updates and new latest bars keep the user's view.
-      const range = marketHistoryViewport(marketCandles, previousHistory.current);
+      const plotWidth = chart.current.timeScale().width() || container.current?.clientWidth || 1200;
+      const range = marketHistoryViewport(marketCandles, previousHistory.current, plotWidth);
       if (range) chart.current.timeScale().setVisibleLogicalRange(range);
       if (marketCandles.length) previousHistory.current = {
         firstTime: marketCandles[0].time, lastTime: marketCandles.at(-1)!.time, count: marketCandles.length,

@@ -21,16 +21,16 @@ describe('complete token history viewport', () => {
   it('expands the viewport when older candles are loaded', () => {
     const latest = history(100);
     const older = history(4000, latest[0].time - 3900 * 60);
-    expect(marketHistoryViewport(older, bounds(latest))).toEqual({ from: -.5, to: 4002 });
+    expect(marketHistoryViewport(older, bounds(latest))).toEqual({ from: -1.75, to: 4000.75 });
   });
   it('expands when backfill fills a gap between retained and latest history', () => {
     const candles = history(1000);
     const separatedWindows = [...candles.slice(0, 100), ...candles.slice(800)];
-    expect(marketHistoryViewport(candles, bounds(separatedWindows))).toEqual({ from: -.5, to: 1002 });
+    expect(marketHistoryViewport(candles, bounds(separatedWindows))).toEqual({ from: -1.75, to: 1000.75 });
     // A live candle can arrive before the missing history does.
     const withNewLatest = [...separatedWindows, history(1, candles.at(-1)!.time + 60)[0]];
     expect(marketHistoryViewport(withNewLatest, bounds(separatedWindows))).toBeNull();
-    expect(marketHistoryViewport([...candles, withNewLatest.at(-1)!], bounds(withNewLatest))).toEqual({ from: -.5, to: 1003 });
+    expect(marketHistoryViewport([...candles, withNewLatest.at(-1)!], bounds(withNewLatest))).toEqual({ from: -1.75, to: 1001.75 });
   });
   it('preserves pan and zoom on candle refreshes and newly appended candles', () => {
     const candles = history(100), previous = bounds(candles);
@@ -40,7 +40,35 @@ describe('complete token history viewport', () => {
   });
   it('waits for candles and handles a token with a single candle', () => {
     expect(marketHistoryViewport([], null)).toBeNull();
-    expect(marketHistoryViewport(history(1), null)).toEqual({ from: -.5, to: 3 });
+    const range = marketHistoryViewport(history(1), null)!;
+    expect(range.from).toBeLessThan(0);
+    expect(range.to).toBeGreaterThan(1);
+    expect(range.to - range.from).toBeGreaterThanOrEqual(100);
+  });
+  it('keeps ten launch candles narrow and exactly centered on desktop', () => {
+    const candles = history(10), width = 1200;
+    const range = marketHistoryViewport(candles, null, width)!;
+    const spacing = width / (range.to - range.from);
+    const center = ((candles.length - 1) / 2 - range.from) / (range.to - range.from);
+    expect(spacing).toBeLessThanOrEqual(12);
+    expect(spacing).toBeGreaterThanOrEqual(10);
+    expect(center).toBeCloseTo(.5, 10);
+    expect(range.from).toBeLessThan(0);
+    expect(range.to).toBeGreaterThan(candles.length - 1);
+  });
+  it('retains readable short-history candles on a narrow chart', () => {
+    const range = marketHistoryViewport(history(10), null, 360)!;
+    const spacing = 360 / (range.to - range.from);
+    expect(spacing).toBeGreaterThanOrEqual(8);
+    expect(spacing).toBeLessThanOrEqual(12);
+    expect(range.from).toBeLessThan(0);
+    expect(range.to).toBeGreaterThan(9);
+    expect((4.5 - range.from) / (range.to - range.from)).toBeCloseTo(.5, 10);
+  });
+  it.each([1, 15, 4000])('centers all %i candles with equal blank time on both sides', count => {
+    const range = marketHistoryViewport(history(count), null)!;
+    expect((range.from + range.to) / 2).toBe((count - 1) / 2);
+    expect(-range.from).toBeCloseTo(range.to - (count - 1), 10);
   });
 });
 
