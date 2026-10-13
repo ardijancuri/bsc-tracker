@@ -814,10 +814,6 @@ export class ReplayCanvas {
     const b = points[lo];
     const span = b.q - a.q;
     const fraction = (progress - a.q) / span;
-    if (this.fillOnly) return {
-      priceUsd: a.priceUsd + (b.priceUsd - a.priceUsd) * fraction,
-      marketCapUsd: a.marketCapUsd + (b.marketCapUsd - a.marketCapUsd) * fraction,
-    };
     return {
       priceUsd: hermite(a.priceUsd, b.priceUsd, this.storyPriceTangents[lo - 1], this.storyPriceTangents[lo], fraction, span),
       marketCapUsd: hermite(a.marketCapUsd, b.marketCapUsd, this.storyCapTangents[lo - 1], this.storyCapTangents[lo], fraction, span),
@@ -882,7 +878,11 @@ export class ReplayCanvas {
       && (holdings !== 0 || Math.abs(rawBasis) <= basisTolerance);
     const remainingCostBasis = validBasis ? Math.abs(rawBasis) <= basisTolerance ? 0 : rawBasis : null;
     const markedValue = holdings === 0 ? 0 : holdings * currentPrice;
-    const unrealizedPnl = remainingCostBasis !== null && marketQuoteAvailable
+    // Recorded-price fallback is an estimate along the disclosed execution
+    // curve, not a verified market quote or current wallet valuation. Keep the
+    // independently checked gross fields above on their stricter market gate.
+    const estimatedQuoteAvailable = marketQuoteAvailable || this.fillOnly && this.storyVertices.length > 0;
+    const unrealizedPnl = remainingCostBasis !== null && estimatedQuoteAvailable
       && (holdings === 0 || Number.isFinite(currentPrice) && currentPrice > 0) && Number.isFinite(markedValue)
       ? markedValue - remainingCostBasis : null;
     const combinedPnl = unrealizedPnl !== null && realizedPnl !== null ? realizedPnl + unrealizedPnl : NaN;
@@ -1036,7 +1036,7 @@ export class ReplayCanvas {
       ctx.beginPath();
       ctx.rect(27, top - 12, Math.max(0, activeX - 27), bottom - top + 24);
       ctx.clip();
-      if (!this.fillOnly) {
+      {
         const area = ctx.createLinearGradient(0, top, 0, bottom);
         area.addColorStop(0, `rgba(${chartRgb},0.18)`);
         area.addColorStop(0.68, `rgba(${chartRgb},0.055)`);
@@ -1138,11 +1138,6 @@ export class ReplayCanvas {
       ctx.lineTo(points[0].x + 1, points[0].y);
       return;
     }
-    if (this.fillOnly) {
-      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
-      return;
-    }
-
     // Monotone cubic tangents give a smooth curve through every exact fill
     // without the loops and extra peaks of an unrestricted Catmull-Rom spline.
     const slope = [];

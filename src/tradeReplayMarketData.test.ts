@@ -20,6 +20,17 @@ function chart(): ReplayMarketChart {
     source: 'geckoterminal', resolution: '1m', marketCapSupply: '1000', pending: false, stale: false, updatedAt: new Date(now).toISOString() };
 }
 describe('finer observed replay history', () => {
+  it('accepts genuine coarse observations covering a long replay and retains explicit sparse-history metadata', () => {
+    const original = data();
+    const observed = { ...chart(), resolution: '5m', sparseHistory: true,
+      points: [chart().points[0], chart().points[5], chart().points[10]] };
+    const replay = applyReplayMarketChart(original, observed, now);
+    expect(replay).not.toBe(original);
+    expect(replay.chart.resolution).toBe('5m'); expect(replay.chart.sparseHistory).toBe(true);
+    expect(replay.trades).toBe(original.trades); expect(replay.realizedAccounting).toBe(original.realizedAccounting);
+    expect(Date.parse(replay.chart.points.at(-1)!.timestamp)).toBe(Date.parse(original.trades.at(-1)!.timestamp));
+    expect(replay.chart.points.at(-1)?.priceUsd).toBeCloseTo(10.75);
+  });
   it('keeps the exact executions and accounting while bounding finer observed prices to the trade window', () => {
     const original = data();
     const replay = applyReplayMarketChart(original, chart(), now);

@@ -31,6 +31,7 @@ export interface TradeReplayData {
     marketCapSupply: number | null;
     resolution: string;
     source: string;
+    sparseHistory?: boolean;
   };
   source: { chart: string; tradesComplete: boolean };
   realizedAccounting?: { available: boolean };
@@ -39,11 +40,11 @@ export interface TradeReplayData {
 
 export type ReplayActivity = KolTokenActivity;
 
-/** A finer observed history can replace the preview's five-minute samples;
+/** Observed history covering the selected window can replace the preview;
  * it never changes the selected wallet, executions, or accounting snapshot. */
 export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarketChart, now = Date.now()): TradeReplayData {
   if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || chart.source === 'unavailable'
-    || chart.partialHistory || !['30s', '1m'].includes(chart.resolution) || !data.trades.length) return data;
+    || chart.partialHistory || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution) || !data.trades.length) return data;
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
   const byTime = new Map<number, TradeReplayData['chart']['points'][number]>();
   for (const point of chart.points) {
@@ -66,7 +67,7 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
   const end = points.findIndex(point => Date.parse(point.timestamp) === last);
   if (start < 0 || end < start) return data;
   const source = chart.source === 'gmgn' ? 'GMGN historical samples' : 'GeckoTerminal historical samples';
-  return { ...data, chart: { points: points.slice(Math.max(0, start - 1), end + 1), marketCapSupply: supply, resolution: chart.resolution, source }, source: { ...data.source, chart: source } };
+  return { ...data, chart: { points: points.slice(Math.max(0, start - 1), end + 1), marketCapSupply: supply, resolution: chart.resolution, source, sparseHistory: chart.sparseHistory }, source: { ...data.source, chart: source } };
 }
 
 export function replayNumber(value: unknown, allowZero = false): number | null {

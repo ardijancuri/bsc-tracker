@@ -209,14 +209,18 @@ describe('trade replay rolling recorded-position profit', () => {
     expect(renderer.eventProgress(2)).toBeGreaterThan(renderer.eventProgress(1));
   });
 
-  it('does not mark open lots against a fill-only curve, but allows zero unrealized profit on the final exit', async () => {
+  it('estimates recorded open lots at the displayed fill-price curve while keeping verified wallet profit withheld', async () => {
     const payload = data();
     payload.chart.points = [];
     payload.chart.source = payload.source.chart = 'Recorded fills';
     const renderer = await replay(payload);
     const open = renderer.snapshot(renderer.eventProgress(2));
     expect(open.remainingCostBasis).toBe(150);
-    expect(open.unrealizedPnl).toBeNull(); expect(open.totalPnl).toBeNull(); expect(open.totalRoi).toBeNull();
+    expect(open.pnl).toBeNull();
+    expect(open.unrealizedPnl).toBe(50); expect(open.totalPnl).toBe(400); expect(open.totalRoi).toBe(1);
+    const moving = renderer.snapshot(between(renderer, 2, 3, .5));
+    expect(moving.unrealizedPnl).toBeCloseTo(moving.holdings! * moving.currentPrice - moving.remainingCostBasis!, 10);
+    expect(moving.currentPrice).toBe(renderer.valueAtStory(between(renderer, 2, 3, .5)).priceUsd);
     const exit = renderer.snapshot(1);
     expect(exit.unrealizedPnl).toBe(0); expect(exit.totalPnl).toBe(300);
   });
@@ -277,6 +281,33 @@ describe('trade replay rolling recorded-position profit', () => {
 });
 
 describe('trade replay profit colors and position labels', () => {
+  it('uses the moving recorded-price estimate for fallback profit, gradient and scrolling while withholding wallet valuation', async () => {
+    const payload = data(); payload.chart.points = [];
+    payload.chart.source = payload.source.chart = 'Recorded fills';
+    const { renderer, drawing } = await recordedReplay(payload);
+    const early = between(renderer, 1, 2, .25), late = between(renderer, 1, 2, .75);
+    const first = renderer.snapshot(early), second = renderer.snapshot(late);
+    expect(first.pnl).toBeNull(); expect(second.pnl).toBeNull();
+    expect(second.totalPnl).toBeGreaterThan(first.totalPnl!);
+    expect(second.totalPnl).toBeCloseTo(second.realizedPnl! + second.holdings! * second.currentPrice - second.remainingCostBasis!, 10);
+    expect(renderer.viewportAt(late).startQ).toBeGreaterThan(renderer.viewportAt(early).startQ);
+    renderer.render(late);
+    expect(drawing.strokes.find(stroke => stroke.width === 8)?.color).toBe('#16c784');
+    expect(drawing.gradients.find(gradient => gradient.coordinates.join(',') === '0,272,0,651')?.stops[0]).toEqual([0, 'rgba(22,199,132,0.18)']);
+  });
+
+  it('keeps fallback profit unavailable when recorded costs or cumulative sale accounting are missing', async () => {
+    for (const variant of ['cost', 'quantity', 'sale', 'coverage'] as const) {
+      const payload = data(); payload.chart.points = [];
+      payload.chart.source = payload.source.chart = 'Recorded fills';
+      if (variant === 'cost') payload.trades[0].amountUsd = null;
+      if (variant === 'quantity') payload.trades[0].tokenAmount = null;
+      if (variant === 'sale') payload.trades[2].cumulativeRealizedProfitUsd = null;
+      if (variant === 'coverage') payload.source.tradesComplete = false;
+      const renderer = await replay(payload);
+      expect(renderer.snapshot(renderer.eventProgress(2)).totalPnl).toBeNull();
+    }
+  });
   it.each([
     ['positive', '#16c784', '22,199,132'],
     ['negative', '#f6465d', '246,70,93'],

@@ -230,4 +230,11 @@ export const chinese: Record<string, string> = {
   'Preparing the token chart and trades.': '正在准备代币图表与交易记录。',
   'Reload page': '重新加载页面',
   'Total P&L includes unrealized profit at the replay price. Estimates use recorded trades; transfers and gas are excluded.': '总盈亏包含按回放价格计算的未实现盈亏。估算基于已记录交易，不包含转账与Gas费用。',
+  'Historical market data is unavailable for this replay.': '此回放暂无历史市场数据。',
+  'Historical market data is rate limited; the replay is using available data.': '历史市场数据请求受到限流，回放正在使用现有数据。',
+  'Historical market data is still loading; the replay is using available data.': '历史市场数据仍在加载，回放正在使用现有数据。',
+  'Historical market data timed out; the replay is using available data.': '历史市场数据加载超时，回放正在使用现有数据。',
+  'Historical market data could not be loaded; the replay is using available data.': '无法加载历史市场数据，回放正在使用现有数据。',
+  'Market history is unavailable. Estimated P&L uses recorded trade prices.': '市场历史数据不可用。估算盈亏使用已记录的交易价格。',
+  'Market observations are sparse. Prices and P&L between observations are estimates.': '市场观测数据稀疏。观测点之间的价格与盈亏为估算值。',
 };

@@ -1,36 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, Send, Share2 } from 'lucide-react';
 import ReplayCanvas from './tradeReplayCanvas';
-import type { ReplayMarketChart } from '../shared/replayChart';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
-import { applyReplayMarketChart, type TradeReplayData } from './tradeReplayData';
+import type { TradeReplayData } from './tradeReplayData';
+import { recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay, shareTradeReplayFile, tradeReplayXIntent } from './tradeReplaySharing';
 import { t } from './i18n';
 import './tradeReplay.css';
 
 export { prepareTradeReplayData } from './tradeReplayData';
-
-async function replayMarketData(data: TradeReplayData, signal: AbortSignal) {
-  if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-  const request = new AbortController();
-  const abort = () => request.abort();
-  signal.addEventListener('abort', abort, { once: true });
-  const timeout = setTimeout(abort, 22_000);
-  try {
-    const response = await fetch(`/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/replay-chart`, { signal: request.signal });
-    if (!response.ok) return data;
-    const chart: ReplayMarketChart = await response.json();
-    if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-    return applyReplayMarketChart(data, chart);
-  } catch {
-    if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-    return data;
-  } finally {
-    clearTimeout(timeout);
-    signal.removeEventListener('abort', abort);
-  }
-}
 
 async function loadReplayFonts() {
   if (!document.fonts) return;
@@ -62,6 +41,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const [sharePending, setSharePending] = useState(false);
   const [imagePending, setImagePending] = useState(false);
   const [notice, setNotice] = useState('');
+  const [marketNotice, setMarketNotice] = useState('');
   const [copied, setCopied] = useState(false);
   const exporting = exportProgress !== null;
   const kolName = data.kol.name ?? 'KOL';
@@ -80,16 +60,21 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
 
   useEffect(() => {
     alive.current = true;
-    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setExportProgress(0);
+    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setMarketNotice(''); setExportProgress(0);
     progress.current = 0;
     // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
     // encoder repaint or replace the file prepared by the next setup.
     const renderer = new ReplayCanvas(document.createElement('canvas'));
     const session = startReplaySession({
       prepare: async signal => {
-        const [selected] = await Promise.all([replayMarketData(data, signal), loadReplayFonts()]);
+        const [market] = await Promise.all([replayMarketData(data, signal), loadReplayFonts()]);
         if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-        await renderer.setData(selected);
+        await renderer.setData(market.data);
+        if (!signal.aborted) {
+          const notices = market.notice ? [t(market.notice)] : [];
+          if (replayUsesRecordedPrices(market.data) && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
+          if (notices.length) setMarketNotice(notices.join(' '));
+        }
       },
       record: (signal, onProgress) => recordTradeReplay(renderer, `${kolName}-${tokenName}`, signal, onProgress),
       onReady: () => { player.current = renderer; renderer.render(0); paintPreview(renderer); setReady(true); },
@@ -217,6 +202,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           </div>
           <div className="trade-replay-status" aria-live="polite">
             <p>{t('Total P&L includes unrealized profit at the replay price. Estimates use recorded trades; transfers and gas are excluded.')}</p>
+            {marketNotice && <p role="status">{marketNotice}</p>}
             {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : t('Preparing trade…')}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
