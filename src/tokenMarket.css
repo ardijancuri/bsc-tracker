@@ -12,9 +12,9 @@
 .token-market-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:0}
 .token-market-toolbar h2{margin:0;font-size:16px;font-weight:700}
 .candle-interval-tabs{display:flex;align-items:center;gap:4px;flex-shrink:0}
-.candle-interval-tabs button{border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted);padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer}
-.candle-interval-tabs button:hover{color:#fff;border-color:var(--line)}
-.candle-interval-tabs button[aria-selected=true]{color:#fff;border-color:var(--line);background:#171d21}
+.candle-interval-tabs button{border:0;background:transparent;color:var(--muted);padding:3px 6px;font-size:12px;font-weight:600;cursor:pointer}
+.candle-interval-tabs button:hover{color:#fff}
+.candle-interval-tabs button[aria-selected=true],.candle-interval-tabs button[aria-pressed=true]{color:#fff;font-weight:800}
 .token-market-stats{display:grid;grid-template-columns:1.1fr .7fr .8fr 1.35fr .8fr 1fr;gap:16px;font-variant-numeric:tabular-nums}
 .token-market-stats>div{display:flex;flex-direction:column;gap:5px;min-width:0}
 .token-market-stats>div>span{color:var(--muted);font-size:12px}
@@ -38,4 +38,4 @@
 @media(max-width:1000px){.token-market-summary{grid-template-columns:minmax(160px,200px) minmax(0,1fr);gap:20px}.token-market-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 18px}}
 @media(max-width:800px){.page.token-detail-page{padding-top:18px}.token-page-toolbar{margin-bottom:12px}.token-market-summary{grid-template-columns:1fr;gap:14px}.token-market-toolbar{gap:10px}.token-market-stats>div>span{font-size:11px}.token-market-stats strong{font-size:16px}}
 @media(max-width:800px){.price-chart-canvas{height:360px}.price-chart-legend{font-size:10px;gap:5px 10px}.price-chart-controls{gap:8px}}
-@media(max-width:400px){.token-market-toolbar h2{font-size:14px}.candle-interval-tabs{gap:2px}.candle-interval-tabs button{padding:7px 9px}}
+@media(max-width:400px){.token-market-toolbar h2{font-size:14px}.candle-interval-tabs{gap:2px}}

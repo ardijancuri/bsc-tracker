@@ -22,6 +22,12 @@ export interface TokenChart {
   supplyPending?: boolean;
   volumeCurrency?: 'usd' | 'unknown';
   partialHistory?: boolean;
+  fullHistory?: boolean;
+  historyComplete?: boolean;
+  historyPending?: boolean;
+  historyLoadStatus?: 'queued' | 'rate_limited' | 'provider_error' | 'limited';
+  historyRetryAfterMs?: number;
+  historyBefore?: number;
   loadStatus?: 'queued' | 'rate_limited' | 'provider_error' | 'no_history';
   retryAfterMs?: number;
 }

@@ -44,7 +44,7 @@ export function TokenMarketPanel({ address, identity }: { address: string; ident
     </div></div>
     {error && <p className="profile-more-error" role="alert">{t('Token market data unavailable')}</p>}
     <div id="token-market-details" role="tabpanel" aria-labelledby={`token-market-${interval}`}>
-      <TokenPriceChart address={address} interval={interval} />
+      <TokenPriceChart address={address} interval={interval} fullHistory />
     </div>
   </section>;
 }

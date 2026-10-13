@@ -7,8 +7,18 @@ import { marketCapCandles } from './tokenChartData';
 import { useTokenChart } from './useTokenChart';
 import { kolTradeMarkers, tradeVisibleRange, type ChartTrade } from './kolTradeChartData';
 
-export function TokenPriceChart({ address, interval, trades, focusTrades = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean }) {
-  const { chart: data, error, retry } = useTokenChart(address, interval);
+type MarketHistoryBounds = { firstTime: number; lastTime: number; count: number };
+
+export function marketHistoryViewport(candles: MarketCandle[], previous: MarketHistoryBounds | null) {
+  if (!candles.length) return null;
+  const insertedHistory = previous && (candles[0].time < previous.firstTime ||
+    candles.length > previous.count && candles.at(-1)!.time <= previous.lastTime);
+  if (previous && !insertedHistory) return null;
+  return { from: -.5, to: candles.length + 2 };
+}
+
+export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean }) {
+  const { chart: data, error, retry } = useTokenChart(address, interval, true, 'chart', fullHistory);
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -16,15 +26,24 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
   const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const candleLookup = useRef(new Map<number, MarketCandle>());
   const fitted = useRef<string | null>(null);
+  const previousHistory = useRef<MarketHistoryBounds | null>(null);
   const tradeRange = useRef<{ from: number; to: number } | null>(null);
   const [hover, setHover] = useState<MarketCandle | null>(null);
   const showVolume = data?.volumeCurrency !== 'unknown';
   const marketCandles = useMemo(() => marketCapCandles(data?.candles ?? [], data?.marketCapSupply), [data]);
   const last = hover ?? marketCandles.at(-1);
   const hasSupply = Number.isFinite(Number(data?.marketCapSupply)) && Number(data?.marketCapSupply) > 0;
-  const coolingDown = data?.loadStatus === 'rate_limited';
-  const refreshFailed = error || data?.loadStatus === 'provider_error' || coolingDown;
-  const status = coolingDown ? 'Market provider cooling down. Retrying automatically…'
+  const currentCoolingDown = data?.loadStatus === 'rate_limited';
+  const historyStatus = !fullHistory || data?.historyComplete ? null
+    : data?.historyLoadStatus === 'rate_limited' ? 'Earlier history cooling down. Retrying automatically…'
+    : data?.historyLoadStatus === 'provider_error' ? 'Earlier history unavailable. Retrying automatically…'
+    : data?.historyLoadStatus === 'limited' ? 'Earlier history unavailable'
+    : data?.historyPending ? 'Loading earlier candles…' : null;
+  const historyFailed = fullHistory && !data?.historyComplete && (data?.historyLoadStatus === 'rate_limited' || data?.historyLoadStatus === 'provider_error');
+  const coolingDown = currentCoolingDown || fullHistory && !data?.historyComplete && data?.historyLoadStatus === 'rate_limited';
+  const limitedHistory = data?.partialHistory && !(fullHistory && data.historyComplete);
+  const refreshFailed = error || data?.loadStatus === 'provider_error' || currentCoolingDown;
+  const status = currentCoolingDown ? 'Market provider cooling down. Retrying automatically…'
     : data?.loadStatus === 'provider_error' ? 'Market provider unavailable. Retrying automatically…'
     : error ? 'Chart refresh failed. Retrying automatically…'
     : !data ? 'Loading candles…'
@@ -36,6 +55,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
   useEffect(() => {
     if (!container.current) return;
     fitted.current = null;
+    previousHistory.current = null;
     tradeRange.current = null;
     candleLookup.current.clear();
     const instance = createChart(container.current, {
@@ -43,7 +63,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       layout: { background: { type: ColorType.Solid, color: '#0b0e11' }, textColor: '#879299', fontFamily: 'Manrope, sans-serif', fontSize: 11, attributionLogo: true },
       grid: { vertLines: { color: '#1b222680' }, horzLines: { color: '#1b222680' } },
       rightPriceScale: { borderColor: '#252d31', scaleMargins: { top: .12, bottom: .08 } },
-      timeScale: { borderColor: '#252d31', timeVisible: interval !== '1d', secondsVisible: false, rightOffset: 3, minBarSpacing: .5 },
+      timeScale: { borderColor: '#252d31', timeVisible: interval !== '1d', secondsVisible: false, rightOffset: 3, minBarSpacing: focusTrades ? .5 : .001, enableConflation: !focusTrades },
       localization: { priceFormatter: (value: number) => compact(value, true), locale: getLocale() },
       crosshair: { mode: 0, vertLine: { color: '#69747a' }, horzLine: { color: '#69747a' } },
     });
@@ -83,10 +103,20 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     candles.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
     volume.current?.setData(marketCandles.filter(c => Number.isFinite(c.volume) && c.volume >= 0).map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#39cb8f70' : '#f1767a70' })));
     markers.current?.setMarkers(kolTradeMarkers(marketCandles, trades ?? [], interval).map(marker => ({ ...marker, time: marker.time as UTCTimestamp })));
-    const history = `${data?.partialHistory ? 'partial' : 'full'}:${focusTrades ? `${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}` : ''}`;
+    if (!focusTrades) {
+      // Include prepended candles and historical gaps filled between cached
+      // windows. Current-candle updates and new latest bars keep the user's view.
+      const range = marketHistoryViewport(marketCandles, previousHistory.current);
+      if (range) chart.current.timeScale().setVisibleLogicalRange(range);
+      if (marketCandles.length) previousHistory.current = {
+        firstTime: marketCandles[0].time, lastTime: marketCandles.at(-1)!.time, count: marketCandles.length,
+      };
+      return;
+    }
+    const history = `${data?.partialHistory ? 'partial' : 'full'}:${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}`;
     if (fitted.current !== history && marketCandles.length) {
       const end = marketCandles.length - 1;
-      tradeRange.current = focusTrades ? tradeVisibleRange(marketCandles, trades ?? [], interval) : null;
+      tradeRange.current = tradeVisibleRange(marketCandles, trades ?? [], interval);
       chart.current.timeScale().setVisibleLogicalRange(tradeRange.current || { from: Math.max(0, end - 149), to: end + 3 });
       fitted.current = history;
     }
@@ -100,6 +130,6 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     </div>
     <div className="price-chart-canvas" ref={container} role="img" aria-busy={!marketCandles.length && !refreshFailed && data?.pending !== false} aria-label={`${t('Token market cap chart')}: ${marketCandles.length} ${t('candles')}`} />
     {!marketCandles.length && <div className="price-chart-status" role="status"><span>{t(status)}</span><div className="price-chart-recovery"><button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button><a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a></div></div>}
-    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(status)}{data?.partialHistory && marketCandles.length > 0 && ` · ${t('Limited history')}`}{refreshFailed && marketCandles.length > 0 && <><span role="status"> · {t(status)}</span><button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button></>}</span><span>{data?.source === 'geckoterminal' && data.poolAddress && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}{data?.source === 'gmgn' && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">GMGN</a>}{data?.source === 'coinmarketcap' && <span>CoinMarketCap</span>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
+    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(status)}{limitedHistory && marketCandles.length > 0 && ` · ${t('Limited history')}`}{historyStatus && marketCandles.length > 0 && <span role="status"> · {t(historyStatus)}</span>}{refreshFailed && marketCandles.length > 0 && <span role="status"> · {t(status)}</span>}{(refreshFailed || historyFailed) && marketCandles.length > 0 && <button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button>}</span><span>{data?.source === 'geckoterminal' && data.poolAddress && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}{data?.source === 'gmgn' && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">GMGN</a>}{data?.source === 'coinmarketcap' && <span>CoinMarketCap</span>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
   </div>;
 }

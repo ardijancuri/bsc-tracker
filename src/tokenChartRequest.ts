@@ -1,4 +1,4 @@
-import { candleIntervals, type CandleInterval, type ChartRange, type TokenChart } from '../shared/intelligence';
+import { candleIntervals, type CandleInterval, type ChartRange, type MarketCandle, type TokenChart } from '../shared/intelligence';
 
 type ChartStorage = Pick<Storage, 'getItem' | 'setItem'>;
 export type TokenChartPriority = 'chart' | 'prefetch' | 'sparkline';
@@ -7,6 +7,25 @@ const storageKey = 'kollens:market-charts:v1';
 const supplyLifetime = 2 * 86400_000;
 const chartWindows: Record<ChartRange, number> = { '24h': 86400, '7d': 604800, '30d': 2592000, '1m': 86400, '5m': 86400, '1h': 2592000, '4h': 7776000, '1d': 15552000 };
 const equivalentRanges: Partial<Record<ChartRange, ChartRange[]>> = { '5m': ['24h'], '24h': ['5m'], '1h': ['30d'], '30d': ['1h'], '7d': ['30d', '1h'] };
+const fullChartScope = (range: ChartRange, fullHistory: boolean) => fullHistory && candleIntervals.includes(range as CandleInterval);
+const chartKey = (address: string, range: ChartRange, fullHistory = false) => `${address.toLowerCase()}-${range}${fullChartScope(range, fullHistory) ? '-full' : ''}`;
+const candlePoints = (candles: MarketCandle[]) => candles.map(candle => ({ timestamp: new Date(candle.time * 1000).toISOString(), priceUsd: String(candle.close) }));
+function mergeCandles(previous: MarketCandle[], incoming: MarketCandle[], before?: number) {
+  const merged = new Map(previous.map(candle => [candle.time, candle]));
+  for (const candle of incoming) {
+    if (!Number.isSafeInteger(candle.time) || candle.time <= 0 || (before !== undefined && candle.time >= before) ||
+      ![candle.open, candle.high, candle.low, candle.close].every(value => Number.isFinite(value) && value > 0) ||
+      !Number.isFinite(candle.volume) || candle.volume < 0) continue;
+    merged.set(candle.time, candle);
+  }
+  return [...merged.values()].sort((a, b) => a.time - b.time);
+}
+function mergedVolumeCurrency(previous: TokenChart, incoming: TokenChart, incomingCandles: MarketCandle[]) {
+  if (incoming.volumeCurrency === 'unknown' && incomingCandles.length) return 'unknown';
+  const replaced = new Set(incomingCandles.map(candle => candle.time));
+  if (previous.volumeCurrency === 'unknown' && previous.candles.some(candle => !replaced.has(candle.time))) return 'unknown';
+  return incoming.volumeCurrency ?? previous.volumeCurrency;
+}
 function browserStorage(): ChartStorage | undefined {
   try { return typeof window === 'undefined' ? undefined : window.sessionStorage; } catch { return undefined; }
 }
@@ -30,11 +49,18 @@ export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) 
   return chart.pending ? loadingDelay : 30_000;
 }
 
+export function tokenChartHistoryRefreshDelay(chart: TokenChart | null) {
+  if (!chart?.fullHistory || !chart.candles.length || !['gmgn', 'geckoterminal'].includes(chart.source) ||
+    chart.historyComplete || chart.historyLoadStatus === 'limited') return null;
+  return chart.historyRetryAfterMs ? Math.max(1000, Math.min(chart.historyRetryAfterMs, 600_000)) : 1500;
+}
+
 /** One browser request per token/interval; transient loading responses retain real cached history. */
 export function createTokenChartRequests({ fetcher = fetch, now = Date.now, timeoutMs = 12_000, storage = browserStorage() }: {
   fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; storage?: ChartStorage;
 } = {}) {
-  const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority }>();
+  const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority; historyChecked?: number; latestRevision?: number }>();
+  let nextLatestRevision = 0;
   type PendingChart = { promise: Promise<TokenChart>; priority: TokenChartPriority; generation: number; controller?: AbortController; releaseForeground?: () => void };
   const pending = new Map<string, PendingChart>();
   const listeners = new Map<string, Set<() => void>>();
@@ -61,26 +87,43 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     if (Array.isArray(entries)) for (const chart of entries.slice(-12) as TokenChart[]) {
       if (!/^0x[0-9a-f]{40}$/.test(chart?.address || '') || !['24h', '7d', '30d', ...candleIntervals].includes(chart.period) ||
         !['geckoterminal', 'gmgn', 'coinmarketcap'].includes(chart.source) || !hasFreshChartSupply(chart, now()) ||
-        !Array.isArray(chart.candles) || !chart.candles.length || chart.candles.length > 1000 ||
+        !Array.isArray(chart.candles) || !chart.candles.length || chart.candles.length > (fullChartScope(chart.period, !!chart.fullHistory) ? 2000 : 1000) ||
         !Number.isFinite(Date.parse(chart.updatedAt || '')) || Date.parse(chart.updatedAt!) > now()) continue;
-      const windowSeconds = chartWindows[chart.period];
-      const candles = chart.candles.filter(c => Number.isInteger(c.time) && c.time <= now() / 1000 && c.time >= now() / 1000 - windowSeconds &&
+      const fullHistory = fullChartScope(chart.period, !!chart.fullHistory);
+      const windowSeconds = fullHistory ? Infinity : chartWindows[chart.period];
+      const candles = chart.candles.filter(c => Number.isInteger(c.time) && c.time > 0 && c.time <= now() / 1000 && c.time >= now() / 1000 - windowSeconds &&
         [c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) && Number.isFinite(c.volume) && c.volume >= 0);
       if (!candles.length) continue;
       const volumeCurrency = chart.source === 'gmgn' && chart.volumeCurrency !== 'usd' ? 'unknown' : chart.volumeCurrency;
-      saved.set(`${chart.address}-${chart.period}`, { chart: { ...chart, candles, volumeCurrency, stale: true }, checked: now() - 10_001 });
+      saved.set(chartKey(chart.address, chart.period, fullHistory), { chart: { ...chart, candles, points: candlePoints(candles), volumeCurrency, stale: true }, checked: now() - 10_001, historyChecked: now(), latestRevision: ++nextLatestRevision });
     }
   } catch { /* A restricted browser or invalid cache must not prevent chart loading. */ }
   const persist = () => {
     try {
-      const entries = [...saved.values()].map(item => item.chart).filter(chart => chart.candles.length && hasFreshChartSupply(chart, now())).slice(-12);
-      storage?.setItem(storageKey, JSON.stringify(entries));
+      const entries = [...saved.values()].map(item => item.chart).filter(chart => chart.candles.length && hasFreshChartSupply(chart, now())).slice(-12).map(chart => {
+        if (!chart.fullHistory || chart.candles.length <= 2000) return chart;
+        const candles = chart.candles.slice(-2000);
+        return { ...chart, candles, points: candlePoints(candles), historyComplete: false, historyPending: true,
+          historyLoadStatus: 'queued' as const, historyRetryAfterMs: 1500, historyBefore: candles[0].time };
+      });
+      let encoded = JSON.stringify(entries);
+      while (encoded.length > 3_000_000 && entries.length) { entries.shift(); encoded = JSON.stringify(entries); }
+      storage?.setItem(storageKey, encoded);
     } catch { /* Quota and privacy restrictions leave the memory cache usable. */ }
   };
-  const peek = (address: string, range: ChartRange): TokenChart | null => {
-    const normalized = address.toLowerCase(), key = `${normalized}-${range}`;
+  const peek = (address: string, range: ChartRange, fullHistory = false): TokenChart | null => {
+    const normalized = address.toLowerCase(), key = chartKey(normalized, range, fullHistory);
     const exact = saved.get(key)?.chart;
     if (exact?.candles.length || exact?.loadStatus === 'no_history') return exact;
+    if (fullChartScope(range, fullHistory)) {
+      const source = peek(normalized, range);
+      if (!source?.candles.length) return exact ?? null;
+      const previous = derived.get(key);
+      if (previous?.source === source) return previous.chart;
+      const chart: TokenChart = { ...source, fullHistory: true, historyComplete: false, historyPending: true, historyLoadStatus: 'queued' };
+      derived.set(key, { source, chart });
+      return chart;
+    }
     const source = equivalentRanges[range]?.map(value => saved.get(`${normalized}-${value}`)?.chart)
       .filter((value): value is TokenChart => !!value?.candles.length)
       .sort((a, b) => Date.parse(b.updatedAt || '') - Date.parse(a.updatedAt || ''))[0];
@@ -90,7 +133,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     const until = Math.floor(now() / 1000);
     const candles = source.candles.filter(candle => candle.time >= until - chartWindows[range] && candle.time <= until);
     if (!candles.length) return exact ?? null;
-    const chart = { ...source, period: range, candles, points: candles.map(candle => ({ timestamp: new Date(candle.time * 1000).toISOString(), priceUsd: String(candle.close) })) };
+    const chart = { ...source, period: range, candles, points: candlePoints(candles) };
     if (derived.size >= 500 && !derived.has(key)) derived.delete(derived.keys().next().value!);
     derived.set(key, { source, chart });
     return chart;
@@ -101,10 +144,11 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     subscribers.add(listener); listeners.set(key, subscribers);
     return () => { subscribers.delete(listener); if (!subscribers.size) listeners.delete(key); };
   };
-  const request = (address: string, range: ChartRange, priority: TokenChartPriority = 'chart', retry = false): Promise<TokenChart> => {
+  const request = (address: string, range: ChartRange, priority: TokenChartPriority = 'chart', retry = false, fullHistory = false, before?: number): Promise<TokenChart> => {
     const normalized = address.toLowerCase();
-    const key = `${normalized}-${range}`;
-    const existing = pending.get(key);
+    fullHistory = fullChartScope(range, fullHistory);
+    const key = chartKey(normalized, range, fullHistory), jobKey = before === undefined ? key : `${key}-before-${before}`;
+    const existing = pending.get(jobKey);
     if (existing) {
       if (priorityOrder[priority] < priorityOrder[existing.priority]) {
         existing.priority = priority;
@@ -116,15 +160,19 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       return existing.promise;
     }
     const cached = saved.get(key);
-    const cachedChart = peek(normalized, range);
-    const coolingDown = !!cached?.chart.loadStatus && cached.chart.loadStatus !== 'queued' && !!cached.chart.retryAfterMs;
-    const reuseMs = coolingDown ? Math.max(1000, Math.min(cached!.chart.retryAfterMs!, 600_000))
+    const cachedChart = peek(normalized, range, fullHistory);
+    const historical = fullHistory && before !== undefined;
+    const coolingDown = historical ? !!cached?.chart.historyRetryAfterMs && !!cached.chart.historyLoadStatus && cached.chart.historyLoadStatus !== 'queued'
+      : !!cached?.chart.loadStatus && cached.chart.loadStatus !== 'queued' && !!cached.chart.retryAfterMs;
+    const retryAfterMs = historical ? cached?.chart.historyRetryAfterMs : cached?.chart.retryAfterMs;
+    const checked = historical ? cached?.historyChecked ?? cached?.checked : cached?.checked;
+    const reuseMs = coolingDown ? Math.max(1000, Math.min(retryAfterMs!, 600_000))
       : cached?.chart.pending || cached?.chart.loadStatus ? 1000 : 10_000;
     // Background provider caches have a longer freshness window; mounting must check foreground freshness once.
     const promoteCached = priority === 'chart' && !!cached?.priority && cached.priority !== 'chart' && !coolingDown;
-    if (cached && !promoteCached && (!retry || coolingDown) && now() - cached.checked < reuseMs) {
+    if (cached && (!historical || coolingDown) && !promoteCached && (!retry || coolingDown) && now() - checked! < reuseMs) {
       const chart = coolingDown
-        ? { ...cachedChart!, retryAfterMs: Math.max(1000, cached.chart.retryAfterMs! - (now() - cached.checked)) } : cachedChart!;
+        ? { ...cachedChart!, [historical ? 'historyRetryAfterMs' : 'retryAfterMs']: Math.max(1000, retryAfterMs! - (now() - checked!)) } : cachedChart!;
       return Promise.resolve(chart);
     }
     const parameter = candleIntervals.includes(range as CandleInterval) ? 'interval' : 'period';
@@ -138,7 +186,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         jobState.controller = controller;
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-          const response = await fetcher(`/api/tokens/${encodeURIComponent(normalized)}/chart?${parameter}=${range}&priority=${jobState.priority}`, {
+          const response = await fetcher(`/api/tokens/${encodeURIComponent(normalized)}/chart?${parameter}=${range}&priority=${jobState.priority}${fullHistory ? '&history=full' : ''}${historical ? `&before=${before}` : ''}`, {
             headers: { Accept: 'application/json' }, signal: controller.signal,
           });
           if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
@@ -150,15 +198,35 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
           throw error;
         } finally { clearTimeout(timer); }
       }
-      if (value.address?.toLowerCase() !== normalized || value.period !== range || !Array.isArray(value.candles) || !Array.isArray(value.points)) {
+      if (value.address?.toLowerCase() !== normalized || value.period !== range || !Array.isArray(value.candles) || !Array.isArray(value.points) || (fullHistory && value.fullHistory !== true)) {
         throw new Error('Invalid token chart response');
       }
       let chart: TokenChart = value.source === 'gmgn' && !value.volumeCurrency ? { ...value, volumeCurrency: 'unknown' } : value;
-      if (!value.candles.length && cachedChart?.candles.length && value.loadStatus !== 'no_history' && (value.pending || value.loadStatus)) {
-        chart = { ...cachedChart, ...value, candles: cachedChart.candles, points: cachedChart.points,
-          source: cachedChart.source, resolution: cachedChart.resolution, updatedAt: cachedChart.updatedAt,
-          partialHistory: cachedChart.partialHistory, stale: true };
-        chart.volumeCurrency = cachedChart.volumeCurrency;
+      if (fullHistory) {
+        const candles = mergeCandles([], chart.candles, before);
+        chart = { ...chart, candles, points: candlePoints(candles) };
+      }
+      const current = saved.get(key), retained = current?.chart ?? cachedChart;
+      if (historical && retained) {
+        const compatible = value.source === retained.source && value.resolution === retained.resolution;
+        const incoming = mergeCandles([], compatible ? chart.candles : [], before);
+        const candles = mergeCandles(retained.candles, incoming);
+        const cursorProgress = Number.isSafeInteger(value.historyBefore) && value.historyBefore! > 0 && value.historyBefore! < before!;
+        const retryable = value.historyLoadStatus === 'queued' || value.historyLoadStatus === 'rate_limited' || value.historyLoadStatus === 'provider_error';
+        const limited = (!compatible && !!value.candles.length) || (!value.historyComplete && !incoming.length && !cursorProgress && !retryable);
+        chart = { ...retained, candles, points: candlePoints(candles), fullHistory: true,
+          volumeCurrency: mergedVolumeCurrency(retained, chart, incoming), historyComplete: limited ? false : value.historyComplete,
+          historyPending: limited ? false : value.historyPending, historyLoadStatus: limited ? 'limited' : value.historyLoadStatus,
+          historyRetryAfterMs: limited ? undefined : value.historyRetryAfterMs, historyBefore: value.historyBefore };
+      } else if (fullHistory && retained?.fullHistory && retained.source === chart.source && retained.resolution === chart.resolution) {
+        const incoming = mergeCandles([], chart.candles), candles = mergeCandles(retained.candles, incoming);
+        chart = { ...chart, candles, points: candlePoints(candles), volumeCurrency: mergedVolumeCurrency(retained, chart, incoming) };
+      }
+      if (!historical && !value.candles.length && retained?.candles.length && value.loadStatus !== 'no_history' && (value.pending || value.loadStatus)) {
+        chart = { ...retained, ...value, candles: retained.candles, points: retained.points,
+          source: retained.source, resolution: retained.resolution, updatedAt: retained.updatedAt,
+          partialHistory: retained.partialHistory, stale: true };
+        chart.volumeCurrency = retained.volumeCurrency;
       }
       if (!Number.isFinite(Number(value.marketCapSupply)) || Number(value.marketCapSupply) <= 0) {
         const previous = [...saved.values()].map(item => item.chart).filter(item => item.address === normalized && hasFreshChartSupply(item, now()))
@@ -166,14 +234,37 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         if (previous) chart = { ...chart, marketCapSupply: previous.marketCapSupply, supplyCheckedAt: previous.supplyCheckedAt, stale: true };
       }
       if (saved.size >= 500 && !saved.has(key)) saved.delete(saved.keys().next().value!);
-      saved.set(key, { chart, checked: now(), priority: jobState.priority });
+      saved.set(key, { chart, checked: historical ? current?.checked ?? now() - 10_001 : now(),
+        priority: historical ? current?.priority : jobState.priority,
+        historyChecked: fullHistory ? now() : current?.historyChecked,
+        latestRevision: historical ? current?.latestRevision : ++nextLatestRevision });
       for (const listener of listeners.get(normalized) ?? []) listener();
       persist();
       return chart;
-    })().finally(() => { pending.delete(key); jobState.releaseForeground?.(); });
+    })().catch(error => {
+      const current = saved.get(key);
+      if (!historical || !current?.chart.candles.length) throw error;
+      const chart: TokenChart = { ...current.chart, historyPending: false, historyLoadStatus: 'provider_error', historyRetryAfterMs: 3000 };
+      saved.set(key, { ...current, chart, historyChecked: now() });
+      for (const listener of listeners.get(normalized) ?? []) listener();
+      persist();
+      return chart;
+    }).finally(() => { pending.delete(jobKey); jobState.releaseForeground?.(); });
     jobState.promise = job;
-    pending.set(key, jobState);
+    pending.set(jobKey, jobState);
     return job;
   };
-  return { request, peek, subscribe, isForegroundLoading, holdForeground, subscribePriority };
+  const requestOlder = (address: string, range: ChartRange, before: number) => {
+    if (!Number.isSafeInteger(before) || before <= 0 || !candleIntervals.includes(range as CandleInterval)) return Promise.reject(new Error('Invalid chart history boundary'));
+    return request(address, range, 'prefetch', false, true, before);
+  };
+  const historyDelay = (address: string, range: ChartRange) => {
+    const cached = saved.get(chartKey(address, range, true));
+    const chart = cached?.chart ?? peek(address, range, true);
+    const delay = tokenChartHistoryRefreshDelay(chart);
+    if (delay === null || !chart?.historyRetryAfterMs) return delay;
+    return Math.max(1000, delay - Math.max(0, now() - (cached?.historyChecked ?? now())));
+  };
+  const latestRevision = (address: string, range: ChartRange, fullHistory = false) => saved.get(chartKey(address, range, fullHistory))?.latestRevision ?? 0;
+  return { request, requestOlder, historyDelay, latestRevision, peek, subscribe, isForegroundLoading, holdForeground, subscribePriority };
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TokenChart } from '../shared/intelligence';
-import { createTokenChartRequests, tokenChartNeedsForeground, tokenChartRefreshDelay } from './tokenChartRequest';
+import { createTokenChartRequests, tokenChartHistoryRefreshDelay, tokenChartNeedsForeground, tokenChartRefreshDelay } from './tokenChartRequest';
 const address = '0x' + 'a'.repeat(40);
 const history: TokenChart = { address, period: '5m', source: 'geckoterminal', updatedAt: '2026-10-12T00:00:00Z',
   resolution: '5m', pending: false, stale: false, marketCapSupply: '1000000', supplyCheckedAt: '1970-01-01T00:00:00.000Z',
@@ -279,5 +279,161 @@ describe('browser chart requests', () => {
     const storage = { getItem: () => { throw new Error('Blocked'); }, setItem: () => { throw new Error('Blocked'); } };
     const charts = createTokenChartRequests({ fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(history)), storage });
     expect(await charts.request(address, '5m')).toEqual(history);
+  });
+});
+
+describe('progressive full browser chart history', () => {
+  const full = (overrides: Partial<TokenChart> = {}): TokenChart => ({ ...history, period: '1m', resolution: '1m', source: 'gmgn', volumeCurrency: 'usd', fullHistory: true,
+    historyComplete: false, historyPending: false, candles: [{ ...history.candles[0], time: 1000 }], ...overrides });
+
+  it('isolates full history from recent requests while showing existing recent candles immediately', async () => {
+    let complete!: (value: Response) => void;
+    const recent = { ...history, period: '1m' as const, resolution: '1m' };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(recent)).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m');
+    const snapshot = charts.peek(address, '1m', true);
+    expect(snapshot).toMatchObject({ candles: recent.candles, fullHistory: true, historyComplete: false });
+    expect(charts.peek(address, '1m', true)).toBe(snapshot);
+    const mounted = charts.request(address, '1m', 'chart', false, true);
+    expect(fetcher.mock.calls[1][0]).toContain('&history=full');
+    const completeHistory = full({ candles: [...recent.candles, ...full().candles], historyComplete: true });
+    complete(response(completeHistory));
+    await mounted;
+    expect(charts.peek(address, '1m', true)?.candles).toHaveLength(2);
+    expect(charts.peek(address, '1m')).toEqual(recent);
+  });
+
+  it('coalesces the same older page, merges genuine bars in order, and keeps the latest tail', async () => {
+    let complete!: (value: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m', 'chart', false, true);
+    const one = charts.requestOlder(address, '1m', 1000), two = charts.requestOlder(address.toUpperCase(), '1m', 1000);
+    expect(two).toBe(one);
+    const older = { ...history.candles[0], time: 100 }, repeated = { ...older, close: 1.5 };
+    complete(response(full({ candles: [older, { ...older, time: 50 }, repeated, { ...older, time: 1000, close: 999 }], historyComplete: true, historyBefore: 50 })));
+    const loaded = await one;
+    expect(loaded.candles.map(c => [c.time, c.close])).toEqual([[50, 2], [100, 1.5], [1000, 2]]);
+    expect(loaded).toMatchObject({ historyComplete: true, historyBefore: 50, pending: false, volumeCurrency: 'usd' });
+    expect(fetcher.mock.calls[1][0]).toContain('priority=prefetch&history=full&before=1000');
+    expect(charts.peek(address, '1m', true)).toBe(loaded);
+  });
+
+  it('retains concurrent latest updates when an older delta arrives afterwards', async () => {
+    let complete!: (value: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }))
+      .mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 1000, close: 3 }, { ...history.candles[0], time: 1060 }] })));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m', 'chart', false, true);
+    const latestRevision = charts.latestRevision(address, '1m', true);
+    const older = charts.requestOlder(address, '1m', 1000);
+    await charts.request(address, '1m', 'chart', true, true);
+    expect(charts.latestRevision(address, '1m', true)).not.toBe(latestRevision);
+    const refreshedRevision = charts.latestRevision(address, '1m', true);
+    complete(response(full({ candles: [{ ...history.candles[0], time: 100 }], historyComplete: true })));
+    expect((await older).candles.map(c => [c.time, c.close])).toEqual([[100, 2], [1000, 3], [1060, 2]]);
+    expect(charts.latestRevision(address, '1m', true)).toBe(refreshedRevision);
+  });
+
+  it('preserves historical rows across latest refreshes and does not let a page postpone latest freshness', async () => {
+    let clock = 0;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 100 }] })))
+      .mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 1060 }] })));
+    const charts = createTokenChartRequests({ fetcher, now: () => clock });
+    await charts.request(address, '1m', 'chart', false, true);
+    clock = 9000; await charts.requestOlder(address, '1m', 1000);
+    clock = 11000;
+    const latest = await charts.request(address, '1m', 'chart', false, true);
+    expect(latest.candles.map(c => c.time)).toEqual([100, 1000, 1060]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('reopens previously complete history when a fresh snapshot identifies an uncovered middle gap', async () => {
+    const old = full({ candles: [{ ...history.candles[0], time: 100 }, { ...history.candles[0], time: 1000 }], historyComplete: true });
+    const fresh = full({ candles: [{ ...history.candles[0], time: 2000 }], historyComplete: false, historyBefore: 2000 });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(old)).mockResolvedValueOnce(response(fresh));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m', 'chart', false, true);
+    const loaded = await charts.request(address, '1m', 'chart', true, true);
+    expect(loaded).toMatchObject({ historyComplete: false, historyBefore: 2000 });
+    expect(loaded.candles.map(c => c.time)).toEqual([100, 1000, 2000]);
+    expect(charts.historyDelay(address, '1m')).toBe(1500);
+  });
+
+  it('preserves usable latest candles through a historical HTTP failure and respects the separate retry cooldown', async () => {
+    let clock = 0;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 100 }], historyComplete: true })));
+    const charts = createTokenChartRequests({ fetcher, now: () => clock });
+    await charts.request(address, '1m', 'chart', false, true);
+    const failed = await charts.requestOlder(address, '1m', 1000);
+    expect(failed).toMatchObject({ candles: full().candles, historyLoadStatus: 'provider_error', historyRetryAfterMs: 3000, pending: false, stale: false });
+    clock = 1000;
+    expect(await charts.requestOlder(address, '1m', 1000)).toMatchObject({ historyRetryAfterMs: 2000 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    clock = 3000;
+    expect((await charts.requestOlder(address, '1m', 1000)).historyComplete).toBe(true);
+  });
+
+  it('keeps history rate-limit cooldown separate from foreground freshness checks', async () => {
+    let clock = 0;
+    const cooling = full({ candles: [], historyLoadStatus: 'rate_limited', historyRetryAfterMs: 120_000 });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockResolvedValueOnce(response(cooling));
+    const charts = createTokenChartRequests({ fetcher, now: () => clock });
+    await charts.request(address, '1m', 'chart', false, true);
+    await charts.requestOlder(address, '1m', 1000);
+    clock = 15000;
+    expect(charts.historyDelay(address, '1m')).toBe(105_000);
+    expect(await charts.requestOlder(address, '1m', 1000)).toMatchObject({ historyRetryAfterMs: 105_000 });
+    expect(charts.peek(address, '1m', true)?.candles).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops backfill for confirmed complete or limited history and unsupported providers', () => {
+    expect(tokenChartHistoryRefreshDelay(full())).toBe(1500);
+    expect(tokenChartHistoryRefreshDelay(full({ historyComplete: true }))).toBeNull();
+    expect(tokenChartHistoryRefreshDelay(full({ historyLoadStatus: 'limited' }))).toBeNull();
+    expect(tokenChartHistoryRefreshDelay(full({ source: 'coinmarketcap' }))).toBeNull();
+    expect(tokenChartHistoryRefreshDelay(history)).toBeNull();
+    expect(tokenChartHistoryRefreshDelay(full({ historyLoadStatus: 'rate_limited', historyRetryAfterMs: 120_000 }))).toBe(120_000);
+  });
+
+  it('keeps mixed full-history volume unlabelled until every retained old bar is verified', async () => {
+    const older = { ...history.candles[0], time: 100 }, latest = full().candles[0];
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full({ candles: [older, latest], volumeCurrency: 'unknown' })))
+      .mockResolvedValueOnce(response(full({ candles: [latest] }))).mockResolvedValueOnce(response(full({ candles: [older, latest], historyComplete: true })));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m', 'chart', false, true);
+    expect((await charts.request(address, '1m', 'chart', true, true)).volumeCurrency).toBe('unknown');
+    expect((await charts.request(address, '1m', 'chart', true, true)).volumeCurrency).toBe('usd');
+  });
+
+  it('hides historical volume of unknown denomination and stops a page that cannot move backwards', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full()))
+      .mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 100 }], volumeCurrency: 'unknown' })))
+      .mockResolvedValueOnce(response(full({ candles: [{ ...history.candles[0], time: 100 }], historyPending: true })));
+    const charts = createTokenChartRequests({ fetcher, now: () => 0 });
+    await charts.request(address, '1m', 'chart', false, true);
+    expect((await charts.requestOlder(address, '1m', 1000)).volumeCurrency).toBe('unknown');
+    const unchanged = await charts.requestOlder(address, '1m', 100);
+    expect(unchanged).toMatchObject({ historyLoadStatus: 'limited', historyPending: false, historyComplete: false });
+    expect(charts.historyDelay(address, '1m')).toBeNull();
+    expect(unchanged.candles.map(c => c.time)).toEqual([100, 1000]);
+  });
+
+  it('persists a bounded full-history tail beyond one day without claiming truncated history is complete', async () => {
+    const clock = Date.parse('2026-10-12T12:00:00Z');
+    const candles = Array.from({ length: 2500 }, (_, index) => ({ ...history.candles[0], time: clock / 1000 - (2500 - index) * 60 }));
+    const completeHistory = full({ candles, historyComplete: true, updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString() });
+    const values = new Map<string, string>();
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+    const first = createTokenChartRequests({ now: () => clock, storage, fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(completeHistory)) });
+    await first.request(address, '1m', 'chart', false, true);
+    expect(first.peek(address, '1m', true)?.candles).toHaveLength(2500);
+    const restored = createTokenChartRequests({ now: () => clock + 1000, storage, fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(completeHistory)) });
+    expect(restored.peek(address, '1m', true)).toMatchObject({ candles: candles.slice(-2000), historyComplete: false, historyPending: true });
+    expect(restored.peek(address, '1m')).toBeNull();
+    expect((await restored.request(address, '1m', 'chart', false, true)).candles).toHaveLength(2500);
   });
 });

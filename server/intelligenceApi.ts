@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { pool } from './db.js';
 import { watchlistMarket } from './watchlistMarket.js';
 import { chartSettings, currentMarketChart } from './tokenChart.js';
+import { currentFullMarketChart } from './tokenFullHistory.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
@@ -106,13 +107,17 @@ export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.sta
 export function registerIntelligenceRoutes(app: FastifyInstance) {
   registerKolTokenTradesRoutes(app);
   // Market history is independent of which KOL wallets happened to trade.
-  app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string; priority?: 'chart' | 'prefetch' | 'sparkline' } }>('/api/tokens/:address/chart', async (request, reply) => {
+  app.get<{ Params: { address: string }; Querystring: { period?: string; interval?: string; priority?: 'chart' | 'prefetch' | 'sparkline'; history?: string; before?: string } }>('/api/tokens/:address/chart', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
     const interval = request.query.interval;
     const period = interval ?? request.query.period ?? '24h';
     const priority = request.query.priority;
+    const fullHistory = request.query.history === 'full';
+    const before = request.query.before === undefined ? undefined : Number(request.query.before);
     if (!parsed.success || !(interval === undefined ? watchPeriods.includes(period as WatchPeriod) : candleIntervals.includes(interval as typeof candleIntervals[number])) ||
-      priority !== undefined && !['chart', 'prefetch', 'sparkline'].includes(priority)) return reply.code(400).send({ error: 'Invalid token or chart interval' });
+      priority !== undefined && !['chart', 'prefetch', 'sparkline'].includes(priority) ||
+      request.query.history !== undefined && !fullHistory || fullHistory && interval === undefined ||
+      before !== undefined && (!fullHistory || !Number.isSafeInteger(before) || before < 1 || before > Math.floor(Date.now() / 1000))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
     const address = parsed.data, selected = period as ChartRange;
     const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
       v.total_supply_raw::text AS "rawSupply",v.decimals,v.supply_checked_at AS "supplyCheckedAt"
@@ -120,10 +125,12 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const supplyRequest = tokenSupplyRequests.start(address, known.rows[0]);
-    const [result] = await Promise.all([priority ? currentMarketChart(address, selected, priority) : currentMarketChart(address, selected), supplyRequest.settle()]);
+    const chartRequest = fullHistory ? currentFullMarketChart(address, selected as typeof candleIntervals[number], priority ?? 'chart', before)
+      : priority ? currentMarketChart(address, selected, priority) : currentMarketChart(address, selected);
+    const [result] = await Promise.all([chartRequest, supplyRequest.settle()]);
     const supply = supplyRequest.snapshot();
     const pending = result.pending || supply.pending;
-    reply.header('Cache-Control', pending || result.loadStatus || !supply.supply ? 'no-store' : 'public, max-age=15');
+    reply.header('Cache-Control', fullHistory || pending || result.loadStatus || !supply.supply ? 'no-store' : 'public, max-age=15');
     const loading = { loadStatus: result.loadStatus ?? (supply.pending ? 'queued' : !supply.supply ? 'provider_error' : undefined),
       retryAfterMs: supply.supply ? result.retryAfterMs : Math.min(result.retryAfterMs ?? Infinity, supply.retryAfterMs ?? 3000) };
     const marketCapSupply = supply.supply;

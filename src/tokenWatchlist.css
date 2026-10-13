@@ -6,12 +6,12 @@
 .token-watchlist-heading p{color:var(--muted);font-size:14px;margin:0}
 .token-watchlist-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;color:var(--muted);font-size:13px}
 .watch-period-controls{display:flex;align-items:center;flex:none;margin-left:auto}
-.token-watchlist-toolbar .feature-tabs{margin:0;gap:0}
-.token-watchlist-toolbar .feature-tabs button[role=tab]{padding:12px 16px}
+.token-watchlist-toolbar .feature-tabs{margin:0;gap:4px;border:0}
+.token-watchlist-toolbar .feature-tabs button[role=tab]{padding:3px 6px;border:0;background:transparent}
 .watch-period-tabs{display:flex;align-items:center;gap:6px}
-.watch-period-tabs button{border:1px solid #30383e;border-radius:6px;background:transparent;color:var(--muted);padding:8px 12px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s}
-.watch-period-tabs button:hover{color:#fff;border-color:#68757b}
-.watch-period-tabs button[aria-selected=true]{color:#fff;border-color:#68757b;background:#1c2226}
+.watch-period-tabs button{border:0;background:transparent;color:var(--muted);padding:3px 6px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;transition:color .15s}
+.watch-period-tabs button:hover{color:#fff}
+.token-watchlist-toolbar .watch-period-tabs button[role=tab][aria-selected=true]{color:#fff;font-weight:800;border:0;background:transparent}
 .watch-period-tabs button:focus-visible{outline:2px solid var(--yellow);outline-offset:4px;border-radius:2px}
 .watch-token-search{display:flex;align-items:center;gap:9px;min-width:0;border:1px solid var(--line);border-radius:7px;padding:8px 12px}
 .watch-token-search>svg{flex:none}

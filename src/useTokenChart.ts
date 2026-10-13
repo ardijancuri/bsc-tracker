@@ -10,13 +10,14 @@ export function preloadTokenChart(address: string, period: ChartRange = defaultC
   void charts.request(address, period, 'prefetch').catch(() => { /* The mounted chart handles retry and error display. */ });
 }
 
-export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true, priority: TokenChartPriority = 'chart') {
-  const key = `${address?.toLowerCase()}-${period}`;
-  const [failure, setFailure] = useState<{ key: string; chart: TokenChart | null } | null>(null);
+export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true, priority: TokenChartPriority = 'chart', fullHistory = false) {
+  const key = `${address?.toLowerCase()}-${period}${fullHistory ? '-full' : ''}`;
+  const [failure, setFailure] = useState<{ key: string; chart: TokenChart | null; latestRevision: number } | null>(null);
   const refreshNow = useRef<(() => void) | null>(null);
-  const retry = useCallback(() => refreshNow.current?.(), []);
+  const refreshHistoryNow = useRef<(() => void) | null>(null);
+  const retry = useCallback(() => { refreshNow.current?.(); refreshHistoryNow.current?.(); }, []);
   const subscribe = useCallback((listener: () => void) => address ? charts.subscribe(address, listener) : () => {}, [address]);
-  const snapshot = useCallback(() => address ? charts.peek(address, period) : null, [address, period]);
+  const snapshot = useCallback(() => address ? charts.peek(address, period, fullHistory) : null, [address, period, fullHistory]);
   const chart = useSyncExternalStore(subscribe, snapshot, () => null);
   useEffect(() => {
     if (!address || !enabled) return;
@@ -33,14 +34,15 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       refreshing = true;
       if (priority === 'chart' && !releaseForeground) releaseForeground = charts.holdForeground();
       let delay = 30_000;
-      const previous = charts.peek(address, period);
+      const previous = charts.peek(address, period, fullHistory);
+      const latestRevision = charts.latestRevision(address, period, fullHistory);
       try {
-        const value = await charts.request(address, period, priority, manual);
+        const value = await charts.request(address, period, priority, manual, fullHistory);
         if (!stopped) setFailure(null);
         delay = tokenChartRefreshDelay(value, candleIntervals.includes(period as CandleInterval));
         if (!tokenChartNeedsForeground(value)) release();
       } catch {
-        if (!stopped) setFailure({ key, chart: previous });
+        if (!stopped) setFailure({ key, chart: previous, latestRevision });
         if (previous?.candles.length) release();
         delay = 3000;
       }
@@ -69,9 +71,50 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       release();
       document.removeEventListener('visibilitychange', visibilityChanged);
     };
-  }, [address, period, key, enabled, priority]);
+  }, [address, period, key, enabled, priority, fullHistory]);
+  useEffect(() => {
+    if (!address || !enabled || !fullHistory || !candleIntervals.includes(period as CandleInterval)) return;
+    let stopped = false, loading = false;
+    let timer: number | undefined;
+    const visible = () => document.visibilityState !== 'hidden';
+    const canLoad = () => !stopped && visible() && !charts.isForegroundLoading();
+    const schedule = (immediate = false) => {
+      window.clearTimeout(timer);
+      if (!canLoad() || loading) return;
+      const delay = charts.historyDelay(address, period);
+      if (delay !== null) timer = window.setTimeout(() => void older(), immediate ? 0 : delay);
+    };
+    const older = async () => {
+      if (!canLoad() || loading) return;
+      const current = charts.peek(address, period, true);
+      if (!current || charts.historyDelay(address, period) === null) return;
+      const oldest = current.candles[0]?.time;
+      if (!oldest) return;
+      const before = Number.isSafeInteger(current.historyBefore) && current.historyBefore! > 0 ? current.historyBefore! : oldest;
+      if (!before) return;
+      loading = true;
+      try { await charts.requestOlder(address, period, before); }
+      catch { /* A transient missing snapshot is retried while this full chart stays visible. */ }
+      loading = false;
+      schedule();
+    };
+    const unsubscribeChart = charts.subscribe(address, () => schedule());
+    const unsubscribePriority = charts.subscribePriority(() => schedule());
+    const visibilityChanged = () => schedule();
+    refreshHistoryNow.current = () => schedule(true);
+    document.addEventListener('visibilitychange', visibilityChanged);
+    schedule();
+    return () => {
+      stopped = true;
+      refreshHistoryNow.current = null;
+      window.clearTimeout(timer);
+      unsubscribeChart(); unsubscribePriority();
+      document.removeEventListener('visibilitychange', visibilityChanged);
+    };
+  }, [address, period, enabled, fullHistory]);
   // Another viewer or preload can repair the shared chart without this hook's own timer firing.
-  return { chart, error: failure?.key === key && failure.chart === chart, retry };
+  const failedCurrentSnapshot = fullHistory && address ? failure?.latestRevision === charts.latestRevision(address, period, true) : failure?.chart === chart;
+  return { chart, error: failure?.key === key && failedCurrentSnapshot, retry };
 }
 
 export function useChartVisibility() {

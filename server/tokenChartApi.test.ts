@@ -1,9 +1,10 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
-const mocks = vi.hoisted(() => ({ query: vi.fn(), currentMarketChart: vi.fn() }));
+const mocks = vi.hoisted(() => ({ query: vi.fn(), currentMarketChart: vi.fn(), currentFullMarketChart: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
 vi.mock('./tokenChart.js', async importOriginal => ({ ...await importOriginal<typeof import('./tokenChart.js')>(), currentMarketChart: mocks.currentMarketChart }));
+vi.mock('./tokenFullHistory.js', () => ({ currentFullMarketChart: mocks.currentFullMarketChart }));
 vi.mock('./tokenSupply.js', () => ({ tokenSupplyRequests: { start: (_address: string, metadata: { supply?: string | null }) => {
   const snapshot = () => ({ supply: metadata.supply ?? null, checkedAt: null, pending: false });
   return { snapshot, settle: async () => snapshot() };
@@ -44,6 +45,28 @@ describe('token chart API intervals', () => {
     try {
       expect((await app.inject(`/api/tokens/${address}/chart?interval=1m&priority=metadata`)).statusCode).toBe(400);
       expect(mocks.query).not.toHaveBeenCalled(); expect(mocks.currentMarketChart).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it('serves opt-in full minute history and passes the exclusive historical boundary without changing recent requests', async () => {
+    const app = Fastify(); registerIntelligenceRoutes(app);
+    mocks.query.mockResolvedValue({ rows: [{ supply: '1000000000' }] });
+    mocks.currentFullMarketChart.mockResolvedValue({ chart: { address, period: '1m', resolution: '1m', source: 'gmgn',
+      fullHistory: true, historyComplete: false, historyPending: true, historyBefore: 900, candles: [], points: [] }, pending: false });
+    try {
+      const response = await app.inject(`/api/tokens/${address}/chart?interval=1m&history=full&before=1000&priority=prefetch`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ fullHistory: true, historyBefore: 900, marketCapSupply: '1000000000' });
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(mocks.currentFullMarketChart).toHaveBeenCalledWith(address, '1m', 'prefetch', 1000);
+      expect(mocks.currentMarketChart).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it.each(['period=24h&history=full', 'interval=1m&history=all', 'interval=1m&before=1000',
+    'interval=1m&history=full&before=0', 'interval=1m&history=full&before=1.5', 'interval=1m&history=full&before=NaN'])('rejects invalid full history request %s before accessing data', async query => {
+    const app = Fastify(); registerIntelligenceRoutes(app);
+    try {
+      expect((await app.inject(`/api/tokens/${address}/chart?${query}`)).statusCode).toBe(400);
+      expect(mocks.query).not.toHaveBeenCalled(); expect(mocks.currentFullMarketChart).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
   it('does not return sparse trade prices as candles when interval data is pending', async () => {
