@@ -3,6 +3,8 @@ import { TokenWatchlistPage } from './TokenWatchlist';
 import { TokenMarketPanel } from './TokenMarketPanel';
 import { KolTokenRealizedPnl } from './KolTokenRealizedPnl';
 import { preloadTokenChart } from './useTokenChart';
+import { tokenChartIntent } from './tokenChartIntent';
+import { intervalForTrades } from './kolTradeChartData';
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
@@ -17,7 +19,9 @@ import './watchlistBanner.css';
 import { TokenName, useTokenTranslation } from './TokenName';
 import { BRAND_HEADER_LOGO_SRC, BRAND_LOGO_SRC } from './brandAssets';
 
-const KolTokenTradeModal = lazy(() => import('./KolTokenTradeModal'));
+const loadKolTokenTradeModal = () => import('./KolTokenTradeModal');
+const KolTokenTradeModal = lazy(loadKolTokenTradeModal);
+const preloadKolTokenTradeModal = () => { void loadKolTokenTradeModal().catch(() => { /* Opening the modal can retry a failed preload. */ }); };
 
 type List<T> = { items: T[]; nextCursor?: string | null };
 const EMPTY_OVERVIEW: Overview = { trackedKols: 0, trades24h: 0, tokens24h: 0, latestTradeAt: null, lastTokenPriceAt: null, lastNodeBlock: null, nodeLagBlocks: null, lastNodeAt: null, bnbPriceUsd: null, bnbPriceAt: null, lastLeaderboardAt: null, leaderboardSource: 'onchain_estimate' };
@@ -130,7 +134,7 @@ function SearchDialog({ close }: { close: () => void }) {
     <div className="search-input-row"><Search size={20} /><input autoFocus placeholder={t("Search KOL, wallet, token, or contract")} value={query} onChange={event => setQuery(event.target.value)} /><button className="icon-button" aria-label={t("Close search")} onClick={close}><X size={18} /></button></div>
     <div className="search-results">{!query && <p className="search-hint">{t("Search tracked KOL wallets and tokens on BNB Smart Chain.")}</p>}
       {results.kols.length > 0 && <><span className="eyebrow">{t("KOLs")}</span>{results.kols.map(kol => <button className="search-result" key={kol.address} onClick={() => go(`/kol/${kol.address}`)}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /><ArrowUpRight size={16} /></button>)}</>}
-      {results.tokens.length > 0 && <><span className="eyebrow">{t("Tokens")}</span>{results.tokens.map(token => <button className="search-result" key={token.address} onClick={() => go(`/token/${token.address}`)}><TokenIdentity token={token} /><ArrowUpRight size={16} /></button>)}</>}
+      {results.tokens.length > 0 && <><span className="eyebrow">{t("Tokens")}</span>{results.tokens.map(token => <button className="search-result" key={token.address} {...tokenChartIntent(token.address)} onClick={() => go(`/token/${token.address}`)}><TokenIdentity token={token} /><ArrowUpRight size={16} /></button>)}</>}
       {query && !results.kols.length && !results.tokens.length && <p className="search-hint">{t("No tracked results. Try a contract address or KOL name.")}</p>}
     </div>
   </div></div>;
@@ -163,7 +167,7 @@ function WatchlistBanner() {
       <Link className="watchlist-banner-shortcut" to="/watchlist" title={t('Watchlist')} aria-label={t('Watchlist')}><Star size={15} fill="currentColor" /><span>{t('Watchlist')}</span></Link>
       <WatchlistMarquee enabled={tokens.length > 0} label={t('Watchlist tokens')}>
         {tokens.map(token => {
-          return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} title={token.name || token.symbol || token.address}>
+          return <Link className="watchlist-banner-token" key={token.address} to={`/token/${token.address}`} {...tokenChartIntent(token.address)} title={token.name || token.symbol || token.address}>
             <span className="watchlist-banner-avatar"><span>{(token.symbol || token.name || '?').slice(0, 1)}</span>{token.logoUrl && <TokenImage key={token.logoUrl} logoUrl={token.logoUrl} />}</span>
             <strong>{token.symbol || token.name || shortAddress(token.address)}</strong>
             <span className="watchlist-banner-cap" title={t('Market cap')}>MC <WatchMarketValue value={token.marketCapUsd} /></span>
@@ -186,9 +190,9 @@ function TradeRow({ trade, bnbPriceUsd, showSide = true, linkTimeToToken = false
   const tokenIdentity = <TokenIdentity token={{ address: trade.tokenAddress, symbol: trade.tokenSymbol, name: trade.tokenName, logoUrl: trade.tokenLogoUrl }} />;
   return <div className="trade-row">
     <div className="trade-kol"><Link to={`/kol/${trade.walletAddress}`}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} twitter={trade.kolTwitter} subtitle={false} /></Link></div>
-    <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{t(trade.side)}</span>}<Link to={`/token/${trade.tokenAddress}`} title={t('View token details')}>{tokenIdentity}</Link></div>
+    <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{t(trade.side)}</span>}<Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={t('View token details')}>{tokenIdentity}</Link></div>
     <div className={`trade-value ${trade.side}`} title={trade.quoteSymbol === 'BNB' || trade.quoteSymbol === 'WBNB' ? t("Recorded BNB trade amount") : t("Approximate BNB amount based on the current BNB/USD price")}><strong>{tradeBnbValue(trade, bnbPriceUsd)}</strong><span className="trade-amount">{tradeTokenAmount(trade.tokenAmount)}</span></div>
-    <div className="trade-time">{linkTimeToToken ? <Link to={`/token/${trade.tokenAddress}`} title={`${localDate(trade.timestamp)} · ${t('View token details')}`} aria-label={t('View {token} details, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}</Link> : <a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title={`${localDate(trade.timestamp)} · ${t('View token activity on GMGN')}`} aria-label={t('View {token} activity on GMGN, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}<ExternalLink size={13} /></a>}</div>
+    <div className="trade-time">{linkTimeToToken ? <Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={`${localDate(trade.timestamp)} · ${t('View token details')}`} aria-label={t('View {token} details, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}</Link> : <a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title={`${localDate(trade.timestamp)} · ${t('View token activity on GMGN')}`} aria-label={t('View {token} activity on GMGN, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}<ExternalLink size={13} /></a>}</div>
   </div>;
 }
 
@@ -221,7 +225,7 @@ function TradeTape({ overview }: { overview: Overview }) {
 
 function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false, walletAddress, onOpen }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null; marketCapInStats?: boolean; walletAddress?: string; onOpen?: () => void }) {
   const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("24h volume")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
-  return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`}>{content}</Link>}
+  return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" {...tokenChartIntent(token.address, intervalForTrades(token.lastTradeAt, token.lastTradeAt), preloadKolTokenTradeModal)} onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`} {...tokenChartIntent(token.address)}>{content}</Link>}
     <FollowButton kind="token" address={token.address} label={token.symbol} />
     {recentTrades && recentTrades.length > 0 && <div className="token-card-trades" aria-label={t('Recent {token} trades', { token: token.symbol || t('token') })}>
       {recentTrades.slice(0, 5).map(trade => <div className="token-card-trade" key={trade.id}>

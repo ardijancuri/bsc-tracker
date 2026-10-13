@@ -12,6 +12,7 @@ export const chartWindows = {
   '30d': { seconds: 2592000, timeframe: 'hour', aggregate: 1, resolution: '1h', fresh: 600_000 },
 } as const;
 export const candleWindows = {
+  '1m': { seconds: 86400, timeframe: 'minute', aggregate: 1, resolution: '1m', fresh: 30_000 },
   '5m': chartWindows['24h'],
   '1h': chartWindows['30d'],
   '4h': { seconds: 7_776_000, timeframe: 'hour', aggregate: 4, resolution: '4h', fresh: 600_000 },
@@ -26,7 +27,7 @@ export function chartForRange(chart: TokenChart, range: ChartRange, now = Date.n
 const addressRe = /^0x[0-9a-f]{40}$/;
 const poolRe = /^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 type JsonRequest = (url: URL) => Promise<any>;
-const resolutionSeconds: Record<string, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+const resolutionSeconds: Record<string, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
 
 // Combine real finer candles; never split a coarse candle into invented prices.
 export function aggregateCandles(candles: MarketCandle[], seconds: number): MarketCandle[] {
@@ -116,7 +117,8 @@ export async function fetchMarketCandles(address: string, period: ChartRange, po
     const candles = parseCandles(body?.data?.attributes?.ohlcv_list, until - settings.seconds, until);
     if (!candles.length) continue;
     return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
-      source: 'geckoterminal', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, poolAddress: pool, pending: false, stale: false };
+      source: 'geckoterminal', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, poolAddress: pool, pending: false, stale: false,
+      ...(period === '1m' ? { partialHistory: true } : {}) };
   }
   return null;
 }
@@ -136,7 +138,11 @@ export async function fetchGmgnMarketCandles(address: string, period: ChartRange
   request: GmgnJsonRequest = (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal }), now = Date.now(), signal = AbortSignal.timeout(20_000)): Promise<TokenChart | null> {
   if (!addressRe.test(address)) throw new Error('Invalid chart address');
   if (!apiKey.trim()) throw new Error('GMGN API key is not configured');
-  const settings = chartSettings(period), until = Math.floor(now / 1000), since = Math.max(0, until - settings.seconds);
+  const settings = chartSettings(period), until = Math.floor(now / 1000);
+  // Keep minute requests within the retained 1,000-bar budget, including the
+  // current bar. Otherwise an ascending 24-hour response can lose its newest bars.
+  const historySeconds = Math.min(settings.seconds, resolutionSeconds[settings.resolution] * 999);
+  const since = Math.max(0, until - historySeconds);
   const url = new URL('https://openapi.gmgn.ai/v1/market/token_kline');
   for (const [key, value] of Object.entries({ chain: 'bsc', address, resolution: settings.resolution,
     from: since * 1000, to: now, timestamp: until, client_id: randomUUID() })) url.searchParams.set(key, String(value));
@@ -145,7 +151,8 @@ export async function fetchGmgnMarketCandles(address: string, period: ChartRange
   const candles = parseGmgnCandles(Array.isArray(body?.data) ? body.data : body?.data?.list, since, until);
   if (!candles.length) return null;
   return { address, period, candles, points: candles.map(c => ({ timestamp: new Date(c.time * 1000).toISOString(), priceUsd: String(c.close) })),
-    source: 'gmgn', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, pending: false, stale: false };
+    source: 'gmgn', updatedAt: new Date(now).toISOString(), resolution: settings.resolution, pending: false, stale: false,
+    ...(historySeconds < settings.seconds ? { partialHistory: true } : {}) };
 }
 
 export async function fetchPreferredMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, options: {
@@ -230,6 +237,15 @@ async function loadCached(key: string, address: string, period: ChartRange) {
   } catch { return null; }
 }
 
+async function persistChart(key: string, chart: TokenChart) {
+  try {
+    await mkdir(cacheDirectory, { recursive: true });
+    const temporary = path.join(cacheDirectory, `${key}.${randomUUID()}.tmp`);
+    await writeFile(temporary, JSON.stringify(chart));
+    await rename(temporary, path.join(cacheDirectory, `${key}.json`));
+  } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
+}
+
 export async function currentMarketChart(address: string, range: ChartRange): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
@@ -260,12 +276,9 @@ export async function currentMarketChart(address: string, range: ChartRange): Pr
         retryAt.delete(key);
         if (cache.size >= 500) cache.delete(cache.keys().next().value!);
         cache.set(key, result);
-        try {
-          await mkdir(cacheDirectory, { recursive: true });
-          const temporary = path.join(cacheDirectory, `${key}.tmp`);
-          await writeFile(temporary, JSON.stringify(result));
-          await rename(temporary, path.join(cacheDirectory, `${key}.json`));
-        } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
+        // Ready candles should reach the browser without waiting for disk I/O.
+        // Atomic persistence still keeps genuine history available after restarts.
+        void persistChart(key, result);
         return result;
       } catch (error) {
         const deferred = error instanceof MarketProviderDeferred;
@@ -287,7 +300,10 @@ export async function currentMarketChart(address: string, range: ChartRange): Pr
   if (available) return { chart: chartForRange({ ...available, stale: true }, range), pending: !!job, ...state() };
   if (job) {
     const result = await new Promise<TokenChart | null>(resolve => {
-      const timer = setTimeout(() => resolve(null), 1000);
+      // A full chart can finish in this response after its provider slot opens.
+      // Otherwise a one-second timeout adds an entire browser polling interval
+      // even when the candles become ready just after that first second.
+      const timer = setTimeout(() => resolve(null), interactive ? 8000 : 1000);
       void job!.then(chart => { clearTimeout(timer); resolve(chart); });
     });
     if (result) return { chart: chartForRange(result, range), pending: false };

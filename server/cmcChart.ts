@@ -15,6 +15,7 @@ function validResponse(body: any): boolean {
   return code != null && code !== '' && typeof code !== 'boolean' && Number(code) === 0 && Array.isArray(body?.data);
 }
 const windows = {
+  '1m': { seconds: 86_400, step: 60, interval: '1min', resolution: '1m', limit: 1000 },
   '24h': { seconds: 86_400, step: 300, interval: '5min', resolution: '5m', limit: 288 },
   '5m': { seconds: 86_400, step: 300, interval: '5min', resolution: '5m', limit: 288 },
   '7d': { seconds: 604_800, step: 3600, interval: '1h', resolution: '1h', limit: 168 },

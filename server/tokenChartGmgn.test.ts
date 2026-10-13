@@ -18,7 +18,7 @@ describe('GMGN token market history', () => {
     ]);
     expect(parseGmgnCandles(undefined, since, until)).toEqual([]);
   });
-  it.each(['5m', '1h', '4h', '1d'] as const)('requests direct BSC %s history with official auth and millisecond range', async period => {
+  it.each(['1m', '5m', '1h', '4h', '1d'] as const)('requests direct BSC %s history with official auth and millisecond range', async period => {
     const request = vi.fn(async (url: URL, _signal: AbortSignal, headers: Record<string, string>) => {
       expect(url.origin + url.pathname).toBe('https://openapi.gmgn.ai/v1/market/token_kline');
       expect(url.searchParams.get('chain')).toBe('bsc'); expect(url.searchParams.get('address')).toBe(address);
@@ -39,6 +39,17 @@ describe('GMGN token market history', () => {
     const chart = await fetchPreferredMarketCandles(address, '5m', undefined, { gmgnKey: 'key', now,
       gmgnRequest: async () => ({ code: 0, data: [bar()] }), cmcRequest, geckoRequest });
     expect(chart?.source).toBe('gmgn'); expect(geckoRequest).not.toHaveBeenCalled(); expect(cmcRequest).not.toHaveBeenCalled();
+  });
+  it('requests the newest retained minute history instead of truncating recent bars from a longer ascending response', async () => {
+    const chart = await fetchGmgnMarketCandles(address, '1m', 'key', async url => {
+      const from = Number(url.searchParams.get('from')) / 1000;
+      const to = Number(url.searchParams.get('to')) / 1000;
+      expect(to - from).toBe(999 * 60);
+      return { code: 0, data: { list: Array.from({ length: 1000 }, (_, index) => bar(from + index * 60)) } };
+    }, now);
+    expect(chart).toMatchObject({ resolution: '1m', partialHistory: true });
+    expect(chart?.candles).toHaveLength(1000);
+    expect(chart?.candles.at(-1)?.time).toBe(now / 1000);
   });
   it('keeps stale cached history during a GMGN cooldown instead of spraying fallback calls', async () => {
     const saved = (await fetchGmgnMarketCandles(address, '5m', 'key', async () => ({ code: 0, data: [bar()] }), now))!;

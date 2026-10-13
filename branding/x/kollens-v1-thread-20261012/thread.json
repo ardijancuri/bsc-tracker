@@ -1,0 +1,60 @@
+{
+  "parent": "Existing Kollens launch post",
+  "postingMode": "Sequential replies to previous post",
+  "replies": [
+    {
+      "number": 1,
+      "title": "Kollens V1 overview",
+      "image": "01-kollens-v1.png",
+      "caption": "1/6 Kollens V1\n\nLive KOL trades, watchlists, token charts, KOL profiles, tracked 24h P&L rankings and shareable replays on BNB Chain.\n\nFeaturing Afeng, 0xAA, 0xLuck & clukz; BIBI, okt, WangChai, SAFU & GM.\n\nFeature tour below ↓\n\nhttps://kollens.com\n\n#BNBChain #KOLTracking",
+      "sourceImage": "kollens-v1-overview.png",
+      "weightedCharacters": 277,
+      "captionFile": "captions/01-v1-overview.txt"
+    },
+    {
+      "number": 2,
+      "title": "Live KOL trades",
+      "image": "02-live-trades.png",
+      "caption": "2/6 Live KOL trades\n\nFollow the moves.\n\nSee the latest buys and sells from tracked wallets on BNB Chain. Check which tokens are being traded, the amounts involved and the on-chain transaction links—all in one live feed.\n\nhttps://kollens.com/trades\n\n#BNBChain #KOLTracking",
+      "sourceImage": "../kollens-feature-series-20261012-v2/01-live-trades/post.png",
+      "weightedCharacters": 269,
+      "captionFile": "captions/02-live-trades.txt"
+    },
+    {
+      "number": 3,
+      "title": "Watchlists",
+      "image": "03-watchlists.png",
+      "caption": "3/6 Watchlists\n\nKeep your favorite tokens in focus.\n\nFollow tokens like WangChai, SAFU and GM with market caps, tracked volume and mini charts. Search, sort and compare 24h, 1 week or 1 month views from your watchlist.\n\nhttps://kollens.com/watchlist\n\n#BNBChain #Memecoins",
+      "sourceImage": "../kollens-feature-series-20261012-v2/02-watchlists/post.png",
+      "weightedCharacters": 265,
+      "captionFile": "captions/03-watchlists.txt"
+    },
+    {
+      "number": 4,
+      "title": "Token details",
+      "image": "04-token-details.png",
+      "caption": "4/6 Token details\n\nSee GM beyond the ticker.\n\nExplore its market-cap chart, tracked volume and recent KOL trades. See who's trading it, copy the contract, or open GMGN/BscScan from one page.\n\nhttps://kollens.com/token/0x13920fe6467e9e3c852b8d365a036c995f0f7777\n\n#BNBChain #Memecoins",
+      "sourceImage": "../kollens-feature-series-20261012-v2/03-token-details/post.png",
+      "weightedCharacters": 237,
+      "captionFile": "captions/04-token-details.txt"
+    },
+    {
+      "number": 5,
+      "title": "KOL profiles & P&L",
+      "image": "05-kol-profiles.png",
+      "caption": "5/6 KOL profiles & P&L\n\nKnow the wallet.\n\nExplore @0xLuckHK's profile: recent activity, traded tokens like Bibi and SI, and tracked 24h realized P&L. Compare wallets on the leaderboard.\n\nhttps://kollens.com/kol/0xffbd5a03e1e936bfae82c567f8b41e0a95296dcc\n\n#BNBChain #KOLTracking",
+      "sourceImage": "../kollens-feature-series-20261012-v2/04-kol-profiles/post.png",
+      "weightedCharacters": 234,
+      "captionFile": "captions/05-kol-profiles.txt"
+    },
+    {
+      "number": 6,
+      "title": "Trade replays",
+      "image": "06-trade-replays.png",
+      "caption": "6/6 Trade replays\n\nReplay @aa_AFeng's BIBI trades.\n\nRecorded realized P&L: +$1,578.01 (+102.43%).\n\nFollow buy/sell markers, review the recap, and export an image or video to share on X.\n\nhttps://kollens.com\n\n#BNBChain #KOLTracking #TradeReplays",
+      "sourceImage": "../kollens-feature-series-20261012-v2/05-trade-replays/post.png",
+      "weightedCharacters": 248,
+      "captionFile": "captions/06-trade-replays.txt"
+    }
+  ]
+}

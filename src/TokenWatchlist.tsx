@@ -9,6 +9,7 @@ import { watchPeriods, type TokenChart, type WatchEntry, type Watchlist, type Wa
 import { PriceChange, WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
 import { compareWatchTokens, type WatchSortKey } from './watchlistSort';
 import { marketChartChanges } from './tokenChartData';
+import { tokenChartIntent } from './tokenChartIntent';
 import './tokenWatchlist.css';
 
 const periodLabels: Record<WatchPeriod, string> = { '24h': '24h', '7d': '1 week', '30d': '1 month' };
@@ -42,13 +43,15 @@ function WatchTokenRow({ token, period, onChart }: { token: WatchEntry; period: 
   const navigate = useNavigate();
   const translation = useTokenTranslation(token);
   const name = token.symbol || token.name || shortAddress(token.address);
-  return <tr onClick={event => {
+  const chartIntent = tokenChartIntent(token.address);
+  return <tr onMouseEnter={chartIntent.onMouseEnter} onMouseLeave={chartIntent.onMouseLeave} onClick={event => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey ||
       (event.target as Element).closest('a,button,input,select,textarea,[role="button"]')) return;
+    chartIntent.onPointerDown();
     navigate(`/token/${token.address}`);
   }}>
     <td className="watch-star"><FollowButton kind="token" address={token.address} label={token.name || token.symbol} /></td>
-    <td className="watch-token-name"><Link to={`/token/${token.address}`} title={token.name || name}>
+    <td className="watch-token-name"><Link to={`/token/${token.address}`} {...chartIntent} title={token.name || name}>
       <span className="token-avatar"><span>{name.slice(0, 1)}</span>{token.logoUrl && <img src={token.logoUrl} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden'; }} />}</span>
       <strong>{name}</strong>{translation?.sourceText && translation.sourceText !== name && <span className="watch-inline-source">{translation.sourceText}</span>}{translation?.englishName && <span className="watch-inline-translation" lang="en" title={translation.englishName}>{translation.englishName}</span>}
     </Link></td>

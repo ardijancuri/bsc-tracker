@@ -8,8 +8,11 @@ coverage/
 .cache/
 __pycache__/
 *.log
-bscan-deploy.tar.gz
-output/*.tar.gz
-output/intelligence-integration.mjs
-output/verify-launchpads.mjs
-output/radar-live.png
+# Local release archives, previews and one-off diagnostics.
+/output/
+*.tar.gz
+*.tgz
+
+# Upload packs duplicate the retained artwork; v2 is the current feature series.
+/branding/x/**/*.zip
+/branding/x/kollens-feature-series-20261012/

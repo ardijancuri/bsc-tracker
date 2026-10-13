@@ -1,0 +1,24 @@
+{
+  "source": "User-supplied Afeng/BIBI Kollens trade replay PNG",
+  "receivedDate": "2026-10-13",
+  "sourceFile": "afeng-bibi-trade-replay.png",
+  "sourceSha256": "2efc58c5160b104e9367ed2b41493f17f9561268cb73648f1f03544f52652155",
+  "originalDimensions": {
+    "width": 1080,
+    "height": 1350
+  },
+  "displayedKol": "阿峰_Afeng",
+  "xHandle": "aa_AFeng",
+  "token": "BIBI",
+  "replayDateAsDisplayed": "Oct 12, 2026",
+  "displayedValues": {
+    "averageEntryMarketCap": "$11.0K",
+    "realizedReturn": "+102.43%",
+    "realizedPnlUsd": "+$1,578.01",
+    "currentMarketCap": "$3.2K",
+    "invested": "$1.5K"
+  },
+  "rendering": "Complete original PNG preserved; scaled proportionally to 404 x 505 in the existing portrait frame.",
+  "dataHandling": "Values transcribed from the supplied replay; no chart reconstruction or financial recalculation.",
+  "exportRoute": "Existing SVG source and Sharp composition; retained native ImageGen campaign plate."
+}

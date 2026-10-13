@@ -11,3 +11,5 @@ coverage
 output
 research
 *.tar.gz
+.agents
+branding

@@ -1,0 +1,22 @@
+{
+  "name": "Final Kollens X header with horizontally centered logo and URL",
+  "dimensions": [
+    1500,
+    500
+  ],
+  "source": "kollens-x-header-centered.svg",
+  "logo": {
+    "centerX": 750,
+    "y": 232,
+    "width": 503.009930075,
+    "height": 105
+  },
+  "url": {
+    "text": "kollens.com",
+    "centerX": 750,
+    "baseline": 386
+  },
+  "background": "Embedded grayscale market grid, decorative price line and candlesticks.",
+  "foreground": "Exact approved vector logo and Manrope URL outlines.",
+  "pngBytes": 253779
+}

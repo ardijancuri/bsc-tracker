@@ -26,9 +26,9 @@ describe('CMC latest token history', () => {
     expect(parseCmcCandles(rows, until - 86_400, until, 300)).toHaveLength(1);
   });
   it.each([
-    ['5m', '5min', '288'], ['1h', '1h', '720'], ['4h', '4h', '540'], ['1d', '1d', '180'],
+    ['1m', '1min', '1000'], ['5m', '5min', '288'], ['1h', '1h', '720'], ['4h', '4h', '540'], ['1d', '1d', '180'],
   ] as const)('requests real latest %s history directly by token address without paid range parameters', async (period, interval, limit) => {
-    const step = { '5m': 300, '1h': 3600, '4h': 14_400, '1d': 86_400 }[period];
+    const step = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14_400, '1d': 86_400 }[period];
     const barTime = Math.floor(until / step) * step;
     const request = vi.fn(async (requestUrl: URL) => {
       expect(requestUrl.origin).toBe('https://pro-api.coinmarketcap.com');
@@ -39,6 +39,13 @@ describe('CMC latest token history', () => {
     const chart = await fetchCmcMarketCandles(address, period, request, now);
     expect(chart).toMatchObject({ source: 'coinmarketcap', resolution: period, volumeCurrency: 'unknown', partialHistory: true });
     expect(chart?.points).toEqual([{ timestamp: new Date(barTime * 1000).toISOString(), priceUsd: '2' }]);
+  });
+  it('preserves minute bars that are not aligned to five-minute boundaries', async () => {
+    const chart = await fetchCmcMarketCandles(address, '1m', async () => body([
+      candle((until - 60) * 1000), candle((until - 120) * 1000), candle((until - 1) * 1000),
+    ]), now);
+    expect(chart?.candles.map(item => item.time)).toEqual([until - 120, until - 60]);
+    expect(chart).toMatchObject({ resolution: '1m', partialHistory: true });
   });
   it('bounds latest requests, flags shortened history, and accepts the provider string success code', async () => {
     const request = vi.fn(async (requestUrl: URL) => {

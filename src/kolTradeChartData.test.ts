@@ -21,6 +21,11 @@ describe('KOL chart trade markers', () => {
     expect(kolTradeMarkers([candle(0)], [trade('valid', 3599), { id: 'bad', timestamp: 'bad', side: 'buy' }], '1h')).toMatchObject([{ text: 'B' }]);
     expect(kolTradeMarkers([candle(0)], [trade('boundary', 3600)], '1h')).toEqual([]);
   });
+  it('places minute trades on their own bars and excludes trades in a missing minute', () => {
+    expect(kolTradeMarkers([candle(0), candle(60), candle(180)], [trade('first', 59), trade('next', 60), trade('gap', 120)], '1m'))
+      .toMatchObject([{ time: start, text: 'B' }, { time: start + 60, text: 'B' }]);
+    expect(tradeVisibleRange([candle(0)], [trade('late', 60)], '1m')).toBeNull();
+  });
 });
 
 describe('KOL chart history selection', () => {

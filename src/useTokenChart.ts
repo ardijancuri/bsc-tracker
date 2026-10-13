@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import type { TokenChart, ChartRange } from '../shared/intelligence';
-import { createTokenChartRequests } from './tokenChartRequest';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { candleIntervals, type CandleInterval, type ChartRange } from '../shared/intelligence';
+import { createTokenChartRequests, tokenChartRefreshDelay } from './tokenChartRequest';
 
 const charts = createTokenChartRequests();
 
@@ -11,9 +11,10 @@ export function preloadTokenChart(address: string, period: ChartRange = '5m') {
 
 export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true) {
   const key = `${address}-${period}`;
-  const [result, setResult] = useState<{ key: string; chart: TokenChart } | null>(null);
-  const [error, setError] = useState(false);
-  const chart = result?.key === key ? result.chart : address ? charts.peek(address, period) : null;
+  const [failure, setFailure] = useState<string | null>(null);
+  const subscribe = useCallback((listener: () => void) => address ? charts.subscribe(address, listener) : () => {}, [address]);
+  const snapshot = useCallback(() => address ? charts.peek(address, period) : null, [address, period]);
+  const chart = useSyncExternalStore(subscribe, snapshot, () => null);
   useEffect(() => {
     if (!address || !enabled) return;
     let stopped = false;
@@ -26,10 +27,9 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       let delay = 30_000;
       try {
         const value = await charts.request(address, period);
-        if (!stopped) { setResult({ key, chart: value }); setError(false); }
-        if (value.retryAfterMs) delay = Math.max(1000, Math.min(value.retryAfterMs, 600_000));
-        else if (value.pending) delay = 3000;
-      } catch { if (!stopped) setError(true); }
+        if (!stopped) setFailure(null);
+        delay = tokenChartRefreshDelay(value, candleIntervals.includes(period as CandleInterval));
+      } catch { if (!stopped) setFailure(key); delay = 3000; }
       refreshing = false;
       if (!stopped && isVisible()) timer = window.setTimeout(() => void refresh(), delay);
     };
@@ -41,7 +41,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
     void refresh();
     return () => { stopped = true; window.clearTimeout(timer); document.removeEventListener('visibilitychange', visibilityChanged); };
   }, [address, period, key, enabled]);
-  return { chart, error };
+  return { chart, error: failure === key };
 }
 
 export function useChartVisibility() {

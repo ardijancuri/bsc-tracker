@@ -1,0 +1,12 @@
+Use case: ads-marketing.
+Asset type: Kollens V1 feature-overview X thread image, native background plate only, 16:9 landscape, ideally1600x900.
+Input images: Image1 watchlist poster and Image2 live-trades poster are STYLE REFERENCES ONLY. Use their dark charcoal, softly blurred app backdrop, thin restrained warm gold edges and smoked-glass UI depth. Do not copy readable content, logos or panels literally.
+Primary request: a fresh single cohesive feature-workspace composition that visually brings the app's capabilities together. Make the LEFT half x0..760 completely quiet near-black and empty for a separate exact logo, headline and feature list. The RIGHT half contains four entirely EMPTY front-on charcoal glass surfaces, tastefully staggered with slight backing-layer depth:
+A) top wide activity-feed panel, approximate x825,y188,w610,h218.
+B) lower-left watchlist/chart panel, approximate x820,y457,w460,h222.
+C) tall replay portrait panel atfar-right, approximate x1320,y428,w230,h288, upright 4:5 proportions.
+D) small horizontal wallet/P&L ribbon, approximate x875,y728,w395,h72.
+All coordinates refer to a1600x900 canvas. Leave all four front surfaces truly blank and smooth, no internal rows, charts, icons or ghost data. Parent will insert two real KOL trades, real watchlist mini charts, a genuine replay card, and real wallet statistics.
+Style/medium: polished but understated product campaign art; matte smoked glass, very thin soft gold edging, subtle layered panels; look related to the approved launch campaign without repeating the circular lens. One unified workspace, not a contact sheet of separate posters.
+Scene/backdrop: near-black with very faint illegible blurred green/red trading-row hints atfar-right. Left empty. Restrained soft edge highlights, never bright gold floor shine or floating gold orb. No complicated wiring; a few quiet gold edges can imply the panels belong to one app.
+Constraints: NO lens, circles, sphere, globe, camera, magnifying glass, huge symbols, random sculpture, neon effects, ground pedestal, floor glow, bright flare. No readable text, headings, logo, brandmark, token art, portraits, numbers, numerical metrics, charts, graphs, stars or fabricated content. Exactly four empty surfaces, sufficient inset space and separated main panels, no overlap obscuring the front surfaces. Background ONLY; the exact app logo, Manrope type, named features and factual UI will be composed later.

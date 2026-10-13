@@ -1,0 +1,56 @@
+{
+  "width": 1600,
+  "height": 900,
+  "font": "Manrope (exact app WOFF glyph outlines)",
+  "logoSha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c",
+  "overviewSha256": "166077a0b15f15f7a27554fc715a9da84f0c4eebd866bf102b1f43cda2198ec1",
+  "generationRoute": "Retained native ImageGen plate; exact app logo, Manrope SVG text, original artwork and genuine app data composed with Sharp. Overview retains the actual clukz app replay; reply 6 uses the unchanged supplied Afeng/BIBI app replay.",
+  "dataSource": "../kollens-feature-series-20261012-v2/shared/snapshot.json",
+  "reply6Source": "../kollens-feature-series-20261012-v2/shared/afeng-bibi-source.json",
+  "snapshotAt": "2026-10-12T18:45:04.832Z",
+  "liveRowsSnapshotAt": "2026-10-12T19:28:05.454Z",
+  "replies": [
+    {
+      "number": 1,
+      "title": "Kollens V1 overview",
+      "image": "01-kollens-v1.png",
+      "caption": "captions/01-v1-overview.txt",
+      "weightedCharacters": 277
+    },
+    {
+      "number": 2,
+      "title": "Live KOL trades",
+      "image": "02-live-trades.png",
+      "caption": "captions/02-live-trades.txt",
+      "weightedCharacters": 269
+    },
+    {
+      "number": 3,
+      "title": "Watchlists",
+      "image": "03-watchlists.png",
+      "caption": "captions/03-watchlists.txt",
+      "weightedCharacters": 265
+    },
+    {
+      "number": 4,
+      "title": "Token details",
+      "image": "04-token-details.png",
+      "caption": "captions/04-token-details.txt",
+      "weightedCharacters": 237
+    },
+    {
+      "number": 5,
+      "title": "KOL profiles & P&L",
+      "image": "05-kol-profiles.png",
+      "caption": "captions/05-kol-profiles.txt",
+      "weightedCharacters": 234
+    },
+    {
+      "number": 6,
+      "title": "Trade replays",
+      "image": "06-trade-replays.png",
+      "caption": "captions/06-trade-replays.txt",
+      "weightedCharacters": 248
+    }
+  ]
+}

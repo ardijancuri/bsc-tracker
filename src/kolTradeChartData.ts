@@ -2,7 +2,7 @@ import type { CandleInterval, MarketCandle } from '../shared/intelligence';
 import type { Trade } from './types';
 
 export type ChartTrade = Pick<Trade, 'id' | 'timestamp' | 'side'>;
-const seconds: Record<CandleInterval, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+const seconds: Record<CandleInterval, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
 
 export function intervalForTrades(first: string | null, last: string | null, now = Date.now()): CandleInterval {
   const start = Date.parse(first || last || '');

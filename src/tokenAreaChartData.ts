@@ -3,7 +3,7 @@ import { marketCapCandles } from './tokenChartData';
 
 export interface AreaPoint { time: number; value: number; volume: number }
 export interface ChartWindow { from: number; to: number }
-export const intervalSeconds: Record<CandleInterval, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+export const intervalSeconds: Record<CandleInterval, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
 
 // Plot real candle closes against their timestamps. Do not turn recorded KOL
 // fills into a continuous market history, or manufacture prices for gaps.

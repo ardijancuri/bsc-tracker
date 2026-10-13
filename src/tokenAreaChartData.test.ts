@@ -28,6 +28,7 @@ describe('market cap area chart data', () => {
   it('keeps empty and one-point histories finite without inventing additional samples', () => {
     const single = marketCapLinePoints([candle(600, 1)], '1000');
     expect(fullChartWindow(single, '5m')).toEqual({ from: 600, to: 900 });
+    expect(fullChartWindow(single, '1m')).toEqual({ from: 600, to: 660 });
     expect(single).toHaveLength(1);
     for (const points of [[], single]) {
       const axis = marketCapAxis(points);

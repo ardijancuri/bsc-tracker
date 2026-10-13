@@ -21,6 +21,72 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('candle loading and shared cache', () => {
+  it('returns an interactive chart as soon as a provider taking more than one second finishes', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    mocks.fetch.mockImplementation(async (url: URL) => {
+      if (url.pathname.endsWith('/pools')) return response(pools);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return response(history);
+    });
+    let settled = false;
+    const selected = currentMarketChart(address, '5m').then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await selected).toMatchObject({ pending: false, chart: { resolution: '5m', candles: [{ close: 1.5 }] } });
+    expect(settled).toBe(true);
+  });
+  it('keeps the shorter watchlist wait and bounds interactive requests when a provider is slow', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    mocks.fetch.mockImplementation(() => new Promise(() => {}));
+    const background = currentMarketChart(address, '24h');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await background).toMatchObject({ chart: null, pending: true });
+    let settled = false;
+    const selected = currentMarketChart(address, '5m').then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await selected).toMatchObject({ chart: null, pending: true, loadStatus: 'queued' });
+    expect(mocks.fetch).toHaveBeenCalledOnce();
+  });
+  it('serves newly fetched candles while persistent cache writes are still pending', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    let finishWrite!: () => void;
+    mocks.writeFile.mockImplementation(() => new Promise<void>(resolve => { finishWrite = resolve; }));
+    let settled = false;
+    const selected = currentMarketChart(address, '5m').then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+    expect((await selected).chart?.candles).toHaveLength(1);
+    expect(mocks.rename).not.toHaveBeenCalled();
+    expect((await currentMarketChart(address, '5m')).chart?.candles).toHaveLength(1);
+    expect(mocks.fetch).toHaveBeenCalledTimes(2);
+    finishWrite();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.rename).toHaveBeenCalledOnce();
+  });
+  it('keeps minute history separate and never invents minute candles from a cached five-minute chart', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    expect((await currentMarketChart(address, '5m')).chart?.resolution).toBe('5m');
+    mocks.fetch.mockImplementation(() => new Promise(() => {}));
+    const minute = currentMarketChart(address, '1m');
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(await minute).toMatchObject({ chart: null, pending: true });
+    expect(mocks.fetch.mock.calls.at(-1)?.[0].searchParams.get('aggregate')).toBe('1');
+  });
+  it('reuses genuine cached minute candles immediately for a coarser chart while its full history loads', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    const bucket = Math.floor(now / 300) * 300 - 300;
+    mocks.fetch.mockImplementation(async (url: URL) => response(url.pathname.endsWith('/pools') ? pools : {
+      data: { attributes: { ohlcv_list: [[bucket, 1, 2, .5, 1.5, 10], [bucket + 60, 1.5, 3, 1, 2, 20]] } },
+    }));
+    expect((await currentMarketChart(address, '1m')).chart?.resolution).toBe('1m');
+    mocks.fetch.mockImplementation(() => new Promise(() => {}));
+    const coarser = await currentMarketChart(address, '5m');
+    expect(coarser).toMatchObject({ pending: true, chart: { resolution: '5m', stale: true, partialHistory: true,
+      candles: [{ time: bucket, open: 1, high: 3, low: .5, close: 2, volume: 30 }] } });
+  });
   it('distinguishes a provider cooldown from missing 5m history and respects its remaining duration', async () => {
     const { currentMarketChart } = await import('./tokenChart.js');
     const { MarketProviderDeferred } = await import('./geckoApi.js');

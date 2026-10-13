@@ -1,0 +1,42 @@
+{
+  "source": "User-supplied GMGN position screenshot received 13 October 2026",
+  "sourceFile": "cryptocharming-gm-source.png",
+  "sourceSha256": "f51c177a548ed1ff1b05aa77b963429c6a191152428b7c26a99e6c8195296702",
+  "wallet": "0xcc291dcd83bd9f2600cca4d65ae3b724eaf4f5a9",
+  "kol": "CryptoCharming",
+  "xHandle": "CryptoCharming",
+  "token": "GM",
+  "contract": "0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+  "chart": {
+    "file": "cryptocharming-gm-chart.png",
+    "units": "USD token price",
+    "selectedRange": "30d",
+    "sourceCrop": {
+      "left": 15,
+      "top": 48,
+      "width": 550,
+      "height": 202
+    },
+    "rendering": "Unchanged screenshot pixels; chart and buy/sell/transfer markers are not reconstructed."
+  },
+  "displayed": {
+    "profitLabel": "GMGN-reported total profit",
+    "totalProfitUsd": "+$18.8K",
+    "totalProfitPercent": "+91.05%",
+    "boughtUsd": "$13.8K",
+    "buyCount": 12,
+    "boughtTokens": "3.7M GM",
+    "soldUsd": "$27K",
+    "sellCount": 17,
+    "soldTokens": "5.5M GM",
+    "transfersIn": "5M GM",
+    "transferInUsd": "$5.98K",
+    "transferCount": 1,
+    "holdingDuration": "13 days"
+  },
+  "interpretation": "Rounded figures copied from the supplied GMGN screenshot. Total profit includes a transferred-in position and is not claimed as Kollens-computed realized P&L or a closed single trade.",
+  "cardFile": "cryptocharming-gm-card.png",
+  "cardSha256": "6bace572d3a026a887b136d77577888b08cd70a2c74b1813eaf65343968374cf",
+  "font": "Exact bundled app Manrope outlined glyphs",
+  "exportRoute": "Existing editable SVG template and deterministic source-preserving Sharp export; retained native ImageGen campaign background."
+}

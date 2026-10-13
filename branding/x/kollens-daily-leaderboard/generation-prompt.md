@@ -1,0 +1,15 @@
+# Current daily leaderboard design
+
+Current route: editable native SVG and Sharp. Use the plain black #000000 background, with no app imagery, blur, glow, outer board or enclosing frame. Keep the large centered rows, a smaller logo and kollens.com. Only the first three rows have gold/silver/bronze backgrounds; fourth and fifth are unfilled and borderless. Remove the separate left accent bar from first place. Preserve authentic avatars, exact names and values, and vertically centered P&L amounts. The method and snapshot time stay in the caption and source metadata.
+
+## Superseded native background generation
+
+Route: Built-in Codex ImageGen, generated on 13 October 2026. Exact app logo, fonts, source names, avatar artwork, ranks and financial values are deterministic foreground content.
+
++Use case: ads-marketing.
+Asset type: A reusable Kollens DAILY KOL LEADERBOARD X-post background plate, 16:9 landscape. Create ONE composition, no collage. This is a NEW background for the established Kollens campaign.
+Style: Near-black charcoal #080B0D, quiet atmosphere, matte smoked-glass product panels, very restrained thin brand-gold #F9C932 edge accents, soft heavily blurred app context at the far right. Refined and credible financial dashboard graphic, no plastic shine. Match the look of a clean black/gold Kollens launch campaign.
+Exact layout in final 1600 x 900 coordinates: Keep the whole left x0 through x705 region entirely empty, flat near-black with subtle texture, for a logo and headline to be added separately. On the right make ONE wide upright front-on rectangular leaderboard panel at x744 y178 width782 height566, with 20px rounded corners, matte dark-gray surface, thin muted gold rim and a little quiet depth. It must be front-on without rotation, so precise data can be overlaid. The panel is one smooth uninterrupted BLANK surface, no row shapes or dividers or fake UI. One very faint larger offset slab behind it can hint at a ranking board, but stay to the right of x716 and do not overlap the left copy area.
+Outside the panel near far-right, keep only soft indiscernible blurred app shapes, no readable data or distinct token art. Keep the bottom region below y750 empty and near-black for exact footnotes.
+The future foreground will show five KOL ranks with authentic avatars and exact daily P&L, and metallic gold/silver/bronze row accents will be added by a deterministic renderer. DO NOT generate those contents yourself.
+Constraints: No readable text, numbers, dates, avatars, token pictures, logos, letters, charts, medals, trophy, crown, podium, coins, lens, globe, circle, bright glow, light pool, pedestal, floor or connector lines. No extra panels, no invented financial data, no badges. Only the restrained blank rectangular board, quiet background, and faint backing slab. Preserve the left empty space. 1600 x 900 wide composition.

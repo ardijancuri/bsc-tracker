@@ -1,0 +1,65 @@
+{
+  "width": 1600,
+  "height": 900,
+  "revision": 4,
+  "headlineBaselineStep": 84,
+  "font": "Manrope (exact bundled WOFF glyph outlines); Microsoft YaHei fallback for actual Chinese token names",
+  "logoSha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c",
+  "dataSnapshotAt": "2026-10-12T18:45:04.832Z",
+  "liveRowsSnapshotAt": "2026-10-12T19:28:05.454Z",
+  "liveKolHandles": [
+    "aa_AFeng",
+    "TurtleTavernTV",
+    "0xAA_Science",
+    "Cupseyy"
+  ],
+  "generationRoute": "Retained built-in ImageGen campaign plates; exact SVG/Manrope/data and original artwork composition with Sharp. Replay example is the unchanged user-supplied Afeng/BIBI app replay image, fitted to the existing portrait frame.",
+  "replaySource": "shared/afeng-bibi-source.json",
+  "posts": [
+    {
+      "title": "Live KOL trades",
+      "slug": "01-live-trades",
+      "image": "01-live-trades/post.png",
+      "caption": "01-live-trades/post.txt",
+      "weightedCharacters": 248,
+      "sha256": "9acc50873c8b5118184cc1450039091e01979a88f1a7dd887b92d6ff00e6edc3",
+      "nativePrompt": "01-live-trades/generation-prompt.md"
+    },
+    {
+      "title": "Token watchlists",
+      "slug": "02-watchlists",
+      "image": "02-watchlists/post.png",
+      "caption": "02-watchlists/post.txt",
+      "weightedCharacters": 249,
+      "sha256": "8da33d1a3d020f904cb2786a903a9448781a0056ca2d498041eab86c664b7b06",
+      "nativePrompt": "02-watchlists/generation-prompt.md"
+    },
+    {
+      "title": "Token details",
+      "slug": "03-token-details",
+      "image": "03-token-details/post.png",
+      "caption": "03-token-details/post.txt",
+      "weightedCharacters": 218,
+      "sha256": "2fe8cd6329eb0453210a00fe0c7727618dd7d6c1c26c2cbb6e5c19ed8502e4b4",
+      "nativePrompt": "03-token-details/generation-prompt.md"
+    },
+    {
+      "title": "KOL profiles and P&L",
+      "slug": "04-kol-profiles",
+      "image": "04-kol-profiles/post.png",
+      "caption": "04-kol-profiles/post.txt",
+      "weightedCharacters": 210,
+      "sha256": "f120faa7bc408c8c5c85ca2a2822c5fe58ac0647ca265ffb4057e5bb30c544b0",
+      "nativePrompt": "04-kol-profiles/generation-prompt.md"
+    },
+    {
+      "title": "Shareable trade replays",
+      "slug": "05-trade-replays",
+      "image": "05-trade-replays/post.png",
+      "caption": "05-trade-replays/post.txt",
+      "weightedCharacters": 229,
+      "sha256": "440dd0117838a2bb6b261459d48dfd4f7bab01b4a35cd3f81645996f4e484b93",
+      "nativePrompt": "05-trade-replays/generation-prompt.md"
+    }
+  ]
+}

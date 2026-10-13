@@ -1,0 +1,240 @@
+{
+  "kol": {
+    "address": "0x077b9981bc8a2ca417cea41861111da63266988b",
+    "name": "clukz",
+    "avatarUrl": "/branding/x/kollens-feature-series-20261012/shared/replay-avatar.png",
+    "twitter": "clukz",
+    "source": "gmgn-csv",
+    "lastSeenAt": "2026-10-12T18:36:20+00:00"
+  },
+  "token": {
+    "address": "0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+    "symbol": "GM",
+    "name": null,
+    "logoUrl": "/branding/x/kollens-feature-series-20261012/shared/replay-token.png",
+    "priceUsd": 0.0015151914098152433,
+    "marketCapUsd": 1361417,
+    "marketCapSupply": "1000000000.00000000"
+  },
+  "trades": [
+    {
+      "id": "0x8429ebb4a2a3dbb6834554e21b9cbc395de28f2736b36cf3201ff516ce4b6246:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x8429ebb4a2a3dbb6834554e21b9cbc395de28f2736b36cf3201ff516ce4b6246",
+      "timestamp": "2026-09-29T19:57:36.000Z",
+      "side": "buy",
+      "tokenAmount": 26217222.482955355,
+      "amountUsd": 1131.879077775,
+      "priceUsd": 0.0000431731118165119,
+      "marketCapUsd": 43173.1118165119,
+      "cumulativeRealizedProfitUsd": 0
+    },
+    {
+      "id": "0x8be506c9934a9cd9e0957e042009bec0721b6374725ca33ec769f4583bbcfbdb:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x8be506c9934a9cd9e0957e042009bec0721b6374725ca33ec769f4583bbcfbdb",
+      "timestamp": "2026-09-29T19:57:41.000Z",
+      "side": "buy",
+      "tokenAmount": 24289.523582977734,
+      "amountUsd": 3.77293025925,
+      "priceUsd": 0.000155331587561235,
+      "marketCapUsd": 155331.587561235,
+      "cumulativeRealizedProfitUsd": 0
+    },
+    {
+      "id": "0x8742e49e54b8f4d276a9300536860203d44a3a94fbbe6ca57a5799042ffceb26:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x8742e49e54b8f4d276a9300536860203d44a3a94fbbe6ca57a5799042ffceb26",
+      "timestamp": "2026-09-29T19:57:42.000Z",
+      "side": "buy",
+      "tokenAmount": 21844.46467351525,
+      "amountUsd": 3.77293025925,
+      "priceUsd": 0.000172717908890868,
+      "marketCapUsd": 172717.908890868,
+      "cumulativeRealizedProfitUsd": 0
+    },
+    {
+      "id": "0x1ad22d5da073ec0f643f71dc728a20ba9131de3ca545a41e46e783c3bbc8739f:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x1ad22d5da073ec0f643f71dc728a20ba9131de3ca545a41e46e783c3bbc8739f",
+      "timestamp": "2026-09-29T19:57:49.000Z",
+      "side": "sell",
+      "tokenAmount": 1313167.8235605925,
+      "amountUsd": 460.6542693181512,
+      "priceUsd": 0.000350796189986676,
+      "marketCapUsd": 350796.189986676,
+      "cumulativeRealizedProfitUsd": 403.960728037724
+    },
+    {
+      "id": "0xd982b0525f3e9a12427e4c9a26cba037ee79737606b255f2767089b8773c02a3:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0xd982b0525f3e9a12427e4c9a26cba037ee79737606b255f2767089b8773c02a3",
+      "timestamp": "2026-09-29T19:57:50.000Z",
+      "side": "sell",
+      "tokenAmount": 1247509.432382563,
+      "amountUsd": 257.42268911869826,
+      "priceUsd": 0.000206349292788158,
+      "marketCapUsd": 206349.292788158,
+      "cumulativeRealizedProfitUsd": 607.524552940017
+    },
+    {
+      "id": "0x63e290023fb9c5eaa318e95ad06a6e36ece90553614848e945ddf83bac826d56:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x63e290023fb9c5eaa318e95ad06a6e36ece90553614848e945ddf83bac826d56",
+      "timestamp": "2026-09-29T19:57:52.000Z",
+      "side": "sell",
+      "tokenAmount": 1185133.9607634346,
+      "amountUsd": 256.74968055354213,
+      "priceUsd": 0.000216641906361497,
+      "marketCapUsd": 216641.906361497,
+      "cumulativeRealizedProfitUsd": 813.108312487974
+    },
+    {
+      "id": "0x131470b6792c4a1d711b4077d31aae58575b852ee48a86f9b5245fb3d443f7cb:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x131470b6792c4a1d711b4077d31aae58575b852ee48a86f9b5245fb3d443f7cb",
+      "timestamp": "2026-09-29T19:57:53.000Z",
+      "side": "sell",
+      "tokenAmount": 1125877.262725263,
+      "amountUsd": 200.97759228131338,
+      "priceUsd": 0.000178507550454331,
+      "marketCapUsd": 178507.550454331,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x01070dafb45d6cda83698399b7db57a281d1caae8b19a6073f4683fabaa6972f:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x01070dafb45d6cda83698399b7db57a281d1caae8b19a6073f4683fabaa6972f",
+      "timestamp": "2026-09-29T19:58:04.000Z",
+      "side": "buy",
+      "tokenAmount": 32327.74454345449,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000116710036635201,
+      "marketCapUsd": 116710.036635201,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0xd84fcb279859af92e65ecc7b40644e26ec966e779419926efa51d898acd685ba:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0xd84fcb279859af92e65ecc7b40644e26ec966e779419926efa51d898acd685ba",
+      "timestamp": "2026-09-29T19:58:05.000Z",
+      "side": "buy",
+      "tokenAmount": 31183.074074799348,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000120994236839822,
+      "marketCapUsd": 120994.236839822,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0xf4115c39a128d706b6bf6996598b22eb25c020395d0e469efa784a5d08d0c706:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0xf4115c39a128d706b6bf6996598b22eb25c020395d0e469efa784a5d08d0c706",
+      "timestamp": "2026-09-29T19:58:06.000Z",
+      "side": "buy",
+      "tokenAmount": 24084.541075175177,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000156655351589362,
+      "marketCapUsd": 156655.351589362,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x8eddb507cee3e54b53c143c6ebd42026b6747d82f3d184ccb744e120e7042758:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x8eddb507cee3e54b53c143c6ebd42026b6747d82f3d184ccb744e120e7042758",
+      "timestamp": "2026-09-29T19:58:06.000Z",
+      "side": "buy",
+      "tokenAmount": 38126.432622945715,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.0000989594879571635,
+      "marketCapUsd": 98959.4879571635,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0xf77670e3e751991bd7cfbb2faba8d95b7c176427c5a978d40b5ea7d776f455f1:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0xf77670e3e751991bd7cfbb2faba8d95b7c176427c5a978d40b5ea7d776f455f1",
+      "timestamp": "2026-09-29T19:58:18.000Z",
+      "side": "buy",
+      "tokenAmount": 22149.03448290703,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000170344772947629,
+      "marketCapUsd": 170344.772947629,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x732ba724947a22b501a2631fb7abbe97ecd0c89524c9e63180f513769927d8a5:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x732ba724947a22b501a2631fb7abbe97ecd0c89524c9e63180f513769927d8a5",
+      "timestamp": "2026-09-29T19:58:19.000Z",
+      "side": "buy",
+      "tokenAmount": 19947.87191062636,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000189141591990578,
+      "marketCapUsd": 189141.591990578,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x79ec0e6837725590061dee352ea32551e713698061dd07258afcc23e1420f8fb:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x79ec0e6837725590061dee352ea32551e713698061dd07258afcc23e1420f8fb",
+      "timestamp": "2026-09-29T19:58:20.000Z",
+      "side": "buy",
+      "tokenAmount": 23022.00205235456,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000163885497074488,
+      "marketCapUsd": 163885.497074488,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x6529ccc488d14591ed65938cd755fe8dfa1ac6f811e1cd678002616979929c46:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x6529ccc488d14591ed65938cd755fe8dfa1ac6f811e1cd678002616979929c46",
+      "timestamp": "2026-09-29T19:58:20.000Z",
+      "side": "buy",
+      "tokenAmount": 29512.768788450987,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000127842029226226,
+      "marketCapUsd": 127842.029226226,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0xae6e3672b1a13dd8e2a16c1258eed552377d8d37e747f67e2d98f38d2faaa235:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0xae6e3672b1a13dd8e2a16c1258eed552377d8d37e747f67e2d98f38d2faaa235",
+      "timestamp": "2026-09-29T19:58:20.000Z",
+      "side": "buy",
+      "tokenAmount": 29475.111065812085,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000128005361593912,
+      "marketCapUsd": 128005.361593912,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x40e703f18b9ee95c5046412a81260826cbc885ca5e17a2f7d77ef080a6567145:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x40e703f18b9ee95c5046412a81260826cbc885ca5e17a2f7d77ef080a6567145",
+      "timestamp": "2026-09-29T19:58:21.000Z",
+      "side": "buy",
+      "tokenAmount": 25600.059932355496,
+      "amountUsd": 3.7729722500000005,
+      "priceUsd": 0.000147381383479943,
+      "marketCapUsd": 147381.383479943,
+      "cumulativeRealizedProfitUsd": 965.478279813981
+    },
+    {
+      "id": "0x174ebf4dd79894534e628092bf06edf21e82878cc767e795c384df33fcb299c2:0x077b9981bc8a2ca417cea41861111da63266988b:0x13920fe6467e9e3c852b8d365a036c995f0f7777",
+      "txHash": "0x174ebf4dd79894534e628092bf06edf21e82878cc767e795c384df33fcb299c2",
+      "timestamp": "2026-09-29T19:58:30.000Z",
+      "side": "sell",
+      "tokenAmount": 21667096.63232888,
+      "amountUsd": 1201.9332154138388,
+      "priceUsd": 0.0000554727398787924,
+      "marketCapUsd": 55472.7398787924,
+      "cumulativeRealizedProfitUsd": 1200.58278589204
+    }
+  ],
+  "position": {
+    "status": "unknown",
+    "tokenBalance": null,
+    "tradeFlowMatched": false,
+    "tradesComplete": true,
+    "checkedAt": null
+  },
+  "chart": {
+    "points": [],
+    "marketCapSupply": 1000000000,
+    "resolution": "",
+    "source": "Recorded fills"
+  },
+  "source": {
+    "chart": "Recorded fills",
+    "tradesComplete": true
+  },
+  "generatedAt": "2026-10-12T18:50:54.688Z",
+  "realizedAccounting": {
+    "available": true
+  }
+}

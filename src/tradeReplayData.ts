@@ -97,7 +97,7 @@ function replayOrder(a: KolTokenActivity['trades'][number], b: KolTokenActivity[
 /** Candle extrema have no exact intrabar timestamps, so a replay only samples
  * their actual opening boundary and completed closing boundaries. */
 function completedCandleRun(chart: TokenChart, firstTrade: number, lastTrade: number, now: number) {
-  const intervalSeconds: Record<string, number> = { '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
+  const intervalSeconds: Record<string, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
   const seconds = intervalSeconds[chart.resolution] ?? intervalSeconds[chart.period];
   if (!seconds) return null;
   const byTime = new Map<number, TokenChart['candles'][number]>();

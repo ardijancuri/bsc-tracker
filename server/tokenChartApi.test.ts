@@ -12,7 +12,7 @@ const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
 afterEach(() => vi.resetAllMocks());
 
 describe('token chart API intervals', () => {
-  it.each(['5m', '1h', '4h', '1d'])('serves %s with token supply and the requested interval even when the cache is shared', async interval => {
+  it.each(['1m', '5m', '1h', '4h', '1d'])('serves %s with token supply and the requested interval even when the cache is shared', async interval => {
     const app = Fastify(); registerIntelligenceRoutes(app);
     mocks.query.mockResolvedValue({ rows: [{ supply: '1000000000' }] });
     mocks.currentMarketChart.mockResolvedValue({ chart: { address, period: '24h', candles: [{ time: 100, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }], points: [], resolution: interval, source: 'geckoterminal' }, pending: false });
@@ -23,7 +23,7 @@ describe('token chart API intervals', () => {
       expect(mocks.currentMarketChart).toHaveBeenCalledWith(address, interval);
     } finally { await app.close(); }
   });
-  it.each(['1s', '30s', '1m', '2m', '../day'])('rejects unsupported %s without querying the database or provider', async interval => {
+  it.each(['1s', '30s', '2m', '../day'])('rejects unsupported %s without querying the database or provider', async interval => {
     const app = Fastify(); registerIntelligenceRoutes(app);
     try {
       expect((await app.inject(`/api/tokens/${address}/chart?interval=${interval}`)).statusCode).toBe(400);

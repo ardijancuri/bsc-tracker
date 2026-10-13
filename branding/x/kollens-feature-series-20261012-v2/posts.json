@@ -1,0 +1,77 @@
+[
+  {
+    "slug": "01-live-trades",
+    "title": "Live KOL trades",
+    "headline": [
+      "Follow the",
+      "moves."
+    ],
+    "subtitle": "Live KOL trades.",
+    "body": [
+      "See buys, sells and amounts",
+      "from tracked BNB Chain wallets."
+    ],
+    "features": "Wallets · Tokens · Transactions",
+    "caption": "Follow the moves.\n\nSee the latest buys and sells from tracked wallets on BNB Chain. Check which tokens are being traded, the amounts involved and the on-chain transaction links—all in one live feed.\n\nhttps://kollens.com/trades\n\n#BNBChain #KOLTracking"
+  },
+  {
+    "slug": "02-watchlists",
+    "title": "Token watchlists",
+    "headline": [
+      "Keep your",
+      "focus."
+    ],
+    "subtitle": "Your tokens, one watchlist.",
+    "body": [
+      "Market caps, volume and mini charts.",
+      "Search, sort and scan in one view."
+    ],
+    "features": "24h · 1 week · 1 month",
+    "caption": "Keep your favorite tokens in focus.\n\nFollow tokens like WangChai, SAFU and GM with market caps, tracked volume and mini charts. Search, sort and compare 24h, 1 week or 1 month views from your watchlist.\n\nhttps://kollens.com/watchlist\n\n#BNBChain #Memecoins"
+  },
+  {
+    "slug": "03-token-details",
+    "title": "Token details",
+    "headline": [
+      "See the",
+      "token."
+    ],
+    "subtitle": "More than a ticker.",
+    "body": [
+      "Explore its market-cap chart,",
+      "KOL activity and recent trades."
+    ],
+    "features": "Charts · KOL trades · Contract copy",
+    "caption": "See GM beyond the ticker.\n\nExplore its market-cap chart, tracked volume and recent KOL trades. See who's trading it, copy the contract, or open GMGN/BscScan from one page.\n\nhttps://kollens.com/token/0x13920fe6467e9e3c852b8d365a036c995f0f7777\n\n#BNBChain #Memecoins"
+  },
+  {
+    "slug": "04-kol-profiles",
+    "title": "KOL profiles and P&L",
+    "headline": [
+      "Know the",
+      "wallet."
+    ],
+    "subtitle": "A closer look at each KOL.",
+    "body": [
+      "Recent trades, traded tokens",
+      "and tracked 24h realized P&L."
+    ],
+    "features": "Profiles · Activity · Leaderboard",
+    "caption": "Know the wallet.\n\nExplore @0xLuckHK's profile: recent activity, traded tokens like Bibi and SI, and tracked 24h realized P&L. Compare wallets on the leaderboard.\n\nhttps://kollens.com/kol/0xffbd5a03e1e936bfae82c567f8b41e0a95296dcc\n\n#BNBChain #KOLTracking"
+  },
+  {
+    "slug": "05-trade-replays",
+    "title": "Shareable trade replays",
+    "headline": [
+      "Replay the",
+      "trade."
+    ],
+    "subtitle": "From fills to a shareable recap.",
+    "body": [
+      "Follow buy and sell markers.",
+      "Save an image or video. Share on X."
+    ],
+    "features": "Trade markers · Recap · Image / video",
+    "caption": "Replay @aa_AFeng's BIBI trades.\n\nRecorded realized P&L: +$1,578.01 (+102.43%).\n\nFollow buy/sell markers, review the recap, and export an image or video to share on X.\n\nhttps://kollens.com\n\n#BNBChain #KOLTracking #TradeReplays"
+  }
+]

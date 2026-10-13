@@ -80,6 +80,16 @@ describe('trade replay factual boundary', () => {
     expect(lastTrade.priceUsd).toBeCloseTo(3.8); expect(data.trades[1].priceUsd).toBe(5);
     expect(lastTrade.marketCapUsd).toBeCloseTo(3800);
   });
+  it('uses completed minute candles for a minute trade replay and preserves missing intervals', () => {
+    const minute: TokenChart = { ...chart, period: '1m', resolution: '1m', candles: Array.from({ length: 10 }, (_, i) => ({
+      ...chart.candles[0], time: chart.candles[0].time + i * 60, open: 2 + i, close: 3 + i,
+    })) };
+    const data = prepareTradeReplayData(activity(), minute, position, now)!;
+    expect(data.source.chart).toBe('Historical market samples');
+    expect(data.chart.points.find(point => Date.parse(point.timestamp) === Date.parse('2026-10-11T10:01:00Z'))?.priceUsd).toBe(3);
+    expect(data.chart.points.at(-1)?.priceUsd).toBe(11);
+    expect(prepareTradeReplayData(activity(), { ...minute, candles: minute.candles.filter((_, i) => i !== 4) }, position, now)!.source.chart).toBe('Recorded fills');
+  });
   it('labels fill-only fallback when recent charts cannot cover the selected history', () => {
     const recent = { ...chart, candles: chart.candles.map(candle => ({ ...candle, time: candle.time + 3600 })) };
     const data = prepareTradeReplayData(activity(), recent, position, now)!;

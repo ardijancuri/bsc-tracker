@@ -10,6 +10,7 @@ import { getLocale, localDate, t, useLanguage } from './i18n';
 import { compact, shortAddress } from './lib';
 import { TokenPriceChart } from './TokenPriceChart';
 import { useTokenChart } from './useTokenChart';
+import { tokenChartIntent } from './tokenChartIntent';
 import { intervalForTrades } from './kolTradeChartData';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
@@ -109,8 +110,8 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     {shareSnapshot && <TradeReplayShare data={shareSnapshot} />}
     <div className="kol-trade-modal-body" hidden={Boolean(shareSnapshot)}>
       <section className="kol-trade-market" aria-label={t('Token chart and trades')}>
-        <div className="kol-trade-token-header"><div className="kol-trade-token-identity">{tokenIdentity}</div><div className="kol-trade-contract">{tokenAddress}<FollowButton kind="token" address={token.address} label={token.symbol} /><Link to={`/token/${token.address}`} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link><div className="kol-trade-current-cap" title={t('Market cap')}><span>{t('MCAP')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div></div>
-        <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} onClick={() => { intervalChosen.current = true; setInterval(value); }}>{value}</button>)}</div></div>
+        <div className="kol-trade-token-header"><div className="kol-trade-token-identity">{tokenIdentity}</div><div className="kol-trade-contract">{tokenAddress}<FollowButton kind="token" address={token.address} label={token.symbol} /><Link to={`/token/${token.address}`} {...tokenChartIntent(token.address)} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link><div className="kol-trade-current-cap" title={t('Market cap')}><span>{t('MCAP')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div></div>
+        <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} {...tokenChartIntent(token.address, value)} onClick={() => { intervalChosen.current = true; setInterval(value); }}>{value}</button>)}</div></div>
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
