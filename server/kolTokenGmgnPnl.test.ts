@@ -4,8 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
+import type { TokenChart } from '../shared/intelligence.js';
 import type { TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
-import { createKolTokenGmgnPnl, realizedAccountingFromReplay } from './kolTokenGmgnPnl.js';
+import { createKolTokenGmgnPnl, loadCurrentPositionQuote, realizedAccountingFromReplay } from './kolTokenGmgnPnl.js';
 import { buildTradeReplayGmgnAccounting } from './tradeReplayGmgnAccounting.js';
 
 const time = Date.parse('2026-10-14T06:00:00Z'), wallet = '0x' + '1'.repeat(40), token = '0x' + '2'.repeat(40), native = '0x' + '0'.repeat(40);
@@ -53,6 +54,48 @@ afterEach(async () => {
   const target = path.resolve(directory), root = path.resolve(os.tmpdir());
   if (path.dirname(target) !== root || !path.basename(target).startsWith('kol-gmgn-pnl-')) throw Error('Unexpected test cache location');
   await rm(target, { recursive: true, force: true });
+});
+
+describe('profile position quotes during chart refresh', () => {
+  function chart(): TokenChart {
+    return { address: token, period: '1m', source: 'gmgn', resolution: '1m', updatedAt: new Date(time - 45_000).toISOString(),
+      pending: false, stale: true, points: [], candles: [{ time: time / 1000 - 60, open: 20, high: 20, low: 20, close: 20, volume: 1 }] };
+  }
+  it('uses a recently observed genuine price while the chart refresh is queued', async () => {
+    const selected = chart(), loadChart = vi.fn(async () => ({ chart: selected, pending: true, loadStatus: 'queued' as const, retryAfterMs: 3000 }));
+    expect(await loadCurrentPositionQuote(token, { loadChart, now: () => time })).toEqual({ quote: { priceUsd: '20', timestamp: selected.updatedAt } });
+    expect(loadChart).toHaveBeenCalledExactlyOnceWith(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
+  });
+  it('does not advance the observation date when a cached partial candle closes', async () => {
+    const selected = chart(), loadChart = async () => ({ chart: selected, pending: true });
+    const beforeClose = await loadCurrentPositionQuote(token, { loadChart, now: () => time - 20_000 });
+    const afterClose = await loadCurrentPositionQuote(token, { loadChart, now: () => time + 20_000 });
+    expect(beforeClose.quote?.timestamp).toBe(selected.updatedAt);
+    expect(afterClose).toEqual(beforeClose);
+  });
+  it('uses the completed candle boundary when it predates chart retrieval', async () => {
+    const selected = chart(); selected.updatedAt = at; selected.candles[0].time = time / 1000 - 120;
+    const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: false }), now: () => time });
+    expect(result.quote?.timestamp).toBe(new Date(time - 60_000).toISOString());
+  });
+  it.each(['expired-chart', 'expired-candle', 'future-chart', 'future-candle', 'candle-after-observation', 'wrong-token', 'wrong-source', 'wrong-resolution', 'invalid-price', 'zero-price', 'invalid-date', 'empty'] as const)(
+    'rejects %s without replacing its missing quote with refreshed timestamps', async variant => {
+      const selected = chart();
+      if (variant === 'expired-chart') selected.updatedAt = new Date(time - 180_001).toISOString();
+      if (variant === 'expired-candle') selected.candles[0].time = time / 1000 - 300;
+      if (variant === 'future-chart') selected.updatedAt = new Date(time + 1).toISOString();
+      if (variant === 'future-candle') selected.candles[0].time = time / 1000 + 60;
+      if (variant === 'candle-after-observation') selected.candles[0].time = time / 1000 - 30;
+      if (variant === 'wrong-token') selected.address = wallet;
+      if (variant === 'wrong-source') selected.source = 'recorded';
+      if (variant === 'wrong-resolution') selected.resolution = '5m';
+      if (variant === 'invalid-price') selected.candles[0].close = NaN;
+      if (variant === 'zero-price') selected.candles[0].close = 0;
+      if (variant === 'invalid-date') selected.updatedAt = 'invalid';
+      if (variant === 'empty') selected.candles = [];
+      const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: true, loadStatus: 'rate_limited', retryAfterMs: 60_000 }), now: () => time });
+      expect(result).toEqual({ reason: 'quote_rate_limited', retryAfterMs: 60_000 });
+    });
 });
 
 describe('GMGN historical realized P&L adapter', () => {

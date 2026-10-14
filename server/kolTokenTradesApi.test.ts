@@ -139,4 +139,63 @@ describe('KOL token activity API', () => {
         inventory: { coverage: { complete: false, reconciled: false, status: 'pending', reason: 'scan_pending' } } });
     } finally { await app.close(); }
   });
+  it('returns 202 promptly for profile preparation, coalesces polls, and returns the completed result', async () => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockImplementation(async sql => ({ rows: sql.includes('json_build_object') ? [identity] : history }));
+    const evidence = await mocks.inventory(); mocks.inventory.mockClear();
+    let finish!: (value: typeof evidence) => void;
+    mocks.inventory.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    mocks.pnl.mockResolvedValue({ status: 'ready', realizedProfitUsd: '70' });
+    try {
+      const started = performance.now();
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true&profile=true`);
+      expect(response.statusCode).toBe(202); expect(response.json()).toEqual({ status: 'pending' });
+      expect(response.headers['retry-after']).toBe('1'); expect(response.headers['cache-control']).toBe('no-store');
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(mocks.inventory).toHaveBeenCalledWith({ wallet, token, firstBlock: '100', decimals: 0,
+        trades: history, tradesComplete: true, priority: 'background' });
+      expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true&profile=true`)).statusCode).toBe(202);
+      expect(mocks.inventory).toHaveBeenCalledOnce(); expect(mocks.pnl).not.toHaveBeenCalled();
+      finish(evidence);
+      await vi.waitFor(() => expect(mocks.pnl).toHaveBeenCalledOnce());
+      const completed = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true&profile=true`);
+      expect(completed.statusCode).toBe(200);
+      expect(completed.json()).toMatchObject({ realizedAccounting: { status: 'ready', realizedProfitUsd: '70' } });
+      expect(mocks.inventory).toHaveBeenCalledOnce(); expect(mocks.query).toHaveBeenCalledTimes(6);
+    } finally { finish?.(evidence); await app.close(); }
+  });
+  it.each(['profile=true', 'profile=true&pnl=false', 'profile=true&pnl=true&replay=true', 'pnl=true'])(
+    'keeps foreground inventory and complete responses for %s', async parameters => {
+      const app = Fastify(); registerKolTokenTradesRoutes(app);
+      mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
+      mocks.replay.mockResolvedValue({ status: 'ready' }); mocks.pnl.mockResolvedValue({ status: 'ready', realizedProfitUsd: '70' });
+      try {
+        expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?${parameters}`)).statusCode).toBe(200);
+        expect(mocks.inventory).toHaveBeenCalledOnce(); expect(mocks.inventory.mock.calls[0][0].priority).toBeUndefined();
+        if (parameters.includes('replay=true')) expect(mocks.replay).toHaveBeenCalledOnce();
+      } finally { await app.close(); }
+    });
+  it('invalidates a profile snapshot after a corrected historical cost without a changed last trade date', async () => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    let selectedHistory = history.map(trade => ({ ...trade })), selectedIdentity = { ...identity };
+    mocks.query.mockImplementation(async sql => ({ rows: sql.includes('json_build_object') ? [selectedIdentity] : selectedHistory }));
+    mocks.pnl.mockResolvedValueOnce({ status: 'ready', realizedProfitUsd: '70' }).mockResolvedValueOnce({ status: 'ready', realizedProfitUsd: '69' })
+      .mockResolvedValueOnce({ status: 'ready', realizedProfitUsd: '59' });
+    try {
+      const url = `/api/kols/${wallet}/tokens/${token}/activity?pnl=true&profile=true`;
+      const first = await app.inject(url), same = await app.inject(url);
+      expect(first.statusCode).toBe(200); expect(same.json()).toEqual(first.json()); expect(mocks.inventory).toHaveBeenCalledOnce();
+      selectedHistory = selectedHistory.map(trade => trade.side === 'buy' ? { ...trade, amountUsd: '21' } : trade);
+      const corrected = await app.inject(url);
+      expect(corrected.statusCode).toBe(200); expect(mocks.inventory).toHaveBeenCalledTimes(2); expect(mocks.pnl).toHaveBeenCalledTimes(2);
+      expect(corrected.json()).toMatchObject({ summary: { investedUsd: '21', lastTradeAt: new Date(identity.lastTradeAt).toISOString() },
+        realizedAccounting: { realizedProfitUsd: '69' } });
+      selectedIdentity = { ...identity, indexedTradeCount: 3, buyCount: 2 };
+      selectedHistory = [...selectedHistory, { ...selectedHistory[1], id: 'reindexed-buy', txHash: 'reindexed-hash', amountUsd: '10' }];
+      const expanded = await app.inject(url);
+      expect(expanded.statusCode).toBe(200); expect(mocks.inventory).toHaveBeenCalledTimes(3);
+      expect(expanded.json()).toMatchObject({ coverage: { indexedTradeCount: 3, complete: true }, summary: { buyCount: 2, investedUsd: '31' },
+        realizedAccounting: { realizedProfitUsd: '59' } });
+    } finally { await app.close(); }
+  });
 });

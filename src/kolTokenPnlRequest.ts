@@ -155,8 +155,9 @@ function retryDelay(response: Response | undefined, attempt: number) {
   return Math.min(3000, (attempt + 1) * 1000);
 }
 
-/** Card attempts share one fair slot; retries release it so one old token cannot
- * block the rest. Foreground modal work uses the other inventory scanner slot. */
+/** Cards poll the nonblocking profile endpoint through one fair HTTP slot.
+ * A pending scan releases the slot immediately, so cached cards can load while
+ * it continues. Foreground modal work keeps its dedicated request path. */
 export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input, init), now = Date.now }:
   { fetcher?: typeof fetch; now?: () => number } = {}) {
   type Client = { resolve(value: KolTokenPnlResult): void; reject(error: unknown): void; detach(): void; onActivity?(activity: KolTokenActivity): void };
@@ -200,9 +201,13 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
         let response: Response | undefined, providerDelay = 0;
         try {
           signal.throwIfAborted();
-          response = await bounded(fetcher(`/api/kols/${encodeURIComponent(walletAddress.toLowerCase())}/tokens/${encodeURIComponent(tokenAddress.toLowerCase())}/activity?pnl=true`,
+          response = await bounded(fetcher(`/api/kols/${encodeURIComponent(walletAddress.toLowerCase())}/tokens/${encodeURIComponent(tokenAddress.toLowerCase())}/activity?pnl=true${job.foreground ? '' : '&profile=true'}`,
             { signal, cache: 'no-store' }), signal);
-          if (!response.ok) {
+          if (response.status === 202) {
+            // Accepted profile work is still running on the server; its small
+            // status response is not an activity snapshot to validate or cache.
+            pending = true;
+          } else if (!response.ok) {
             pending = response.status === 429 || response.status >= 500;
             if (!pending) return { activity: null, status: 'unavailable' };
           } else {

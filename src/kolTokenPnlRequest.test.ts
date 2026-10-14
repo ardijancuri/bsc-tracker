@@ -38,6 +38,39 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('fair token-card realized profit loading', () => {
+  it('lets the other five initial cards load while accepted profile work is still running and honors its retry time', async () => {
+    const selections = Array.from({ length: 6 }, (_, index) => selection(index + 2));
+    const calls: string[] = []; let coldAttempts = 0;
+    const pendingResponse = response({ status: 'pending' }, 202, '3');
+    const readPendingBody = vi.spyOn(pendingResponse, 'json');
+    const fetcher = vi.fn((input: RequestInfo | URL) => {
+      const token = String(input).split('/tokens/')[1].split('/')[0];
+      const selected = selections.find(item => item.tokenAddress === token)!;
+      calls.push(token);
+      return Promise.resolve(token === selections[0].tokenAddress && coldAttempts++ === 0
+        ? pendingResponse : response(activity(selected)));
+    });
+    const loader = createKolTokenPnlLoader({ fetcher }), results = selections.map(item => loader(item, signal()));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual(selections.map(item => item.tokenAddress));
+    expect((await Promise.all(results.slice(1))).every(result => result.status === 'ready')).toBe(true);
+    expect(readPendingBody).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/activity?pnl=true&profile=true'))).toBe(true);
+    await vi.advanceTimersByTimeAsync(2999); expect(calls).toHaveLength(6);
+    await vi.advanceTimersByTimeAsync(1); expect((await results[0]).status).toBe('ready');
+    expect(calls).toHaveLength(7); expect(calls.at(-1)).toBe(selections[0].tokenAddress);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps a long accepted-work cooldown pending without validating or caching the status response', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response({ status: 'pending' }, 202, '75')).mockResolvedValue(response(activity()));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selection(), signal())).toEqual({ activity: null, status: 'pending', retryAfterMs: 75_000 });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('suspends queued and newly mounted cards during a trade modal while foreground preparation can finish', async () => {
     let release!: (value: Response) => void;
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve; }))
@@ -145,7 +178,7 @@ describe('fair token-card realized profit loading', () => {
     });
     const loader = createKolTokenPnlLoader({ fetcher }), results = selections.map(item => loader(item, signal()));
     await vi.advanceTimersByTimeAsync(999);
-    expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/activity?pnl=true'))).toBe(true);
+    expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/activity?pnl=true&profile=true'))).toBe(true);
     expect(calls).toEqual(selections.map(item => item.tokenAddress)); expect(peak).toBe(1);
     await vi.advanceTimersByTimeAsync(11);
     expect((await Promise.all(results)).every(result => result.status === 'ready')).toBe(true);
@@ -162,6 +195,7 @@ describe('fair token-card realized profit loading', () => {
     const foreground = loader(selection(3), signal(), { priority: 'foreground', onActivity: seen });
     await vi.advanceTimersByTimeAsync(0);
     expect((await foreground).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2); expect(seen).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[1][0]).toMatch(/\/activity\?pnl=true$/);
     release(response(activity()));
     await background; await queued; expect(fetcher).toHaveBeenCalledTimes(3); expect(vi.getTimerCount()).toBe(0);
   });

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
 import { pool } from './db.js';
@@ -7,6 +8,7 @@ import { summarizeKolTokenTrades, type IndexedKolTokenTrade } from './kolTokenTr
 import { currentKolTokenInventory } from './kolTokenInventory.js';
 import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
 import { currentKolTokenGmgnPnl } from './kolTokenGmgnPnl.js';
+import { createKolTokenProfilePnl } from './kolTokenProfilePnl.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 export const kolTokenHistoryLimit = 2000;
@@ -14,7 +16,8 @@ const pairWhere = `t.wallet_address=$1 AND t.token_address=$2 AND k.is_tracked A
   AND t.timestamp<=now() AND ${nonStockTokenSql('t.token_address')}`;
 
 export function registerKolTokenTradesRoutes(app: FastifyInstance) {
-  app.get<{ Params: { address: string; token: string }; Querystring: { replay?: string; pnl?: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
+  const profilePnl = createKolTokenProfilePnl();
+  app.get<{ Params: { address: string; token: string }; Querystring: { replay?: string; pnl?: string; profile?: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
     const wallet = addressSchema.safeParse(request.params.address), token = addressSchema.safeParse(request.params.token);
     if (!wallet.success || !token.success) return reply.code(400).send({ error: 'Invalid KOL or token address' });
     const values = [wallet.data, token.data];
@@ -55,22 +58,31 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: 'KOL token activity not found' });
     const indexedTradeCount = Number(row.indexedTradeCount);
     const complete = indexedTradeCount === activity.rows.length && indexedTradeCount <= kolTokenHistoryLimit;
-    const inventory = await currentKolTokenInventory({ wallet: wallet.data, token: token.data, firstBlock: row.firstBlock ?? null,
-      decimals: row.token.decimals ?? null, trades: activity.rows, tradesComplete: complete });
-    const result = summarizeKolTokenTrades(activity.rows as IndexedKolTokenTrade[], wallet.data, token.data, row.token.marketCapSupply, complete, Date.now(), inventory);
-    // Full-history metadata remains accurate when the latest history exceeds the bounded payload.
-    result.summary.buyCount = Number(row.buyCount); result.summary.sellCount = Number(row.sellCount);
-    result.summary.firstTradeAt = new Date(row.firstTradeAt).toISOString(); result.summary.lastTradeAt = new Date(row.lastTradeAt).toISOString();
-    const response: KolTokenActivity = {
-      kol: row.kol, token: row.token, ...result,
-      coverage: { source: 'indexed', indexedTradeCount, returnedTradeCount: result.trades.length, complete,
-        historyLimit: kolTokenHistoryLimit, costsIncluded: false }, generatedAt: new Date().toISOString(),
+    const background = request.query.profile === 'true' && request.query.pnl === 'true' && request.query.replay !== 'true';
+    const prepare = async () => {
+      const inventory = await currentKolTokenInventory({ wallet: wallet.data, token: token.data, firstBlock: row.firstBlock ?? null,
+        decimals: row.token.decimals ?? null, trades: activity.rows, tradesComplete: complete, ...(background ? { priority: 'background' as const } : {}) });
+      const result = summarizeKolTokenTrades(activity.rows as IndexedKolTokenTrade[], wallet.data, token.data, row.token.marketCapSupply, complete, Date.now(), inventory);
+      // Full-history metadata remains accurate when the latest history exceeds the bounded payload.
+      result.summary.buyCount = Number(row.buyCount); result.summary.sellCount = Number(row.sellCount);
+      result.summary.firstTradeAt = new Date(row.firstTradeAt).toISOString(); result.summary.lastTradeAt = new Date(row.lastTradeAt).toISOString();
+      const response: KolTokenActivity = {
+        kol: row.kol, token: row.token, ...result,
+        coverage: { source: 'indexed', indexedTradeCount, returnedTradeCount: result.trades.length, complete,
+          historyLimit: kolTokenHistoryLimit, costsIncluded: false }, generatedAt: new Date().toISOString(),
+      };
+      if (request.query.replay === 'true') {
+        response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
+        const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: request.query.pnl === 'true' });
+        if (request.query.pnl === 'true') response.realizedAccounting = realized;
+      } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response);
+      return response;
     };
-    if (request.query.replay === 'true') {
-      response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
-      const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: request.query.pnl === 'true' });
-      if (request.query.pnl === 'true') response.realizedAccounting = realized;
-    } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response);
+    // Every poll rereads indexed evidence. New swaps, corrected quantities/costs,
+    // or supply changes invalidate the short snapshot even with the same last trade time.
+    const revision = background ? createHash('sha256').update(JSON.stringify([row.firstBlock, indexedTradeCount, row.buyCount, row.sellCount, row.firstTradeAt, row.lastTradeAt, row.token.decimals, row.token.marketCapSupply, activity.rows])).digest('hex') : '';
+    const response = background ? await profilePnl(`${wallet.data}:${token.data}`, revision, prepare) : await prepare();
+    if (!response) return reply.code(202).header('Cache-Control', 'no-store').header('Retry-After', '1').send({ status: 'pending' });
     if (response.inventory?.coverage.status === 'pending') reply.header('Retry-After', '1');
     if (response.realizedAccounting?.status === 'pending') reply.header('Retry-After', String(Math.ceil((response.realizedAccounting.retryAfterMs ?? 1000) / 1000)));
     else if (response.realizedAccounting?.position?.status === 'open' && response.realizedAccounting.position.estimatedProfitUsd === null) {

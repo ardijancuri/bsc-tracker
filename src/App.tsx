@@ -5,6 +5,7 @@ import { KolTokenRealizedPnl } from './KolTokenRealizedPnl';
 import { preloadTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
 import { defaultCandleInterval } from '../shared/intelligence';
+import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolProfile';
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
@@ -221,8 +222,8 @@ function TradeTape({ overview }: { overview: Overview }) {
   </div>;
 }
 
-function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false, walletAddress, onOpen }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null; marketCapInStats?: boolean; walletAddress?: string; onOpen?: () => void }) {
-  const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("24h volume")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
+function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false, walletAddress, eagerPnl = false, onOpen }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null; marketCapInStats?: boolean; walletAddress?: string; eagerPnl?: boolean; onOpen?: () => void }) {
+  const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} eager={eagerPnl} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("24h volume")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
   return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" {...tokenChartIntent(token.address, defaultCandleInterval, preloadKolTokenTradeModal)} onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`} {...tokenChartIntent(token.address)}>{content}</Link>}
     <FollowButton kind="token" address={token.address} label={token.symbol} />
     {recentTrades && recentTrades.length > 0 && <div className="token-card-trades" aria-label={t('Recent {token} trades', { token: token.symbol || t('token') })}>
@@ -289,11 +290,11 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const [extraCursor, setExtraCursor] = useState<string | null | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState(false);
-  const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 10, loading: false, error: false });
+  const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false });
   const { data, loading } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; windowStart: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
   useEffect(() => { setExtraTrades([]); setExtraCursor(undefined); setMoreError(false); }, [address]);
-  useEffect(() => { setTokenPage({ address, items: [], visibleCount: 10, loading: false, error: false }); }, [address]);
-  const currentTokenPage = tokenPage.address === address ? tokenPage : { address, items: [], cursor: undefined, visibleCount: 10, loading: false, error: false };
+  useEffect(() => { setTokenPage({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false }); }, [address]);
+  const currentTokenPage = tokenPage.address === address ? tokenPage : { address, items: [], cursor: undefined, visibleCount: kolProfileTokenPageSize, loading: false, error: false };
   const allTokens = useMemo(() => {
     const unique = new Map<string, Token>();
     for (const token of [...(tokenPage.address === address ? tokenPage.items : []), ...data.tokens]) unique.set(token.address, token);
@@ -317,14 +318,14 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const hasMoreTokens = allTokens.length > visibleTokens.length || Boolean(tokensNextCursor);
   const loadMoreTokens = async () => {
     if (currentTokenPage.loading || !hasMoreTokens) return;
-    if (allTokens.length >= currentTokenPage.visibleCount + 10 || !tokensNextCursor) {
-      setTokenPage(current => current.address === address ? { ...current, visibleCount: current.visibleCount + 10 } : current);
+    if (allTokens.length >= currentTokenPage.visibleCount + kolProfileTokenPageSize || !tokensNextCursor) {
+      setTokenPage(current => current.address === address ? { ...current, visibleCount: current.visibleCount + kolProfileTokenPageSize } : current);
       return;
     }
     setTokenPage(current => ({ ...current, items: allTokens, loading: true, error: false }));
     try {
       const page = await api<List<Token>>(`/api/kols/${encodeURIComponent(address)}/tokens?cursor=${encodeURIComponent(tokensNextCursor)}`);
-      setTokenPage(current => current.address === address ? { ...current, items: [...current.items, ...page.items], cursor: page.nextCursor ?? null, visibleCount: current.visibleCount + 10, loading: false } : current);
+      setTokenPage(current => current.address === address ? { ...current, items: [...current.items, ...page.items], cursor: page.nextCursor ?? null, visibleCount: current.visibleCount + kolProfileTokenPageSize, loading: false } : current);
     } catch {
       setTokenPage(current => current.address === address ? { ...current, loading: false, error: true } : current);
     }
@@ -342,7 +343,7 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     setLoadingMore(true);
     setMoreError(false);
     try {
-      const page = await api<List<Trade>>(`/api/trades?kol=${encodeURIComponent(address)}&window=24h&limit=20&cursor=${encodeURIComponent(nextCursor)}`);
+      const page = await api<List<Trade>>(`/api/trades?kol=${encodeURIComponent(address)}&window=24h&limit=${kolProfileTradePageSize}&cursor=${encodeURIComponent(nextCursor)}`);
       setExtraTrades(current => [...current, ...page.items]);
       setExtraCursor(page.nextCursor ?? null);
     } catch { setMoreError(true); }
@@ -351,7 +352,7 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   if (!loading && !data.kol) return <div className="page"><EmptyState title={t("KOL not found")} detail={t("This wallet is not in the supplied KOL roster.")} /></div>;
   return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
     <div className="profile-stats"><Metric label={t("24H tracked realized P&L")} value={signedMoney(data.stats?.realizedProfitUsd)} detail={data.stats?.realizedProfitUsd == null ? (data.unpricedSellCount24h > 0 ? t("Sale prices unavailable") : t("Purchase costs unavailable in the last 24 hours")) : t('{matched} matched sales · {excluded} excluded', { matched: data.stats?.valuedSellCount || 0, excluded: data.stats?.excludedSellCount || 0 })} /><Metric label={t("Trades · last 24 hours")} value={data.tradeCount24h} detail={t('{buys} buys · {sells} sells · {zone}', { buys: data.buyCount24h, sells: data.sellCount24h, zone: skopjeTimeZone() })} /><Metric label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
-    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div className="profile-token-list">{visibleTokens.map(token => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No trades in the last 24 hours")} detail={t("New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
+    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No trades in the last 24 hours")} detail={t("New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
     {selectedToken && data.kol?.address.toLowerCase() === address.toLowerCase() && <TradeModalLoader key={`${address}:${selectedToken.address}`} kol={data.kol} token={selectedToken} kolIdentity={<Identity name={data.kol.name} address={address} avatar={data.kol.avatarUrl} subtitle={false} />} tokenIdentity={<TokenIdentity token={selectedToken} hideAddress />} tokenAddress={<CopyAddress address={selectedToken.address} label={t('Token contract address')} />} onClose={closeToken} />}
   </div>;
 }

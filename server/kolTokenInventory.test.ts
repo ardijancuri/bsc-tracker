@@ -167,6 +167,187 @@ describe('canonical KOL token inventory', () => {
       const results = await Promise.all([first, duplicate, second]); expect(results[0]).toBe(results[1]);
     } finally { timeout.mockRestore(); }
   });
+  it('reserves a scanner for foreground work and releases background reservations after timeout', async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const controller = new AbortController(); setTimeout(() => controller.abort(new Error('Budget')), ms); return controller.signal;
+    });
+    const rpc = vi.fn(async () => new Promise(() => {}));
+    try {
+      const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null, budgetMs: 100 });
+      const selected = { ...request(), priority: 'background' as const };
+      const first = inventory(selected), duplicate = inventory(selected), foregroundJoin = inventory(request());
+      const otherBackground = { ...selected, wallet: '0x' + '4'.repeat(40) };
+      const queued = inventory(otherBackground), queuedDuplicate = inventory(otherBackground);
+      expect(rpc).toHaveBeenCalledOnce();
+      const foreground = inventory({ ...request(), wallet: '0x' + '5'.repeat(40) });
+      expect(rpc).toHaveBeenCalledTimes(2);
+      expect((await inventory({ ...request(), wallet: '0x' + '6'.repeat(40) })).coverage.reason).toBe('scan_queued');
+      await vi.advanceTimersByTimeAsync(100);
+      const results = await Promise.all([first, duplicate, foregroundJoin, foreground]);
+      expect(results[0]).toBe(results[1]); expect(results[0]).toBe(results[2]);
+      expect(results.every(result => result.coverage.reason === 'scan_pending')).toBe(true);
+      expect(rpc).toHaveBeenCalledTimes(3);
+      // The three subscribers to the first job must not release extra slots or
+      // start a retry ahead of the older queued card.
+      const retried = inventory(selected);
+      expect(rpc).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(100);
+      const queuedResults = await Promise.all([queued, queuedDuplicate]);
+      expect(queuedResults[0]).toBe(queuedResults[1]); expect(queuedResults[0].coverage.reason).toBe('scan_pending');
+      expect(rpc).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(100);
+      expect((await retried).coverage.reason).toBe('scan_pending');
+    } finally { timeout.mockRestore(); }
+  });
+  it('releases the background reservation after a successful canonical scan', async () => {
+    const provider = chain();
+    const inventory = createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null });
+    const selected = { ...request(), priority: 'background' as const };
+    expect((await inventory(selected)).coverage.reconciled).toBe(true);
+    provider.rpc.mockClear();
+    expect((await inventory(selected)).coverage.reconciled).toBe(true);
+    expect(provider.rpc).toHaveBeenCalled();
+  });
+  it('releases the background reservation after an RPC failure', async () => {
+    const rpc = vi.fn(async () => { throw Error('offline'); });
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null });
+    const selected = { ...request(), priority: 'background' as const };
+    expect((await inventory(selected)).coverage.reason).toBe('inventory_rpc_unavailable');
+    expect((await inventory({ ...selected, wallet: '0x' + '4'.repeat(40) })).coverage.reason).toBe('inventory_rpc_unavailable');
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+  it('bounds the background waiting queue and dispatches cards in arrival order without duplicate scans', async () => {
+    const releases: ((value: string) => void)[] = [];
+    const rpc = vi.fn(async () => new Promise<string>(resolve => { releases.push(resolve); }));
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null });
+    const selected = (index: number) => ({ ...request(), wallet: '0x' + index.toString(16).padStart(40, '0'), priority: 'background' as const });
+    const completed: number[] = [];
+    const active = inventory(selected(1)).then(value => { completed.push(1); return value; });
+    const queued = Array.from({ length: 8 }, (_, index) => inventory(selected(index + 2)).then(value => { completed.push(index + 2); return value; }));
+    const duplicate = inventory(selected(5));
+    expect((await inventory(selected(10))).coverage).toMatchObject({ status: 'pending', reason: 'scan_queued' });
+    expect(rpc).toHaveBeenCalledOnce();
+    for (let index = 0; index < 9; index++) {
+      // A head below the first trade ends each admitted job without extra RPC.
+      releases[index]('0x1');
+      if (index < 8) await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(index + 2));
+    }
+    const results = await Promise.all([active, ...queued]);
+    expect(completed).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]); expect(await duplicate).toBe(results[4]);
+    expect(results.every(value => value.coverage.reason === 'confirmation_pending')).toBe(true);
+  });
+  it('starts a waiting background scan when either of two foreground scans releases capacity', async () => {
+    const releases: ((value: string) => void)[] = [];
+    const rpc = vi.fn(async () => new Promise<string>(resolve => { releases.push(resolve); }));
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null });
+    const first = inventory(request()), second = inventory({ ...request(), wallet: '0x' + '4'.repeat(40) });
+    const queued = inventory({ ...request(), wallet: '0x' + '5'.repeat(40), priority: 'background' });
+    expect(rpc).toHaveBeenCalledTimes(2);
+    releases[1]('0x1'); expect((await second).coverage.reason).toBe('confirmation_pending');
+    expect(rpc).toHaveBeenCalledTimes(3);
+    releases[0]('0x1'); releases[2]('0x1');
+    expect((await first).coverage.reason).toBe('confirmation_pending'); expect((await queued).coverage.reason).toBe('confirmation_pending');
+  });
+  it('promotes an opened queued card into the reserved foreground slot without duplicating its scan', async () => {
+    const releases: ((value: string) => void)[] = [];
+    const rpc = vi.fn(async () => new Promise<string>(resolve => { releases.push(resolve); }));
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null });
+    const first = inventory({ ...request(), priority: 'background' });
+    const waiting = inventory({ ...request(), wallet: '0x' + '4'.repeat(40), priority: 'background' });
+    const selected = { ...request(), wallet: '0x' + '5'.repeat(40) };
+    const card = inventory({ ...selected, priority: 'background' });
+    expect(rpc).toHaveBeenCalledOnce();
+    const modal = inventory(selected), duplicate = inventory(selected);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    releases[1]('0x1');
+    const results = await Promise.all([card, modal, duplicate]);
+    expect(results[0]).toBe(results[1]); expect(results[0]).toBe(results[2]);
+    // Completing the promoted job does not release the running background job.
+    expect(rpc).toHaveBeenCalledTimes(2);
+    releases[0]('0x1'); await first; expect(rpc).toHaveBeenCalledTimes(3);
+    releases[2]('0x1'); await waiting;
+  });
+  it('yields background backfills after a verified page while foreground scans finish the whole range', async () => {
+    const provider = chain(), inventory = createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null, pageSize: 3 });
+    const background = { ...request(), priority: 'background' as const };
+    expect((await inventory(background)).coverage).toMatchObject({ complete: false, reconciled: false, reason: 'scan_pending', scannedThroughBlock: '102' });
+    expect((await inventory(background)).coverage).toMatchObject({ complete: false, reconciled: false, reason: 'scan_pending', scannedThroughBlock: '105' });
+    expect((await inventory(background)).coverage).toMatchObject({ complete: true, reconciled: true, scannedThroughBlock: '108' });
+    expect(provider.rpc.mock.calls.filter(([method, params]) => method === 'eth_getLogs' && params[0].fromBlock === hex(100))).toHaveLength(2);
+    const foreground = createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null, pageSize: 3 });
+    expect((await foreground(request())).coverage).toMatchObject({ complete: true, reconciled: true, scannedThroughBlock: '108' });
+  });
+  it('recovers the configured page size after pairs of successful canonical pages', async () => {
+    const provider = chain(); provider.advanceHead(30_000);
+    let maximum = 512;
+    const rpc = vi.fn(async (method: string, params: any[], signal: AbortSignal) => {
+      if (method === 'eth_getLogs' && Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1 > maximum) throw Error('Temporary RPC limit');
+      return provider.rpc(method, params, signal);
+    });
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null, pageSize: 4096,
+      now: () => (1_790_000_000 + 30_000) * 1000 });
+    const selected = { ...request(), priority: 'background' as const };
+    expect((await inventory(selected)).coverage).toMatchObject({ reason: 'scan_pending', scannedThroughBlock: '611' });
+    maximum = Infinity;
+    for (const expectedSize of [512, 1024, 1024, 2048, 2048, 4096, 4096, 4096]) {
+      rpc.mockClear(); expect((await inventory(selected)).coverage.reason).toBe('scan_pending');
+      const windows = rpc.mock.calls.filter(([method]) => method === 'eth_getLogs')
+        .map(([, params]) => Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1);
+      expect(windows).toEqual([expectedSize, expectedSize]);
+    }
+  });
+  it('resets the successful-page streak whenever the RPC window backs off', async () => {
+    const provider = chain(); provider.advanceHead(30_000);
+    let maximum = 512;
+    const rpc = vi.fn(async (method: string, params: any[], signal: AbortSignal) => {
+      if (method === 'eth_getLogs' && Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1 > maximum) throw Error('Temporary RPC limit');
+      return provider.rpc(method, params, signal);
+    });
+    const inventory = createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null, pageSize: 4096,
+      now: () => (1_790_000_000 + 30_000) * 1000 });
+    const selected = { ...request(), priority: 'background' as const };
+    await inventory(selected); maximum = Infinity;
+    await inventory(selected); await inventory(selected); // 512 -> 1024, then one success at 1024.
+    maximum = 512; await inventory(selected); // Backoff must clear that earlier success.
+    maximum = Infinity; rpc.mockClear(); await inventory(selected);
+    const windows = rpc.mock.calls.filter(([method]) => method === 'eth_getLogs')
+      .map(([, params]) => Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1);
+    expect(windows).toEqual([512, 512]);
+    rpc.mockClear(); await inventory(selected);
+    expect(rpc.mock.calls.filter(([method]) => method === 'eth_getLogs')
+      .map(([, params]) => Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1)).toEqual([1024, 1024]);
+  });
+  it.each([false, true])('resumes cached small pages with legacy=%s and grows only after two verified successes', async legacy => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'bscan-inventory-test-'));
+    const provider = chain(); provider.advanceHead(30_000);
+    let maximum = 512;
+    const rpc = vi.fn(async (method: string, params: any[], signal: AbortSignal) => {
+      if (method === 'eth_getLogs' && Number(BigInt(params[0].toBlock)) - Number(BigInt(params[0].fromBlock)) + 1 > maximum) throw Error('Temporary RPC limit');
+      return provider.rpc(method, params, signal);
+    });
+    const options = { rpc, query, persist: async () => {}, directory, pageSize: 4096, now: () => (1_790_000_000 + 30_000) * 1000 };
+    const selected = { ...request(), priority: 'background' as const }, file = path.join(directory, `${wallet}-${token}-100.json`);
+    try {
+      await createKolTokenInventory(options)(selected);
+      const cached = JSON.parse(await readFile(file, 'utf8'));
+      expect(cached.state).toMatchObject({ pageSize: 512, successfulPages: 1, scanned: 611 });
+      if (legacy) {
+        delete cached.state.successfulPages;
+        cached.checksum = createHash('sha256').update(JSON.stringify(cached.state)).digest('hex'); await writeFile(file, JSON.stringify(cached));
+      }
+      maximum = Infinity;
+      const resumed = createKolTokenInventory(options);
+      expect((await resumed(selected)).coverage.scannedThroughBlock).toBe('1123');
+      expect(JSON.parse(await readFile(file, 'utf8')).state.pageSize).toBe(legacy ? 512 : 1024);
+      await resumed(selected);
+      expect(JSON.parse(await readFile(file, 'utf8')).state.pageSize).toBe(1024);
+    } finally {
+      const resolved = path.resolve(directory), intended = path.resolve(tmpdir()) + path.sep;
+      if (!resolved.startsWith(intended) || !path.basename(resolved).startsWith('bscan-inventory-test-')) throw new Error('Unsafe inventory test cleanup');
+      await rm(resolved, { recursive: true, force: true });
+    }
+  });
   it('keeps movement coverage explicit when indexed swaps are incomplete', async () => {
     const provider = chain(), selected = { ...request(), tradesComplete: false };
     const result = await createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null })(selected);

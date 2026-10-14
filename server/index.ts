@@ -12,6 +12,7 @@ import { registerIntelligenceRoutes } from './intelligenceApi.js';
 import { getTokenTranslation } from './tokenTranslation.js';
 import { registerTradeReplayChartRoutes } from './tradeReplayChart.js';
 import { registerFrontendRoutes } from './frontendRoutes.js';
+import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolProfile.js';
 
 const app = Fastify({ logger: { redact: ['req.headers.cookie', 'res.headers.set-cookie'] }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -191,10 +192,10 @@ async function kolTokenPage(key: string, cursor?: string) {
       }
     } catch { /* Invalid cursor starts at latest. */ }
   }
-  const result = await pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} GROUP BY v.address ${having} ORDER BY MAX(t.timestamp) DESC,v.address DESC LIMIT 11`, values);
-  const items = result.rows.slice(0, 10);
+  const result = await pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} GROUP BY v.address ${having} ORDER BY MAX(t.timestamp) DESC,v.address DESC LIMIT ${kolProfileTokenPageSize + 1}`, values);
+  const items = result.rows.slice(0, kolProfileTokenPageSize);
   const last = items.at(-1);
-  return { items, nextCursor: result.rows.length > 10 && last ? Buffer.from(JSON.stringify({ ts: last.lastTradeAt, address: last.address })).toString('base64url') : null };
+  return { items, nextCursor: result.rows.length > kolProfileTokenPageSize && last ? Buffer.from(JSON.stringify({ ts: last.lastTradeAt, address: last.address })).toString('base64url') : null };
 }
 
 app.get<{ Params: { address: string }; Querystring: { cursor?: string } }>('/api/kols/:address/tokens', async request => {
@@ -209,13 +210,13 @@ app.get<{ Params: { address: string } }>('/api/kols/:address', async request => 
   const [kol, stats, trades, activity, tokens] = await Promise.all([
     pool.query(`SELECT address,display_name AS name,avatar_url AS "avatarUrl",twitter,source,last_seen_at AS "lastSeenAt" FROM kols WHERE address=$1 AND is_tracked`, [key]),
     pool.query(`SELECT s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt",s.valued_sell_count AS "valuedSellCount",s.excluded_sell_count AS "excludedSellCount" FROM leaderboard_snapshots s JOIN kols k ON k.address=s.wallet_address WHERE s.wallet_address=$1 AND s.period='1d' AND s.window_start IS NOT NULL AND k.is_tracked`, [key]),
-    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp >= $2::timestamptz ORDER BY t.timestamp DESC,t.id DESC LIMIT 21`, [key, windowStart]),
+    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp >= $2::timestamptz ORDER BY t.timestamp DESC,t.id DESC LIMIT ${kolProfileTradePageSize + 1}`, [key, windowStart]),
     pool.query(`SELECT COUNT(*)::int AS "tradeCount24h",COUNT(*) FILTER (WHERE t.side='buy')::int AS "buyCount24h",COUNT(*) FILTER (WHERE t.side='sell')::int AS "sellCount24h",COUNT(*) FILTER (WHERE t.side='sell' AND t.amount_usd IS NULL)::int AS "unpricedSellCount24h" FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp >= $2::timestamptz`, [key, windowStart]),
     kolTokenPage(key),
   ]);
-  const tradeRows = trades.rows.slice(0, 20);
+  const tradeRows = trades.rows.slice(0, kolProfileTradePageSize);
   return { kol: kol.rows[0] ?? null, stats: stats.rows[0] ?? null, trades: tradeRows,
-    tradesNextCursor: trades.rows.length > 20 ? nextTradeCursor(tradeRows.at(-1)) : null,
+    tradesNextCursor: trades.rows.length > kolProfileTradePageSize ? nextTradeCursor(tradeRows.at(-1)) : null,
     ...activity.rows[0], tokens: tokens.items, tokensNextCursor: tokens.nextCursor, windowStart };
 });
 

@@ -309,16 +309,24 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
 }
 
 /** Reuse chart jobs/cache while keeping card valuation below foreground charts. */
-async function loadCurrentPositionQuote(token: string): Promise<PositionQuoteResult> {
-  const result = await currentMarketChart(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
-  const chart = result.chart, now = Date.now(), updated = Date.parse(chart?.updatedAt ?? '');
+export async function loadCurrentPositionQuote(token: string, { loadChart = currentMarketChart, now: clock = Date.now }: {
+  loadChart?: typeof currentMarketChart; now?: () => number;
+} = {}): Promise<PositionQuoteResult> {
+  const result = await loadChart(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
+  const chart = result.chart, now = clock(), updated = Date.parse(chart?.updatedAt ?? '');
   const unavailable = { reason: result.loadStatus === 'rate_limited' ? 'quote_rate_limited' : 'current_quote_unavailable', retryAfterMs: result.retryAfterMs ?? 3000 };
-  if (!chart || chart.address !== token || chart.resolution !== '1m' || chart.pending || chart.stale
-    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source) || !Number.isFinite(updated) || updated > now || now - updated > 30_000) return unavailable;
-  const bar = chart.candles.filter(candle => Number.isInteger(candle.time) && candle.time >= 0 && candle.time * 1000 <= now
+  // The chart refresh target is shorter than the position quote's validity.
+  // Keep a genuinely observed recent price usable while its refresh is queued;
+  // otherwise a busy profile can revisit only after every fresh chart expires.
+  if (!chart || chart.address !== token || chart.resolution !== '1m'
+    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source) || !Number.isFinite(updated) || updated > now
+    || now - updated > kolTokenPositionQuoteMaxAgeMs) return unavailable;
+  const bar = chart.candles.filter(candle => Number.isInteger(candle.time) && candle.time >= 0 && candle.time * 1000 <= updated
     && Number.isFinite(candle.close) && candle.close > 0).sort((a, b) => b.time - a.time)[0];
   if (!bar) return unavailable;
-  const boundary = (bar.time + 60) * 1000, observed = boundary > now ? updated : boundary;
+  // A cached partial candle must retain its original observation time after
+  // that minute closes, rather than acquire the later minute boundary.
+  const observed = Math.min(updated, (bar.time + 60) * 1000);
   if (now - observed > kolTokenPositionQuoteMaxAgeMs) return unavailable;
   return { quote: { priceUsd: String(bar.close), timestamp: new Date(observed).toISOString() } };
 }

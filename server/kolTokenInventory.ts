@@ -15,7 +15,7 @@ type Persist = (events: KolTokenInventoryTransfer[], endpoint: { height: number;
 type Page = { from: number; to: number; hash: string; logs: Log[]; canonicalTransactions: string[]; transactions: string[]; checked: string[] };
 type State = { version: 1; wallet: string; token: string; first: number; target: number; endpoint: Block; scanned: number;
   checkpointHash: string | null; pageSize: number; page?: Page; movements: Movement[]; initialRaw: string | null; endingRaw: string | null;
-  decimals: number; initialSource: 'historical_call' | 'derived_complete_movements' | null; checkedAt: string | null };
+  decimals: number; initialSource: 'historical_call' | 'derived_complete_movements' | null; checkedAt: string | null; successfulPages?: number };
 const address = /^0x[0-9a-f]{40}$/;
 const hash = /^0x[0-9a-f]{64}$/;
 const hex = (height: number) => `0x${height.toString(16)}`;
@@ -73,6 +73,7 @@ export const persistCanonicalInventoryTransfers: Persist = async (events, endpoi
 };
 export interface KolTokenInventoryRequest {
   wallet: string; token: string; firstBlock: string | null; decimals: number | null; trades: Trade[]; tradesComplete: boolean;
+  priority?: 'foreground' | 'background';
 }
 
 /** Resume canonical movement scans independently of the indexed swap ledger.
@@ -81,6 +82,12 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
   persist = persistCanonicalInventoryTransfers, directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'inventory'), budgetMs = 6000, now = Date.now, pageSize = 65_536,
 }: { rpc?: Rpc; query?: Query; persist?: Persist; directory?: string | null; budgetMs?: number; now?: () => number; pageSize?: number } = {}) {
   const states = new Map<string, State>(), jobs = new Map<string, Promise<KolTokenInventoryEvidence>>();
+  const activeJobs = new Set<string>(), backgroundJobs = new Set<string>();
+  const configuredPageSize = Number.isSafeInteger(pageSize) && pageSize > 0 ? Math.min(pageSize, 65_536) : 65_536;
+  const waitingBackground: { key: string; start(background: boolean): void }[] = [];
+  const dispatchBackground = () => {
+    if (activeJobs.size < 2 && backgroundJobs.size === 0) waitingBackground.shift()?.start(true);
+  };
   const save = async (key: string, state: State) => {
     if (!directory) return;
     await mkdir(directory, { recursive: true });
@@ -106,9 +113,22 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
     if (!address.test(request.wallet) || !address.test(request.token) || !/^\d+$/.test(request.firstBlock ?? '')
       || !Number.isSafeInteger(Number(request.firstBlock))) return evidence(request, undefined, 'inventory_range_unavailable');
     const key = `${request.wallet}-${request.token}-${request.firstBlock}`;
-    const existing = jobs.get(key); if (existing) return existing;
-    if (jobs.size >= 2) return evidence(request, states.get(key), 'scan_queued');
-    const job = (async () => {
+    const existing = jobs.get(key);
+    if (existing) {
+      // Opening a queued card uses the reserved foreground slot immediately,
+      // without creating a second scan for the same pair.
+      if (request.priority !== 'background' && activeJobs.size < 2) {
+        const queued = waitingBackground.findIndex(item => item.key === key);
+        if (queued >= 0) waitingBackground.splice(queued, 1)[0].start(false);
+      }
+      return existing;
+    }
+    // Profile cards queue in arrival order and use one scanner, leaving the
+    // second available to an opened trade or replay. Polling cannot jump ahead
+    // of an older card, and coalesced callers never consume another slot.
+    let background = request.priority === 'background';
+    if (background ? waitingBackground.length >= 8 : activeJobs.size >= 2) return evidence(request, states.get(key), 'scan_queued');
+    const work = async () => {
       const signal = AbortSignal.timeout(budgetMs);
       const call = (method: string, params: unknown[]) => bounded(rpc(method, params, signal), signal);
       const block = async (height: number): Promise<Block> => {
@@ -130,6 +150,7 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
               && saved.scanned >= saved.first - 1 && saved.scanned <= saved.target && saved.target >= saved.first
               && Number.isInteger(saved.decimals) && saved.decimals >= 0 && saved.decimals <= 36
               && Number.isSafeInteger(saved.pageSize) && saved.pageSize > 0 && saved.pageSize <= 65_536
+              && (saved.successfulPages === undefined || Number.isInteger(saved.successfulPages) && saved.successfulPages >= 0 && saved.successfulPages < 2)
               && hash.test(saved.endpoint?.hash ?? '') && Number(BigInt(saved.endpoint.number)) === saved.target
               && (saved.initialRaw === null || /^\d+$/.test(saved.initialRaw)) && (saved.endingRaw === null || /^\d+$/.test(saved.endingRaw))
               && saved.movements.every(event => event.walletAddress === request.wallet && event.tokenAddress === request.token && hash.test(event.txHash)
@@ -154,7 +175,7 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
           const decimals = Number(BigInt(rawDecimals));
           if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36 || request.decimals != null && request.decimals !== decimals) return evidence(request, undefined, 'decimals_unreconciled');
           state = { version: 1, wallet: request.wallet, token: request.token, first, target, endpoint, scanned: first - 1,
-            checkpointHash: null, pageSize, movements: [], initialRaw: null, endingRaw: null, decimals, initialSource: null, checkedAt: null };
+            checkpointHash: null, pageSize: configuredPageSize, movements: [], initialRaw: null, endingRaw: null, decimals, initialSource: null, checkedAt: null };
           if (first > 0) {
             try { state.initialRaw = BigInt(await call('eth_call', [{ to: request.token, data: `0x70a08231${request.wallet.slice(2).padStart(64, '0')}` }, hex(first - 1)])).toString(); state.initialSource = 'historical_call'; }
             catch { /* Derivation requires the completed movement scan and same-block end balance below. */ }
@@ -219,7 +240,9 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
               if (responses.some(value => !Array.isArray(value))) throw new Error('movement_scan_unavailable');
               rows = responses.flat();
             } catch (problem) {
-              if (!signal.aborted && state.pageSize > 512) { state.pageSize = Math.max(512, Math.floor(state.pageSize / 2)); continue; }
+              if (!signal.aborted && state.pageSize > 512) {
+                state.pageSize = Math.max(512, Math.floor(state.pageSize / 2)); state.successfulPages = 0; continue;
+              }
               throw problem;
             }
             if (rows.length > 20_000) throw new Error('inventory_limit');
@@ -254,6 +277,13 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
           if (state.page.checked.length !== state.page.transactions.length) break;
           if ((await block(state.page.to)).hash !== state.page.hash) throw new Error('canonical_page_changed');
           state.scanned = state.page.to; state.checkpointHash = state.page.hash; state.page = undefined;
+          // Temporary RPC failures should not strand future backfills at the
+          // smallest window. Grow only after two fully verified pages.
+          state.successfulPages = (state.successfulPages ?? 0) + 1;
+          if (state.successfulPages >= 2) { state.pageSize = Math.min(configuredPageSize, state.pageSize * 2); state.successfulPages = 0; }
+          // A cold profile backfill yields at a verified checkpoint so the next
+          // visible card can run before this token requests another page.
+          if (background && state.scanned < state.target) break;
         }
         if (state.scanned !== state.target) return evidence(request, state, 'scan_pending');
         const endpointTime = Number(BigInt(state.endpoint.timestamp)) * 1000;
@@ -302,8 +332,21 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
         if (state) { states.set(key, state); await save(key, state).catch(() => {}); }
         if (states.size > 100) for (const savedKey of states.keys()) { if (!jobs.has(savedKey)) { states.delete(savedKey); break; } }
       }
-    })().finally(() => jobs.delete(key));
-    jobs.set(key, job); return job;
+    };
+    let resolve!: (value: KolTokenInventoryEvidence) => void, reject!: (reason: unknown) => void;
+    const job = new Promise<KolTokenInventoryEvidence>((accept, fail) => { resolve = accept; reject = fail; });
+    jobs.set(key, job);
+    const finished = () => {
+      jobs.delete(key); activeJobs.delete(key); backgroundJobs.delete(key); dispatchBackground();
+    };
+    const start = (asBackground: boolean) => {
+      background = asBackground;
+      activeJobs.add(key); if (background) backgroundJobs.add(key);
+      void work().then(value => { finished(); resolve(value); }, error => { finished(); reject(error); });
+    };
+    if (background) { waitingBackground.push({ key, start }); dispatchBackground(); }
+    else start(false);
+    return job;
   };
 }
 export const currentKolTokenInventory = createKolTokenInventory();

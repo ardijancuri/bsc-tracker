@@ -3,21 +3,21 @@ import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import { getLocale, t } from './i18n';
 import { kolTokenPnlKey, requestKolTokenPnl, tokenPnlMovementsMatch, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
-export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt }: {
-  walletAddress: string; tokenAddress: string; lastTradeAt: string | null;
+export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt, eager = false }: {
+  walletAddress: string; tokenAddress: string; lastTradeAt: string | null; eager?: boolean;
 }) {
   const wallet = walletAddress.toLowerCase(), token = tokenAddress.toLowerCase();
   const pair = kolTokenPnlKey({ walletAddress: wallet, tokenAddress: token, lastTradeAt });
   const [result, setResult] = useState<{ pair: string; activity: KolTokenActivity | null; busy: boolean } | null>(null);
   const element = useRef<HTMLSpanElement>(null);
-  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
+  const [visible, setVisible] = useState(eager || typeof IntersectionObserver === 'undefined');
 
   useEffect(() => {
-    if (typeof IntersectionObserver === 'undefined' || !element.current) { setVisible(true); return; }
+    if (eager || typeof IntersectionObserver === 'undefined' || !element.current) { setVisible(true); return; }
     const observer = new IntersectionObserver(entries => setVisible(entries.some(entry => entry.isIntersecting)), { rootMargin: '160px 0px' });
     observer.observe(element.current);
     return () => observer.disconnect();
-  }, []);
+  }, [eager]);
 
   useEffect(() => {
     if (!visible) return;
