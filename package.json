@@ -13,7 +13,8 @@
     "worker": "node dist-server/worker.js",
     "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
-    "test:integration": "tsx server/intelligence.integration.ts"
+    "test:integration": "tsx server/intelligence.integration.ts",
+    "test:integration:kol-profile": "tsx server/kolProfile.integration.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

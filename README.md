@@ -19,6 +19,8 @@ The public leaderboard uses a continuously moving 24-hour window and FIFO cost b
 
 The token tracker includes recognized meme launchpad contracts and known meme coins, excluding quote assets, LP tokens and dividend trackers. Its initial one-hour window uses on-chain trade timestamps. Logos are validated by decoding their image bytes, cached locally and served through `/api/token-image/:address` with a content version. IPFS images retry independent gateways; oversized animation uses a compact still frame. Coins with unavailable artwork keep a readable initial while background retries continue.
 
+KOL profiles exclude quote assets, LPs, dividend trackers, registered stock tokens and the reward-asset contracts listed in `server/kolProfileToken.ts` from token cards, trade lists, activity counts and last-trade timestamps. The same filter prevents their per-token P&L and replay preparation. It runs before pagination; raw indexed trades and transfer evidence remain available for accounting of other tokens. Unknown contracts and dividend-paying meme tokens remain eligible.
+
 ## Run
 
 Use Node.js 22+, PostgreSQL 17, and a BSC node with HTTP and WebSocket RPC. Copy `.env.example` to a private `.env`, set `BSCAN_DB_PASSWORD`, and run `docker compose up -d --build` on the VPS. The API binds to loopback port 3300; PostgreSQL binds to loopback port 5434. RPC access remains private. `GET /api/health` checks the API and database. `GET /api/overview` reports roster and data freshness.
@@ -78,3 +80,5 @@ Production HTML revalidates on each navigation; fingerprinted `/assets/` files h
 Live data hooks share one `/api/stream` connection per tab. Transport errors close the failed connection and retry after 2, 4, 8, 16, 32, then at most 60 seconds. The connection pauses offline and in hidden tabs; existing polling remains the fallback. These changes reduce duplicate connections and retry noise; they do not change the reverse proxy's HTTP/3 configuration.
 
 Run `npm run check`, `npm test`, and `npm run build`. For database-backed validation, create a disposable PostgreSQL database named `bscan_intelligence_test` or `bscan_intelligence_test_<digits>` and set its private `DATABASE_URL`, then run `npm run test:integration`. The runner refuses other database names, mocks RPC/DEX Screener, and tests migrations, profile backfills, isolation, movements, stale/failed checks, launch milestones, pool IDs and reorgs. `INTELLIGENCE_PREVIEW_FIXTURES=1` leaves synthetic fixtures for isolated desktop/mobile QA; never use them in production.
+
+With a separate, empty database using the same test-only naming convention, `npm run test:integration:kol-profile` checks the real profile and pagination routes, excluded-asset P&L/replay rejection and preservation of stored trades. Provider HTTP access is disabled during this test.

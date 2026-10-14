@@ -8,7 +8,7 @@ import { pool } from './db.js';
 import { geckoFetch, MarketProviderDeferred } from './geckoApi.js';
 import { gmgnRequest } from './gmgnApi.js';
 import { currentMarketChart, parseCandles, selectChartPools } from './tokenChart.js';
-import { nonStockTokenSql } from './stockToken.js';
+import { isExcludedKolProfileTokenAddress, kolProfileTokenSql } from './kolProfileToken.js';
 
 const addressPattern = /^0x[0-9a-f]{40}$/;
 const requestBudgetMs = 20_000;
@@ -409,6 +409,7 @@ export function registerTradeReplayChartRoutes(app: FastifyInstance) {
     const wallet = request.params.address.toLowerCase(), token = request.params.token.toLowerCase();
     if (!addressPattern.test(wallet) || !addressPattern.test(token)) return reply.code(400).send({ error: 'Invalid KOL or token address' });
     if (request.query.end !== undefined && request.query.end !== 'current') return reply.code(400).send({ error: 'Invalid replay ending' });
+    if (isExcludedKolProfileTokenAddress(token)) return reply.code(404).send({ error: 'KOL token activity not found' });
     const current = request.query.end === 'current';
     const result = await pool.query(`SELECT MIN(t.timestamp) AS first,GREATEST(MAX(t.timestamp),COALESCE((SELECT MAX(m.timestamp) FROM wallet_transfers m
       WHERE m.wallet_address=$1 AND m.token_address=$2 AND m.kind='transfer' AND m.timestamp<=now()
@@ -418,7 +419,7 @@ export function registerTradeReplayChartRoutes(app: FastifyInstance) {
         THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END AS supply
       FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
       WHERE t.wallet_address=$1 AND t.token_address=$2 AND k.is_tracked AND t.block_number IS NOT NULL
-        AND t.timestamp<=now() AND t.side IN ('buy','sell') AND ${nonStockTokenSql('t.token_address')}
+        AND t.timestamp<=now() AND t.side IN ('buy','sell') AND ${kolProfileTokenSql()}
       GROUP BY v.address`, [wallet, token]);
     const row = result.rows[0];
     if (!row) return reply.code(404).send({ error: 'KOL token activity not found' });

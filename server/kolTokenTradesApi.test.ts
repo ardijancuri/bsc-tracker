@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerKolTokenTradesRoutes, kolTokenHistoryLimit } from './kolTokenTradesApi.js';
+import { kolProfileTokenSql } from './kolProfileToken.js';
 
 const mocks = vi.hoisted(() => ({ query: vi.fn(), inventory: vi.fn(), replay: vi.fn(), pnl: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
@@ -38,6 +39,9 @@ describe('KOL token activity API', () => {
       expect(historyCall[0]).toContain('k.is_tracked'); expect(historyCall[0]).toContain('t.block_number IS NOT NULL');
       expect(historyCall[0]).not.toContain("interval '24 hours'");
       expect(historyCall[0]).toContain('other.token_address<>t.token_address');
+      expect(historyCall[0]).toContain("COALESCE(asset.symbol,'') !~* 'dividend[_ ]?tracker'");
+      expect(identityCall[0]).toContain(kolProfileTokenSql());
+      expect(historyCall[0]).toContain(kolProfileTokenSql());
       expect(identityCall[0]).toContain("v.supply_checked_at>now()-interval '2 days'");
       expect(mocks.inventory).toHaveBeenCalledWith({ wallet, token, firstBlock: '100', decimals: 0, trades: history, tradesComplete: true });
       expect(response.json().inventory.coverage).toMatchObject({ complete: true, reconciled: true, balance: '0' });
@@ -113,9 +117,36 @@ describe('KOL token activity API', () => {
     try { expect((await app.inject(`/api/kols/${kol}/tokens/${address}/activity`)).statusCode).toBe(status); expect(mocks.query).not.toHaveBeenCalled(); }
     finally { await app.close(); }
   });
-  it('returns not-found rather than a different wallet/contract or untracked identity', async () => {
-    const app = Fastify(); registerKolTokenTradesRoutes(app); mocks.query.mockResolvedValue({ rows: [] });
-    try { expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/activity`)).statusCode).toBe(404); }
+  it.each([
+    ['XAUt', '0x21caef8a43163eea865baee23b9c2e327696a3bf'],
+    ['BTCB', '0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c'],
+    ['xOPAI', '0x7ddef360f3c2db4cc41c3967984fefa2598cc9a6'],
+  ])('rejects excluded %s contracts before database, inventory, or accounting preparation', async (_symbol, address) => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    try {
+      for (const contract of [address, address.toUpperCase().replace('0X', '0x')]) {
+        for (const parameters of ['pnl=true&replay=true', 'pnl=true&profile=true']) {
+          const response = await app.inject(`/api/kols/${wallet}/tokens/${contract}/activity?${parameters}`);
+          expect(response.statusCode).toBe(404);
+          expect(response.json()).toEqual({ error: 'KOL token activity not found' });
+        }
+      }
+      expect(mocks.query).not.toHaveBeenCalled();
+      expect(mocks.inventory).not.toHaveBeenCalled();
+      expect(mocks.pnl).not.toHaveBeenCalled();
+      expect(mocks.replay).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it('returns not-found without preparing PNL when the identity query excludes metadata or untracked tokens', async () => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: history });
+    try {
+      expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true&replay=true`)).statusCode).toBe(404);
+      expect(mocks.query.mock.calls[0][0]).toContain(kolProfileTokenSql());
+      expect(mocks.inventory).not.toHaveBeenCalled();
+      expect(mocks.pnl).not.toHaveBeenCalled();
+      expect(mocks.replay).not.toHaveBeenCalled();
+    }
     finally { await app.close(); }
   });
   it('keeps full indexed counts and first/last dates but nulls monetary totals for truncated history', async () => {

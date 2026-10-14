@@ -8,6 +8,7 @@ import type { ReplayMarketChart } from '../shared/replayChart.js';
 import type { TokenChart } from '../shared/intelligence.js';
 import { createReplayChartCache, fetchTradeReplayChart, registerTradeReplayChartRoutes, replayPointsFromBars, replaySparsePointsFromBars } from './tradeReplayChart.js';
 import { MarketProviderDeferred } from './geckoApi.js';
+import { kolProfileTokenSql } from './kolProfileToken.js';
 
 const mocks = vi.hoisted(() => ({ query: vi.fn(), geckoFetch: vi.fn(), currentMarketChart: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
@@ -609,7 +610,28 @@ describe('KOL replay chart route', () => {
       expect(mocks.query).not.toHaveBeenCalled();
       mocks.query.mockResolvedValue({ rows: [] });
       expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/replay-chart`)).statusCode).toBe(404);
+      expect(mocks.query.mock.calls[0][0]).toContain(kolProfileTokenSql());
       expect(mocks.geckoFetch).not.toHaveBeenCalled();
+      expect(mocks.currentMarketChart).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it.each([
+    ['XAUt', '0x21caef8a43163eea865baee23b9c2e327696a3bf'],
+    ['BTCB', '0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c'],
+    ['xOPAI', '0x7ddef360f3c2db4cc41c3967984fefa2598cc9a6'],
+  ])('rejects excluded %s contracts before database or historical/current chart requests', async (_symbol, address) => {
+    const app = Fastify(); registerTradeReplayChartRoutes(app);
+    try {
+      for (const contract of [address, address.toUpperCase().replace('0X', '0x')]) {
+        for (const ending of ['', '?end=current']) {
+          const response = await app.inject(`/api/kols/${wallet}/tokens/${contract}/replay-chart${ending}`);
+          expect(response.statusCode).toBe(404);
+          expect(response.json()).toEqual({ error: 'KOL token activity not found' });
+        }
+      }
+      expect(mocks.query).not.toHaveBeenCalled();
+      expect(mocks.geckoFetch).not.toHaveBeenCalled();
+      expect(mocks.currentMarketChart).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
   it('derives the exact confirmed pair/window and verified supply on the server without adding normal one-minute charts', async () => {
@@ -625,6 +647,7 @@ describe('KOL replay chart route', () => {
       expect(mocks.query.mock.calls[0][0]).toContain('t.block_number IS NOT NULL');
       expect(mocks.query.mock.calls[0][0]).toContain("t.side IN ('buy','sell')");
       expect(mocks.query.mock.calls[0][0]).toContain('k.is_tracked');
+      expect(mocks.query.mock.calls[0][0]).toContain(kolProfileTokenSql());
       expect(response.headers['cache-control']).toBe('public, max-age=60');
     } finally { await app.close(); }
   });
