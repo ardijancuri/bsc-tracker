@@ -9,7 +9,7 @@
  */
 
 import { BRAND_ICON_PATHS, BRAND_WORDMARK_PATHS } from './tradeReplayBrandPaths';
-import { replayEndTimestamp, replayIsOpen } from './tradeReplayData';
+import { replayAccountingTotal, replayEndTimestamp, replayIsOpen } from './tradeReplayData';
 
 const WIDTH = 1080;
 const HEIGHT = 1350;
@@ -1018,7 +1018,7 @@ export class ReplayCanvas {
     const fees = finite(snapshot.feesUsd, null);
     const value = holdings === 0 ? 0 : holdings !== null && state.currentPrice > 0 ? holdings * state.currentPrice : null;
     const unrealized = value !== null && basis !== null ? value - basis : null;
-    let total = unrealized !== null && realized !== null && cost !== null && fees !== null ? realized + unrealized : null;
+    let total = replayAccountingTotal(snapshot, state.currentPrice);
     let roi = total !== null && cost > 0 ? total / cost : null;
     // Exact provider totals belong only to the ending. A different selected
     // price reprices the remaining quantity, without changing disposal gains.

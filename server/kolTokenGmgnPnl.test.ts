@@ -56,6 +56,49 @@ afterEach(async () => {
 });
 
 describe('GMGN historical realized P&L adapter', () => {
+  it('returns open estimated total and return with the exact aggregate mark, including transfers and fees', () => {
+    const selected = activity(), result = realizedAccountingFromReplay(selected, accounting(selected, true), time);
+    expect(result.position).toMatchObject({ status: 'open', remainingTokenAmount: '4', remainingCostBasisUsd: '42.4', feeInclusiveCostUsd: '109',
+      estimatedProfitUsd: '71', priceUsd: '10', pricedAt: at, valuationSource: 'gmgn' });
+    expect(Number(result.position!.unrealizedProfitUsd)).toBeCloseTo(-2.4, 12);
+    expect(Number(result.position!.estimatedRoi)).toBeCloseTo(71 / 109, 12);
+    expect(Number(result.realizedProfitUsd) + Number(result.position!.unrealizedProfitUsd)).toBe(71);
+  });
+  it('identifies a canonical closed position without requiring a current market quote', () => {
+    const selected = activity(), value = accounting(selected, true);
+    selected.inventory!.coverage.balance = '0'; selected.inventory!.events.at(-1)!.remainingTokenAmount = '0';
+    Object.assign(value.final!, { remainingTokenAmount: '0', remainingCostBasisUsd: '0', cumulativeRealizedProfitUsd: '31', priceUsd: null });
+    const result = realizedAccountingFromReplay(selected, value, time);
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: '31', position: { status: 'closed', estimatedProfitUsd: '31', unrealizedProfitUsd: '0',
+      priceUsd: null, pricedAt: null, valuationSource: null } });
+    expect(Number(result.position!.estimatedRoi)).toBeCloseTo(31 / 109, 12);
+  });
+  it('keeps complete open-position cash flows when the realized/unrealized allocation is unavailable', async () => {
+    const selected = activity(), value = accounting(selected);
+    value.events.at(-1)!.remainingCostBasisUsd = null;
+    value.events.at(-1)!.cumulativeRealizedProfitUsd = null;
+    const load = vi.fn(async () => value), run = createKolTokenGmgnPnl({ load, directory, now: () => time,
+      loadQuote: async () => ({ quote: { priceUsd: '20', timestamp: at } }) });
+    const result = await run(selected);
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: null, coverage: { reason: 'gmgn_activity_estimate' }, position: {
+      status: 'open', estimatedProfitUsd: '111', unrealizedProfitUsd: null, remainingCostBasisUsd: null,
+      feeInclusiveCostUsd: '109', cashFlow: { investedUsd: '100', soldUsd: '60', transferOutIncomeUsd: '80', feesUsd: '9' } } });
+    expect(Number(result.position!.estimatedRoi)).toBeCloseTo(111 / 109, 12);
+    expect((await run(selected)).position!.estimatedProfitUsd).toBe('111'); expect(load).toHaveBeenCalledOnce();
+    const restarted = createKolTokenGmgnPnl({ load, directory, now: () => time, loadQuote: async () => ({ quote: { priceUsd: '30', timestamp: at } }) });
+    expect((await restarted(selected)).position!.estimatedProfitUsd).toBe('151'); expect(load).toHaveBeenCalledOnce();
+  });
+  it.each(['missing-fees', 'missing-cost', 'invalid-basis'] as const)('does not infer an open total with %s even when a quote is available', async variant => {
+    const selected = activity(), value = accounting(selected), last = value.events.at(-1)!;
+    last.remainingCostBasisUsd = null; last.cumulativeRealizedProfitUsd = null;
+    if (variant === 'missing-fees') last.feesUsd = null;
+    if (variant === 'missing-cost') last.feeInclusiveCostUsd = null;
+    if (variant === 'invalid-basis') last.remainingCostBasisUsd = '-1';
+    const loadQuote = vi.fn(async () => ({ quote: { priceUsd: '20', timestamp: at } }));
+    const result = await createKolTokenGmgnPnl({ load: async () => value, loadQuote, directory: null, now: () => time })(selected);
+    expect(result).toMatchObject({ status: 'unavailable', realizedProfitUsd: null }); expect(result.position).toBeUndefined();
+    expect(loadQuote).not.toHaveBeenCalled();
+  });
   it('uses complete fee-accounted history including marked transfers without FIFO substitution or a current quote', () => {
     const selected = activity(), result = realizedAccountingFromReplay(selected, accounting(selected), time);
     expect(result).toMatchObject({ version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', status: 'ready', realizedProfitUsd: '73.4',
@@ -93,6 +136,121 @@ describe('GMGN historical realized P&L adapter', () => {
 });
 
 describe('bounded durable historical realized cache', () => {
+  it('never replaces a reported total or its expiry with a subsequently supplied history estimate', async () => {
+    let clock = time; const run = createKolTokenGmgnPnl({ directory, now: () => clock });
+    const exact = accounting(activity(), true); exact.final!.remainingCostBasisUsd = '43.4'; exact.final!.cumulativeRealizedProfitUsd = '74.4';
+    await run(activity(), exact);
+    const file = path.join(directory, (await readdir(directory))[0]), stored = JSON.parse(await readFile(file, 'utf8'));
+    clock += 1000;
+    expect(await run(activity(), accounting())).toMatchObject({ realizedProfitUsd: '74.4' });
+    expect((await run(activity())).coverage.reason).toBeUndefined();
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(stored);
+  });
+  it('expires a derived total after fifteen seconds so a provider lookup can upgrade it to reported accounting', async () => {
+    let clock = time; const exact = accounting(activity(), true); exact.final!.remainingCostBasisUsd = '43.4'; exact.final!.cumulativeRealizedProfitUsd = '74.4';
+    const load = vi.fn().mockResolvedValueOnce(accounting()).mockResolvedValue(exact);
+    const run = createKolTokenGmgnPnl({ load, directory, now: () => clock });
+    const first = await run(activity()); expect(first.realizedProfitUsd).toBe('73.4'); expect(first.retryAfterMs).toBeUndefined();
+    clock += 14_999; expect((await run(activity())).realizedProfitUsd).toBe('73.4'); expect(load).toHaveBeenCalledOnce();
+    clock += 1; expect((await run(activity())).realizedProfitUsd).toBe('74.4'); expect(load).toHaveBeenCalledTimes(2);
+    expect((await run(activity())).coverage.reason).toBeUndefined();
+  });
+  it('decrements a derived aggregate cooldown instead of resetting it on every cached read', async () => {
+    let clock = time; const deferred = accounting(); deferred.coverage.reason = 'aggregate_provider_busy'; deferred.retryAfterMs = 2500;
+    const load = vi.fn().mockResolvedValueOnce(deferred).mockResolvedValue(accounting(activity(), true));
+    const run = createKolTokenGmgnPnl({ load, directory: null, now: () => clock });
+    expect(await run(activity())).toMatchObject({ status: 'ready', retryAfterMs: 2500, coverage: { reason: 'gmgn_activity_estimate' } });
+    clock += 1000; expect((await run(activity())).retryAfterMs).toBe(1500); expect(load).toHaveBeenCalledOnce();
+    clock += 1500; const ready = await run(activity()); expect(ready.coverage.reason).toBeUndefined(); expect(ready.retryAfterMs).toBeUndefined();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it('lets a completed reported lookup upgrade an estimate supplied while that lookup was still running', async () => {
+    let finish!: (value: TradeReplayAccounting) => void;
+    const run = createKolTokenGmgnPnl({ load: async () => new Promise(resolve => { finish = resolve; }), directory, now: () => time });
+    const loading = run(activity()); await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect((await run(activity(), accounting())).coverage.reason).toBe('gmgn_activity_estimate');
+    const exact = accounting(activity(), true); exact.final!.remainingCostBasisUsd = '43.4'; exact.final!.cumulativeRealizedProfitUsd = '74.4';
+    finish(exact);
+    expect(await loading).toMatchObject({ status: 'ready', realizedProfitUsd: '74.4' });
+    expect((await run(activity())).coverage.reason).toBeUndefined();
+    const restarted = createKolTokenGmgnPnl({ load: async () => { throw Error('Unexpected provider lookup'); }, directory, now: () => time });
+    expect((await restarted(activity())).realizedProfitUsd).toBe('74.4');
+  });
+  it('marks cached verified basis with fresh prices without requesting the historical ledger again', async () => {
+    let clock = time, price = '20'; const load = vi.fn(async (selected: KolTokenActivity) => {
+      const value = accounting(selected, true); value.final!.priceUsd = null; return value;
+    });
+    const loadQuote = vi.fn(async () => ({ quote: { priceUsd: price, timestamp: new Date(clock).toISOString() } }));
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory, now: () => clock });
+    expect(await run(activity())).toMatchObject({ realizedProfitUsd: '73.4', position: { estimatedProfitUsd: '111', valuationSource: 'market' } });
+    clock += 60_000; price = '30';
+    const current = activity(); current.inventory!.coverage.checkedAt = new Date(clock).toISOString(); current.token.priceUsd = '999';
+    expect(await run(current)).toMatchObject({ realizedProfitUsd: '73.4', position: { estimatedProfitUsd: '151', priceUsd: '30', pricedAt: new Date(clock).toISOString() } });
+    expect(load).toHaveBeenCalledOnce(); expect(loadQuote).toHaveBeenCalledTimes(2);
+    const restarted = createKolTokenGmgnPnl({ load, loadQuote, directory, now: () => clock });
+    price = '5'; expect(Number((await restarted(current)).position!.estimatedProfitUsd)).toBeCloseTo(51, 12);
+    expect(load).toHaveBeenCalledOnce();
+  });
+  it('uses a fresh aggregate quote without another market request, then expires it without renewing its date', async () => {
+    let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
+    const loadQuote = vi.fn(async () => ({ reason: 'quote_rate_limited', retryAfterMs: 60_000 }));
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => clock });
+    expect((await run(activity())).position!.estimatedProfitUsd).toBe('71'); expect(loadQuote).not.toHaveBeenCalled();
+    clock += 180_001; const current = activity(); current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect(await run(current)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { status: 'open', estimatedProfitUsd: null,
+      priceUsd: null, pricedAt: null, reason: 'quote_rate_limited', retryAfterMs: 60_000 } });
+    expect(load).toHaveBeenCalledOnce(); expect(loadQuote).toHaveBeenCalledOnce();
+  });
+  it('refreshes an aggregate mark after thirty seconds and only retains a dated recent mark during quote cooldown', async () => {
+    let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
+    const loadQuote = vi.fn(async () => ({ reason: 'quote_rate_limited', retryAfterMs: 60_000 } as { reason?: string; retryAfterMs?: number; quote?: { priceUsd: string; timestamp: string } }));
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => clock });
+    await run(activity()); clock += 60_000;
+    const current = activity(); current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect(await run(current)).toMatchObject({ position: { estimatedProfitUsd: '71', priceUsd: '10', pricedAt: at, reason: 'quote_rate_limited' } });
+    expect(loadQuote).toHaveBeenCalledOnce();
+    loadQuote.mockResolvedValue({ quote: { priceUsd: '20', timestamp: new Date(clock).toISOString() } });
+    expect(await run(current)).toMatchObject({ position: { estimatedProfitUsd: '111', priceUsd: '20', pricedAt: new Date(clock).toISOString(), valuationSource: 'market' } });
+    expect(load).toHaveBeenCalledOnce();
+  });
+  it('warms a replay ledger without loading a redundant market quote when position marking is not requested', async () => {
+    const loadQuote = vi.fn(async () => ({ quote: { priceUsd: '20', timestamp: at } }));
+    const run = createKolTokenGmgnPnl({ loadQuote, directory: null, now: () => time });
+    expect(await run(activity(), accounting(), { markPosition: false })).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { estimatedProfitUsd: null } });
+    expect(loadQuote).not.toHaveBeenCalled();
+    expect((await run(activity())).position!.estimatedProfitUsd).toBe('111'); expect(loadQuote).toHaveBeenCalledOnce();
+  });
+  it.each(['old', 'future', 'before-last-movement', 'invalid', 'zero'] as const)('does not mark a verified position with a %s quote', async variant => {
+    const selected = activity(); const quote = { priceUsd: '20', timestamp: at };
+    if (variant === 'old') quote.timestamp = new Date(time - 180_001).toISOString();
+    if (variant === 'future') quote.timestamp = new Date(time + 1).toISOString();
+    if (variant === 'before-last-movement') quote.timestamp = new Date(time - 99_000).toISOString();
+    if (variant === 'invalid') quote.priceUsd = '0x100';
+    if (variant === 'zero') quote.priceUsd = '0';
+    const run = createKolTokenGmgnPnl({ load: async () => accounting(selected), loadQuote: async () => ({ quote }), directory: null, now: () => time });
+    expect(await run(selected)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { estimatedProfitUsd: null, priceUsd: null } });
+  });
+  it('does not ask for a quote for unproven accounting or a closed position', async () => {
+    const selected = activity(), value = accounting(selected, true), loadQuote = vi.fn(async () => ({ quote: { priceUsd: '20', timestamp: at } }));
+    value.status = 'pending'; const run = createKolTokenGmgnPnl({ load: async () => value, loadQuote, directory: null, now: () => time });
+    expect((await run(selected)).status).toBe('pending'); expect(loadQuote).not.toHaveBeenCalled();
+    selected.inventory!.coverage.balance = '0'; selected.inventory!.events.at(-1)!.remainingTokenAmount = '0';
+    value.status = 'ready'; Object.assign(value.final!, { remainingTokenAmount: '0', remainingCostBasisUsd: '0', cumulativeRealizedProfitUsd: '31', priceUsd: null });
+    expect((await run(selected)).position!.estimatedProfitUsd).toBe('31'); expect(loadQuote).not.toHaveBeenCalled();
+  });
+  it('coalesces a quote for concurrent positions in the same token and bounds a stalled mark', async () => {
+    let finish!: (value: { quote: { priceUsd: string; timestamp: string } }) => void;
+    const loadQuote = vi.fn(() => new Promise<{ quote: { priceUsd: string; timestamp: string } }>(resolve => { finish = resolve; }));
+    const load = async (selected: KolTokenActivity) => { const value = accounting(); value.walletAddress = selected.kol.address; return value; };
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => time });
+    const second = activity(); second.kol.address = '0x' + '3'.repeat(40);
+    const first = run(activity()), other = run(second);
+    await vi.waitFor(() => expect(loadQuote).toHaveBeenCalledOnce()); finish({ quote: { priceUsd: '20', timestamp: at } });
+    expect((await first).position!.estimatedProfitUsd).toBe('111'); expect((await other).position!.estimatedProfitUsd).toBe('111');
+    vi.useFakeTimers(); const stalled = createKolTokenGmgnPnl({ load, loadQuote: async () => new Promise(() => {}), directory: null, now: () => time });
+    const pending = stalled(activity()); await vi.advanceTimersByTimeAsync(2500);
+    expect(await pending).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { estimatedProfitUsd: null, retryAfterMs: 3000 } });
+  });
   it('reuses unchanged verified historical profit across process restart and endpoint/quote refresh', async () => {
     let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
     const first = createKolTokenGmgnPnl({ load, directory, now: () => clock });

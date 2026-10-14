@@ -19,6 +19,20 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('GMGN chart caching and request coalescing', () => {
+  it('refreshes an older background chart for current valuation without raising its provider priority', async () => {
+    const saved = { ...retained, period: '1m', resolution: '1m', updatedAt: new Date(now - 120_000).toISOString() };
+    mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+    const { currentMarketChart } = await import('./tokenChart.js');
+    expect((await currentMarketChart(address, '1m', 'prefetch')).chart?.stale).toBe(false);
+    expect(mocks.gmgn).not.toHaveBeenCalled();
+    let finish!: (value: unknown) => void;
+    mocks.gmgn.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    expect((await currentMarketChart(address, '1m', 'prefetch', { maxAgeMs: 30_000 })).chart?.stale).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.gmgn.mock.calls[0][1].priority()).toBe('prefetch');
+    finish({ code: 0, data: { list: [row] } }); await vi.advanceTimersByTimeAsync(0);
+    expect((await currentMarketChart(address, '1m', 'prefetch', { maxAgeMs: 30_000 })).chart?.stale).toBe(false);
+  });
   it('prefers the dedicated chart key while retaining the legacy key as a fallback', async () => {
     vi.stubEnv('GMGN_CHART_API_KEY', ' chart-only-test-key ');
     const { currentMarketChart } = await import('./tokenChart.js');

@@ -1,11 +1,58 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketRequestResult } from './tradeReplayMarketRequest';
 import type { TradeReplayData } from './tradeReplayData';
-import { ReplayPreparationError, requirePreparedReplay } from './tradeReplayPreparation';
+import { ReplayPreparationError, prepareReplayForShare, requirePreparedReplay } from './tradeReplayPreparation';
 import { startReplaySession } from './tradeReplaySession';
 
 const result = (preparationStatus: ReplayMarketRequestResult['preparationStatus'], retryAfterMs?: number): ReplayMarketRequestResult =>
   ({ data: {} as TradeReplayData, notice: null, preparationStatus, retryAfterMs });
+
+afterEach(() => vi.useRealTimers());
+
+describe('automatic replay preparation continuation', () => {
+  it('waits for provider cooldown, retains the observed chart, and resumes without manual retry', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const initial = {} as TradeReplayData;
+    const pending = result('pending', 60_000), ready = result('ready');
+    const prepare = vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(ready);
+    const onWait = vi.fn(), onResult = vi.fn();
+    const promise = prepareReplayForShare(initial, new AbortController().signal, { prepare, onWait, onResult });
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(prepare).toHaveBeenCalledOnce(); expect(onWait).toHaveBeenLastCalledWith(60_000);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await promise).toBe(ready);
+    expect(prepare.mock.calls[1][0]).toBe(pending.data);
+    expect(onWait).toHaveBeenLastCalledWith(0); expect(onResult.mock.calls.map(call => call[0])).toEqual([pending, ready]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not retry terminal unavailable data or shorten a cooldown beyond the bounded wait', async () => {
+    for (const status of ['unavailable', 'pending'] as const) {
+      const prepare = vi.fn().mockResolvedValue(result(status, 300_000));
+      await expect(prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare })).rejects.toMatchObject({ retryAfterMs: 300_000 });
+      expect(prepare).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('cancels the automatic cooldown without another request or late progress', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController(), prepare = vi.fn().mockResolvedValue(result('pending', 60_000)), onWait = vi.fn();
+    const promise = prepareReplayForShare({} as TradeReplayData, controller.signal, { prepare, onWait });
+    const rejected = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(1); controller.abort(); await rejected;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(prepare).toHaveBeenCalledOnce(); expect(onWait).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds repeated short pending results and reserves a whole request budget before resuming', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const prepare = vi.fn().mockResolvedValue(result('pending', 1000));
+    const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare });
+    const rejected = expect(promise).rejects.toBeInstanceOf(ReplayPreparationError);
+    await vi.advanceTimersByTimeAsync(8000); await rejected;
+    expect(prepare).toHaveBeenCalledTimes(8); expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('complete replay export gate', () => {
   it.each(['pending', 'unavailable'] as const)('never starts the encoder or enables saving for %s data', async status => {

@@ -8,11 +8,19 @@ function hasIndexedEncoder() {
   return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
 }
 
+function recorderFormat(): string | null {
+  if (typeof MediaRecorder === 'undefined' || typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.captureStream) return null;
+  return formats.find(type => MediaRecorder.isTypeSupported(type)) ?? null;
+}
+
+class ReplayCodecUnavailable extends Error {
+  constructor() { super('This browser cannot encode the replay. Try Chrome, Edge, or Safari.'); }
+}
+
 export function supportedReplayFormat(): string | null {
   // The encoder's actual codec is selected asynchronously at export time.
   if (hasIndexedEncoder()) return 'video/mp4';
-  if (typeof MediaRecorder === 'undefined' || typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.captureStream) return null;
-  return formats.find(type => MediaRecorder.isTypeSupported(type)) ?? null;
+  return recorderFormat();
 }
 
 export function replayFileName(name: string, mime: string) {
@@ -25,7 +33,16 @@ function cancelled() { return new DOMException('Video export cancelled.', 'Abort
 /** Encode every canvas frame at the handoff generator's fixed timestamps. */
 export async function recordTradeReplay(player: ReplayCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<File> {
   if (signal.aborted) throw cancelled();
-  if (hasIndexedEncoder()) return encodeIndexedReplay(player, name, signal, onProgress);
+  if (hasIndexedEncoder()) {
+    try { return await encodeIndexedReplay(player, name, signal, onProgress); }
+    catch (problem) {
+      // Some browsers expose WebCodecs but have no usable codec for this canvas.
+      // Compatibility capture is safe only before encoding has begun; failures
+      // after frames have been submitted must never produce a truncated replay.
+      if (!(problem instanceof ReplayCodecUnavailable) || signal.aborted
+        || typeof document === 'undefined' || document.visibilityState === 'hidden' || !recorderFormat()) throw problem;
+    }
+  }
   return recordLiveReplay(player, name, signal, onProgress);
 }
 
@@ -65,7 +82,7 @@ async function encodeIndexedReplay(player: ReplayCanvas, name: string, signal: A
     if (codec) format = new Mp4OutputFormat();
     else {
       codec = await wait(getFirstEncodableVideoCodec(['vp9', 'vp8'], options));
-      if (!codec) throw new Error('This browser cannot encode the replay. Try Chrome, Edge, or Safari.');
+      if (!codec) throw new ReplayCodecUnavailable();
       format = new WebMOutputFormat();
     }
     const target = new BufferTarget();
@@ -98,7 +115,7 @@ async function encodeIndexedReplay(player: ReplayCanvas, name: string, signal: A
 
 /** Compatibility path for browsers without WebCodecs. */
 async function recordLiveReplay(player: ReplayCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void): Promise<File> {
-  const mime = supportedReplayFormat();
+  const mime = recorderFormat();
   if (!mime) throw new Error('Video recording is unavailable in this browser. Try Chrome, Edge, or Safari.');
   if (signal.aborted) throw cancelled();
   if (document.visibilityState === 'hidden') throw new Error('Keep this tab visible while exporting the video.');

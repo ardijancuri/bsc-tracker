@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { createKolTokenPnlLoader, kolTokenPnlKey, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
+import { createKolTokenPnlLoader, kolTokenPnlKey, verifiedTokenPositionPnl, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
 
 const wallet = '0x' + '1'.repeat(40), date = '2026-10-14T12:00:00Z';
 const selection = (index = 2): KolTokenPnlSelection => ({ walletAddress: wallet, tokenAddress: '0x' + index.toString(16).padStart(40, '0'), lastTradeAt: date });
@@ -26,10 +26,113 @@ function pending(selected = selection(), reason = 'scan_pending') {
 const response = (body: unknown, status = 200, retryAfter?: string) => ({ ok: status >= 200 && status < 300, status,
   headers: new Headers(retryAfter ? { 'Retry-After': retryAfter } : {}), json: async () => body }) as Response;
 const signal = () => new AbortController().signal;
+function openPosition() {
+  const body = activity();
+  body.inventory!.coverage.balance = body.summary.remainingTokenAmount = '10';
+  body.summary.status = 'open';
+  body.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: '70', estimatedRoi: '3.5', unrealizedProfitUsd: '40',
+    priceUsd: '5', pricedAt: date, valuationSource: 'market', remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20' };
+  return body;
+}
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('fair token-card realized profit loading', () => {
+  it('suspends queued and newly mounted cards during a trade modal while foreground preparation can finish', async () => {
+    let release!: (value: Response) => void;
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve; }))
+      .mockImplementation((input: RequestInfo | URL) => Promise.resolve(response(activity(String(input).includes(selection(3).tokenAddress) ? selection(3) : selection(4)))));
+    const loader = createKolTokenPnlLoader({ fetcher }), active = loader(selection(), signal());
+    await vi.advanceTimersByTimeAsync(0);
+    const resume = loader.suspendBackground(), resumeNested = loader.suspendBackground();
+    const queued = loader(selection(3), signal());
+    release(response(activity())); await active;
+    const foreground = await loader(selection(4), signal(), { priority: 'foreground' });
+    expect(foreground.status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2);
+    // A nested modal must not accidentally resume cards owned by the first one.
+    resumeNested(); resumeNested(); await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    resume(); expect((await queued).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a card waiting behind an open modal without making a provider request', async () => {
+    const fetcher = vi.fn(), loader = createKolTokenPnlLoader({ fetcher }), resume = loader.suspendBackground();
+    const controller = new AbortController(), queued = loader(selection(), controller.signal);
+    const stopped = expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+    controller.abort(); await stopped; resume(); await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('selects current total for an open position, keeps realized available separately, and waits for a fresh mark', async () => {
+    const body = openPosition();
+    expect(verifiedTokenRealizedPnl(body)).toBe(30); expect(verifiedTokenPositionPnl(body)).toBe(70);
+    const missing = structuredClone(body); missing.realizedAccounting!.position!.estimatedProfitUsd = null;
+    missing.realizedAccounting!.position!.retryAfterMs = 3000;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(missing)).mockResolvedValue(response(body));
+    const loader = createKolTokenPnlLoader({ fetcher }), result = loader(selection(), signal());
+    await vi.advanceTimersByTimeAsync(2999); expect(fetcher).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect((await result).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['stale', 'future', 'undated', 'invalidPrice', 'balanceMismatch', 'unknownSource', 'missingTotal'] as const)
+    ('does not present historical realized profit as current open profit for a %s mark', variant => {
+      const body = openPosition(), position = body.realizedAccounting!.position!;
+      if (variant === 'stale') position.pricedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'future') position.pricedAt = new Date(Date.now() + 1001).toISOString();
+      if (variant === 'undated') position.pricedAt = null;
+      if (variant === 'invalidPrice') position.priceUsd = '0x10';
+      if (variant === 'balanceMismatch') position.remainingTokenAmount = '11';
+      if (variant === 'unknownSource') position.valuationSource = null;
+      if (variant === 'missingTotal') position.estimatedProfitUsd = null;
+      expect(verifiedTokenPositionPnl(body)).toBeNull(); expect(verifiedTokenRealizedPnl(body)).toBe(30);
+    });
+
+  it('does not reuse a recently cached open profit after its quote expires', async () => {
+    const body = openPosition(); body.realizedAccounting!.position!.pricedAt = new Date(Date.now() - 179_000).toISOString();
+    const fresh = openPosition();
+    const fetcher = vi.fn().mockResolvedValueOnce(response(body)).mockResolvedValue(response(fresh));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(1001);
+    expect((await loader(selection(), signal())).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('shows an open total from complete cash flows without inventing a realized/unrealized split', async () => {
+    const body = openPosition(), accounting = body.realizedAccounting!, position = accounting.position!;
+    accounting.realizedProfitUsd = null; position.remainingCostBasisUsd = null; position.unrealizedProfitUsd = null;
+    position.cashFlow = { investedUsd: '18', soldUsd: '30', transferOutIncomeUsd: '10', feesUsd: '2' };
+    expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBe(70);
+    const loader = createKolTokenPnlLoader({ fetcher: vi.fn().mockResolvedValue(response(body)) });
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    position.cashFlow.feesUsd = 'missing'; expect(verifiedTokenPositionPnl(body)).toBeNull();
+    position.cashFlow.feesUsd = '2'; position.estimatedProfitUsd = '700'; expect(verifiedTokenPositionPnl(body)).toBeNull();
+    position.estimatedProfitUsd = '70'; position.feeInclusiveCostUsd = '1'; expect(verifiedTokenPositionPnl(body)).toBeNull();
+  });
+  it('publishes a provisional known estimate immediately and retries toward the reported total without monopolizing card requests', async () => {
+    const estimate = activity(); estimate.realizedAccounting!.coverage.reason = 'gmgn_activity_estimate'; estimate.realizedAccounting!.retryAfterMs = 3000;
+    const exact = activity(selection(), '31'), seen = vi.fn();
+    const fetcher = vi.fn().mockResolvedValueOnce(response(estimate)).mockResolvedValueOnce(response(activity(selection(3)))).mockResolvedValue(response(exact));
+    const loader = createKolTokenPnlLoader({ fetcher }), first = loader(selection(), signal(), { onActivity: seen });
+    await vi.advanceTimersByTimeAsync(0); expect(seen).toHaveBeenCalledWith(estimate);
+    expect((await loader(selection(3), signal())).status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(3000); expect(await first).toEqual({ activity: exact, status: 'ready' });
+    expect(fetcher).toHaveBeenCalledTimes(3); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('returns a known estimate during a long aggregate cooldown as pending and never caches it as final', async () => {
+    const estimate = activity(); estimate.realizedAccounting!.coverage.reason = 'gmgn_activity_estimate'; estimate.realizedAccounting!.retryAfterMs = 60_000;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(estimate)).mockResolvedValue(response(activity(selection(), '31')));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selection(), signal())).toEqual({ activity: estimate, status: 'pending', retryAfterMs: 60_000 });
+    expect((await loader(selection(), signal())).activity?.realizedAccounting?.realizedProfitUsd).toBe('31');
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('rejects a closed label while canonical tokens remain and never treats a dust quantity as an empty balance', () => {
+    const body = openPosition(); body.realizedAccounting!.position!.status = 'closed';
+    expect(verifiedTokenPositionPnl(body)).toBeNull();
+    body.realizedAccounting!.position!.status = 'open'; body.realizedAccounting!.position!.remainingTokenAmount = '0.0000000000001';
+    body.inventory!.coverage.balance = '0'; expect(verifiedTokenPositionPnl(body)).toBeNull();
+  });
   it('lets nineteen other cards load before retrying a pending old token, with one background request at a time', async () => {
     const selections = Array.from({ length: 20 }, (_, index) => selection(index + 2));
     const calls: string[] = []; let inFlight = 0, peak = 0, oldCalls = 0;

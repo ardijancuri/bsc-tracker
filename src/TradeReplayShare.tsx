@@ -3,9 +3,9 @@ import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, S
 import ReplayCanvas from './tradeReplayCanvas';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
 import type { TradeReplayData } from './tradeReplayData';
-import { currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
+import { currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 import { startReplaySession } from './tradeReplaySession';
-import { ReplayPreparationError, requirePreparedReplay } from './tradeReplayPreparation';
+import { ReplayPreparationError, prepareReplayForShare } from './tradeReplayPreparation';
 import { shareableTradeReplay, shareTradeReplayFile, tradeReplayXIntent } from './tradeReplaySharing';
 import { t } from './i18n';
 import './tradeReplay.css';
@@ -71,9 +71,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
     const renderer = new ReplayCanvas(document.createElement('canvas'));
     const session = startReplaySession({
       prepare: async signal => {
-        const [market] = await Promise.all([replayMarketData(data, signal), loadReplayFonts()]);
-        if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-        if (!signal.aborted) {
+        const [market] = await Promise.all([prepareReplayForShare(data, signal, { onResult: market => {
           const notices = market.notice ? [t(market.notice)] : [];
           if (replayUsesRecordedPrices(market.data) && !market.data.currentQuote && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
           if (replayUsesRecordedPrices(market.data) && market.data.currentQuote && market.notice !== currentQuoteEstimateNotice) notices.push(t(currentQuoteEstimateNotice));
@@ -82,9 +80,9 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           if (market.currentPriceNotice) notices.push(t(market.currentPriceNotice));
           if (market.inventoryNotice) notices.push(t(market.inventoryNotice));
           if (market.accountingNotice) notices.push(t(market.accountingNotice));
-          if (notices.length) setMarketNotice(notices.join(' '));
-        }
-        requirePreparedReplay(market);
+          setMarketNotice(notices.join(' '));
+        }, onWait: retryAt => { setRetryAt(retryAt); setRetrySeconds(retryAt ? Math.ceil((retryAt - Date.now()) / 1000) : 0); } }), loadReplayFonts()]);
+        if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
         await renderer.setData(market.data);
       },
       record: (signal, onProgress) => recordTradeReplay(renderer, `${kolName}-${tokenName}`, signal, onProgress),
@@ -226,7 +224,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           <div className="trade-replay-status" aria-live="polite">
             <p>{t('GMGN-style total P&L includes unrealized profit, marked transfer-out gains and fees. Return uses fee-inclusive cost. Earlier frames are estimates; verified GMGN totals apply at the ending.')}</p>
             {marketNotice && <p role="status">{marketNotice}</p>}
-            {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : t('Preparing trade…')}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
+            {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t('Preparing trade…')}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
             {error && <p className="trade-replay-error" role="alert">{error}</p>}

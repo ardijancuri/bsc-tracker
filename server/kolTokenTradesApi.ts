@@ -68,11 +68,14 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
     };
     if (request.query.replay === 'true') {
       response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
-      const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting);
+      const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: request.query.pnl === 'true' });
       if (request.query.pnl === 'true') response.realizedAccounting = realized;
     } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response);
     if (response.inventory?.coverage.status === 'pending') reply.header('Retry-After', '1');
     if (response.realizedAccounting?.status === 'pending') reply.header('Retry-After', String(Math.ceil((response.realizedAccounting.retryAfterMs ?? 1000) / 1000)));
+    else if (response.realizedAccounting?.position?.status === 'open' && response.realizedAccounting.position.estimatedProfitUsd === null) {
+      reply.header('Retry-After', String(Math.ceil((response.realizedAccounting.position.retryAfterMs ?? 3000) / 1000)));
+    }
     return reply.header('Cache-Control', 'no-store').send(response);
   });
 }

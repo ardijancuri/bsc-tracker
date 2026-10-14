@@ -70,6 +70,7 @@ describe('GMGN profit in every replay frame', () => {
     const payload = data();
     payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
     payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
+    payload.replayAccounting!.events[3].feeInclusiveCostUsd = null;
     if (direction === 'loss') {
       payload.replayAccounting!.final!.cumulativeRealizedProfitUsd = -327.7;
       payload.replayAccounting!.final!.reportedProfitUsd = -200.8;
@@ -167,8 +168,25 @@ describe('GMGN profit in every replay frame', () => {
     const payload = data();
     payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
     payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
+    payload.replayAccounting!.events[3].feeInclusiveCostUsd = null;
     expect((await replay(payload)).snapshot(.9).totalPnl).toBeNull();
     expect((await replay(payload)).snapshot(1).totalPnl).toBe(200.8);
+  });
+
+  it('displays the moving total from complete cash flows when the realized and held-basis allocation is unknown', async () => {
+    const payload = data();
+    payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
+    payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
+    const renderer = await replay(payload);
+    const earlier = renderer.snapshot(.8), later = renderer.snapshot(.9);
+    for (const state of [earlier, later]) {
+      expect(state.realizedPnl).toBeNull(); expect(state.unrealizedPnl).toBeNull();
+      expect(state.totalPnl).toBeCloseTo(80 + 60 + 50 * state.currentPrice - 139);
+      expect(state.totalRoi).toBeCloseTo(state.totalPnl! / 139);
+    }
+    expect(later.totalPnl).not.toBe(earlier.totalPnl);
+    expect(renderer.snapshot(1).totalPnl).toBe(200.8);
+    expect(renderer.snapshot(.8)).toEqual(earlier);
   });
 
   it('withholds estimated profit when basis is known but fees are unavailable', async () => {

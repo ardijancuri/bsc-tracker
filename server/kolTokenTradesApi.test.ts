@@ -76,6 +76,19 @@ describe('KOL token activity API', () => {
       expect(response.json()).toMatchObject({ replayAccounting: replay, realizedAccounting: { status: 'pending', realizedProfitUsd: null } });
     } finally { await app.close(); }
   });
+  it('retains historical realized gains and requests a paced retry while an open position needs a current mark', async () => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
+    mocks.pnl.mockResolvedValue({ version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', walletAddress: wallet, tokenAddress: token,
+      status: 'ready', checkedAt: new Date().toISOString(), realizedProfitUsd: '70', coverage: { transactionsComplete: true, balanceMatched: true },
+      position: { status: 'open', estimatedProfitUsd: null, reason: 'quote_rate_limited', retryAfterMs: 45_000 } });
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true`);
+      expect(response.statusCode).toBe(200); expect(response.headers['retry-after']).toBe('45');
+      expect(response.json().realizedAccounting).toMatchObject({ status: 'ready', realizedProfitUsd: '70', position: { status: 'open', estimatedProfitUsd: null } });
+      expect(mocks.replay).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   it.each(['true', 'false', '1'])('requests additional GMGN accounting only for replay=%s when explicitly true', async replay => {
     const app = Fastify(); registerKolTokenTradesRoutes(app);
     mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
@@ -89,6 +102,7 @@ describe('KOL token activity API', () => {
         expect(response.json().replayAccounting).toMatchObject({ status: 'pending', retryAfterMs: 1000 });
         expect(mocks.pnl).toHaveBeenCalledOnce();
         expect(mocks.pnl.mock.calls[0][1]).toEqual(response.json().replayAccounting);
+        expect(mocks.pnl.mock.calls[0][2]).toEqual({ markPosition: false });
         expect(response.json().realizedAccounting).toBeUndefined();
       } else { expect(mocks.replay).not.toHaveBeenCalled(); expect(response.json().replayAccounting).toBeUndefined(); }
     } finally { await app.close(); }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { prepareTradeReplayData, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, prepareTradeReplayData, type TradeReplayData } from './tradeReplayData';
 import { accountingEstimateNotice, accountingExactNotice, accountingUnavailableNotice, currentPriceUnavailableNotice, currentQuoteEstimateNotice, inventoryUnavailableNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 
 const token = '0x2222222222222222222222222222222222222222';
@@ -24,7 +24,8 @@ function data(): TradeReplayData {
 function chart(): ReplayMarketChart {
   return {
     address: token, period: 'replay', candles: [],
-    points: Array.from({ length: 11 }, (_, minute) => ({ timestamp: new Date(Date.parse('2026-10-11T10:00:00Z') + minute * 60000).toISOString(), priceUsd: String(1 + minute) })),
+    points: [...Array.from({ length: 11 }, (_, minute) => ({ timestamp: new Date(Date.parse('2026-10-11T10:00:00Z') + minute * 60000).toISOString(), priceUsd: String(1 + minute) })),
+      { timestamp: new Date(now - 60_000).toISOString(), priceUsd: '7' }],
     source: 'gmgn', resolution: '1m', marketCapSupply: '1000', pending: false, stale: false, updatedAt: new Date(now).toISOString(),
   };
 }
@@ -101,6 +102,23 @@ describe('bounded replay historical-market preparation', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('accepts complete GMGN cash-flow totals without requiring an unavailable realized and held-basis split', async () => {
+    const activity = gmgnActivity();
+    activity.replayAccounting!.status = 'estimated';
+    activity.replayAccounting!.coverage.exactFinal = false;
+    activity.replayAccounting!.final = null;
+    for (const event of activity.replayAccounting!.events) {
+      event.remainingCostBasisUsd = null;
+      event.cumulativeRealizedProfitUsd = null;
+    }
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity
+      : { ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '7' } }))));
+    const result = await replayMarketData(data(), new AbortController().signal);
+    expect(result.preparationStatus).toBe('ready');
+    expect(result.accountingNotice).toBe(accountingEstimateNotice);
+    expect(result.data.replayAccounting!.events.at(-1)!.remainingCostBasisUsd).toBeNull();
+  });
+
   it('opts an older DTO without inventory into GMGN accounting and freezes the validated final provider quote', async () => {
     const original = data(), activity = gmgnActivity(); activity.inventory!.events.at(-1)!.remainingCostBasisUsd = null;
     const fetcher = vi.fn().mockResolvedValueOnce(response(activity)).mockResolvedValue(response({ ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } }));
@@ -162,13 +180,48 @@ describe('bounded replay historical-market preparation', () => {
 
   it('retains genuine sparse cached observations during cooldown and accepts their fresh provider endpoint without additional requests', async () => {
     const activity = gmgnActivity(), observed = { ...chart(), loadStatus: 'rate_limited' as const, retryAfterMs: 30_000, sparseHistory: true };
-    observed.points = [observed.points[0], observed.points[5], observed.points[10]];
+    observed.points = [observed.points[0], observed.points[5], observed.points[10], observed.points.at(-1)!];
     const fetcher = vi.fn().mockImplementation((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity : observed)));
     vi.stubGlobal('fetch', fetcher);
     const result = await replayMarketData(data(), new AbortController().signal);
     expect(result.preparationStatus).toBe('ready'); expect(result.data.chart.source).toBe('GMGN historical samples');
     expect(result.data.chart.sparseHistory).toBe(true); expect(result.data.currentQuote?.priceUsd).toBe(7);
     expect(result.notice).toMatch(/rate limited/); expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['response', 'retained'] as const)('waits for post-trade observations when %s history ends a day before the current quote', async mode => {
+    const activity = gmgnActivity(), oldHistory = chart();
+    for (const trade of activity.trades) trade.timestamp = new Date(Date.parse(trade.timestamp) - 86_400_000).toISOString();
+    for (const event of activity.inventory!.events) event.timestamp = new Date(Date.parse(event.timestamp) - 86_400_000).toISOString();
+    for (const event of activity.replayAccounting!.events) event.timestamp = new Date(Date.parse(event.timestamp) - 86_400_000).toISOString();
+    oldHistory.points = oldHistory.points.slice(0, 11).map(point => ({ ...point, timestamp: new Date(Date.parse(point.timestamp) - 86_400_000).toISOString() }));
+    let original = prepareTradeReplayData(activity, null, null, now)!;
+    if (mode === 'retained') original = applyReplayMarketChart(original, oldHistory, now);
+    const fetcher = vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity
+      : mode === 'retained' ? deferredChart() : oldHistory)));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await replayMarketData(original, new AbortController().signal);
+    expect(result.preparationStatus).toBe('pending'); expect(result.retryAfterMs).toBeGreaterThanOrEqual(3000);
+    expect(result.data.currentQuote?.priceUsd).toBe(7); expect(result.data.replayAccounting?.final?.reportedProfitUsd).toBe(4.8);
+    expect(result.notice).toMatch(/still loading/); expect(result.data.chart.points.at(-1)?.timestamp).toBe(oldHistory.points.at(-1)?.timestamp);
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([{ resolution: '1m', lag: 180_000 }, { resolution: '5m', lag: 600_000 }, { resolution: '1h', lag: 7_200_000 }])('allows normal $resolution observation spacing at an open quote', async ({ resolution, lag }) => {
+    const activity = gmgnActivity(), observed = chart();
+    observed.resolution = resolution;
+    // Coarse bars belong to an older position whose final movement is already
+    // covered by observations before the normal two-bar quote gap.
+    if (resolution === '1h') {
+      for (const trade of activity.trades) trade.timestamp = new Date(Date.parse(trade.timestamp) - 21_600_000).toISOString();
+      for (const event of [...activity.inventory!.events, ...activity.replayAccounting!.events]) event.timestamp = new Date(Date.parse(event.timestamp) - 21_600_000).toISOString();
+      observed.points = observed.points.slice(0, 11).map(point => ({ ...point, timestamp: new Date(Date.parse(point.timestamp) - 21_600_000).toISOString() }));
+    }
+    observed.points = observed.points.filter(point => Date.parse(point.timestamp) <= now - lag - 1000);
+    observed.points.push({ timestamp: new Date(now - lag - 1000).toISOString(), priceUsd: '7' });
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity : observed))));
+    const result = await replayMarketData(data(), new AbortController().signal);
+    expect(result.preparationStatus).toBe('ready');
   });
 
   it('requests a fresh current endpoint when an initially checked closed selection has since reopened', async () => {
@@ -200,6 +253,38 @@ describe('bounded replay historical-market preparation', () => {
     expect(result.accountingNotice).toBe(accountingEstimateNotice); expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('waits for a temporarily busy reported aggregate instead of exporting a different estimate first', async () => {
+    const reported = gmgnActivity(), estimate = structuredClone(reported);
+    estimate.replayAccounting!.status = 'estimated'; estimate.replayAccounting!.final = null;
+    estimate.replayAccounting!.coverage.exactFinal = false;
+    estimate.replayAccounting!.coverage.reason = 'aggregate_provider_busy';
+    estimate.replayAccounting!.retryAfterMs = 2500;
+    let activityCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true')
+      ? activityCalls++ === 0 ? estimate : reported : chart()))));
+    const pending = replayMarketData(data(), new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(2499); expect(activityCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(activityCalls).toBe(2); expect(result.preparationStatus).toBe('ready');
+    expect(result.data.replayAccounting?.final?.reportedProfitUsd).toBe(4.8);
+    expect(result.accountingNotice).toBe(accountingExactNotice); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['aggregate_provider_rate_limited', 'historical_cache_provider_rate_limited'])('keeps computed profit while %s remains pending for automatic continuation', async reason => {
+    const activity = gmgnActivity();
+    activity.replayAccounting!.status = 'estimated'; activity.replayAccounting!.final = null;
+    activity.replayAccounting!.coverage.exactFinal = false;
+    activity.replayAccounting!.coverage.reason = reason;
+    activity.replayAccounting!.retryAfterMs = 60_000;
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity
+      : { ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '7' } }))));
+    const result = await replayMarketData(data(), new AbortController().signal);
+    expect(result.preparationStatus).toBe('pending'); expect(result.retryAfterMs).toBe(60_000);
+    expect(result.data.replayAccounting?.events.at(-1)?.feeInclusiveCostUsd).toBe(1.2);
+    expect(result.accountingNotice).toBe(accountingEstimateNotice); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('reports unavailable ending profit for an estimated envelope with unknown fees while retaining known earlier snapshots', async () => {
     const activity = gmgnActivity();
     activity.replayAccounting!.status = 'estimated'; activity.replayAccounting!.coverage.exactFinal = false; activity.replayAccounting!.final = null;
@@ -219,8 +304,8 @@ describe('bounded replay historical-market preparation', () => {
       if (variant === 'cooldown') { activity.replayAccounting!.status = 'pending'; activity.replayAccounting!.retryAfterMs = 30_000; }
       const fetcher = vi.fn().mockResolvedValueOnce(response(activity)).mockResolvedValue(response(chart())); vi.stubGlobal('fetch', fetcher);
       const result = await replayMarketData(data(), new AbortController().signal);
-      expect(result.data.replayAccounting?.status, variant).toBe('unavailable'); expect(result.data.replayAccounting?.final, variant).toBeNull();
-      expect(result.accountingNotice, variant).toBe(accountingUnavailableNotice); expect(fetcher, variant).toHaveBeenCalledTimes(2);
+      expect(result.data.replayAccounting?.status, variant).toBe(variant === 'cooldown' ? 'pending' : 'unavailable'); expect(result.data.replayAccounting?.final, variant).toBeNull();
+      expect(result.accountingNotice, variant).toBe(variant === 'cooldown' ? undefined : accountingUnavailableNotice); expect(fetcher, variant).toHaveBeenCalledTimes(2);
       expect(Date.now(), variant).toBe(now); expect(vi.getTimerCount()).toBe(0);
     }
   });
@@ -232,6 +317,18 @@ describe('bounded replay historical-market preparation', () => {
     const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     await vi.advanceTimersByTimeAsync(1000); controller.abort(); await rejected;
     await vi.advanceTimersByTimeAsync(30_000); expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not restart the full provider cooldown after waiting for concurrent historical work', async () => {
+    const activity = gmgnActivity(); activity.replayAccounting!.status = 'pending'; activity.replayAccounting!.retryAfterMs = 30_000;
+    const fetcher = vi.fn((url: string) => url.endsWith('/activity?replay=true') ? Promise.resolve(response(activity))
+      : new Promise<Response>(resolve => setTimeout(() => resolve(response(chart())), 10_000)));
+    vi.stubGlobal('fetch', fetcher);
+    const pending = replayMarketData(data(), new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+    expect(result.preparationStatus).toBe('pending'); expect(result.retryAfterMs).toBe(20_000);
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
   });
 
   it('refreshes the exact pair without caching and replaces stale trades and balances before requesting a current endpoint', async () => {

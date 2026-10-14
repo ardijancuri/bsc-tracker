@@ -30,8 +30,32 @@ export interface KolTokenRealizedAccounting {
   tokenAddress: string;
   status: 'ready' | 'pending' | 'unavailable';
   checkedAt: string;
+  /** May be unknown while the open position's complete net cash-flow total is known. */
   realizedProfitUsd: string | null;
+  /** Mark a verified GMGN position independently of its historical realized cache. */
+  position?: KolTokenProfitPosition;
   coverage: { transactionsComplete: boolean; balanceMatched: boolean; reason?: string };
+  retryAfterMs?: number;
+}
+
+/** A profile quote may be the boundary of the latest completed one-minute bar. */
+export const kolTokenPositionQuoteMaxAgeMs = 180_000;
+
+export interface KolTokenProfitPosition {
+  status: 'open' | 'closed';
+  estimatedProfitUsd: string | null;
+  /** Ratio, not percentage points (1 means 100%). */
+  estimatedRoi: string | null;
+  unrealizedProfitUsd: string | null;
+  remainingTokenAmount: string;
+  remainingCostBasisUsd: string | null;
+  feeInclusiveCostUsd: string;
+  /** Total profit can be known even when the realized/unrealized split is not. */
+  cashFlow?: { investedUsd: string; soldUsd: string; transferOutIncomeUsd: string; feesUsd: string };
+  priceUsd: string | null;
+  pricedAt: string | null;
+  valuationSource: 'gmgn' | 'market' | null;
+  reason?: string;
   retryAfterMs?: number;
 }
 

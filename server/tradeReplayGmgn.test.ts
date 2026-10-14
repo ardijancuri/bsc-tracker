@@ -7,6 +7,7 @@ import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 import { GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { createTradeReplayGmgnLoader } from './tradeReplayGmgn.js';
+import { buildTradeReplayGmgnAccounting } from './tradeReplayGmgnAccounting.js';
 
 const wallet = '0x' + '1'.repeat(40), other = '0x' + '2'.repeat(40), token = '0x' + '3'.repeat(40);
 const tx = '0x' + '4'.repeat(64), blockHash = '0x' + '5'.repeat(64), native = '0x' + '0'.repeat(40);
@@ -55,8 +56,107 @@ function setup(handler?: (url: URL, options: GmgnRequestOptions) => Promise<any>
   return { load, request };
 }
 const routes = (request: ReturnType<typeof setup>['request']) => request.mock.calls.map(([url]) => url.pathname);
+const priorityOf = (options: GmgnRequestOptions) => typeof options.priority === 'function' ? options.priority() : options.priority;
 
 describe('existing-key GMGN replay provider', () => {
+  it('continues ranking search through misses after long cooldowns and refreshes the last successful ranking first after restart', async () => {
+    let clock = time, stage = 0;
+    const handler = async (url: URL) => {
+      if (url.pathname.endsWith('wallet_activity')) return { data: { activities: [providerRow()], next: null } };
+      const sort = url.searchParams.get('order_by');
+      if (stage === 0 && sort === 'profit' || stage === 1 && sort === 'buy_volume_cur') throw new MarketProviderDeferred('rate_limited', 20_000);
+      return { data: { list: sort === 'buy_volume_cur' ? [{ ...aggregate(), ...(stage === 3 ? { usd_value: 300, profit: 199, unrealized_profit: 199, profit_change: 199 / 101 } : {}) }] : [] } };
+    };
+    const { load, request } = setup(handler, { now: () => clock });
+    await load(activity());
+    clock += 20_000; stage = 1; const second = activity(); second.inventory!.coverage.checkedAt = new Date(clock).toISOString(); await load(second);
+    clock += 20_000; stage = 2; const third = activity(); third.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect((await load(third)).final?.reportedProfitUsd).toBe('99');
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('wallet_activity'))).toHaveLength(1);
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('token_top_traders')).map(([url]) => url.searchParams.get('order_by')))
+      .toEqual(['amount_percentage', 'profit', 'profit', 'buy_volume_cur', 'buy_volume_cur']);
+    clock += 20_000; stage = 3; const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const restarted = setup(handler, { now: () => clock }); const result = await restarted.load(fresh);
+    expect(result.final?.reportedProfitUsd).toBe('199'); expect(result.final?.priceUsd).toBe('30');
+    expect(restarted.request).toHaveBeenCalledOnce(); expect(restarted.request.mock.calls[0][0].searchParams.get('order_by')).toBe('buy_volume_cur');
+  });
+  it('refreshes absent ranking membership after three minutes and restarts ranking search on a canonical correction', async () => {
+    let clock = time;
+    const { load, request } = setup(async url => ({ data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null } : { list: [] } }), { now: () => clock });
+    await load(activity()); clock += 20_000;
+    const same = activity(); same.inventory!.coverage.checkedAt = new Date(clock).toISOString(); await load(same);
+    expect(request).toHaveBeenCalledTimes(4);
+    const corrected = structuredClone(same); corrected.trades[0].amountUsd = '101'; await load(corrected);
+    expect(request).toHaveBeenCalledTimes(8);
+    clock += 180_001; corrected.inventory!.coverage.checkedAt = new Date(clock).toISOString(); await load(corrected);
+    expect(request).toHaveBeenCalledTimes(12);
+  });
+  it('upgrades a coalesced profile history request to foreground replay priority without issuing duplicate provider calls', async () => {
+    let finish!: (value: any) => void;
+    const { load, request } = setup(async url => url.pathname.endsWith('wallet_activity') ? new Promise(resolve => { finish = resolve; }) : { data: { list: [aggregate()] } });
+    const profile = load(activity(), { historicalRealized: true }); await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(priorityOf(request.mock.calls[0][1])).toBe('prefetch');
+    const replay = load(activity()); expect(priorityOf(request.mock.calls[0][1])).toBe('chart');
+    finish({ data: { activities: [providerRow()], next: null } });
+    expect((await profile).status).toBe('ready'); expect((await replay).status).toBe('ready');
+    expect(request).toHaveBeenCalledTimes(2); expect(priorityOf(request.mock.calls[1][1])).toBe('chart');
+  });
+  it('preserves native gas in public history and invalidates older sanitized history versions', async () => {
+    const first = setup(async url => ({ data: url.pathname.endsWith('wallet_activity') ? { activities: [{ ...providerRow(), gas_native: '0.001' }], next: null } : { list: [aggregate()] } }));
+    await first.load(activity());
+    for (const name of (await readdir(directory)).filter(name => name.includes('activity-'))) {
+      const file = path.join(directory, name), envelope = JSON.parse(await readFile(file, 'utf8'));
+      expect(envelope.value.version).toBe(2); expect(envelope.value.rows[0].gas_native).toBe('0.001');
+      envelope.value.version = 1; delete envelope.value.rows[0].gas_native;
+      envelope.checksum = createHash('sha256').update(JSON.stringify(envelope.value)).digest('hex'); await writeFile(file, JSON.stringify(envelope));
+    }
+    const restarted = setup(); await restarted.load(activity());
+    expect(restarted.request).toHaveBeenCalledOnce(); expect(routes(restarted.request)[0]).toContain('wallet_activity');
+  });
+  it('keeps a fully known open cash-flow total usable while a realized split and optional ranking are unavailable', async () => {
+    const { load } = setup(async url => {
+      if (url.pathname.endsWith('wallet_activity')) return { data: { activities: [providerRow()], next: null } };
+      throw new MarketProviderDeferred('rate_limited', 20_000);
+    }, { builder: (body, rows, options) => {
+      const result = buildTradeReplayGmgnAccounting(body, rows, options);
+      result.events[0].remainingCostBasisUsd = null; result.events[0].cumulativeRealizedProfitUsd = null;
+      return result;
+    } });
+    const result = await load(activity());
+    expect(result).toMatchObject({ status: 'estimated', final: null, coverage: { transactionsComplete: true, balanceMatched: true,
+      exactFinal: false, reason: 'aggregate_provider_rate_limited' } });
+    expect(result.events[0]).toMatchObject({ remainingTokenAmount: '10', remainingCostBasisUsd: null, cumulativeRealizedProfitUsd: null,
+      investedUsd: '100', soldUsd: '0', transferOutIncomeUsd: '0', feesUsd: '1', feeInclusiveCostUsd: '101' });
+  });
+  it.each([-180_001, 1001])('does not dispatch provider requests with a stale or future canonical proof (%sms)', async skew => {
+    const { load, request } = setup(), body = activity(); body.inventory!.coverage.checkedAt = new Date(time + skew).toISOString();
+    const result = await load(body); expect(result.final).toBeNull(); expect(request).not.toHaveBeenCalled();
+  });
+  it.each(['inventory_rpc_unavailable', 'canonical_block_unavailable', 'canonical_receipt_unavailable', 'canonical_transaction_unavailable',
+    'movement_scan_unavailable', 'confirmed_endpoint_stale', 'indexed_snapshot_changed', 'unindexed_swap_pending'])
+    ('keeps a temporary %s inventory failure retryable and recovers automatically once proof returns', async reason => {
+      const { load, request } = setup(), body = activity();
+      body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason };
+      expect(await load(body)).toMatchObject({ status: 'pending', retryAfterMs: 1000, final: null, coverage: { exactFinal: false, reason } });
+      expect(request).not.toHaveBeenCalled();
+      expect((await load(activity())).status).toBe('ready'); expect(request).toHaveBeenCalledTimes(2);
+      body.coverage.complete = false; expect((await load(body)).status).toBe('unavailable');
+    });
+  it('does not retry a permanent incomplete inventory diagnosis as though it were a temporary provider failure', async () => {
+    const { load, request } = setup(), body = activity();
+    body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason: 'unknown_transfer_cost' };
+    expect((await load(body)).status).toBe('unavailable'); expect(request).not.toHaveBeenCalled();
+  });
+  it.each(['balance', 'fromBlock', 'initialBalanceSource', 'amountUsd', 'priceUsd', 'tokenAmount', 'side', 'txHash', 'timestamp'] as const)
+    ('invalidates reused history when canonical %s changes', async field => {
+      const { load, request } = setup(); await load(activity()); const changed = activity();
+      if (field === 'balance') changed.inventory!.coverage.balance = '11';
+      else if (field === 'fromBlock') changed.inventory!.coverage.fromBlock = '99';
+      else if (field === 'initialBalanceSource') changed.inventory!.coverage.initialBalanceSource = 'historical_call';
+      else if (field === 'side') changed.trades[0].side = 'sell';
+      else changed.trades[0][field] = field === 'timestamp' ? new Date(time - 10_000).toISOString() : field === 'txHash' ? '0x' + 'a'.repeat(64) : '11';
+      await load(changed); expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
+    });
   it('queries every movement kind and exact pair, weights history3/traders5 and reconciles a reported final', async () => {
     const { load, request } = setup(); const result = await load(activity());
     expect(result).toMatchObject({ status: 'ready', final: { reportedProfitUsd: '99', feeInclusiveCostUsd: '101', priceUsd: '20' },
@@ -66,13 +166,13 @@ describe('existing-key GMGN replay provider', () => {
     expect(history[0].searchParams.get('limit')).toBe('50'); expect(history[0].searchParams.getAll('type')).toEqual(['buy', 'sell', 'transferIn', 'transferOut']);
     expect(history[0].searchParams.get('timestamp')).toBe(String(time / 1000));
     expect(history[0].searchParams.get('client_id')).toMatch(/^[a-f0-9-]{36}$/);
-    expect(history[1]).toMatchObject({ weight: 3, priority: 'prefetch', apiKey: 'private-test-key' });
+    expect(history[1]).toMatchObject({ weight: 3, apiKey: 'private-test-key' }); expect(priorityOf(history[1])).toBe('chart');
     expect(traders[0].searchParams.get('address')).toBe(token); expect(traders[0].searchParams.get('order_by')).toBe('amount_percentage');
     expect(traders[0].searchParams.get('limit')).toBe('100'); expect(traders[0].searchParams.has('wallet_address')).toBe(false);
     expect(traders[0].searchParams.get('timestamp')).toBe(String(time / 1000));
     expect(traders[0].searchParams.get('client_id')).toMatch(/^[a-f0-9-]{36}$/);
     expect(traders[0].searchParams.get('client_id')).not.toBe(history[0].searchParams.get('client_id'));
-    expect(traders[1]).toMatchObject({ weight: 5, priority: 'prefetch' });
+    expect(traders[1]).toMatchObject({ weight: 5 }); expect(priorityOf(traders[1])).toBe('chart');
     expect(history[0].href).not.toContain('private-test-key'); expect(JSON.stringify(result)).not.toContain('private-test-key');
   });
   it('uses bounded documented KOL rankings for a missing wallet and never infers zero from absence', async () => {
@@ -103,7 +203,7 @@ describe('existing-key GMGN replay provider', () => {
     expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1);
     expect(request).toHaveBeenCalledTimes(3);
   });
-  it('reuses complete matched profile history for three minutes while keeping replay and aggregate freshness at fifteen seconds', async () => {
+  it('reuses complete matched history across profile and replay for three minutes while refreshing aggregate prices after fifteen seconds', async () => {
     let clock = time; const { load, request } = setup(undefined, { now: () => clock });
     expect((await load(activity(), { historicalRealized: true })).status).toBe('ready');
     clock += 20_000;
@@ -111,7 +211,7 @@ describe('existing-key GMGN replay provider', () => {
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
     expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2);
     expect((await load(activity())).status).toBe('ready');
-    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
+    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
   });
   it.each(['movement', 'currency', 'expired'] as const)('refreshes profile historical data after %s changes', async variant => {
     let clock = time; const { load, request } = setup(undefined, { now: () => clock });
@@ -122,7 +222,7 @@ describe('existing-key GMGN replay provider', () => {
     await load(changed, { historicalRealized: true });
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
   });
-  it('isolates in-flight profile history reuse from replay work under the same two-job limit', async () => {
+  it('coalesces in-flight profile and replay work instead of duplicating history under the two-job limit', async () => {
     let clock = time, finish!: (value: any) => void;
     const { load, request } = setup(async url => {
       if (url.pathname.endsWith('wallet_activity')) return { data: { activities: [providerRow()], next: null } };
@@ -133,7 +233,7 @@ describe('existing-key GMGN replay provider', () => {
     const profile = load(activity(), { historicalRealized: true });
     await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2));
     const replay = load(activity());
-    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2));
+    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
     finish({ data: { list: [aggregate()] } });
     expect((await profile).status).toBe('ready'); expect((await replay).status).toBe('ready');
   });
@@ -143,16 +243,16 @@ describe('existing-key GMGN replay provider', () => {
       : { list: [{ ...aggregate(), apiKey: 'upstream-secret' }] } }));
     await load(activity()); await load(activity()); expect(request).toHaveBeenCalledTimes(2);
     const second = setup(); expect((await second.load(activity())).status).toBe('ready'); expect(second.request).not.toHaveBeenCalled();
-    const files = await readdir(directory); expect(files.length).toBe(3);
+    const files = await readdir(directory); expect(files.length).toBe(4);
     const contents = (await Promise.all(files.map(file => readFile(path.join(directory, file), 'utf8')))).join('');
     expect(contents).not.toMatch(/private-test-key|upstream-secret|untrusted-metadata/); expect(contents).toContain('checksum');
   });
-  it('expires complete history and trader caches after15seconds while applying a new canonical proof to cached data', async () => {
+  it('expires current trader prices after fifteen seconds while reusing history with a new canonical proof', async () => {
     let clock = time; const { load, request } = setup(undefined, { now: () => clock });
     await load(activity()); clock += 14_000;
     const newer = activity(); newer.inventory!.coverage.toBlock = '120'; newer.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     expect((await load(newer)).inventoryBlockNumber).toBe('120'); expect(request).toHaveBeenCalledTimes(2);
-    clock += 1001; await load(newer); expect(request).toHaveBeenCalledTimes(4);
+    clock += 1001; await load(newer); expect(request).toHaveBeenCalledTimes(3);
   });
   it('retains canonical-matched completed historical values during a later cooldown without carrying an old exact final or price', async () => {
     let clock = time, paused = false;
@@ -165,9 +265,9 @@ describe('existing-key GMGN replay provider', () => {
     const refreshed = activity(); refreshed.inventory!.coverage.toBlock = '120'; refreshed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     const result = await load(refreshed);
     expect(result).toMatchObject({ status: 'estimated', checkedAt: new Date(clock).toISOString(), inventoryBlockNumber: '120', final: null,
-      coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false, reason: 'historical_cache_provider_rate_limited' } });
+      coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false, reason: 'aggregate_provider_rate_limited' } });
     expect(result.events).toHaveLength(1); expect(result.events[0]).toMatchObject({ investedUsd: '100', feesUsd: '1', remainingCostBasisUsd: '101', feeInclusiveCostUsd: '101' });
-    expect(result.retryAfterMs).toBeUndefined(); expect(request).toHaveBeenCalledTimes(3);
+    expect(result.retryAfterMs).toBe(300_000); expect(request).toHaveBeenCalledTimes(3);
     const restarted = setup(async () => { throw new MarketProviderDeferred('rate_limited', 300_000); }, { now: () => clock + 1000 });
     expect(await restarted.load(refreshed)).toMatchObject({ status: 'estimated', final: null, coverage: { exactFinal: false } });
     expect(restarted.request).toHaveBeenCalledOnce();
@@ -217,8 +317,8 @@ describe('existing-key GMGN replay provider', () => {
       return { data: url.pathname.endsWith('wallet_activity') ? { activities: [{ ...providerRow(), gas_usd: null }], next: null } : { list: [] } };
     }, { now: () => clock });
     await load(activity()); clock += 16_000; paused = true;
-    const result = await load(activity()); expect(result.status).toBe('pending'); expect(result.final).toBeNull();
-    expect(result.coverage.transactionsComplete).toBe(false);
+    const result = await load(activity()); expect(result.status).toBe('estimated'); expect(result.final).toBeNull();
+    expect(result.events[0].feesUsd).toBeNull(); expect(result.events[0].feeInclusiveCostUsd).toBeNull();
   });
   it('resumes successful pages after a deferral and includes the returned cursor instead of restarting', async () => {
     let stage = 0;
@@ -304,7 +404,7 @@ describe('existing-key GMGN replay provider', () => {
     const result = await load(activity());
     expect(result).toMatchObject({ status: 'estimated', final: null, coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false } });
     expect(result.events[0]).toMatchObject({ investedUsd: '100', feesUsd: '1', remainingCostBasisUsd: '101', cumulativeRealizedProfitUsd: '0' });
-    expect(result.retryAfterMs).toBeUndefined(); expect(result.coverage.reason).toMatch(/^aggregate_/);
+    expect(result.retryAfterMs).toBe(failure === 'deferred' ? 60_000 : undefined); expect(result.coverage.reason).toMatch(/^aggregate_/);
   });
   it('does not turn incomplete fee evidence into a usable estimate when an aggregate is deferred', async () => {
     const { load } = setup(async url => {

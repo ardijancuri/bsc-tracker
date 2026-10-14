@@ -122,6 +122,26 @@ describe('indexed replay video encoding', () => {
     expect(canvas.captureStream).not.toHaveBeenCalled(); expect(indexed.start).not.toHaveBeenCalled();
   });
 
+  it('uses a supported visible recorder when WebCodecs exposes no encodable codec', async () => {
+    const { player, stopTrack, render } = browserRecorder('video/webm;codecs=vp8');
+    vi.stubGlobal('VideoEncoder', class {}); vi.stubGlobal('VideoFrame', class {});
+    indexed.codec.mockResolvedValue(null);
+    const promise = recordTradeReplay(player, 'Trader TOKEN', new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(1000);
+    const file = await promise;
+    expect(file.type).toBe('video/webm'); expect(file.name).toBe('trader-token-trade-replay.webm');
+    expect(indexed.start).not.toHaveBeenCalled(); expect(indexed.add).not.toHaveBeenCalled();
+    expect(render).toHaveBeenLastCalledWith(1); expect(stopTrack).toHaveBeenCalledOnce();
+  });
+
+  it('never switches to a recorder after an indexed frame fails even when capture is supported', async () => {
+    const { player, stopTrack } = browserRecorder('video/mp4');
+    vi.stubGlobal('VideoEncoder', class {}); vi.stubGlobal('VideoFrame', class {});
+    indexed.add.mockRejectedValue(new Error('Encoder failed'));
+    await expect(recordTradeReplay(player, 'Trader TOKEN', new AbortController().signal)).rejects.toThrow('Encoder failed');
+    expect(indexed.cancel).toHaveBeenCalledOnce(); expect(stopTrack).not.toHaveBeenCalled();
+  });
+
   it('rejects cancellation while a frame is pending and disposes the encoder without finalizing', async () => {
     vi.useFakeTimers();
     const { player, canvas } = indexedPlayer(.1);

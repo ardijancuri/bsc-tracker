@@ -75,6 +75,22 @@ export function replayAccountingIsFresh(data: Pick<TradeReplayData, 'replayAccou
     && Number.isFinite(time) && time <= now + serverClockSkewMs && now - time <= 180_000);
 }
 
+/** Total profit does not depend on how GMGN allocates cost between disposed
+ * and held lots. Use the complete fee-inclusive cash flows when those are
+ * known, even if its realized/unrealized split cannot be established. */
+export function replayAccountingTotal(snapshot: AccountingNumbers | null | undefined, priceUsd: number | null | undefined): number | null {
+  if (!snapshot) return null;
+  const { remainingTokenAmount: quantity, investedUsd: invested, soldUsd: sold,
+    transferOutIncomeUsd: transferred, feesUsd: fees, feeInclusiveCostUsd: cost } = snapshot;
+  if ([quantity, invested, sold, transferred, fees, cost].some(value => value === null || !Number.isFinite(value) || value < 0)
+    || quantity! > 0 && (priceUsd == null || !Number.isFinite(priceUsd) || priceUsd <= 0)) return null;
+  const tolerance = Math.max(1e-6, Math.max(cost!, invested! + fees!) * 1e-8);
+  if (cost! + tolerance < invested! + fees!) return null;
+  const value = quantity === 0 ? 0 : quantity! * priceUsd!;
+  const total = sold! + transferred! + value - cost!;
+  return Number.isFinite(total) ? total : null;
+}
+
 export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now()) {
   const accounting = data.replayAccounting, final = accounting?.final;
   if (!final || accounting?.status !== 'ready' || !accounting.coverage.exactFinal || !replayAccountingIsFresh(data, now)

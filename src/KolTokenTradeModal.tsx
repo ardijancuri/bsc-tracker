@@ -13,7 +13,7 @@ import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
-import { gmgnRealizedPnlDescription, kolTokenPnlKey, requestKolTokenPnl, tokenRealizedPnlUnavailableNotice, verifiedTokenRealizedPnl } from './kolTokenPnlRequest';
+import { kolTokenPnlKey, requestKolTokenPnl, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
 import { tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
 import './tokenMarket.css';
 import './kolTokenTradeModal.css';
@@ -42,7 +42,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const transactionList = useRef<HTMLDivElement>(null);
   const fittedPageSize = useRef(6);
   const positions = usePositions('kol', kol.address, [token.address]);
-  const { chart } = useTokenChart(token.address, interval);
+  const { chart } = useTokenChart(token.address, interval, !shareSnapshot);
   const replay = useMemo(() => activity ? prepareTradeReplayData(activity, chart, positions.get(token.address)) : null, [activity, chart, positions, token.address]);
   const retry = useCallback(() => { setError(false); setRefresh(value => value + 1); }, []);
   const backToTrades = useCallback(() => {
@@ -55,11 +55,15 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     const previous = document.activeElement as HTMLElement | null;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    const resumeBackgroundPnl = requestKolTokenPnl.suspendBackground();
     element?.showModal();
-    return () => { element?.close(); document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
+    return () => { resumeBackgroundPnl(); element?.close(); document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
   }, []);
 
   useEffect(() => {
+    // The share view prepares its own frozen accounting and chart snapshot.
+    // Keep this hidden details refresh from competing for the same provider budget.
+    if (shareSnapshot) return;
     const controller = new AbortController();
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -73,8 +77,9 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         // wallet. Only the exact-pair activity response dates this selection.
         const result = await requestKolTokenPnl({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null }, controller.signal,
           { priority: 'foreground', onActivity: value => { if (active) {
-            const status = verifiedTokenRealizedPnl(value) !== null ? 'ready'
-              : value.realizedAccounting?.status === 'pending' || value.inventory?.coverage?.status === 'pending' ? 'pending' : 'unavailable';
+            const status = verifiedTokenPositionPnl(value) !== null ? 'ready'
+              : value.realizedAccounting?.status === 'pending' || value.inventory?.coverage?.status === 'pending'
+                || value.realizedAccounting?.position?.status === 'open' && value.realizedAccounting.status === 'ready' ? 'pending' : 'unavailable';
             setActivity(current => tokenPnlStateAfterLoad({ pair, activity: current, busy: true }, pair, { activity: value, status }).activity);
             setError(false);
           } } });
@@ -90,13 +95,15 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     };
     void load();
     return () => { active = false; controller.abort(); if (timer) clearTimeout(timer); };
-  }, [kol.address, token.address, refresh]);
+  }, [kol.address, token.address, refresh, Boolean(shareSnapshot)]);
 
   const trades = useMemo(() => (activity?.trades ?? []).filter(trade => side === 'all' || trade.side === side), [activity, side]);
   const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const summary = activity?.summary;
-  const profit = verifiedTokenRealizedPnl(activity);
+  const profit = verifiedTokenPositionPnl(activity);
+  const priceTime = tokenPositionPnlPriceTime(activity);
+  const profitDescription = t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
   const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';
 
   useEffect(() => {
@@ -131,12 +138,12 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
-        <div className="kol-trade-profit" aria-busy={activityBusy} title={t(gmgnRealizedPnlDescription(activity))}><span>{t('Realized P&L')}</span><strong className={profitClass}>{profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
-        <p className="kol-trade-coverage">{t(gmgnRealizedPnlDescription(activity))}</p>
+        <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
+        <p className="kol-trade-coverage">{profitDescription}</p>
         <dl className="kol-trade-summary"><div title={t('Indexed buy amount. GMGN realized P&L also includes transfer gains and fees.')}><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div title={t('Indexed sell amount. Transfer-out values are included in GMGN realized P&L.')}><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
         {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
-        {activity && activityBusy && profit === null && <p className="kol-trade-coverage" role="status">{t('Loading GMGN realized P&L…')}</p>}
-        {activity && !activityBusy && profit === null && <p className="kol-trade-coverage">{t(tokenRealizedPnlUnavailableNotice(activity))}</p>}
+        {activity && activityBusy && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlLoadingNotice(activity))}</p>}
+        {activity && !activityBusy && profit === null && <p className="kol-trade-coverage">{t(tokenPositionPnlUnavailableNotice(activity))}</p>}
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
         {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>

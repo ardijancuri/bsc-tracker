@@ -4,7 +4,7 @@ import type { ReplayAccountingFinal, ReplayAccountingSnapshot, TradeReplayAccoun
 export interface GmgnReplayActivity {
   wallet?: unknown; chain?: unknown; tx_hash?: unknown; timestamp?: unknown; event_type?: unknown; type?: unknown;
   token?: { address?: unknown }; token_amount?: unknown; quote_amount?: unknown; cost_usd?: unknown; buy_cost_usd?: unknown;
-  gas_usd?: unknown; dex_usd?: unknown; priority_fee?: unknown; tip_fee?: unknown; price_usd?: unknown;
+  gas_usd?: unknown; gas_native?: unknown; dex_usd?: unknown; priority_fee?: unknown; tip_fee?: unknown; price_usd?: unknown;
   quote_token?: { token_address?: unknown; symbol?: unknown }; quote_address?: unknown;
 }
 export interface GmgnReplayAccountingOptions {
@@ -37,6 +37,19 @@ function quoteMatched(trade: KolTokenTrade, provider: GmgnReplayActivity) {
   if (nativeAddresses.has(providerAddress)) return trade.quoteTokenAddress === null
     ? trade.quoteSymbol?.toUpperCase() === 'BNB' : indexedAddress !== undefined && nativeAddresses.has(indexedAddress);
   return !!indexedAddress && addressRe.test(providerAddress) && indexedAddress === providerAddress;
+}
+/** A multi-hop swap can spend BNB while GMGN names the pool's intermediate
+ * token as its quote. The provider's same-transaction native gas/USD pair is
+ * an independent native FX observation; intermediate token units are never
+ * compared with the wallet's BNB amount. Missing/zero gas cannot supply FX. */
+function nativeQuoteCash(trade: KolTokenTrade, provider: GmgnReplayActivity): number | null {
+  const nativeQuote = trade.quoteTokenAddress === null && trade.quoteSymbol?.toUpperCase() === 'BNB'
+    || typeof trade.quoteTokenAddress === 'string' && nativeAddresses.has(trade.quoteTokenAddress.toLowerCase());
+  if (!nativeQuote || trade.valuationStatus !== 'valued' || !['node', 'node+gmgn'].includes(trade.source)) return null;
+  const nativeGas = numeric(provider.gas_native), usdGas = numeric(provider.gas_usd), amount = numeric(trade.quoteAmount);
+  if (nativeGas === null || nativeGas <= 0 || usdGas === null || usdGas <= 0 || amount === null || amount <= 0) return null;
+  const cash = amount * usdGas / nativeGas;
+  return Number.isFinite(cash) && cash > 0 ? cash : null;
 }
 function ordered(a: InventoryEvent, b: InventoryEvent) {
   const left = BigInt(a.blockNumber), right = BigInt(b.blockNumber);
@@ -124,10 +137,12 @@ export function buildTradeReplayGmgnAccounting(activity: KolTokenActivity, gmgnA
     if (event.kind === 'buy' || event.kind === 'sell') {
       const trade = event.tradeId ? trades.get(event.tradeId) : undefined;
       const quoteAmount = numeric(row?.quote_amount), indexedQuote = numeric(trade?.quoteAmount);
-      if (!groupValid || !trade || !quoteMatched(trade, row!) || quoteAmount === null || quoteAmount <= 0 || indexedQuote === null || indexedQuote <= 0 || fee === null) {
+      const convertedCash = groupValid && trade && indexedQuote !== null && indexedQuote > 0
+        ? quoteMatched(trade, row!) && quoteAmount !== null && quoteAmount > 0
+          ? indexedQuote * amount! / quoteAmount : nativeQuoteCash(trade, row!) : null;
+      if (convertedCash === null || fee === null) {
         fee = null; costsKnown = false; reason ??= 'quote_or_fee_unavailable';
       } else {
-        const convertedCash = indexedQuote * amount! / quoteAmount;
         const inferredFee = event.kind === 'buy' ? convertedCash - amount! + fee : amount! - convertedCash + fee;
         fee = inferredFee >= -Math.max(1e-8, amount! * 1e-10) ? Math.max(0, inferredFee) : null;
         if (fee === null) { costsKnown = false; reason ??= 'quote_or_fee_unavailable'; }

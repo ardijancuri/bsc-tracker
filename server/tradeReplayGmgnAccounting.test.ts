@@ -67,6 +67,35 @@ const yukazAggregate: Record<string, unknown> = { address: wallet, balance: 2572
   profit_change: 5.684526437412225, realized_profit: 586.4671337325424, unrealized_profit: 2540.2959049751003 };
 
 describe('GMGN replay fee and marked-transfer accounting', () => {
+  it('values native wallet cash using same-transaction gas FX when the pool quote is an intermediate token', () => {
+    const intermediate = '0x' + 'a'.repeat(40);
+    const rows = [
+      provider(1, 'buy', '10', '95', { quote_address: intermediate, quote_amount: '4', gas_native: '0.001', gas_usd: '0.5', dex_usd: '3' }),
+      provider(2, 'sell', '4', '80', { quote_address: intermediate, quote_amount: '3', gas_native: '0.002', gas_usd: '1', dex_usd: '2', buy_cost_usd: '40.2' }),
+    ];
+    const result = build(canonical(rows, ['0.2', '0.15']), rows);
+    expect(result.events[0]).toMatchObject({ investedUsd: '95', feesUsd: '5.5', remainingCostBasisUsd: '100.5', feeInclusiveCostUsd: '100.5' });
+    expect(result.events[1]).toMatchObject({ feesUsd: '11.5', cumulativeRealizedProfitUsd: '33.8', remainingCostBasisUsd: '60.3', feeInclusiveCostUsd: '106.5' });
+    expect(result.coverage.reason).toBeUndefined();
+  });
+
+  it.each(['missing-gas', 'zero-gas', 'negative-gas', 'erc20-wallet-quote', 'unvalued-cash', 'untrusted-cash', 'negative-friction', 'missing-tip'])(
+    'keeps native FX unavailable for %s instead of mixing currencies or assuming zero fees', variant => {
+      const row = provider(1, 'buy', '10', '95', { quote_address: '0x' + 'a'.repeat(40), gas_native: '0.001', gas_usd: '0.5' });
+      const activity = canonical([row], ['0.2']);
+      if (variant === 'missing-gas') delete row.gas_native;
+      if (variant === 'zero-gas') row.gas_native = '0';
+      if (variant === 'negative-gas') row.gas_native = '-1';
+      if (variant === 'erc20-wallet-quote') activity.trades[0].quoteTokenAddress = '0x' + 'b'.repeat(40);
+      if (variant === 'unvalued-cash') activity.trades[0].valuationStatus = 'shared_quote';
+      if (variant === 'untrusted-cash') activity.trades[0].source = 'gmgn';
+      if (variant === 'negative-friction') activity.trades[0].quoteAmount = '0.01';
+      if (variant === 'missing-tip') delete row.tip_fee;
+      const result = build(activity, [row]);
+      expect(result.events[0].feeInclusiveCostUsd).toBeNull();
+      expect(result.coverage.reason).toBe('quote_or_fee_unavailable');
+    });
+
   it('derives full transaction friction from matched native flows rather than only displayed gas and DEX fees', () => {
     const activity = yukaz(), before = structuredClone(activity);
     const result = build(activity, yukazRows);

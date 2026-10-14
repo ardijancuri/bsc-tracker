@@ -249,7 +249,7 @@ async function persistChart(key: string, chart: TokenChart) {
   } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
 }
 
-export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
+export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority, options: { maxAgeMs?: number } = {}): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
   const period = range === '5m' ? '24h' : range === '1h' || range === '7d' ? '30d' : range;
@@ -265,7 +265,10 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
   const saved = await loadCached(key, address, period);
   // Another caller may have started the job during the asynchronous cache read.
   promote();
-  const lifetime = interactive ? chartSettings(period).fresh : Math.max(300_000, chartSettings(period).fresh);
+  const defaultLifetime = interactive ? chartSettings(period).fresh : Math.max(300_000, chartSettings(period).fresh);
+  // Valuation needs a current quote even when its request keeps background
+  // priority. Do not promote every profile card ahead of the selected chart.
+  const lifetime = Number.isFinite(options.maxAgeMs) && options.maxAgeMs! > 0 ? Math.min(defaultLifetime, options.maxAgeMs!) : defaultLifetime;
   const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
   if (fresh) return { chart: chartForRange(saved, range), pending: false };
   let job = jobs.get(key);

@@ -19,6 +19,28 @@ const activity = (value: string | null, lastTradeAt = date): KolTokenActivity =>
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 describe('KOL token realized profit display', () => {
+  it('shows estimated total profit for an open position and realized profit after it closes', () => {
+    const body = activity('30');
+    body.inventory!.coverage.balance = body.summary.remainingTokenAmount = '10'; body.summary.status = 'open';
+    body.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: '70', estimatedRoi: '3.5', unrealizedProfitUsd: '40',
+      priceUsd: '5', pricedAt: date, valuationSource: 'market', remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20' };
+    const open = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy={false} />);
+    expect(open).toContain('Est. profit'); expect(open).toContain('+$70'); expect(open).not.toContain('+$30');
+    expect(open).toContain('Price as of 12:00:00 UTC.');
+    const cashOnly = structuredClone(body); cashOnly.realizedAccounting!.realizedProfitUsd = null;
+    cashOnly.realizedAccounting!.position!.remainingCostBasisUsd = null; cashOnly.realizedAccounting!.position!.unrealizedProfitUsd = null;
+    cashOnly.realizedAccounting!.position!.cashFlow = { investedUsd: '18', soldUsd: '30', transferOutIncomeUsd: '10', feesUsd: '2' };
+    const cashOnlyHtml = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={cashOnly} busy={false} />);
+    expect(cashOnlyHtml).toContain('Est. profit'); expect(cashOnlyHtml).toContain('+$70');
+    body.realizedAccounting!.position.estimatedProfitUsd = null;
+    const pending = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy />);
+    expect(pending).toContain('Updating estimated profit'); expect(pending).not.toContain('+$30');
+    body.inventory!.coverage.balance = '0'; body.realizedAccounting!.position.status = 'closed'; body.realizedAccounting!.position.remainingTokenAmount = '0';
+    const closed = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy={false} />);
+    expect(closed).toContain('Realized P&amp;L'); expect(closed).toContain('+$30'); expect(closed).not.toContain('Est. profit');
+    expect(closed).not.toContain('Price as of');
+  });
+
   it('shows pending verification as loading rather than falsely diagnosing missing purchase costs', () => {
     const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={activity(null)} busy />);
     expect(html).toContain('aria-busy="true"'); expect(html).toContain('Loading GMGN realized'); expect(html).toContain('…');

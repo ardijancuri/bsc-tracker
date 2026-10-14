@@ -1,4 +1,4 @@
-import type { KolTokenActivity } from '../shared/kolTokenTrades';
+import { kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
 
 export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
@@ -13,12 +13,64 @@ export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
     ? ' Estimated from matched GMGN activity; a reported position total is unavailable.' : '');
 }
 
+export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
+  return activity?.realizedAccounting?.position?.status === 'open' ? 'Est. profit' : 'Realized P&L';
+}
+export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
+  return activity?.realizedAccounting?.position?.status === 'open'
+    ? 'Estimated total profit includes realized gains, the current value of remaining tokens, marked transfer-out gains and fees.'
+    : gmgnRealizedPnlDescription(activity);
+}
+export function tokenPositionPnlLoadingNotice(activity: KolTokenActivity | null) {
+  return activity?.realizedAccounting?.position?.status === 'open' ? 'Updating estimated profit…' : 'Loading GMGN realized P&L…';
+}
+export function tokenPositionPnlPriceTime(activity: KolTokenActivity | null) {
+  const position = activity?.realizedAccounting?.position;
+  return position?.status === 'open' && position.pricedAt && verifiedTokenPositionPnl(activity) !== null
+    ? new Date(position.pricedAt).toISOString().slice(11, 19) : null;
+}
+
+/** Open positions require a dated market mark. The historical realized total is
+ * still available separately, but must never be mislabeled as current profit. */
+export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now = Date.now()) {
+  const accounting = verifiedTokenAccounting(activity, now);
+  if (!accounting) return null;
+  const realized = verifiedTokenRealizedPnl(activity, now), position = accounting.position;
+  if (!position) return realized;
+  const proofBalance = Number(activity!.inventory!.coverage.balance);
+  const remaining = typeof position.remainingTokenAmount === 'string' && decimal.test(position.remainingTokenAmount.trim())
+    ? Number(position.remainingTokenAmount) : NaN;
+  if (position.status === 'closed') return remaining === 0 && proofBalance === 0 ? realized : null;
+  const price = typeof position.priceUsd === 'string' && decimal.test(position.priceUsd.trim()) ? Number(position.priceUsd) : NaN;
+  const pricedAt = typeof position.pricedAt === 'string' ? Date.parse(position.pricedAt) : NaN;
+  const value = typeof position.estimatedProfitUsd === 'string' && decimal.test(position.estimatedProfitUsd.trim())
+    ? Number(position.estimatedProfitUsd) : NaN;
+  if (position.status !== 'open' || !['gmgn', 'market'].includes(position.valuationSource ?? '')
+    || !Number.isFinite(remaining) || remaining <= 0 || proofBalance <= 0 || Math.abs(remaining - proofBalance) > proofBalance * 1e-10
+    || !Number.isFinite(price) || price <= 0 || !Number.isFinite(pricedAt) || pricedAt > now + 1000
+    || now - pricedAt > kolTokenPositionQuoteMaxAgeMs || !Number.isFinite(value)) return null;
+  const positiveNumber = (raw: unknown) => typeof raw === 'string' && decimal.test(raw.trim()) && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : null;
+  const basis = positiveNumber(position.remainingCostBasisUsd), cost = positiveNumber(position.feeInclusiveCostUsd), flow = position.cashFlow;
+  const invested = positiveNumber(flow?.investedUsd), sold = positiveNumber(flow?.soldUsd), outgoing = positiveNumber(flow?.transferOutIncomeUsd), fees = positiveNumber(flow?.feesUsd);
+  const expected = realized !== null && basis !== null ? realized + remaining * price - basis
+    : invested !== null && sold !== null && outgoing !== null && fees !== null && cost !== null && cost + 1e-8 >= invested + fees
+      ? sold + outgoing + remaining * price - cost : null;
+  if (expected === null || !Number.isFinite(expected) || Math.abs(value - expected) > Math.max(1e-6, Math.abs(expected) * 1e-8)) return null;
+  return value;
+}
+
+export function tokenPositionPnlUnavailableNotice(activity: KolTokenActivity | null) {
+  return activity?.realizedAccounting?.position?.status === 'open' && verifiedTokenAccounting(activity) !== null
+    ? 'Estimated profit is unavailable until a current token price is verified.'
+    : tokenRealizedPnlUnavailableNotice(activity);
+}
+
 export function kolTokenPnlKey(selection: KolTokenPnlSelection) {
   const time = Date.parse(selection.lastTradeAt ?? '');
   return `${selection.walletAddress.toLowerCase()}:${selection.tokenAddress.toLowerCase()}:${Number.isFinite(time) ? time : selection.lastTradeAt ?? ''}`;
 }
 
-export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now = Date.now()) {
+function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.now()) {
   const proof = activity?.inventory?.coverage, accounting = activity?.realizedAccounting;
   if (!activity || typeof activity.kol?.address !== 'string' || typeof activity.token?.address !== 'string'
     || !address.test(activity.kol.address) || !address.test(activity.token.address)
@@ -34,7 +86,12 @@ export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now 
   const balance = typeof proof.balance === 'string' && decimal.test(proof.balance.trim()) ? Number(proof.balance) : NaN;
   if (!Number.isFinite(checkedAt) || checkedAt > now + 1000 || now - checkedAt > 180_000
     || !Number.isFinite(providerCheckedAt) || providerCheckedAt > now + 1000 || !Number.isFinite(balance) || balance < 0) return null;
-  const raw = accounting.realizedProfitUsd;
+  return accounting;
+}
+
+export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now = Date.now()) {
+  const accounting = verifiedTokenAccounting(activity, now);
+  const raw = accounting?.realizedProfitUsd;
   if (typeof raw !== 'string' || !decimal.test(raw.trim())) return null;
   const value = Number(raw);
   return Number.isFinite(value) ? value : null;
@@ -107,9 +164,9 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
   type Ticket = { job: Job; start(): void; stop(): void };
   const jobs = new Map<string, Job>(), queue: Ticket[] = [];
   const recent = new Map<string, { value: KolTokenPnlResult; checkedAt: number }>();
-  let active = false;
+  let active = false, backgroundHolds = 0;
   const dispatch = () => {
-    if (active) return;
+    if (active || backgroundHolds > 0) return;
     const next = queue.shift();
     if (!next) return;
     if (next.job.controller.signal.aborted) { next.stop(); dispatch(); return; }
@@ -158,12 +215,16 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
             else {
               activity = body;
               for (const client of job.clients) client.onActivity?.(body);
-              if (verifiedTokenRealizedPnl(body, now()) !== null) return { activity: body, status: 'ready' };
               const proof = body.inventory?.coverage;
               const accounting = body.realizedAccounting;
-              pending = accounting?.status === 'pending' || proof?.status === 'pending' || ['inventory_rpc_unavailable', 'canonical_block_unavailable', 'canonical_receipt_unavailable',
+              const retryAfter = Math.max(accounting?.retryAfterMs ?? 0, accounting?.position?.retryAfterMs ?? 0);
+              const provisional = Number.isFinite(retryAfter) && retryAfter > 0;
+              if (verifiedTokenPositionPnl(body, now()) !== null && !provisional) return { activity: body, status: 'ready' };
+              pending = accounting?.status === 'pending' || (accounting?.status === 'ready' && accounting.position?.status === 'open')
+                || provisional
+                || proof?.status === 'pending' || ['inventory_rpc_unavailable', 'canonical_block_unavailable', 'canonical_receipt_unavailable',
                 'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale'].includes(proof?.reason ?? '');
-              if (typeof accounting?.retryAfterMs === 'number' && Number.isFinite(accounting.retryAfterMs) && accounting.retryAfterMs > 0) providerDelay = Math.max(1000, accounting.retryAfterMs);
+              if (Number.isFinite(retryAfter) && retryAfter > 0) providerDelay = Math.max(1000, retryAfter);
               if (!pending) return { activity, status: 'unavailable' };
             }
           }
@@ -192,12 +253,13 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
       for (const client of job.clients) { client.detach(); client.resolve(value); }
     });
   }
-  return (selection: KolTokenPnlSelection, signal: AbortSignal,
+  const load = (selection: KolTokenPnlSelection, signal: AbortSignal,
     options: { priority?: 'background' | 'foreground'; onActivity?(activity: KolTokenActivity): void } = {}): Promise<KolTokenPnlResult> => {
     if (signal.aborted) return Promise.reject(cancelled());
     if (!address.test(selection.walletAddress) || !address.test(selection.tokenAddress)) return Promise.resolve({ activity: null, status: 'unavailable' });
     const cacheKey = kolTokenPnlKey(selection), cached = recent.get(cacheKey);
-    if (cached && now() >= cached.checkedAt && now() - cached.checkedAt < recentResultMs) {
+    if (cached && now() >= cached.checkedAt && now() - cached.checkedAt < recentResultMs
+      && verifiedTokenPositionPnl(cached.value.activity, now()) !== null) {
       if (cached.value.activity) options.onActivity?.(cached.value.activity);
       return Promise.resolve(cached.value);
     }
@@ -217,6 +279,11 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
     if (created) start(selected);
     return result;
   };
+  return Object.assign(load, { suspendBackground: () => {
+    backgroundHolds++;
+    let released = false;
+    return () => { if (!released) { released = true; backgroundHolds--; dispatch(); } };
+  } });
 }
 
 export const requestKolTokenPnl = createKolTokenPnlLoader();
