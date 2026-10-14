@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
-import { prepareTradeReplayData, replayIsOpen, replayNumber, replaySignedNumber } from './tradeReplayData';
+import { prepareTradeReplayData, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, replayNumber, replaySignedNumber } from './tradeReplayData';
 import { replayFileName } from './tradeReplayExport';
 import ReplayCanvas from './tradeReplayCanvas';
 
@@ -25,6 +25,93 @@ const position: Position = { walletAddress: wallet, tokenAddress: token, balance
 const chart: TokenChart = { address: token, period: '5m', marketCapSupply: '1000', resolution: '5m', source: 'geckoterminal', pending: false, stale: false, updatedAt: new Date(now).toISOString(),
   candles: [ { time: Date.parse('2026-10-11T10:00:00Z') / 1000, open: 2, high: 4, low: 1, close: 3, volume: 1 },
     { time: Date.parse('2026-10-11T10:05:00Z') / 1000, open: 3, high: 6, low: 2, close: 4, volume: 1 } ], points: [] };
+
+function inventoryActivity(): KolTokenActivity {
+  const payload = activity();
+  payload.trades[0] = { ...payload.trades[0], txHash: `0x${'a'.repeat(64)}`, blockNumber: '1' };
+  payload.trades[1] = { ...payload.trades[1], txHash: `0x${'b'.repeat(64)}`, blockNumber: '2', tokenAmount: '50', amountUsd: '250' };
+  payload.inventory = { version: 1, coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '3',
+    blockHash: `0x${'f'.repeat(64)}`, checkedAt: new Date(now).toISOString(), balance: '0', status: 'verified',
+    scannedThroughBlock: '3', initialBalanceSource: 'historical_call' }, events: [
+    { id: 'buy', kind: 'buy', tradeId: 'b', txHash: payload.trades[0].txHash, timestamp: payload.trades[0].timestamp,
+      blockNumber: '1', transactionIndex: 0, logIndex: null, tokenAmount: '100', remainingTokenAmount: '100',
+      remainingCostBasisUsd: '100', cumulativeRealizedProfitUsd: '0', investedUsd: '100', soldUsd: '0' },
+    { id: 'sell', kind: 'sell', tradeId: 's', txHash: payload.trades[1].txHash, timestamp: payload.trades[1].timestamp,
+      blockNumber: '2', transactionIndex: 0, logIndex: null, tokenAmount: '50', remainingTokenAmount: '50',
+      remainingCostBasisUsd: '50', cumulativeRealizedProfitUsd: '200', investedUsd: '100', soldUsd: '250' },
+    { id: 'out', kind: 'transfer_out', txHash: `0x${'c'.repeat(64)}`, timestamp: '2026-10-11T10:11:00Z',
+      blockNumber: '3', transactionIndex: 0, logIndex: 1, tokenAmount: '50', remainingTokenAmount: '0',
+      remainingCostBasisUsd: '0', cumulativeRealizedProfitUsd: '200', investedUsd: '100', soldUsd: '250' },
+  ] };
+  return payload;
+}
+
+describe('authoritative replay inventory', () => {
+  it('preserves transfer-adjusted snapshots and canonical evidence without changing swaps or inventing sale proceeds', () => {
+    const payload = inventoryActivity(); payload.inventory!.events.reverse();
+    const prepared = prepareTradeReplayData(payload, null, { ...position, balance: '50', status: 'Holding' }, now)!;
+    expect(prepared.trades).toHaveLength(2); expect(prepared.trades[1].amountUsd).toBe(250);
+    expect(prepared.inventory?.events.map(event => event.kind)).toEqual(['buy', 'sell', 'transfer_out']);
+    expect(prepared.inventory?.events.at(-1)).toMatchObject({ tokenAmount: 50, remainingTokenAmount: 0,
+      remainingCostBasisUsd: 0, cumulativeRealizedProfitUsd: 200, investedUsd: 100, soldUsd: 250 });
+    expect(prepared.inventory?.coverage).toEqual(payload.inventory!.coverage);
+    expect(prepared.position).toMatchObject({ status: 'closed', tokenBalance: 0, tradeFlowMatched: false });
+    expect(replayIsOpen(prepared)).toBe(false); expect(replayInventoryIsFresh(prepared, now)).toBe(true);
+    expect(replayEndTimestamp(prepared)).toBe(Date.parse('2026-10-11T10:11:00Z'));
+  });
+
+  it('keeps physically open inventory with an unknown incoming cost basis without deriving that basis from cash totals', () => {
+    const payload = inventoryActivity(), incoming = payload.inventory!.events.at(-1)!;
+    Object.assign(incoming, { kind: 'transfer_in', tokenAmount: '20', remainingTokenAmount: '70', remainingCostBasisUsd: null });
+    payload.inventory!.coverage.balance = '70';
+    const prepared = prepareTradeReplayData(payload, null, position, now)!;
+    expect(prepared.inventory?.coverage.reconciled).toBe(true); expect(prepared.position.status).toBe('open');
+    expect(replayIsOpen(prepared)).toBe(true); expect(prepared.inventory?.events.at(-1)?.remainingCostBasisUsd).toBeNull();
+    expect(prepared.inventory?.events.at(-1)?.cumulativeRealizedProfitUsd).toBe(200);
+  });
+
+  it('uses exact remaining decimals to validate the same-block balance rather than accepting a numerically rounded mismatch', () => {
+    const payload = inventoryActivity();
+    payload.inventory!.events.at(-1)!.remainingTokenAmount = '25.723034412444041478';
+    payload.inventory!.coverage.balance = '25.723034412444041479';
+    const rejected = prepareTradeReplayData(payload, null, { ...position, balance: '25.723034412444041478' }, now)!;
+    expect(rejected.inventory?.coverage.reconciled).toBe(false); expect(rejected.position.status).toBe('unknown');
+    payload.inventory!.coverage.balance = '25.7230344124440414780';
+    expect(prepareTradeReplayData(payload, null, null, now)!.inventory?.coverage.reconciled).toBe(true);
+  });
+
+  it('withholds inventory coverage for missing, duplicate, future, wrong-fill or out-of-range events and stale canonical proof', () => {
+    const variants = ['missing', 'duplicate', 'future', 'wrong-fill', 'out-of-range', 'stale', 'incomplete', 'unreconciled', 'ambiguous', 'missing-log', 'same-swap-transfer'] as const;
+    for (const variant of variants) {
+      const payload = inventoryActivity(), inventory = payload.inventory!;
+      if (variant === 'missing') inventory.events.splice(1, 1);
+      if (variant === 'duplicate') inventory.events.push({ ...inventory.events[0] });
+      if (variant === 'future') inventory.events.at(-1)!.timestamp = new Date(now + 1).toISOString();
+      if (variant === 'wrong-fill') inventory.events[0].txHash = inventory.events[1].txHash;
+      if (variant === 'out-of-range') inventory.events.at(-1)!.blockNumber = '4';
+      if (variant === 'stale') inventory.coverage.checkedAt = new Date(now - 180_001).toISOString();
+      if (variant === 'incomplete') inventory.coverage.complete = false;
+      if (variant === 'unreconciled') inventory.coverage.reconciled = false;
+      if (variant === 'ambiguous') inventory.events.at(-1)!.blockNumber = '2';
+      if (variant === 'missing-log') inventory.events.at(-1)!.logIndex = null;
+      if (variant === 'same-swap-transfer') inventory.events.at(-1)!.txHash = inventory.events[1].txHash;
+      const prepared = prepareTradeReplayData(payload, null, position, now)!;
+      expect(replayInventoryIsFresh(prepared, now), variant).toBe(false);
+      expect(prepared.position.status, variant).toBe('unknown'); expect(replayIsOpen(prepared), variant).toBe(false);
+      expect(prepared.inventory, variant).toBeDefined();
+    }
+  });
+
+  it('requires historical observations through a closing transfer, while leaving the execution count unchanged', () => {
+    const payload = inventoryActivity();
+    expect(prepareTradeReplayData(payload, chart, position, now)!.chart.points).toEqual([]);
+    const covering = { ...chart, candles: [...chart.candles,
+      { time: Date.parse('2026-10-11T10:10:00Z') / 1000, open: 4, high: 6, low: 3, close: 5, volume: 1 }] };
+    const prepared = prepareTradeReplayData(payload, covering, position, now)!;
+    expect(prepared.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:11:00.000Z');
+    expect(prepared.chart.points.at(-1)?.priceUsd).toBeCloseTo(4.2); expect(prepared.trades).toHaveLength(2);
+  });
+});
 
 describe('trade replay factual boundary', () => {
   it('keeps missing amounts missing and never infers supply from current market cap/price', () => {

@@ -1,5 +1,5 @@
 import type { Position, TokenChart } from '../shared/intelligence';
-import type { KolTokenActivity } from '../shared/kolTokenTrades';
+import type { InventoryCoverage, InventoryEvent, KolTokenActivity } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
 import type { ReplayMarketChart } from '../shared/replayChart';
 
@@ -13,6 +13,14 @@ export interface ReplayTrade {
   priceUsd: number | null;
   marketCapUsd: number | null;
   cumulativeRealizedProfitUsd?: number | null;
+}
+
+type InventoryNumberField = 'tokenAmount' | 'remainingTokenAmount' | 'remainingCostBasisUsd' | 'cumulativeRealizedProfitUsd' | 'investedUsd' | 'soldUsd';
+export type ReplayInventoryEvent = Omit<InventoryEvent, InventoryNumberField> & Record<InventoryNumberField, number | null>;
+export interface ReplayInventory {
+  version: 1;
+  events: ReplayInventoryEvent[];
+  coverage: InventoryCoverage;
 }
 
 export interface TradeReplayData {
@@ -37,13 +45,16 @@ export interface TradeReplayData {
   realizedAccounting?: { available: boolean };
   generatedAt: string;
   currentQuote?: { timestamp: string; priceUsd: number; marketCapUsd: number | null };
+  inventory?: ReplayInventory;
 }
 
 export type ReplayActivity = KolTokenActivity;
 
 /** Checked ending balances win; otherwise use only complete, consistent recorded quantities. */
-export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' | 'trades'>): boolean {
+export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' | 'trades' | 'inventory'>): boolean {
   if (data.position.status === 'open' || data.position.status === 'closed') return data.position.status === 'open';
+  if (data.inventory) return data.inventory.coverage.complete && data.inventory.coverage.reconciled
+    && (data.inventory.events.at(-1)?.remainingTokenAmount ?? 0) > 0;
   if (!data.source.tradesComplete || !data.position.tradesComplete || !data.trades.length) return false;
   let bought = 0, sold = 0;
   for (const trade of data.trades) {
@@ -57,10 +68,107 @@ export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' |
   return bought - sold > Math.max(Number.MIN_VALUE, bought * 1e-10);
 }
 
+export function replayEndTimestamp(data: Pick<TradeReplayData, 'trades' | 'inventory'>): number {
+  let end = -Infinity;
+  for (const event of [...data.trades, ...(data.inventory?.events ?? [])]) {
+    const time = Date.parse(event.timestamp);
+    if (Number.isFinite(time)) end = Math.max(end, time);
+  }
+  return end;
+}
+
+export function replayInventoryIsFresh(data: Pick<TradeReplayData, 'inventory'>, now = Date.now()): boolean {
+  const checkedAt = Date.parse(data.inventory?.coverage.checkedAt ?? '');
+  return Boolean(data.inventory && data.inventory.coverage.complete && data.inventory.coverage.reconciled
+    && Number.isFinite(checkedAt) && checkedAt <= now && now - checkedAt <= 180_000);
+}
+
+function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[], complete: boolean, now: number): ReplayInventory | undefined {
+  const inventory = activity.inventory;
+  if (!inventory) return undefined;
+  const coverage = { ...inventory.coverage };
+  let valid = inventory.version === 1 && complete && Array.isArray(inventory.events)
+    && typeof coverage.complete === 'boolean' && typeof coverage.reconciled === 'boolean'
+    && /^0x[0-9a-f]{40}$/i.test(activity.kol.address) && /^0x[0-9a-f]{40}$/i.test(activity.token.address);
+  const from = /^\d+$/.test(coverage.fromBlock ?? '') ? BigInt(coverage.fromBlock!) : null;
+  const to = /^\d+$/.test(coverage.toBlock ?? '') ? BigInt(coverage.toBlock!) : null;
+  const checkedAt = Date.parse(coverage.checkedAt ?? '');
+  const fresh = Number.isFinite(checkedAt) && checkedAt <= now && now - checkedAt <= 180_000;
+  if (from === null || to === null || from > to || !/^0x[0-9a-f]{64}$/i.test(coverage.blockHash ?? '') || !fresh) valid = false;
+  if (coverage.scannedThroughBlock != null && (!/^\d+$/.test(coverage.scannedThroughBlock)
+    || to === null || BigInt(coverage.scannedThroughBlock) !== to)) valid = false;
+  if (coverage.initialBalanceSource === null && coverage.complete) valid = false;
+  if (coverage.status != null && coverage.status !== 'verified' && (coverage.complete || coverage.reconciled)) valid = false;
+  const decimal = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value)) return null;
+    const [whole, fractional = ''] = value.split('.');
+    return `${whole.replace(/^0+(?=\d)/, '')}.${fractional.replace(/0+$/, '')}`;
+  };
+  const ids = new Set<string>(), matched = new Set<string>(), transferLogs = new Set<string>();
+  const tradeById = new Map(trades.map(trade => [trade.id, trade]));
+  const sourceTradeById = new Map(activity.trades.map(trade => [trade.id, trade]));
+  const swapTransactions = new Set(trades.map(trade => trade.txHash.toLowerCase()));
+  const events: ReplayInventoryEvent[] = [];
+  const numberFields: InventoryNumberField[] = ['tokenAmount', 'remainingTokenAmount', 'remainingCostBasisUsd', 'cumulativeRealizedProfitUsd', 'investedUsd', 'soldUsd'];
+  for (const event of Array.isArray(inventory.events) ? inventory.events : []) {
+    if (!event || typeof event !== 'object') { valid = false; continue; }
+    const time = Date.parse(event.timestamp), block = /^\d+$/.test(event.blockNumber ?? '') ? BigInt(event.blockNumber) : null;
+    const ordinal = (value: number | null) => value === null || Number.isSafeInteger(value) && value >= 0;
+    if (typeof event.id !== 'string' || !event.id || ids.has(event.id) || !/^0x[0-9a-f]{64}$/i.test(event.txHash ?? '') || !['buy', 'sell', 'transfer_in', 'transfer_out'].includes(event.kind)
+      || !Number.isFinite(time) || time > now || Number.isFinite(checkedAt) && time > checkedAt
+      || block === null || from !== null && block < from || to !== null && block > to
+      || !ordinal(event.transactionIndex) || !ordinal(event.logIndex)) { valid = false; continue; }
+    ids.add(event.id);
+    const numbers = {} as Record<InventoryNumberField, number | null>;
+    for (const field of numberFields) {
+      const raw = event[field];
+      const parsed = field === 'cumulativeRealizedProfitUsd' ? replaySignedNumber(raw) : replayNumber(raw, field !== 'tokenAmount');
+      numbers[field] = parsed;
+      if (raw !== null && parsed === null) valid = false;
+    }
+    if (numbers.tokenAmount === null || numbers.remainingTokenAmount === null) valid = false;
+    if (event.kind === 'buy' || event.kind === 'sell') {
+      const trade = event.tradeId ? tradeById.get(event.tradeId) : undefined;
+      const sourceTrade = trade ? sourceTradeById.get(trade.id) : undefined;
+      if (!trade || matched.has(trade.id) || trade.side !== event.kind || trade.txHash.toLowerCase() !== event.txHash.toLowerCase()
+        || Date.parse(trade.timestamp) !== time || trade.tokenAmount !== numbers.tokenAmount
+        || decimal(sourceTrade?.tokenAmount) === null || decimal(sourceTrade?.tokenAmount) !== decimal(event.tokenAmount)
+        || sourceTrade?.blockNumber === null || !/^\d+$/.test(sourceTrade?.blockNumber ?? '') || BigInt(sourceTrade!.blockNumber!) !== block
+        || sourceTrade?.transactionIndex != null && sourceTrade.transactionIndex !== event.transactionIndex) { valid = false; continue; }
+      matched.add(trade.id);
+    } else {
+      const log = `${block}:${event.txHash.toLowerCase()}:${event.logIndex}`;
+      if (event.tradeId || event.logIndex === null || transferLogs.has(log) || swapTransactions.has(event.txHash.toLowerCase())) { valid = false; continue; }
+      transferLogs.add(log);
+    }
+    events.push({ ...event, ...numbers });
+  }
+  events.sort((a, b) => {
+    const block = BigInt(a.blockNumber) - BigInt(b.blockNumber);
+    return (block < 0n ? -1 : block > 0n ? 1 : 0) || (a.transactionIndex ?? 0) - (b.transactionIndex ?? 0)
+      || (a.logIndex ?? -1) - (b.logIndex ?? -1) || a.id.localeCompare(b.id);
+  });
+  if (matched.size !== trades.length || !events.length) valid = false;
+  for (let index = 1; index < events.length; index += 1) {
+    const previous = events[index - 1], current = events[index];
+    if (Date.parse(current.timestamp) < Date.parse(previous.timestamp)) valid = false;
+    if (BigInt(current.blockNumber) === BigInt(previous.blockNumber) && current.txHash.toLowerCase() !== previous.txHash.toLowerCase()
+      && (current.transactionIndex === null || previous.transactionIndex === null || current.transactionIndex === previous.transactionIndex)) valid = false;
+  }
+  const balance = replayNumber(coverage.balance, true), remaining = events.at(-1)?.remainingTokenAmount;
+  const finalRaw = (Array.isArray(inventory.events) ? inventory.events : []).find(event => event?.id === events.at(-1)?.id)?.remainingTokenAmount;
+  if (balance === null || remaining == null || decimal(coverage.balance) === null || decimal(coverage.balance) !== decimal(finalRaw)) valid = false;
+  if (!valid) {
+    coverage.complete = coverage.reconciled = false;
+    coverage.reason = coverage.reason ?? (fresh ? 'invalid_inventory_events' : 'stale_inventory_snapshot');
+  }
+  return { version: 1, events, coverage };
+}
+
 function checkedCurrentQuote(data: TradeReplayData, quote: ReplayMarketChart['currentQuote'] | TradeReplayData['currentQuote'], supply: number | null, now: number) {
   if (!quote || !replayIsOpen(data)) return undefined;
   const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
-  const lastFill = Date.parse(data.trades.at(-1)?.timestamp ?? '');
+  const lastFill = replayEndTimestamp(data);
   if (price === null || !Number.isFinite(time) || !Number.isFinite(lastFill) || time < lastFill || time > now || now - time > 180_000) return undefined;
   return { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) };
 }
@@ -98,7 +206,7 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
     if (Number.isFinite(time) && time <= now && (!open || time <= observationEnd) && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
   }
   const points = [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point);
-  const first = Date.parse(data.trades[0].timestamp), last = Date.parse(data.trades.at(-1)!.timestamp);
+  const first = Date.parse(data.trades[0].timestamp), last = replayEndTimestamp(data);
   if (!points.length || Date.parse(points[0].timestamp) > first || Date.parse(points.at(-1)!.timestamp) < last) return selected;
   for (const time of [first, last]) {
     const after = points.findIndex(point => Date.parse(point.timestamp) >= time);
@@ -199,11 +307,14 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   });
 
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
+  const inventory = prepareReplayInventory(activity, trades, complete, now);
+  const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
   const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
     && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';
   const checkedAt = validPosition && position?.checkedAt ? Date.parse(position.checkedAt) : NaN;
   const fresh = Number.isFinite(checkedAt) && now - checkedAt <= 180_000 && now - checkedAt >= -60_000;
-  const balance = fresh ? replayNumber(position?.balance, true) : null;
+  const balance = inventory ? inventoryTrusted ? replayNumber(inventory.coverage.balance, true) : null
+    : fresh ? replayNumber(position?.balance, true) : null;
   let bought = 0, sold = 0, reconciled = complete && trades.length > 0 && balance !== null
     && activity.trades.every(trade => trade.valuationStatus === 'valued');
   for (const trade of trades) {
@@ -215,8 +326,10 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   const tolerance = Math.max(Number.MIN_VALUE, Math.max(bought, sold, balance ?? 0) * 1e-10);
   const flowMatched = reconciled && Math.abs(bought - sold - (balance ?? 0)) <= tolerance;
   const replayPosition: TradeReplayData['position'] = { status: balance === null ? 'unknown' : balance === 0 ? 'closed' : 'open',
-    tokenBalance: balance, tradeFlowMatched: flowMatched, tradesComplete: complete, checkedAt: fresh ? position?.checkedAt ?? null : null };
-  const open = replayIsOpen({ trades, position: replayPosition, source: { chart: '', tradesComplete: complete } });
+    tokenBalance: balance, tradeFlowMatched: flowMatched, tradesComplete: complete,
+    checkedAt: inventoryTrusted ? inventory!.coverage.checkedAt : !inventory && fresh ? position?.checkedAt ?? null : null };
+  const open = replayIsOpen({ trades, position: replayPosition, source: { chart: '', tradesComplete: complete }, inventory });
+  const replayEnd = replayEndTimestamp({ trades, inventory });
 
   const pointsByTime = new Map<number, TradeReplayData['chart']['points'][number]>();
   const addPoint = (time: number, rawPrice: unknown) => {
@@ -227,7 +340,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     // The app's convenience points place candle closes at their opening times.
     // Use the underlying completed candles for the replay's exact event timeline.
     if (selectedChart.candles.length) {
-      const run = completedCandleRun(selectedChart, Date.parse(trades[0]?.timestamp ?? ''), Date.parse(trades.at(-1)?.timestamp ?? ''), now);
+      const run = completedCandleRun(selectedChart, Date.parse(trades[0]?.timestamp ?? ''), replayEnd, now);
       if (run) for (const [index, candle] of run.candles.entries()) {
         if (index === 0) addPoint(candle.time * 1000, candle.open);
         addPoint((candle.time + run.seconds) * 1000, candle.close);
@@ -237,12 +350,12 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   let points = [...pointsByTime.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point);
   // Recent-only charts must never be extrapolated backward as historical prices.
   if (trades.length && (Date.parse(points[0]?.timestamp ?? '') > Date.parse(trades[0].timestamp)
-    || Date.parse(points.at(-1)?.timestamp ?? '') < Date.parse(trades.at(-1)!.timestamp))) points = [];
-  // Closed recaps stop at their final fill. Open recaps may preserve actual
+    || Date.parse(points.at(-1)?.timestamp ?? '') < replayEnd)) points = [];
+  // Closed recaps stop at their final wallet movement. Open recaps may preserve actual
   // later observations; a separate fresh currentQuote is still required to
   // claim a current endpoint. Activity token fields never supply that quote.
   if (points.length && trades.length) {
-    for (const timestamp of [trades[0].timestamp, trades.at(-1)!.timestamp]) {
+    for (const timestamp of [trades[0].timestamp, trades.at(-1)!.timestamp, new Date(replayEnd).toISOString()]) {
       const time = Date.parse(timestamp);
       const after = points.findIndex(point => Date.parse(point.timestamp) >= time);
       if (after > 0 && Date.parse(points[after].timestamp) !== time) {
@@ -253,7 +366,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
       }
     }
     const first = points.findIndex(point => Date.parse(point.timestamp) === Date.parse(trades[0].timestamp));
-    const last = points.findIndex(point => Date.parse(point.timestamp) === Date.parse(trades.at(-1)!.timestamp));
+    const last = points.findIndex(point => Date.parse(point.timestamp) === replayEnd);
     // One prior genuine sample gives the chart context without adding a long
     // lead-in or inventing a price before the available history begins.
     if (first >= 0 && last >= first) points = points.slice(Math.max(0, first - 1), open ? undefined : last + 1);
@@ -266,5 +379,6 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     chart: { points, marketCapSupply: supply, resolution: selectedChart?.resolution ?? '', source: chartSource },
     source: { chart: chartSource, tradesComplete: complete }, generatedAt: new Date(now).toISOString(),
     realizedAccounting: { available: complete && replaySignedNumber(activity.summary.realizedProfitUsd) !== null },
+    ...(inventory ? { inventory } : {}),
   };
 }

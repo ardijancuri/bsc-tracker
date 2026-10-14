@@ -229,7 +229,8 @@ export const chinese: Record<string, string> = {
   'Reload the page to reconnect, then open this token again.': '请重新加载页面以恢复连接，然后再次打开此代币。',
   'Preparing the token chart and trades.': '正在准备代币图表与交易记录。',
   'Reload page': '重新加载页面',
-  'Total P&L includes unrealized profit at the replay price. Estimates use recorded trades; transfers and gas are excluded.': '总盈亏包含按回放价格计算的未实现盈亏。估算基于已记录交易，不包含转账与Gas费用。',
+  'Total P&L includes unrealized profit at the replay price. Transfers change holdings, not realized profit. Gas is excluded.': '总盈亏包含按回放价格计算的未实现盈亏。转账会改变持仓，不计为已实现盈亏。Gas费用不包含在内。',
+  'Profit is unavailable until wallet movements and the balance are verified at the same block.': '钱包资金变动与余额在同一区块完成验证后，才会显示盈亏。',
   'Historical market data is unavailable for this replay.': '此回放暂无历史市场数据。',
   'Historical market data is rate limited; the replay is using available data.': '历史市场数据请求受到限流，回放正在使用现有数据。',
   'Historical market data is still loading; the replay is using available data.': '历史市场数据仍在加载，回放正在使用现有数据。',
@@ -237,6 +238,6 @@ export const chinese: Record<string, string> = {
   'Historical market data could not be loaded; the replay is using available data.': '无法加载历史市场数据，回放正在使用现有数据。',
   'Market history is unavailable. Estimated P&L uses recorded trade prices.': '市场历史数据不可用。估算盈亏使用已记录的交易价格。',
   'Market observations are sparse. Prices and P&L between observations are estimates.': '市场观测数据稀疏。观测点之间的价格与盈亏为估算值。',
-  'Current market price is unavailable. This replay ends at the last recorded trade.': '当前市场价格暂不可用。此回放止于最后一笔已记录交易。',
+  'Current market price is unavailable. This replay ends at the last recorded wallet movement.': '当前市场价格暂不可用。此回放止于最后一次已记录的钱包资金变动。',
   'Market history is unavailable. Prices between recorded trades and the current quote are estimates.': '市场历史数据不可用。已记录交易与当前报价之间的价格为估算值。',
 };

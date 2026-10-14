@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyReplayMarketChart, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, replayEndTimestamp, type TradeReplayData } from './tradeReplayData';
 import type { ReplayMarketChart } from '../shared/replayChart';
 
 const token = '0x2222222222222222222222222222222222222222';
@@ -20,6 +20,38 @@ function chart(): ReplayMarketChart {
     source: 'geckoterminal', resolution: '1m', marketCapSupply: '1000', pending: false, stale: false, updatedAt: new Date(now).toISOString() };
 }
 describe('finer observed replay history', () => {
+  it('covers and trims a closed replay through its last transfer rather than stopping at the final sale', () => {
+    const original = data(); original.position.status = 'closed';
+    original.inventory = { version: 1, coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '3',
+      blockHash: `0x${'f'.repeat(64)}`, checkedAt: new Date(now).toISOString(), balance: '0' }, events: [
+      { id: 'out', kind: 'transfer_out', txHash: `0x${'c'.repeat(64)}`, timestamp: '2026-10-11T10:11:30Z', blockNumber: '3',
+        transactionIndex: 0, logIndex: 1, tokenAmount: .5, remainingTokenAmount: 0, remainingCostBasisUsd: 0,
+        cumulativeRealizedProfitUsd: 2, investedUsd: 1, soldUsd: 2.5 },
+    ] };
+    expect(applyReplayMarketChart(original, chart(), now)).toBe(original);
+    const observed = chart();
+    observed.points.push({ timestamp: '2026-10-11T10:15:00Z', priceUsd: '21' });
+    observed.currentQuote = { timestamp: new Date(now).toISOString(), priceUsd: '99' };
+    const replay = applyReplayMarketChart(original, observed, now);
+    expect(replay.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:11:30.000Z');
+    expect(replayEndTimestamp(replay)).toBe(Date.parse('2026-10-11T10:11:30Z'));
+    expect(replay.currentQuote).toBeUndefined(); expect(replay.trades).toBe(original.trades); expect(replay.inventory).toBe(original.inventory);
+  });
+
+  it('rejects a current quote before the latest wallet movement even when it follows every recorded swap', () => {
+    const original = data(); original.position.status = 'open';
+    original.inventory = { version: 1, coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '3',
+      blockHash: `0x${'f'.repeat(64)}`, checkedAt: new Date(now).toISOString(), balance: '.5' }, events: [
+      { id: 'in', kind: 'transfer_in', txHash: `0x${'c'.repeat(64)}`, timestamp: '2026-10-11T11:59:30Z', blockNumber: '3',
+        transactionIndex: 0, logIndex: 1, tokenAmount: .5, remainingTokenAmount: .5, remainingCostBasisUsd: null,
+        cumulativeRealizedProfitUsd: 4, investedUsd: 1, soldUsd: 5 },
+    ] };
+    const observed = { ...chart(), source: 'unavailable' as const, points: [],
+      currentQuote: { timestamp: '2026-10-11T11:59:00Z', priceUsd: '12' } };
+    expect(applyReplayMarketChart(original, observed, now).currentQuote).toBeUndefined();
+    expect(applyReplayMarketChart(original, { ...observed, currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } }, now).currentQuote?.priceUsd).toBe(12);
+  });
+
   it('accepts genuine coarse observations covering a long replay and retains explicit sparse-history metadata', () => {
     const original = data();
     const observed = { ...chart(), resolution: '5m', sparseHistory: true,

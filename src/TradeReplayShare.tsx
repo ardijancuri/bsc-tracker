@@ -77,6 +77,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           const sparseNotice = 'Market observations are sparse. Prices and P&L between observations are estimates.';
           if (market.data.chart.sparseHistory && market.notice !== sparseNotice) notices.push(t(sparseNotice));
           if (market.currentPriceNotice) notices.push(t(market.currentPriceNotice));
+          if (market.inventoryNotice) notices.push(t(market.inventoryNotice));
           if (notices.length) setMarketNotice(notices.join(' '));
         }
       },
@@ -205,7 +206,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
             {fileShareAvailable && <button type="button" disabled={sharePending || exporting} onClick={() => void share()}><span className="trade-replay-social-icon"><Share2 size={19} /></span><span>{t(sharePending ? 'Sharing…' : 'Share trade')}</span></button>}
           </div>
           <div className="trade-replay-status" aria-live="polite">
-            <p>{t('Total P&L includes unrealized profit at the replay price. Estimates use recorded trades; transfers and gas are excluded.')}</p>
+            <p>{t('Total P&L includes unrealized profit at the replay price. Transfers change holdings, not realized profit. Gas is excluded.')}</p>
             {marketNotice && <p role="status">{marketNotice}</p>}
             {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : t('Preparing trade…')}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}

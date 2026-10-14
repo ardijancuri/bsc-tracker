@@ -7,12 +7,67 @@ export interface KolTokenActivity {
   };
   trades: KolTokenTrade[];
   summary: KolTokenTradeSummary;
+  inventory?: { version: 1; events: InventoryEvent[]; coverage: InventoryCoverage };
   coverage: {
     source: 'indexed'; indexedTradeCount: number; returnedTradeCount: number;
     /** Complete indexed history, not a claim that every on-chain movement is indexed. */
     complete: boolean; historyLimit: number; costsIncluded: false;
   };
   generatedAt: string;
+}
+
+/** Accounting snapshots include transfers without representing them as swaps. */
+export interface InventoryEvent {
+  id: string;
+  kind: 'buy' | 'sell' | 'transfer_in' | 'transfer_out';
+  tradeId?: string;
+  txHash: string;
+  timestamp: string;
+  blockNumber: string;
+  transactionIndex: number | null;
+  logIndex: number | null;
+  tokenAmount: string | null;
+  remainingTokenAmount: string | null;
+  remainingCostBasisUsd: string | null;
+  cumulativeRealizedProfitUsd: string | null;
+  investedUsd: string | null;
+  soldUsd: string | null;
+}
+
+/** Movement coverage and the ending balance must describe the same canonical block. */
+export interface InventoryCoverage {
+  complete: boolean;
+  reconciled: boolean;
+  fromBlock: string | null;
+  toBlock: string | null;
+  blockHash: string | null;
+  checkedAt: string | null;
+  balance: string | null;
+  reason?: string;
+  status?: 'pending' | 'verified' | 'unavailable';
+  initialBalanceSource?: 'historical_call' | 'derived_complete_movements' | null;
+  scannedThroughBlock?: string | null;
+}
+
+/** Internal evidence from canonical receipts; quantity is signed ERC-20 raw units. */
+export interface KolTokenInventoryTransfer {
+  id: string;
+  txHash: string;
+  walletAddress: string;
+  tokenAddress: string;
+  deltaRaw: string;
+  timestamp: string;
+  blockNumber: string;
+  transactionIndex: number | null;
+  logIndex: number | null;
+}
+
+export interface KolTokenInventoryEvidence {
+  decimals: number;
+  initialBalanceRaw: string | null;
+  endingBalanceRaw: string | null;
+  transfers: KolTokenInventoryTransfer[];
+  coverage: InventoryCoverage;
 }
 
 export interface KolTokenTrade {
@@ -32,7 +87,7 @@ export interface KolTokenTradeSummary {
   investedUsd: string | null; soldUsd: string | null; realizedProfitUsd: string | null;
   avgBoughtPriceUsd: string | null; avgSoldPriceUsd: string | null;
   avgBoughtMcapUsd: string | null; avgSoldMcapUsd: string | null;
-  /** These are recorded trade lots, not a verified current wallet balance. */
+  /** Transfer-adjusted lots when verified inventory is supplied; otherwise observed swaps only. */
   remainingTokenAmount: string | null; remainingCostBasisUsd: string | null;
   buyCount: number; sellCount: number; valuedBuyCount: number; valuedSellCount: number;
   excludedSellCount: number; unpricedTradeCount: number;

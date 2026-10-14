@@ -513,4 +513,23 @@ describe('KOL replay chart route', () => {
       expect(response.headers['cache-control']).toBe('no-store');
     } finally { await app.close(); vi.useRealTimers(); }
   });
+  it('loads a closed replay through its last standalone transfer after the final swap', async () => {
+    vi.stubEnv('GMGN_API_KEY', ''); vi.stubEnv('GMGN_CHART_API_KEY', '');
+    const movedToken = '0x' + '6'.repeat(40);
+    mocks.query.mockResolvedValue({ rows: [{ first: iso(base + 15), last: iso(base + 335), supply: '1000' }] });
+    mocks.geckoFetch.mockImplementation(async (url: URL) => {
+      if (!url.pathname.endsWith('/pools')) expect(Number(url.searchParams.get('before_timestamp'))).toBe(base + 635);
+      return { ok: true, json: async () => url.pathname.endsWith('/pools') ? { data: [poolRow(poolAddress, movedToken)] }
+        : { data: { attributes: { ohlcv_list: Array.from({ length: 11 }, (_, index) => [base + index * 60, 1, 3, 1, 2, 10]) } } } };
+    });
+    const app = Fastify(); registerTradeReplayChartRoutes(app);
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${movedToken}/replay-chart`);
+      expect(response.statusCode).toBe(200);
+      expect(Date.parse(response.json().points.at(-1).timestamp)).toBeGreaterThanOrEqual((base + 335) * 1000);
+      expect(mocks.query.mock.calls[0][0]).toContain("m.kind='transfer'");
+      expect(mocks.query.mock.calls[0][0]).toContain('swapped.tx_hash=m.tx_hash');
+      expect(mocks.query.mock.calls[0][0]).toContain("swapped.side IN('buy','sell')");
+    } finally { await app.close(); }
+  });
 });

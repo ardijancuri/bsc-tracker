@@ -327,7 +327,10 @@ export function registerTradeReplayChartRoutes(app: FastifyInstance) {
     if (!addressPattern.test(wallet) || !addressPattern.test(token)) return reply.code(400).send({ error: 'Invalid KOL or token address' });
     if (request.query.end !== undefined && request.query.end !== 'current') return reply.code(400).send({ error: 'Invalid replay ending' });
     const current = request.query.end === 'current';
-    const result = await pool.query(`SELECT MIN(t.timestamp) AS first,MAX(t.timestamp) AS last,
+    const result = await pool.query(`SELECT MIN(t.timestamp) AS first,GREATEST(MAX(t.timestamp),COALESCE((SELECT MAX(m.timestamp) FROM wallet_transfers m
+      WHERE m.wallet_address=$1 AND m.token_address=$2 AND m.kind='transfer' AND m.timestamp<=now()
+        AND NOT EXISTS(SELECT 1 FROM trades swapped WHERE swapped.wallet_address=m.wallet_address AND swapped.token_address=m.token_address
+          AND swapped.tx_hash=m.tx_hash AND swapped.block_number IS NOT NULL AND swapped.side IN('buy','sell'))),MAX(t.timestamp))) AS last,
       CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
         THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END AS supply
       FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address

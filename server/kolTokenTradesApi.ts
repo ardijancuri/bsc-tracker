@@ -4,6 +4,7 @@ import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
 import { pool } from './db.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { summarizeKolTokenTrades, type IndexedKolTokenTrade } from './kolTokenTrades.js';
+import { currentKolTokenInventory } from './kolTokenInventory.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 export const kolTokenHistoryLimit = 2000;
@@ -25,13 +26,13 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
           'marketCapUsd',(CASE WHEN v.market_cap_usd>0 AND v.market_cap_checked_at>now()-interval '2 hours' THEN v.market_cap_usd
             WHEN v.price_source='onchain' AND v.price_usd>0 AND v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36
               AND v.supply_checked_at>now()-interval '2 days' THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END)::text,
-          'marketCapSupply',CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
+          'decimals',v.decimals,'marketCapSupply',CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
             THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END) AS token,
         history.count AS "indexedTradeCount",history.first_trade AS "firstTradeAt",history.last_trade AS "lastTradeAt",
-        history.buys AS "buyCount",history.sells AS "sellCount"
+        history.buys AS "buyCount",history.sells AS "sellCount",history.first_block::text AS "firstBlock"
         FROM kols k JOIN tokens v ON v.address=$2
         CROSS JOIN LATERAL(SELECT COUNT(*)::int AS count,MIN(t.timestamp) AS first_trade,MAX(t.timestamp) AS last_trade,
-          COUNT(*) FILTER(WHERE t.side='buy')::int AS buys,COUNT(*) FILTER(WHERE t.side='sell')::int AS sells
+          COUNT(*) FILTER(WHERE t.side='buy')::int AS buys,COUNT(*) FILTER(WHERE t.side='sell')::int AS sells,MIN(t.block_number) AS first_block
           FROM trades t WHERE t.wallet_address=k.address AND t.token_address=v.address AND t.block_number IS NOT NULL AND t.timestamp<=now()) history
         WHERE k.address=$1 AND k.is_tracked AND ${nonStockTokenSql()} AND history.count>0`, values),
       pool.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",
@@ -39,7 +40,7 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
         CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
         t.side,t.token_amount::text AS "tokenAmount",t.quote_symbol AS "quoteSymbol",t.quote_amount::text AS "quoteAmount",
         t.amount_usd::text AS "amountUsd",t.price_usd::text AS "priceUsd",t.timestamp,t.source,
-        t.block_number::text AS "blockNumber",t.transaction_index AS "transactionIndex",
+        t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex",
         EXISTS(SELECT 1 FROM trades other JOIN tokens asset ON asset.address=other.token_address
           WHERE other.wallet_address=t.wallet_address AND other.tx_hash=t.tx_hash AND other.side=t.side
             AND other.token_address<>t.token_address AND other.block_number IS NOT NULL
@@ -52,7 +53,9 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: 'KOL token activity not found' });
     const indexedTradeCount = Number(row.indexedTradeCount);
     const complete = indexedTradeCount === activity.rows.length && indexedTradeCount <= kolTokenHistoryLimit;
-    const result = summarizeKolTokenTrades(activity.rows as IndexedKolTokenTrade[], wallet.data, token.data, row.token.marketCapSupply, complete);
+    const inventory = await currentKolTokenInventory({ wallet: wallet.data, token: token.data, firstBlock: row.firstBlock ?? null,
+      decimals: row.token.decimals ?? null, trades: activity.rows, tradesComplete: complete });
+    const result = summarizeKolTokenTrades(activity.rows as IndexedKolTokenTrade[], wallet.data, token.data, row.token.marketCapSupply, complete, Date.now(), inventory);
     // Full-history metadata remains accurate when the latest history exceeds the bounded payload.
     result.summary.buyCount = Number(row.buyCount); result.summary.sellCount = Number(row.sellCount);
     result.summary.firstTradeAt = new Date(row.firstTradeAt).toISOString(); result.summary.lastTradeAt = new Date(row.lastTradeAt).toISOString();

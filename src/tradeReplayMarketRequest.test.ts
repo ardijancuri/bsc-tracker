@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketChart } from '../shared/replayChart';
-import type { TradeReplayData } from './tradeReplayData';
-import { currentPriceUnavailableNotice, currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
+import type { KolTokenActivity } from '../shared/kolTokenTrades';
+import { prepareTradeReplayData, type TradeReplayData } from './tradeReplayData';
+import { currentPriceUnavailableNotice, currentQuoteEstimateNotice, inventoryUnavailableNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 
 const token = '0x2222222222222222222222222222222222222222';
 const now = Date.parse('2026-10-11T12:00:00Z');
@@ -36,10 +37,135 @@ function response(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
 
+function inventoryActivity(open = true): KolTokenActivity {
+  const original = data();
+  const trades = original.trades.map((trade, index) => ({ ...trade, txHash: `0x${String(index + 1).repeat(64)}`,
+    tokenAmount: String(trade.tokenAmount), amountUsd: String(trade.amountUsd), priceUsd: String(trade.priceUsd), marketCapUsd: String(trade.marketCapUsd),
+    walletAddress: original.kol.address, tokenAddress: token, blockNumber: String(index + 1), transactionIndex: 0,
+    kolName: 'Trader', kolAvatarUrl: null, kolTwitter: null, tokenSymbol: 'TEST', tokenName: 'Test', tokenLogoUrl: null,
+    quoteSymbol: 'BNB', quoteAmount: null, valuationStatus: 'valued' as const, realizedProfitUsd: null, cumulativeRealizedProfitUsd: null, source: 'node' }));
+  if (open) { trades[1].tokenAmount = '0.5'; trades[1].amountUsd = '2.5'; }
+  return { kol: { ...original.kol, source: 'node', lastSeenAt: null },
+    token: { ...original.token, priceUsd: '9', marketCapUsd: '9000', marketCapSupply: '1000' }, trades,
+    summary: {} as KolTokenActivity['summary'], generatedAt: new Date(now).toISOString(),
+    coverage: { source: 'indexed', indexedTradeCount: 2, returnedTradeCount: 2, complete: true, historyLimit: 2000, costsIncluded: false },
+    inventory: { version: 1, coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '2',
+      blockHash: `0x${'f'.repeat(64)}`, checkedAt: new Date(now).toISOString(), balance: open ? '0.5' : '0', status: 'verified' }, events: [
+      { id: 'buy', kind: 'buy', tradeId: 'buy', txHash: trades[0].txHash, timestamp: trades[0].timestamp, blockNumber: '1', transactionIndex: 0,
+        logIndex: null, tokenAmount: '1', remainingTokenAmount: '1', remainingCostBasisUsd: '1', cumulativeRealizedProfitUsd: '0', investedUsd: '1', soldUsd: '0' },
+      { id: 'sell', kind: 'sell', tradeId: 'sell', txHash: trades[1].txHash, timestamp: trades[1].timestamp, blockNumber: '2', transactionIndex: 0,
+        logIndex: null, tokenAmount: open ? '0.5' : '1', remainingTokenAmount: open ? '0.5' : '0', remainingCostBasisUsd: open ? '0.5' : '0',
+        cumulativeRealizedProfitUsd: open ? '2' : '4', investedUsd: '1', soldUsd: open ? '2.5' : '5' },
+    ] } };
+}
+
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('bounded replay historical-market preparation', () => {
+  it('refreshes the exact pair without caching and replaces stale trades and balances before requesting a current endpoint', async () => {
+    const previous = inventoryActivity(false), latest = inventoryActivity(true);
+    previous.inventory!.coverage.checkedAt = new Date(now - 180_001).toISOString();
+    const original = prepareTradeReplayData(previous, null, null, now)!;
+    const observed = { ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } };
+    const fetcher = vi.fn().mockResolvedValueOnce(response(latest)).mockResolvedValue(response(observed)); vi.stubGlobal('fetch', fetcher);
+    const result = await replayMarketData(original, new AbortController().signal);
+    expect(fetcher.mock.calls[0][0]).toBe(`/api/kols/${original.kol.address}/tokens/${token}/activity`);
+    expect(fetcher.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetcher.mock.calls[1][0]).toBe(`/api/kols/${original.kol.address}/tokens/${token}/replay-chart?end=current`);
+    expect(result.data.trades[1].tokenAmount).toBe(.5); expect(result.data.position.tokenBalance).toBe(.5);
+    expect(result.data.inventory?.events.at(-1)?.remainingCostBasisUsd).toBe(.5);
+    expect(result.data.currentQuote?.priceUsd).toBe(12); expect(result.inventoryNotice).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not authorize swap-only estimates when an activity refresh fails, mismatches the pair, or omits inventory', async () => {
+    for (const variant of ['failure', 'wrong-pair', 'missing-inventory'] as const) {
+      const activity = inventoryActivity(), original = prepareTradeReplayData(activity, null, null, now)!;
+      const body = structuredClone(activity);
+      if (variant === 'wrong-pair') body.kol.address = token;
+      if (variant === 'missing-inventory') delete body.inventory;
+      const fetcher = vi.fn().mockResolvedValueOnce(response(body, variant === 'failure' ? 502 : 200)).mockResolvedValue(response(chart()));
+      vi.stubGlobal('fetch', fetcher);
+      const result = await replayMarketData(original, new AbortController().signal);
+      expect(result.data.inventory, variant).toBeDefined(); expect(result.data.inventory?.coverage.reconciled, variant).toBe(false);
+      expect(result.data.position.status, variant).toBe('unknown'); expect(result.inventoryNotice, variant).toBe(inventoryUnavailableNotice);
+      expect(fetcher.mock.calls[1][0].endsWith('?end=current'), variant).toBe(false); expect(vi.getTimerCount()).toBe(0);
+    }
+  });
+
+  it('paces pending inventory refreshes and stops after three attempts without discarding the coverage gate', async () => {
+    const activity = inventoryActivity(), original = prepareTradeReplayData(activity, null, null, now)!;
+    activity.inventory!.coverage = { ...activity.inventory!.coverage, complete: false, reconciled: false, status: 'pending', reason: 'scan_pending' };
+    const fetcher = vi.fn().mockImplementation((url: string) => Promise.resolve(response(url.endsWith('/activity') ? activity : chart())));
+    vi.stubGlobal('fetch', fetcher);
+    const pending = replayMarketData(original, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(999); expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000); expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(fetcher).toHaveBeenCalledTimes(4); expect(result.inventoryNotice).toBe(inventoryUnavailableNotice);
+    expect(result.data.inventory?.coverage.reason).toBe('scan_pending'); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds a hung activity refresh and the remaining history request inside the same 22-second session', async () => {
+    const original = prepareTradeReplayData(inventoryActivity(), null, null, now)!;
+    const fetcher = vi.fn().mockImplementation(() => new Promise<Response>(() => {})); vi.stubGlobal('fetch', fetcher);
+    const pending = replayMarketData(original, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(15_000); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(7000);
+    const result = await pending;
+    expect(result.notice).toMatch(/timed out/); expect(result.inventoryNotice).toBe(inventoryUnavailableNotice);
+    expect(result.data.inventory?.coverage.reconciled).toBe(false); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('accepts pending responses after a full six-second server scan plus overhead and leaves time to request history', async () => {
+    const activity = inventoryActivity(), original = prepareTradeReplayData(activity, null, null, now)!;
+    activity.inventory!.coverage = { ...activity.inventory!.coverage, complete: false, reconciled: false, status: 'pending', reason: 'scan_pending' };
+    const fetcher = vi.fn().mockImplementation((url: string) => url.endsWith('/activity')
+      ? new Promise<Response>(resolve => setTimeout(() => resolve(response(activity)), 6250))
+      : Promise.resolve(response(chart())));
+    vi.stubGlobal('fetch', fetcher);
+    const pending = replayMarketData(original, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(fetcher).toHaveBeenCalledOnce(); expect(fetcher.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1249); expect(fetcher).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(6250);
+    const result = await pending;
+    expect(fetcher).toHaveBeenCalledTimes(3); expect(fetcher.mock.calls[2][0]).toMatch(/replay-chart$/);
+    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(false); expect(fetcher.mock.calls[1][1].signal.aborted).toBe(false);
+    expect(result.inventoryNotice).toBe(inventoryUnavailableNotice); expect(result.data.inventory?.coverage.reason).toBe('scan_pending');
+    expect(Date.now() - now).toBe(13_500); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a pending inventory refresh before another attempt or market request can start', async () => {
+    const activity = inventoryActivity(), original = prepareTradeReplayData(activity, null, null, now)!;
+    activity.inventory!.coverage.status = 'pending'; activity.inventory!.coverage.complete = activity.inventory!.coverage.reconciled = false;
+    const fetcher = vi.fn().mockResolvedValue(response(activity)); vi.stubGlobal('fetch', fetcher);
+    const controller = new AbortController(), pending = replayMarketData(original, controller.signal);
+    const rejection = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(500); controller.abort(); await rejection;
+    await vi.advanceTimersByTimeAsync(30_000); expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reports unknown incoming basis and rejects inventory proof that expires during market retries', async () => {
+    const activity = inventoryActivity(), original = prepareTradeReplayData(activity, null, null, now)!;
+    activity.inventory!.events.at(-1)!.remainingCostBasisUsd = null;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(activity)).mockResolvedValue(response(chart())); vi.stubGlobal('fetch', fetcher);
+    const unknownBasis = await replayMarketData(original, new AbortController().signal);
+    expect(unknownBasis.data.position.status).toBe('open'); expect(unknownBasis.inventoryNotice).toBe(inventoryUnavailableNotice);
+    activity.inventory!.events.at(-1)!.remainingCostBasisUsd = '0.5';
+    activity.inventory!.coverage.checkedAt = new Date(now - 179_000).toISOString();
+    const retrying = vi.fn().mockResolvedValueOnce(response(activity)).mockResolvedValueOnce(response(deferredChart('queued', 3000))).mockResolvedValue(response(chart()));
+    vi.stubGlobal('fetch', retrying);
+    const pending = replayMarketData(original, new AbortController().signal); await vi.advanceTimersByTimeAsync(3000);
+    const expired = await pending;
+    expect(expired.data.inventory?.coverage.reconciled).toBe(false); expect(expired.data.position.status).toBe('unknown');
+    expect(expired.inventoryNotice).toBe(inventoryUnavailableNotice); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('waits through queued and rate-limited responses before applying genuine history without changing accounting', async () => {
     const original = data();
     const fetcher = vi.fn().mockResolvedValueOnce(response(deferredChart('queued', 3000)))
