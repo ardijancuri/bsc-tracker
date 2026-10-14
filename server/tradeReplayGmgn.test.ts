@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -429,10 +430,19 @@ describe('existing-key GMGN replay provider', () => {
       return { data: { activities: [providerRow(url.searchParams.get('wallet_address')!)], next: null } };
     }, { now: () => clock, budgetMs: 1000 });
     const first = load(activity());
-    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1));
+    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1), { interval: 0 });
     clock += 500; await vi.advanceTimersByTimeAsync(500);
     const joined = load(activity(other));
-    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2));
+    // Dispatching wallet_activity is earlier than saving its history and joining
+    // the shared trader lookup. Wait for both cancellation boundaries (the
+    // outer trader lookup and its coalesced wait) before advancing the owner’s
+    // deadline. interval:0 lets real disk I/O finish without waitFor advancing
+    // fake time on each poll under a busy, parallel test run.
+    await vi.waitFor(() => {
+      const options = request.mock.calls.find(([url]) => url.pathname.endsWith('wallet_activity') && url.searchParams.get('wallet_address') === other)?.[1];
+      expect(options?.signal).toBeDefined();
+      expect(getEventListeners(options!.signal!, 'abort')).toHaveLength(2);
+    }, { interval: 0 });
     clock += 500; await vi.advanceTimersByTimeAsync(500);
     expect((await first).status).toBe('estimated'); expect(await joined).toMatchObject({ status: 'estimated', coverage: { reason: 'aggregate_provider_timeout', exactFinal: false } });
     expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1);

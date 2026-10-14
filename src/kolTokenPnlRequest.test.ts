@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { createKolTokenPnlLoader, displayedTokenPnl, kolTokenPnlKey, tokenPositionPnlDescription, tokenPositionPnlLabel, verifiedTokenPositionPnl, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
+import { createKolTokenPnlLoader, displayedTokenPnl, kolTokenPnlKey, terminalTokenInventoryFailure, tokenPnlMovementsMatch, tokenPositionPnlDescription, tokenPositionPnlLabel, verifiedTokenPositionPnl, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
 
 const wallet = '0x' + '1'.repeat(40), date = '2026-10-14T12:00:00Z';
 const selection = (index = 2): KolTokenPnlSelection => ({ walletAddress: wallet, tokenAddress: '0x' + index.toString(16).padStart(40, '0'), lastTradeAt: date });
@@ -34,8 +34,159 @@ function openPosition() {
     priceUsd: '5', pricedAt: date, valuationSource: 'market', remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20' };
   return body;
 }
+function gmgnHistory(body = activity()) {
+  const balance = body.inventory!.coverage.balance!;
+  body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable',
+    reason: 'inventory_history_unavailable', balance: null, checkedAt: null };
+  body.realizedAccounting!.coverage = { transactionsComplete: true, balanceMatched: true, verification: 'gmgn_history',
+    historyFingerprint: 'b'.repeat(64), historyCheckedAt: date, lastMovementAt: date,
+    balanceProof: { walletAddress: body.kol.address, tokenAddress: body.token.address, chain: 'bsc', blockNumber: '1000',
+      blockHash: '0x' + 'c'.repeat(64), blockTimestamp: date, balance, checkedAt: date } };
+  return body;
+}
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
+
+describe('explicit GMGN history fallback for pruned node history', () => {
+  it('shows current open profit and closed realized estimates using current balance proof without promoting canonical coverage', () => {
+    const open = gmgnHistory(openPosition()), closed = gmgnHistory();
+    expect(verifiedTokenPositionPnl(open)).toBe(70); expect(verifiedTokenRealizedPnl(open)).toBe(30);
+    expect(verifiedTokenPositionPnl(closed)).toBe(30); expect(terminalTokenInventoryFailure(open)).toBe(false);
+    expect(open.inventory!.coverage.complete).toBe(false); expect(open.inventory!.coverage.reconciled).toBe(false);
+    expect(tokenPositionPnlLabel(open)).toBe('Est. profit'); expect(tokenPositionPnlLabel(closed)).toBe('Est. realized P&L');
+    expect(tokenPositionPnlDescription(open)).toContain('current wallet balance checked');
+    expect(tokenPositionPnlDescription(closed)).toContain('Historical movements are not chain-verified');
+    open.realizedAccounting!.position!.estimatedProfitUsd = null;
+    expect(displayedTokenPnl(open)).toBe(30); expect(tokenPositionPnlLabel(open)).toBe('Est. realized P&L');
+  });
+
+  it.each(['historyStale', 'historyFuture', 'historyMissing', 'balanceStale', 'balanceFuture', 'blockStale', 'blockFuture',
+    'blockAfterCheck', 'accountingStale', 'invalidBalance', 'negativeBalance', 'infiniteBalance', 'wrongWallet', 'wrongToken',
+    'wrongAccountingPair', 'wrongChain', 'invalidBlock', 'invalidHash', 'invalidFingerprint', 'missingProof',
+    'incompleteHistory', 'unmatchedBalance', 'incompleteIndex', 'canonicalMismatch', 'canonicalPending', 'canonicalPromoted',
+    'unmarkedHistory', 'unknownVerification', 'missingMovementTime', 'invalidMovementTime', 'movementAfterBlock'] as const)('rejects invalid fallback evidence: %s', variant => {
+      const body = gmgnHistory(openPosition()), accounting = body.realizedAccounting!, coverage = accounting.coverage, proof = coverage.balanceProof!;
+      const stale = new Date(Date.now() - 180_001).toISOString(), future = new Date(Date.now() + 1001).toISOString();
+      if (variant === 'historyStale') coverage.historyCheckedAt = stale;
+      if (variant === 'historyFuture') coverage.historyCheckedAt = future;
+      if (variant === 'historyMissing') delete coverage.historyCheckedAt;
+      if (variant === 'balanceStale') proof.checkedAt = stale;
+      if (variant === 'balanceFuture') proof.checkedAt = future;
+      if (variant === 'blockStale') proof.blockTimestamp = stale;
+      if (variant === 'blockFuture') proof.blockTimestamp = future;
+      if (variant === 'blockAfterCheck') proof.blockTimestamp = new Date(Date.now() + 1).toISOString();
+      if (variant === 'accountingStale') accounting.checkedAt = stale;
+      if (variant === 'invalidBalance') proof.balance = '0xa';
+      if (variant === 'negativeBalance') proof.balance = '-1';
+      if (variant === 'infiniteBalance') proof.balance = '1e999';
+      if (variant === 'wrongWallet') proof.walletAddress = selection(3).tokenAddress;
+      if (variant === 'wrongToken') proof.tokenAddress = selection(3).tokenAddress;
+      if (variant === 'wrongAccountingPair') accounting.tokenAddress = selection(3).tokenAddress;
+      if (variant === 'wrongChain') Object.assign(proof, { chain: 'eth' });
+      if (variant === 'invalidBlock') proof.blockNumber = '1.5';
+      if (variant === 'invalidHash') proof.blockHash = '0x1234';
+      if (variant === 'invalidFingerprint') coverage.historyFingerprint = 'not-a-digest';
+      if (variant === 'missingProof') delete coverage.balanceProof;
+      if (variant === 'incompleteHistory') coverage.transactionsComplete = false;
+      if (variant === 'unmatchedBalance') coverage.balanceMatched = false;
+      if (variant === 'incompleteIndex') body.coverage.complete = false;
+      if (variant === 'canonicalMismatch') body.inventory!.coverage.reason = 'inventory_balance_mismatch';
+      if (variant === 'canonicalPending') body.inventory!.coverage.status = 'pending';
+      if (variant === 'canonicalPromoted') Object.assign(body.inventory!.coverage, { complete: true, reconciled: true, checkedAt: date, balance: '10' });
+      if (variant === 'unmarkedHistory') delete coverage.verification;
+      if (variant === 'unknownVerification') Object.assign(coverage, { verification: 'other_provider' });
+      if (variant === 'missingMovementTime') delete coverage.lastMovementAt;
+      if (variant === 'invalidMovementTime') coverage.lastMovementAt = 'invalid';
+      if (variant === 'movementAfterBlock') coverage.lastMovementAt = new Date(Date.parse(proof.blockTimestamp) + 1).toISOString();
+      expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBeNull();
+    });
+
+  it('does not let proof-source fields pass through the canonical branch when the fallback marker is missing', () => {
+    const body = gmgnHistory();
+    Object.assign(body.inventory!.coverage, { complete: true, reconciled: true, status: 'verified', checkedAt: date, balance: '0' });
+    delete body.realizedAccounting!.coverage.verification;
+    expect(verifiedTokenRealizedPnl(body)).toBeNull();
+  });
+
+  it('uses fallback balance for remaining-position checks and rejects mismatched open and closed balances', () => {
+    const open = gmgnHistory(openPosition()); open.realizedAccounting!.position!.remainingTokenAmount = '11';
+    expect(verifiedTokenPositionPnl(open)).toBeNull();
+    const closed = gmgnHistory(); closed.realizedAccounting!.position = { ...openPosition().realizedAccounting!.position!, status: 'closed', remainingTokenAmount: '0' };
+    closed.realizedAccounting!.coverage.balanceProof!.balance = '1';
+    expect(verifiedTokenPositionPnl(closed)).toBeNull();
+  });
+
+  it('continues an explicitly marked pending GMGN fallback until ready despite the missing archive history', async () => {
+    const waiting = gmgnHistory(), ready = gmgnHistory();
+    waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
+    waiting.realizedAccounting!.coverage.transactionsComplete = false;
+    delete waiting.realizedAccounting!.coverage.balanceProof; delete waiting.realizedAccounting!.coverage.historyFingerprint;
+    expect(terminalTokenInventoryFailure(waiting)).toBe(false);
+    const fetcher = vi.fn().mockResolvedValueOnce(response(waiting)).mockResolvedValue(response(ready));
+    const result = createKolTokenPnlLoader({ fetcher })(selection(), signal());
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await result).toEqual({ activity: ready, status: 'ready' }); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['unmarked', 'mismatch', 'incompleteIndex', 'wrongPair'] as const)('does not retry an ineligible pending fallback: %s', async variant => {
+    const body = gmgnHistory(); body.realizedAccounting!.status = 'pending';
+    if (variant === 'unmarked') delete body.realizedAccounting!.coverage.verification;
+    if (variant === 'mismatch') body.inventory!.coverage.reason = 'inventory_balance_mismatch';
+    if (variant === 'incompleteIndex') body.coverage.complete = false;
+    if (variant === 'wrongPair') body.realizedAccounting!.tokenAddress = selection(3).tokenAddress;
+    expect(terminalTokenInventoryFailure(body)).toBe(true);
+    const fetcher = vi.fn().mockResolvedValue(response(body));
+    expect((await createKolTokenPnlLoader({ fetcher })(selection(), signal())).status).toBe('unavailable');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each(['fingerprint', 'balance', 'verification', 'proofPair', 'blockHash', 'invalidBlockHash', 'movementTime'] as const)('invalidates retained accounting when fallback %s changes', variant => {
+    const before = gmgnHistory(), after = gmgnHistory();
+    after.realizedAccounting!.status = 'pending'; after.realizedAccounting!.realizedProfitUsd = null;
+    expect(tokenPnlMovementsMatch(before, after)).toBe(true);
+    if (variant === 'fingerprint') after.realizedAccounting!.coverage.historyFingerprint = 'f'.repeat(64);
+    if (variant === 'balance') after.realizedAccounting!.coverage.balanceProof!.balance = '1';
+    if (variant === 'verification') delete after.realizedAccounting!.coverage.verification;
+    if (variant === 'proofPair') after.realizedAccounting!.coverage.balanceProof!.walletAddress = selection(3).tokenAddress;
+    if (variant === 'blockHash') after.realizedAccounting!.coverage.balanceProof!.blockHash = '0x' + 'd'.repeat(64);
+    if (variant === 'invalidBlockHash') after.realizedAccounting!.coverage.balanceProof!.blockHash = 'invalid';
+    if (variant === 'movementTime') after.realizedAccounting!.coverage.lastMovementAt = new Date(Date.now() - 1000).toISOString();
+    expect(tokenPnlMovementsMatch(before, after)).toBe(false);
+  });
+
+  it('expires recent-result cache when fallback history or current balance proof becomes stale', async () => {
+    const old = gmgnHistory(), fresh = gmgnHistory();
+    old.realizedAccounting!.coverage.historyCheckedAt = new Date(Date.now() - 179_000).toISOString();
+    const fetcher = vi.fn().mockResolvedValueOnce(response(old)).mockResolvedValue(response(fresh));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(1001);
+    expect((await loader(selection(), signal())).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires the current mark to follow the latest provider movement while accepting old historical movement dates', () => {
+    const body = gmgnHistory(openPosition());
+    body.realizedAccounting!.position!.pricedAt = new Date(Date.now() - 1000).toISOString();
+    expect(verifiedTokenPositionPnl(body)).toBeNull();
+    expect(verifiedTokenRealizedPnl(body)).toBe(30);
+    body.realizedAccounting!.coverage.lastMovementAt = '2026-09-28T12:00:00Z';
+    expect(verifiedTokenPositionPnl(body)).toBe(70);
+    body.realizedAccounting!.coverage.lastMovementAt = body.realizedAccounting!.position!.pricedAt!;
+    expect(verifiedTokenPositionPnl(body)).toBe(70);
+  });
+
+  it('shows a provider-history cash-flow total with unknown realized split, only after the latest movement', async () => {
+    const body = gmgnHistory(openPosition()), accounting = body.realizedAccounting!, position = accounting.position!;
+    accounting.realizedProfitUsd = null; position.remainingCostBasisUsd = null; position.unrealizedProfitUsd = null;
+    position.cashFlow = { investedUsd: '18', soldUsd: '30', transferOutIncomeUsd: '10', feesUsd: '2' };
+    expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBe(70);
+    expect(tokenPositionPnlLabel(body)).toBe('Est. profit');
+    const loader = createKolTokenPnlLoader({ fetcher: vi.fn().mockResolvedValue(response(body)) });
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    position.pricedAt = new Date(Date.now() - 1000).toISOString();
+    expect(displayedTokenPnl(body)).toBeNull();
+  });
+});
 
 describe('fair token-card realized profit loading', () => {
   it('lets the other five initial cards load while accepted profile work is still running and honors its retry time', async () => {

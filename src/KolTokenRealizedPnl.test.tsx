@@ -19,6 +19,48 @@ const activity = (value: string | null, lastTradeAt = date): KolTokenActivity =>
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 describe('KOL token realized profit display', () => {
+  function historyFallback(value = '30') {
+    const body = activity(value);
+    body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason: 'inventory_history_unavailable' };
+    body.realizedAccounting!.coverage = { transactionsComplete: true, balanceMatched: true, verification: 'gmgn_history',
+      historyFingerprint: 'b'.repeat(64), historyCheckedAt: date, lastMovementAt: date,
+      balanceProof: { walletAddress: wallet, tokenAddress: token, chain: 'bsc', blockNumber: '1000', blockTimestamp: date,
+        blockHash: '0x' + 'c'.repeat(64), checkedAt: date, balance: '0' } };
+    return body;
+  }
+
+  it('labels provider-history closed profit as an estimate and describes current balance verification honestly', () => {
+    const body = historyFallback(), state = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'ready' });
+    expect(state.busy).toBe(false); expect(state.activity).toBe(body);
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={state.activity} busy={state.busy} />);
+    expect(html).toContain('Est. realized P&amp;L'); expect(html).toContain('+$30');
+    expect(html).toContain('Estimated from GMGN history; current wallet balance checked. Historical movements are not chain-verified.');
+  });
+
+  it('shows provider-history open total as estimated profit without changing missing canonical coverage', () => {
+    const body = historyFallback(); body.realizedAccounting!.coverage.balanceProof!.balance = '10';
+    body.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: '70', estimatedRoi: '3.5', unrealizedProfitUsd: '40',
+      priceUsd: '5', pricedAt: date, valuationSource: 'market', remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20' };
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy={false} />);
+    expect(html).toContain('Est. profit'); expect(html).toContain('+$70'); expect(html).not.toContain('+$30');
+    expect(html).toContain('Historical movements are not chain-verified'); expect(body.inventory!.coverage.complete).toBe(false);
+  });
+
+  it('keeps eligible fallback loading, but never retains a value when the history digest or current balance changes', () => {
+    const previous = { pair: 'pair', activity: historyFallback(), busy: false };
+    const waiting = historyFallback(); waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
+    const retained = tokenPnlStateAfterLoad(previous, 'pair', { activity: waiting, status: 'pending' });
+    expect(retained.activity).toBe(previous.activity); expect(retained.busy).toBe(true);
+    waiting.realizedAccounting!.coverage.historyFingerprint = 'd'.repeat(64);
+    const changed = tokenPnlStateAfterLoad(previous, 'pair', { activity: waiting, status: 'pending' });
+    expect(changed.activity).toBe(waiting); expect(changed.busy).toBe(true);
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={changed.activity} busy={changed.busy} />);
+    expect(html).toContain('…'); expect(html).not.toContain('+$30');
+    waiting.realizedAccounting!.coverage.historyFingerprint = previous.activity.realizedAccounting!.coverage.historyFingerprint;
+    waiting.realizedAccounting!.coverage.balanceProof!.balance = '1';
+    expect(tokenPnlStateAfterLoad(previous, 'pair', { activity: waiting, status: 'pending' }).activity).toBe(waiting);
+  });
+
   it('shows estimated total profit for an open position and realized profit after it closes', () => {
     const body = activity('30');
     body.inventory!.coverage.balance = body.summary.remainingTokenAmount = '10'; body.summary.status = 'open';

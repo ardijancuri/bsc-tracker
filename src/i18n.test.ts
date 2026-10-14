@@ -25,6 +25,8 @@ describe('Chinese app language', () => {
   it('translates GMGN realized profit policy and provider coverage notices', () => {
     for (const label of [
       'GMGN realized P&L includes marked transfer-out gains and fees.',
+      'Est. realized P&L',
+      'Estimated from GMGN history; current wallet balance checked. Historical movements are not chain-verified.',
       'GMGN realized P&L includes marked transfer-out gains and fees. Estimated from matched GMGN activity; a reported position total is unavailable.',
       'Loading GMGN realized P&L…',
       'Est. profit',

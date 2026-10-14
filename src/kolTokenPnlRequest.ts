@@ -7,7 +7,9 @@ const requestBudgetMs = 20_000;
 const recentResultMs = 5000;
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const gmgnRealizedPnlNote = 'GMGN realized P&L includes marked transfer-out gains and fees.';
+export const gmgnHistoryPnlNote = 'Estimated from GMGN history; current wallet balance checked. Historical movements are not chain-verified.';
 export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
+  if (isGmgnHistoryFallback(activity)) return gmgnHistoryPnlNote;
   return gmgnRealizedPnlNote + (activity?.realizedAccounting?.status === 'ready'
     && activity.realizedAccounting.coverage?.reason === 'gmgn_activity_estimate'
     ? ' Estimated from matched GMGN activity; a reported position total is unavailable.' : '');
@@ -15,9 +17,11 @@ export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
 
 export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
   return activity?.realizedAccounting?.position?.status === 'open'
-    && (verifiedTokenPositionPnl(activity) !== null || verifiedTokenRealizedPnl(activity) === null) ? 'Est. profit' : 'Realized P&L';
+    && (verifiedTokenPositionPnl(activity) !== null || verifiedTokenRealizedPnl(activity) === null) ? 'Est. profit'
+    : isGmgnHistoryFallback(activity) ? 'Est. realized P&L' : 'Realized P&L';
 }
 export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
+  if (isGmgnHistoryFallback(activity)) return gmgnHistoryPnlNote;
   return tokenPositionPnlLabel(activity) === 'Est. profit'
     ? 'Estimated total profit includes realized gains, the current value of remaining tokens, marked transfer-out gains and fees.'
     : gmgnRealizedPnlDescription(activity);
@@ -38,7 +42,8 @@ export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now 
   if (!accounting) return null;
   const realized = verifiedTokenRealizedPnl(activity, now), position = accounting.position;
   if (!position) return realized;
-  const proofBalance = Number(activity!.inventory!.coverage.balance);
+  const proofBalance = Number(accounting.coverage.verification === 'gmgn_history'
+    ? accounting.coverage.balanceProof!.balance : activity!.inventory!.coverage.balance);
   const remaining = typeof position.remainingTokenAmount === 'string' && decimal.test(position.remainingTokenAmount.trim())
     ? Number(position.remainingTokenAmount) : NaN;
   if (position.status === 'closed') return remaining === 0 && proofBalance === 0 ? realized : null;
@@ -50,6 +55,8 @@ export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now 
     || !Number.isFinite(remaining) || remaining <= 0 || proofBalance <= 0 || Math.abs(remaining - proofBalance) > proofBalance * 1e-10
     || !Number.isFinite(price) || price <= 0 || !Number.isFinite(pricedAt) || pricedAt > now + 1000
     || now - pricedAt > kolTokenPositionQuoteMaxAgeMs || !Number.isFinite(value)) return null;
+  if (accounting.coverage.verification === 'gmgn_history'
+    && pricedAt < Date.parse(accounting.coverage.lastMovementAt!)) return null;
   const positiveNumber = (raw: unknown) => typeof raw === 'string' && decimal.test(raw.trim()) && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : null;
   const basis = positiveNumber(position.remainingCostBasisUsd), cost = positiveNumber(position.feeInclusiveCostUsd), flow = position.cashFlow;
   const invested = positiveNumber(flow?.investedUsd), sold = positiveNumber(flow?.soldUsd), outgoing = positiveNumber(flow?.transferOutIncomeUsd), fees = positiveNumber(flow?.feesUsd);
@@ -72,6 +79,8 @@ const retryableInventoryReasons = new Set(['inventory_rpc_unavailable', 'canonic
   'canonical_receipt_unavailable', 'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale']);
 export function terminalTokenInventoryFailure(activity: KolTokenActivity | null) {
   const proof = activity?.inventory?.coverage;
+  if (isGmgnHistoryFallback(activity)
+    && (activity!.realizedAccounting!.status === 'pending' || verifiedTokenAccounting(activity) !== null)) return false;
   return proof?.status === 'unavailable' && !retryableInventoryReasons.has(proof.reason ?? '');
 }
 
@@ -91,18 +100,62 @@ function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.n
   if (!activity || typeof activity.kol?.address !== 'string' || typeof activity.token?.address !== 'string'
     || !address.test(activity.kol.address) || !address.test(activity.token.address)
     || activity.coverage?.complete !== true || activity.inventory?.version !== 1 || !proof
-    || proof.complete !== true || proof.reconciled !== true || !accounting || accounting.version !== 1
+    || !accounting || accounting.version !== 1
     || accounting.source !== 'gmgn' || accounting.policy !== 'gmgn_realized_profit_v1' || accounting.status !== 'ready'
     || accounting.coverage?.transactionsComplete !== true || accounting.coverage.balanceMatched !== true
     || typeof accounting.walletAddress !== 'string' || typeof accounting.tokenAddress !== 'string'
     || accounting.walletAddress.toLowerCase() !== activity.kol.address.toLowerCase()
     || accounting.tokenAddress.toLowerCase() !== activity.token.address.toLowerCase()) return null;
+  if (accounting.coverage.verification === 'gmgn_history') {
+    const balanceProof = accounting.coverage.balanceProof;
+    const balance = typeof balanceProof?.balance === 'string' && decimal.test(balanceProof.balance.trim()) ? Number(balanceProof.balance) : NaN;
+    const lastMovementAt = typeof accounting.coverage.lastMovementAt === 'string' ? Date.parse(accounting.coverage.lastMovementAt) : NaN;
+    if (!isGmgnHistoryFallback(activity) || !balanceProof || balanceProof.chain !== 'bsc'
+      || typeof balanceProof.walletAddress !== 'string' || typeof balanceProof.tokenAddress !== 'string'
+      || balanceProof.walletAddress.toLowerCase() !== activity.kol.address.toLowerCase()
+      || balanceProof.tokenAddress.toLowerCase() !== activity.token.address.toLowerCase()
+      || typeof balanceProof.blockNumber !== 'string' || !/^[1-9]\d*$/.test(balanceProof.blockNumber)
+      || typeof balanceProof.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(balanceProof.blockHash)
+      || typeof accounting.coverage.historyFingerprint !== 'string' || !/^[0-9a-f]{64}$/i.test(accounting.coverage.historyFingerprint)
+      || !freshProofTime(accounting.coverage.historyCheckedAt, now) || !freshProofTime(balanceProof.checkedAt, now)
+      || !freshProofTime(balanceProof.blockTimestamp, now) || Date.parse(balanceProof.blockTimestamp) > now
+      || Date.parse(balanceProof.blockTimestamp) > Date.parse(balanceProof.checkedAt)
+      || !Number.isFinite(lastMovementAt) || lastMovementAt > Date.parse(balanceProof.blockTimestamp)
+      || !freshProofTime(accounting.checkedAt, now) || !Number.isFinite(balance) || balance < 0) return null;
+    return accounting;
+  }
+  // Provider-history evidence must never silently pass as canonical history.
+  if (accounting.coverage.verification !== undefined || accounting.coverage.historyFingerprint !== undefined
+    || accounting.coverage.historyCheckedAt !== undefined || accounting.coverage.balanceProof !== undefined
+    || accounting.coverage.lastMovementAt !== undefined
+    || proof.complete !== true || proof.reconciled !== true) return null;
   const checkedAt = typeof proof.checkedAt === 'string' ? Date.parse(proof.checkedAt) : NaN;
   const providerCheckedAt = typeof accounting.checkedAt === 'string' ? Date.parse(accounting.checkedAt) : NaN;
   const balance = typeof proof.balance === 'string' && decimal.test(proof.balance.trim()) ? Number(proof.balance) : NaN;
   if (!Number.isFinite(checkedAt) || checkedAt > now + 1000 || now - checkedAt > 180_000
     || !Number.isFinite(providerCheckedAt) || providerCheckedAt > now + 1000 || !Number.isFinite(balance) || balance < 0) return null;
   return accounting;
+}
+
+function freshProofTime(raw: unknown, now: number) {
+  const time = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(time) && time <= now + 1000 && now - time <= 180_000;
+}
+
+/** This marker allows a separate provider-history path only when the node has
+ * pruned the old history. It cannot override a canonical mismatch or failure. */
+function isGmgnHistoryFallback(activity: KolTokenActivity | null) {
+  const proof = activity?.inventory?.coverage, accounting = activity?.realizedAccounting;
+  return !!activity && activity.coverage?.complete === true && activity.inventory?.version === 1
+    && proof?.complete === false && proof.reconciled === false && proof.status === 'unavailable'
+    && proof.reason === 'inventory_history_unavailable' && accounting?.version === 1
+    && accounting.source === 'gmgn' && accounting.policy === 'gmgn_realized_profit_v1'
+    && accounting.coverage?.verification === 'gmgn_history'
+    && typeof activity.kol?.address === 'string' && address.test(activity.kol.address)
+    && typeof activity.token?.address === 'string' && address.test(activity.token.address)
+    && typeof accounting.walletAddress === 'string' && typeof accounting.tokenAddress === 'string'
+    && accounting.walletAddress.toLowerCase() === activity.kol.address.toLowerCase()
+    && accounting.tokenAddress.toLowerCase() === activity.token.address.toLowerCase();
 }
 
 export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now = Date.now()) {
@@ -138,6 +191,21 @@ export function tokenPnlMovementsMatch(left: KolTokenActivity, right: KolTokenAc
     || incoming.walletAddress.toLowerCase() !== oldAccounting.walletAddress.toLowerCase()
     || incoming.tokenAddress.toLowerCase() !== oldAccounting.tokenAddress.toLowerCase()
     || incoming.realizedProfitUsd !== null && incoming.realizedProfitUsd !== oldAccounting.realizedProfitUsd) return false;
+  if (oldAccounting.coverage.verification !== incoming.coverage.verification
+    || oldAccounting.coverage.historyFingerprint !== incoming.coverage.historyFingerprint
+    || oldAccounting.coverage.lastMovementAt !== incoming.coverage.lastMovementAt
+    || oldAccounting.coverage.balanceProof?.balance !== incoming.coverage.balanceProof?.balance) return false;
+  if (incoming.coverage.verification === 'gmgn_history') {
+    const oldProof = oldAccounting.coverage.balanceProof, nextProof = incoming.coverage.balanceProof;
+    if (!isGmgnHistoryFallback(left) || !isGmgnHistoryFallback(right) || !oldProof || !nextProof
+      || oldProof.chain !== nextProof.chain || typeof oldProof.walletAddress !== 'string' || typeof nextProof.walletAddress !== 'string'
+      || typeof oldProof.tokenAddress !== 'string' || typeof nextProof.tokenAddress !== 'string'
+      || oldProof.walletAddress.toLowerCase() !== nextProof.walletAddress.toLowerCase()
+      || oldProof.tokenAddress.toLowerCase() !== nextProof.tokenAddress.toLowerCase()
+      || typeof nextProof.blockNumber !== 'string' || !/^[1-9]\d*$/.test(nextProof.blockNumber)
+      || typeof nextProof.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(nextProof.blockHash)
+      || oldProof.blockNumber === nextProof.blockNumber && oldProof.blockHash.toLowerCase() !== nextProof.blockHash.toLowerCase()) return false;
+  }
   const events = (activity: KolTokenActivity) => activity.inventory!.events.map(event => [event.id, event.kind, event.txHash,
     event.timestamp, event.blockNumber, event.transactionIndex, event.logIndex, event.tokenAmount]);
   const trades = (activity: KolTokenActivity) => activity.trades.map(trade => [trade.id, trade.side, trade.tokenAmount,

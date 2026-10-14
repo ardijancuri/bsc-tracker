@@ -34,8 +34,30 @@ export interface KolTokenRealizedAccounting {
   realizedProfitUsd: string | null;
   /** Mark a verified GMGN position independently of its historical realized cache. */
   position?: KolTokenProfitPosition;
-  coverage: { transactionsComplete: boolean; balanceMatched: boolean; reason?: string };
+  coverage: {
+    /** Completeness of the history source identified by verification. */
+    transactionsComplete: boolean; balanceMatched: boolean; reason?: string;
+    /** Omitted for the original canonical receipt-backed accounting. */
+    verification?: 'gmgn_history';
+    historyFingerprint?: string;
+    historyCheckedAt?: string;
+    /** Latest movement in the complete provider history, independent of its read time. */
+    lastMovementAt?: string;
+    balanceProof?: KolTokenBalanceProof;
+  };
   retryAfterMs?: number;
+}
+
+/** Current chain state only; this does not certify historical token movements. */
+export interface KolTokenBalanceProof {
+  walletAddress: string;
+  tokenAddress: string;
+  chain: 'bsc';
+  blockNumber: string;
+  blockHash: string;
+  blockTimestamp: string;
+  balance: string;
+  checkedAt: string;
 }
 
 /** A profile quote may be the boundary of the latest completed one-minute bar. */

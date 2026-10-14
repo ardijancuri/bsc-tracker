@@ -181,6 +181,8 @@ export const chinese: Record<string, string> = {
   'Realized P&L': '已实现盈亏', 'Transaction pagination': '交易分页', 'MCAP': '市值',
   'Realized P&L from indexed trades in this token. Gas fees are excluded.': '基于此代币已记录交易的已实现盈亏，不含Gas费用。',
   'GMGN realized P&L includes marked transfer-out gains and fees.': 'GMGN已实现盈亏包含按转出时估值计算的收益和费用。',
+  'Est. realized P&L': '预计已实现盈亏',
+  'Estimated from GMGN history; current wallet balance checked. Historical movements are not chain-verified.': '根据GMGN历史记录估算，已核对当前钱包余额。历史资金变动未经链上核实。',
   'GMGN realized P&L includes marked transfer-out gains and fees. Estimated from matched GMGN activity; a reported position total is unavailable.': 'GMGN已实现盈亏包含按转出时估值计算的收益和费用。此金额根据已匹配的GMGN交易活动估算；无法获取GMGN报告的仓位总额。',
   'Loading GMGN realized P&L…': '正在加载GMGN已实现盈亏…',
   'Est. profit': '预计收益',

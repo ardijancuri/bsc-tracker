@@ -47,6 +47,75 @@ function accounting(selected = activity(), exact = false): TradeReplayAccounting
     realized_profit: 73.4, unrealized_profit: -2.4 };
   return buildTradeReplayGmgnAccounting(selected, rows, { activitiesComplete: true, aggregateRow: exact ? aggregate : undefined, checkedAt: at, now: time });
 }
+
+describe('GMGN history fallback integration', () => {
+  it.each([false, true])('marks provider history with no canonical events and unknown realized split=%s', async unknownSplit => {
+    const selected = activity();
+    const fallback = realizedAccountingFromReplay(selected, accounting(selected, true), time);
+    Object.assign(fallback.position!, { priceUsd: null, pricedAt: null, valuationSource: null,
+      estimatedProfitUsd: null, estimatedRoi: null, unrealizedProfitUsd: null });
+    fallback.coverage = { transactionsComplete: true, balanceMatched: true, verification: 'gmgn_history',
+      historyFingerprint: 'a'.repeat(64), historyCheckedAt: at, lastMovementAt: selected.inventory!.events.at(-1)!.timestamp,
+      balanceProof: { walletAddress: wallet, tokenAddress: token, chain: 'bsc', blockNumber: '110', blockHash: hash(110),
+        blockTimestamp: at, balance: '4', checkedAt: at } };
+    if (unknownSplit) { fallback.realizedProfitUsd = null; fallback.position!.remainingCostBasisUsd = null; }
+    Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable',
+      reason: 'inventory_history_unavailable', checkedAt: null, balance: null });
+    selected.inventory!.events = [];
+    const original = structuredClone(selected), load = vi.fn(), loadHistoryFallback = vi.fn(async () => fallback);
+    // A legitimate cached quote can predate the current balance block while
+    // still following every movement in the verified provider history.
+    const quoteAt = new Date(time - 45_000).toISOString();
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, load, loadHistoryFallback,
+      loadQuote: async () => ({ quote: { priceUsd: '30', timestamp: quoteAt } }) });
+    const result = await run(selected, undefined, { foreground: true });
+    expect(loadHistoryFallback).toHaveBeenCalledWith(selected, { foreground: true });
+    expect(load).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: unknownSplit ? null : '73.4', coverage: { verification: 'gmgn_history' },
+      position: { status: 'open', estimatedProfitUsd: '151', priceUsd: '30', pricedAt: quoteAt } });
+    if (unknownSplit) expect(result.position!.unrealizedProfitUsd).toBeNull();
+    expect(selected).toEqual(original);
+  });
+
+  it.each(['later-transfer', 'missing-boundary'] as const)('rejects a provider-history mark with %s', async reason => {
+    const selected = activity(), fallback = realizedAccountingFromReplay(selected, accounting(selected, true), time);
+    const quoteAt = new Date(time - 20_000).toISOString();
+    // Check both a retained quote and a freshly loaded quote against the
+    // provider boundary, rather than the last indexed buy/sell or its events.
+    Object.assign(fallback.position!, { priceUsd: '30', pricedAt: quoteAt, valuationSource: 'market',
+      estimatedProfitUsd: '151', estimatedRoi: String(151 / 109), unrealizedProfitUsd: '77.6' });
+    fallback.coverage = { transactionsComplete: true, balanceMatched: true, verification: 'gmgn_history',
+      historyFingerprint: 'a'.repeat(64), historyCheckedAt: at,
+      ...(reason === 'later-transfer' ? { lastMovementAt: new Date(time - 10_000).toISOString() } : {}),
+      balanceProof: { walletAddress: wallet, tokenAddress: token, chain: 'bsc', blockNumber: '110', blockHash: hash(110),
+        blockTimestamp: at, balance: '4', checkedAt: at } };
+    Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable',
+      reason: 'inventory_history_unavailable', checkedAt: null, balance: null });
+    selected.inventory!.events = [];
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, loadHistoryFallback: async () => fallback,
+      loadQuote: async () => ({ quote: { priceUsd: '30', timestamp: quoteAt } }) });
+    expect(await run(selected)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4',
+      position: { estimatedProfitUsd: null, priceUsd: null, pricedAt: null, reason: 'current_quote_unavailable' } });
+  });
+
+  it.each(['inventory_balance_mismatch', 'canonical_receipt_mismatch', 'scan_pending', 'indexed_snapshot_changed'])(
+    'does not bypass %s with provider history', async reason => {
+      const selected = activity(), loadHistoryFallback = vi.fn();
+      Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable', reason });
+      const value = await createKolTokenGmgnPnl({ directory: null, now: () => time, loadHistoryFallback })(selected);
+      expect(value.status).not.toBe('ready'); expect(loadHistoryFallback).not.toHaveBeenCalled();
+    });
+
+  it('keeps the canonical path and rejects truncated indexed history independently', async () => {
+    const selected = activity(), loadHistoryFallback = vi.fn(), load = vi.fn(async () => accounting(selected, true));
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, load, loadHistoryFallback });
+    expect((await run(selected)).status).toBe('ready');
+    selected.coverage.complete = false;
+    Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable', reason: 'inventory_history_unavailable' });
+    expect((await run(selected)).status).toBe('unavailable');
+    expect(loadHistoryFallback).not.toHaveBeenCalled(); expect(load).toHaveBeenCalledOnce();
+  });
+});
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(path.join(os.tmpdir(), 'kol-gmgn-pnl-')); });
 afterEach(async () => {
