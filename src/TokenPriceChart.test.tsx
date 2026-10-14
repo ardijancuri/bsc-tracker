@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { TokenChart } from '../shared/intelligence';
-import { marketHistoryViewport, tradeChartViewport, TokenPriceChart } from './TokenPriceChart';
+import { marketHistoryViewport, tradeChartViewport, tradeChartNeedsRefit, TokenPriceChart } from './TokenPriceChart';
 import { TokenMarketPanel } from './TokenMarketPanel';
 
 const state = vi.hoisted(() => ({ chart: null as TokenChart | null, error: false, retry: vi.fn(), useTokenChart: vi.fn() }));
@@ -99,6 +99,18 @@ describe('initial trade modal viewport', () => {
   });
   it('waits for genuine candles', () => {
     expect(tradeChartViewport([], [], '1m', 620)).toBeNull();
+  });
+  it('recenters cached candles when a fresh window grows or shifts until the user adjusts the view', () => {
+    const cached = history(6), previous = { firstTime: cached[0].time, lastTime: cached.at(-1)!.time, count: cached.length };
+    const fresh = history(18), shifted = fresh.slice(12).map(candle => ({ ...candle, time: candle.time + 60 }));
+    expect(tradeChartNeedsRefit(fresh, previous, false, false)).toBe(true);
+    expect(tradeChartNeedsRefit(shifted, previous, false, false)).toBe(true);
+    expect(tradeChartNeedsRefit(cached.map(candle => ({ ...candle, close: 1.6 })), previous, false, false)).toBe(false);
+    expect(tradeChartNeedsRefit(fresh, previous, false, true)).toBe(false);
+    expect(tradeChartNeedsRefit(fresh, previous, true, true)).toBe(false);
+    expect(tradeChartNeedsRefit([], null, true, false)).toBe(false);
+    const range = tradeChartViewport(fresh, [], '1m', 620)!;
+    expect((range.from + range.to) / 2).toBe(8.5);
   });
 });
 

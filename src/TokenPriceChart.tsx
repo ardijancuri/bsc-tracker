@@ -33,6 +33,11 @@ export function tradeChartViewport(candles: MarketCandle[], trades: ChartTrade[]
   return recent ? { from: recent.from + offset, to: recent.to + offset } : null;
 }
 
+export function tradeChartNeedsRefit(candles: MarketCandle[], previous: MarketHistoryBounds | null, selectionChanged: boolean, userAdjusted: boolean) {
+  return !userAdjusted && candles.length > 0 && (!previous || selectionChanged ||
+    candles.length !== previous.count || candles[0].time !== previous.firstTime || candles.at(-1)!.time !== previous.lastTime);
+}
+
 export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean }) {
   const { chart: data, error, retry } = useTokenChart(address, interval, true, 'chart', fullHistory);
   const container = useRef<HTMLDivElement>(null);
@@ -46,6 +51,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
   const tradeRange = useRef<{ from: number; to: number } | null>(null);
   const tradeSelection = useRef<ChartTrade[]>([]);
   const fittingFrame = useRef(0);
+  const userAdjustedViewport = useRef(false);
   const [hover, setHover] = useState<MarketCandle | null>(null);
   const showVolume = data?.volumeCurrency !== 'unknown';
   const marketCandles = useMemo(() => marketCapCandles(data?.candles ?? [], data?.marketCapSupply), [data]);
@@ -75,6 +81,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     fitted.current = null;
     previousHistory.current = null;
     tradeRange.current = null;
+    userAdjustedViewport.current = false;
     candleLookup.current.clear();
     const instance = createChart(container.current, {
       autoSize: true,
@@ -105,9 +112,10 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       // The trade modal keeps its chart mounted while the sharing view is open.
       // Retain the last visible width so hiding/restoring it does not refit a pan.
       if (nextWidth <= 0) return;
-      if (Math.abs(nextWidth - width) > 1 && focusTrades && tradeRange.current) {
+      if (Math.abs(nextWidth - width) > 1 && focusTrades && tradeRange.current && !userAdjustedViewport.current) {
         cancelAnimationFrame(resizeFrame);
         resizeFrame = requestAnimationFrame(() => {
+          if (userAdjustedViewport.current) return;
           const range = tradeChartViewport([...candleLookup.current.values()], tradeSelection.current, interval, instance.timeScale().width() || nextWidth);
           if (range) { tradeRange.current = range; instance.timeScale().setVisibleLogicalRange(range); }
         });
@@ -138,9 +146,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     }
     const history = `${data?.partialHistory ? 'partial' : 'full'}:${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}`;
     const previous = previousHistory.current;
-    const insertedHistory = previous && marketCandles.length && (marketCandles[0].time < previous.firstTime ||
-      marketCandles.length > previous.count && marketCandles.at(-1)!.time <= previous.lastTime);
-    if ((fitted.current !== history || insertedHistory) && marketCandles.length) {
+    if (tradeChartNeedsRefit(marketCandles, previous, fitted.current !== history, userAdjustedViewport.current)) {
       tradeRange.current = tradeChartViewport(marketCandles, trades ?? [], interval, chart.current.timeScale().width() || container.current?.clientWidth || 480);
       if (tradeRange.current) chart.current.timeScale().setVisibleLogicalRange(tradeRange.current);
       // The first price labels can change the plot width after setData. Refit
@@ -148,7 +154,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       cancelAnimationFrame(fittingFrame.current);
       fittingFrame.current = requestAnimationFrame(() => {
         const instance = chart.current;
-        if (!instance || !tradeRange.current) return;
+        if (!instance || !tradeRange.current || userAdjustedViewport.current) return;
         const range = tradeChartViewport([...candleLookup.current.values()], tradeSelection.current, interval, instance.timeScale().width() || container.current?.clientWidth || 480);
         if (range) { tradeRange.current = range; instance.timeScale().setVisibleLogicalRange(range); }
       });
@@ -165,7 +171,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       {data?.stale && <span>{t('Cached')}</span>}
       {hover && <span>{new Date(hover.time * 1000).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</span>}
     </div>
-    <div className="price-chart-canvas" ref={container} role="img" aria-busy={!marketCandles.length && !refreshFailed && data?.pending !== false} aria-label={`${t('Token market cap chart')}: ${marketCandles.length} ${t('candles')}`} />
+    <div className="price-chart-canvas" ref={container} onPointerDownCapture={() => { userAdjustedViewport.current = true; }} onWheelCapture={() => { userAdjustedViewport.current = true; }} role="img" aria-busy={!marketCandles.length && !refreshFailed && data?.pending !== false} aria-label={`${t('Token market cap chart')}: ${marketCandles.length} ${t('candles')}`} />
     {!marketCandles.length && <div className="price-chart-status" role="status"><span>{t(status)}</span><div className="price-chart-recovery"><button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button><a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a></div></div>}
     <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(status)}{limitedHistory && marketCandles.length > 0 && ` · ${t('Limited history')}`}{historyStatus && marketCandles.length > 0 && <span role="status"> · {t(historyStatus)}</span>}{refreshFailed && marketCandles.length > 0 && <span role="status"> · {t(status)}</span>}{(refreshFailed || historyFailed) && marketCandles.length > 0 && <button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button>}</span><span>{data?.source === 'geckoterminal' && data.poolAddress && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}{data?.source === 'gmgn' && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">GMGN</a>}{data?.source === 'coinmarketcap' && <span>CoinMarketCap</span>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
   </div>;
