@@ -81,6 +81,26 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('bounded replay historical-market preparation', () => {
+  it('allows an independently verified final aggregate when historical quote currencies cannot prove prefix fees', async () => {
+    const activity = gmgnActivity();
+    activity.summary.realizedProfitUsd = null;
+    activity.replayAccounting!.coverage.reason = 'quote_or_fee_unavailable';
+    for (const event of activity.replayAccounting!.events) {
+      event.remainingCostBasisUsd = null;
+      event.cumulativeRealizedProfitUsd = null;
+      event.feesUsd = null;
+      event.feeInclusiveCostUsd = null;
+    }
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(response(
+      url.endsWith('/activity?replay=true') ? activity : chart()))));
+    const result = await replayMarketData(data(), new AbortController().signal);
+    expect(result.preparationStatus).toBe('ready');
+    expect(result.accountingNotice).toBe(accountingExactNotice);
+    expect(result.data.replayAccounting?.final).toMatchObject({ reportedProfitUsd: 4.8, reportedRoi: 4, cumulativeRealizedProfitUsd: 1.85 });
+    expect(result.data.replayAccounting?.events.every(event => event.feesUsd === null && event.cumulativeRealizedProfitUsd === null)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('opts an older DTO without inventory into GMGN accounting and freezes the validated final provider quote', async () => {
     const original = data(), activity = gmgnActivity(); activity.inventory!.events.at(-1)!.remainingCostBasisUsd = null;
     const fetcher = vi.fn().mockResolvedValueOnce(response(activity)).mockResolvedValue(response({ ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } }));

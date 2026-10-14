@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import { getLocale, t } from './i18n';
-import { kolTokenPnlKey, requestKolTokenPnl, verifiedTokenRealizedPnl, type KolTokenPnlResult } from './kolTokenPnlRequest';
+import { gmgnRealizedPnlDescription, kolTokenPnlKey, requestKolTokenPnl, tokenPnlMovementsMatch, tokenRealizedPnlUnavailableNotice, verifiedTokenRealizedPnl, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
 export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt }: {
   walletAddress: string; tokenAddress: string; lastTradeAt: string | null;
@@ -49,8 +49,8 @@ export function KolTokenRealizedPnlValue({ activity, busy }: { activity: KolToke
     style: 'currency', currency: 'USD', notation: Math.abs(amount) >= 1000 ? 'compact' : 'standard',
     maximumFractionDigits: 2, signDisplay: 'exceptZero',
   }).format(amount) : busy ? '…' : '—';
-  const title = valid ? t('Realized P&L from indexed trades in this token. Gas fees are excluded.')
-    : busy ? t('Loading trade details…') : t('Profit is unavailable where trade prices or purchase costs are missing.');
+  const title = valid ? t(gmgnRealizedPnlDescription(activity))
+    : busy ? t('Loading GMGN realized P&L…') : t(tokenRealizedPnlUnavailableNotice(activity));
 
   return <span className="token-card-profit" title={title} aria-busy={busy}>
     <span>{t('Realized P&L')}</span><strong className={color}>{formatted}</strong>
@@ -60,6 +60,8 @@ export function KolTokenRealizedPnlValue({ activity, busy }: { activity: KolToke
 export function tokenPnlStateAfterLoad(current: { pair: string; activity: KolTokenActivity | null; busy: boolean } | null,
   pair: string, loaded: KolTokenPnlResult) {
   const changedTrade = loaded.activity && current?.activity && Date.parse(loaded.activity.summary.lastTradeAt ?? '') !== Date.parse(current.activity.summary.lastTradeAt ?? '');
-  const retained = loaded.status === 'pending' && !changedTrade && current?.pair === pair && verifiedTokenRealizedPnl(current.activity) !== null ? current.activity : null;
-  return { pair, activity: loaded.status === 'ready' ? loaded.activity : retained, busy: loaded.status === 'pending' };
+  const unchangedMovements = !loaded.activity || current?.activity && tokenPnlMovementsMatch(current.activity, loaded.activity);
+  const retained = loaded.status === 'pending' && !changedTrade && unchangedMovements && current?.pair === pair
+    && verifiedTokenRealizedPnl(current.activity) !== null ? current.activity : null;
+  return { pair, activity: loaded.status === 'pending' ? retained ?? loaded.activity : loaded.activity, busy: loaded.status === 'pending' };
 }

@@ -77,7 +77,10 @@ export function gmgnRetryMs(headers: Headers, body: any, now = Date.now()) {
   const retryNumber = retry ? Number(retry) : NaN;
   const retryUntil = Number.isFinite(retryNumber) ? now + retryNumber * 1000 : retry ? Date.parse(retry) : NaN;
   const until = Math.max(...[...resetValues, retryUntil].filter(Number.isFinite));
-  return Number.isFinite(until) && until > now ? Math.min(600_000, Math.max(1000, until - now)) : 60_000;
+  // GMGN's client leaves one second after reset. Unix-second rounding and
+  // clock skew must not dispatch an early retry that extends the account ban.
+  return Number.isFinite(until) && until >= now - 1000
+    ? Math.min(600_000, Math.max(1000, until - now + 1000)) : 60_000;
 }
 
 export interface GmgnRequestOptions {

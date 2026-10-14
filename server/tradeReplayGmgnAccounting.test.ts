@@ -108,6 +108,16 @@ describe('GMGN replay fee and marked-transfer accounting', () => {
       expect(result.events).toEqual(build(yukaz(), yukazRows).events);
     });
 
+  it.each(['buy', 'sell'] as const)('does not substitute a matching current-cycle %s quantity for contradictory history', side => {
+    const field = `${side}_amount_cur`;
+    for (const invalid of [0, null, '', 'invalid', Number(yukazAggregate[`current_${side}_amount`]) + 1]) {
+      const result = build(yukaz(), yukazRows, { ...yukazAggregate, [field]: invalid });
+      expect(result.final).toBeNull();
+      expect(result.coverage.exactFinal).toBe(false);
+      expect(result.events).toEqual(build(yukaz(), yukazRows).events);
+    }
+  });
+
   it.each(['incomplete', 'missing', 'duplicate', 'wrong-token', 'wrong-quantity'] as const)('withholds money from %s provider history', variant => {
     const rows = structuredClone(yukazRows);
     if (variant === 'missing') rows.splice(2, 1);
@@ -234,5 +244,65 @@ describe('closed Afeng/Taku official provider snapshot', () => {
     expect(result.status).toBe('ready');
     expect(result.final).toMatchObject({ priceUsd: null, remainingTokenAmount: '0', reportedProfitUsd: '-81.6656792297689', reportedRoi: '-0.142789231750993' });
     expect(result.events.every(event => event.feeInclusiveCostUsd === null)).toBe(true);
+  });
+});
+
+describe('David/元宝 official provider snapshot with a fully exited earlier cycle', () => {
+  it('reconciles all-history quantities and final profit without mixing BABAB quotes with native BNB', () => {
+    const david = '0x7a2363a401b2340c7941dd2eeff0196a5078d2e6', yuanbao = '0xba5dd6b869512f7f3acaf565e5c6dde076727777';
+    const babab = '0x4ef9d3062c7f6eba4aae4990c5036598c6eff4ec';
+    const observations: [InventoryEvent['kind'], string, string, number][] = [
+      ['buy', '32970749.454012856', '465.9176764905549', 1791950621],
+      ['sell', '10550639.825284114', '301.89898164183296', 1791950629],
+      ['buy', '253124.1513768271', '7.22463760686168', 1791950640],
+      ['buy', '336673.626310296', '7.222893486537339', 1791950651],
+      ['sell', '23009907.406415865', '183.3661678411393', 1791950660],
+      ['buy', '26989181.397799186', '375.55795202797793', 1791950678],
+      ['buy', '17159480.330396883', '216.5741554076847', 1791950757],
+      ['transfer_out', '21388689.49452374', '305.3353849791694', 1791950762],
+      ['transfer_in', '1043731.173058266', '31.677217551010806', 1791950856],
+      ['buy', '22506038.943878736', '216.56648424403616', 1791950943],
+      ['buy', '15234789.545340778', '216.7813379836211', 1791951032],
+      ['transfer_out', '29557740.40972603', '388.1406308685412', 1791951091],
+      ['transfer_out', '15396494.677308949', '276.8595545742637', 1791951198],
+      ['buy', '15644682.781038782', '216.41045320683762', 1791951509],
+      ['transfer_out', '15516224.404720709', '314.37423818027065', 1791951550],
+      ['transfer_out', '15873814.756819075', '321.619376661726', 1791951550],
+      ['transfer_in', '9784351.629209666', '188.54237008853914', 1791951560],
+      ['transfer_out', '2872484.655259865', '81.079492980406', 1791951711],
+      ['transfer_in', '3867047.0843171193', '129.18031654320043', 1791951723],
+      ['sell', '3487156.3460043143', '141.67402638939555', 1791951751],
+    ];
+    const rows = observations.map(([kind, quantity, usd, timestamp], index) => provider(index + 1, kind, quantity, usd,
+      { wallet: david, token: { address: yuanbao }, timestamp, quote_address: babab, quote_token: { token_address: babab, symbol: 'BABAB' } }));
+    rows[0].quote_amount = '4.114332738760088'; rows[0].gas_usd = '2.699849969788277'; rows[0].dex_usd = '14.342024573066713';
+    const activity = canonical(rows); activity.kol.address = david; activity.token.address = yuanbao;
+    activity.trades.forEach(trade => { trade.walletAddress = david; trade.tokenAddress = yuanbao; });
+    activity.trades[0].quoteAmount = '0.65';
+    const at = '2026-10-14T04:25:26.347Z'; activity.inventory!.coverage.checkedAt = at;
+    activity.inventory!.events.at(-1)!.remainingTokenAmount = '8136698.140676733293235668';
+    activity.inventory!.coverage.balance = '8136698.140676733293235668';
+    const aggregate: Record<string, unknown> = { address: david, balance: 8136698.140676733, usd_value: 215.36050718450178,
+      cost_cur: 192.6030713168681, history_bought_cost: 1722.2555904541116, history_bought_fee: 63.877191462362156,
+      history_sold_income: 626.9391758723679, history_sold_fee: 22.53938175981237, history_transfer_in_cost: 349.3999041827504,
+      history_transfer_out_income: 1687.4086782443771, history_transfer_out_fee: 0.0784312283388,
+      history_transfer_in_amount: 14695129.886585051, history_transfer_out_amount: 100605448.39835837,
+      current_buy_amount: 97534172.99845436, buy_amount_cur: 131094720.23015435,
+      current_sell_amount: 3487156.3460043143, sell_amount_cur: 37047703.577704296,
+      buy_tx_count_cur: 8, sell_tx_count_cur: 3, transfer_in_count: 3, transfer_out_count: 6,
+      last_block: 119, last_active_timestamp: 1791951751, total_cost: 2158.1504990873755, profit: 371.55786221387143,
+      profit_change: 0.1721649451097101, realized_profit: 348.80042634623777, unrealized_profit: 22.75743586763369 };
+    const options = { activitiesComplete: true, now: Date.parse(at), checkedAt: at };
+    const prefix = buildTradeReplayGmgnAccounting(activity, rows, options);
+    const result = buildTradeReplayGmgnAccounting(activity, rows, { ...options, aggregateRow: aggregate });
+    expect(result.status).toBe('ready');
+    expect(result.coverage).toMatchObject({ transactionsComplete: true, balanceMatched: true, exactFinal: true });
+    expect(result.final).toMatchObject({ reportedProfitUsd: '371.557862213871', reportedRoi: '0.17216494510971',
+      cumulativeRealizedProfitUsd: '348.800426346238', feeInclusiveCostUsd: '2158.15049908738' });
+    expect(result.events).toEqual(prefix.events);
+    expect(result.events.every(event => event.feesUsd === null && event.feeInclusiveCostUsd === null)).toBe(true);
+    expect(prefix.coverage.reason).toBe('quote_or_fee_unavailable');
+    delete aggregate.buy_amount_cur; delete aggregate.sell_amount_cur;
+    expect(buildTradeReplayGmgnAccounting(activity, rows, { ...options, aggregateRow: aggregate }).final).toBeNull();
   });
 });

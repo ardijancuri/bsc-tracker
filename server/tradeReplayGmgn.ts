@@ -20,6 +20,7 @@ interface ProviderData { history: History; aggregate: Record<string, unknown> | 
 const addressRe = /^0x[0-9a-f]{40}$/;
 const hashRe = /^0x[0-9a-f]{64}$/;
 const ttlMs = 15_000;
+const historicalRealizedTtlMs = 180_000;
 const resumeTtlMs = 600_000;
 const maxRows = 10_000;
 const fields = ['token_amount', 'quote_amount', 'cost_usd', 'buy_cost_usd', 'gas_usd', 'dex_usd', 'priority_fee', 'tip_fee', 'price_usd'] as const;
@@ -63,7 +64,8 @@ function traderRows(input: unknown): Record<string, unknown>[] {
   return input.flatMap(row => {
     const address = String(row?.address ?? '').toLowerCase();
     if (!addressRe.test(address)) return [];
-    return [{ address, ...Object.fromEntries(aggregateFields.map(field => [field, numericValue(row[field])])) }];
+    return [{ address, ...Object.fromEntries(aggregateFields.filter(field => !['buy_amount_cur', 'sell_amount_cur'].includes(field)
+      || Object.hasOwn(row, field)).map(field => [field, numericValue(row[field])])) }];
   });
 }
 function fingerprint(activity: KolTokenActivity) {
@@ -82,7 +84,7 @@ function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** Only share/export opts into these calls. All work shares the chart account's
+/** Share/export and profile realized P&L opt into these calls. Work shares the chart account's
  * DB rate budget; public cache payloads contain neither credentials nor errors. */
 export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = buildTradeReplayGmgnAccounting,
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'replay-gmgn'),
@@ -119,12 +121,13 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     }
     return null;
   }
-  async function historyFor(wallet: string, token: string, signature: string) {
+  async function historyFor(wallet: string, token: string, signature: string, historicalRealized: boolean) {
     const key = `${wallet}-${token}`, stored = histories.get(key) ?? await read<History>('activity-' + key);
     const completed = stored?.complete ? stored : completedHistories.get(key) ?? await read<History>('completed-activity-' + key);
     const fallback = completed?.complete ? validHistory(completed, wallet, token, signature, resumeTtlMs) : null;
     if (fallback) remember(completedHistories, key, fallback, 24); else completedHistories.delete(key);
-    const history = validHistory(stored, wallet, token, signature, stored?.complete ? ttlMs : resumeTtlMs) ?? freshHistory(wallet, token, signature);
+    const history = validHistory(stored, wallet, token, signature, stored?.complete ? historicalRealized ? historicalRealizedTtlMs : ttlMs : resumeTtlMs)
+      ?? freshHistory(wallet, token, signature);
     remember(histories, key, history, 24); return { history, fallback };
   }
   async function topTraders(token: string, sort: Sort, key: string, signal: AbortSignal): Promise<Traders> {
@@ -147,12 +150,12 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     traderJobs.set(name, work);
     try { return await work; } finally { if (traderJobs.get(name) === work) traderJobs.delete(name); }
   }
-  async function fetchData(wallet: string, token: string, signature: string, key: string): Promise<ProviderData> {
+  async function fetchData(wallet: string, token: string, signature: string, key: string, historicalRealized: boolean): Promise<ProviderData> {
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(Error('provider_timeout')), Math.max(1, Math.min(8000, budgetMs)));
     const signal = controller.signal; let history = freshHistory(wallet, token, signature), fallbackHistory: History | null = null;
     let aggregate: Record<string, unknown> | null = null, checkedAt = now();
     try {
-      const cached = await bounded(historyFor(wallet, token, signature), signal); history = cached.history; fallbackHistory = cached.fallback;
+      const cached = await bounded(historyFor(wallet, token, signature, historicalRealized), signal); history = cached.history; fallbackHistory = cached.fallback;
       while (!history.complete) {
         signal.throwIfAborted();
         if (history.pages >= 200 || history.rows.length >= maxRows) throw Error('provider_history_limit');
@@ -223,17 +226,18 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     if (data?.failure || reason) { value.status = 'unavailable'; value.final = null; value.coverage.exactFinal = false; value.coverage.reason = data?.failure ?? reason; }
     return value;
   }
-  return async (activity: KolTokenActivity): Promise<TradeReplayAccounting> => {
+  return async (activity: KolTokenActivity, options: { historicalRealized?: boolean } = {}): Promise<TradeReplayAccounting> => {
     const wallet = activity.kol.address.toLowerCase(), token = activity.token.address.toLowerCase(), key = apiKey();
     if (!addressRe.test(wallet) || !addressRe.test(token)) return result(activity, undefined, 'invalid_pair');
     if (!key) return result(activity, undefined, 'provider_key_unavailable');
     if (!activity.coverage.complete || !activity.inventory?.coverage.complete || !activity.inventory.coverage.reconciled) return result(activity);
-    const signature = fingerprint(activity), jobKey = `${wallet}-${token}`;
+    const historicalRealized = options.historicalRealized === true;
+    const signature = fingerprint(activity), jobKey = `${wallet}-${token}:${historicalRealized ? 'realized' : 'replay'}`;
     let job = jobs.get(jobKey);
     if (!job) {
       if (active >= 2) { const value = result(activity); value.status = 'pending'; value.coverage.reason = 'provider_busy'; value.retryAfterMs = 1000; return value; }
       active++;
-      job = fetchData(wallet, token, signature, key); jobs.set(jobKey, job);
+      job = fetchData(wallet, token, signature, key, historicalRealized); jobs.set(jobKey, job);
       void job.finally(() => { active--; if (jobs.get(jobKey) === job) jobs.delete(jobKey); });
     }
     const data = await job;

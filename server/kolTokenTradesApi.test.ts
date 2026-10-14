@@ -2,10 +2,11 @@ import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerKolTokenTradesRoutes, kolTokenHistoryLimit } from './kolTokenTradesApi.js';
 
-const mocks = vi.hoisted(() => ({ query: vi.fn(), inventory: vi.fn(), replay: vi.fn() }));
+const mocks = vi.hoisted(() => ({ query: vi.fn(), inventory: vi.fn(), replay: vi.fn(), pnl: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
 vi.mock('./kolTokenInventory.js', () => ({ currentKolTokenInventory: mocks.inventory }));
 vi.mock('./tradeReplayGmgn.js', () => ({ currentTradeReplayGmgnAccounting: mocks.replay }));
+vi.mock('./kolTokenGmgnPnl.js', () => ({ currentKolTokenGmgnPnl: mocks.pnl }));
 const wallet = '0x664d6645a04be9e27a8b33088f85025f29d45dc1';
 const token = '0xdd806e436dda5588bf54061c11590c77ddc87777';
 const date = '2026-10-08T01:00:00Z';
@@ -41,6 +42,38 @@ describe('KOL token activity API', () => {
       expect(mocks.inventory).toHaveBeenCalledWith({ wallet, token, firstBlock: '100', decimals: 0, trades: history, tradesComplete: true });
       expect(response.json().inventory.coverage).toMatchObject({ complete: true, reconciled: true, balance: '0' });
       expect(mocks.replay).not.toHaveBeenCalled();
+      expect(mocks.pnl).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it.each(['true', 'false', '1'])('requests policy-separated realized accounting only for pnl=%s when explicitly true', async pnl => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
+    mocks.pnl.mockResolvedValue({ version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', walletAddress: wallet, tokenAddress: token,
+      status: 'ready', checkedAt: new Date().toISOString(), realizedProfitUsd: '70', coverage: { transactionsComplete: true, balanceMatched: true } });
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=${pnl}`);
+      expect(response.statusCode).toBe(200); expect(response.json().summary.realizedProfitUsd).toBe('30');
+      if (pnl === 'true') {
+        expect(mocks.pnl).toHaveBeenCalledOnce(); expect(mocks.pnl.mock.calls[0][1]).toBeUndefined();
+        expect(response.json().realizedAccounting).toMatchObject({ policy: 'gmgn_realized_profit_v1', status: 'ready', realizedProfitUsd: '70' });
+      } else { expect(mocks.pnl).not.toHaveBeenCalled(); expect(response.json().realizedAccounting).toBeUndefined(); }
+      expect(mocks.replay).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it('shares one provider accounting call for both policies and reports its retry cooldown', async () => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
+    const replay = { version: 1, source: 'gmgn', status: 'pending', coverage: { exactFinal: false } };
+    mocks.replay.mockResolvedValue(replay);
+    mocks.pnl.mockImplementation(async (_activity, supplied) => {
+      expect(await supplied).toEqual(replay);
+      return { status: 'pending', realizedProfitUsd: null, retryAfterMs: 45_000 };
+    });
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?replay=true&pnl=true`);
+      expect(mocks.replay).toHaveBeenCalledOnce(); expect(mocks.pnl).toHaveBeenCalledOnce();
+      expect(response.headers['retry-after']).toBe('45');
+      expect(response.json()).toMatchObject({ replayAccounting: replay, realizedAccounting: { status: 'pending', realizedProfitUsd: null } });
     } finally { await app.close(); }
   });
   it.each(['true', 'false', '1'])('requests additional GMGN accounting only for replay=%s when explicitly true', async replay => {
@@ -54,6 +87,9 @@ describe('KOL token activity API', () => {
         expect(mocks.replay).toHaveBeenCalledOnce();
         expect(mocks.replay.mock.calls[0][0]).toMatchObject({ kol: { address: wallet }, token: { address: token }, inventory: { coverage: { reconciled: true } } });
         expect(response.json().replayAccounting).toMatchObject({ status: 'pending', retryAfterMs: 1000 });
+        expect(mocks.pnl).toHaveBeenCalledOnce();
+        expect(mocks.pnl.mock.calls[0][1]).toEqual(response.json().replayAccounting);
+        expect(response.json().realizedAccounting).toBeUndefined();
       } else { expect(mocks.replay).not.toHaveBeenCalled(); expect(response.json().replayAccounting).toBeUndefined(); }
     } finally { await app.close(); }
   });

@@ -11,11 +11,16 @@ function activity(selected = selection(), value: string | null = '30'): KolToken
     summary: { investedUsd: '20', soldUsd: '50', realizedProfitUsd: value, avgBoughtPriceUsd: '1', avgSoldPriceUsd: '2.5', avgBoughtMcapUsd: '1000', avgSoldMcapUsd: '2500',
       remainingTokenAmount: '0', remainingCostBasisUsd: '0', buyCount: 1, sellCount: 1, valuedBuyCount: 1, valuedSellCount: value === null ? 0 : 1,
       excludedSellCount: value === null ? 1 : 0, unpricedTradeCount: 0, firstTradeAt: date, lastTradeAt: date, status: 'closed', profitBasis: 'observed_fifo' },
-    inventory: { version: 1, events: [], coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '2', blockHash: '0x' + 'a'.repeat(64), checkedAt: date, balance: '0', status: 'verified' } } };
+    inventory: { version: 1, events: [], coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '2', blockHash: '0x' + 'a'.repeat(64), checkedAt: date, balance: '0', status: 'verified' } },
+    realizedAccounting: { version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', walletAddress: selected.walletAddress,
+      tokenAddress: selected.tokenAddress, status: value === null ? 'unavailable' : 'ready', checkedAt: date, realizedProfitUsd: value,
+      coverage: { transactionsComplete: true, balanceMatched: true, ...(value === null ? { reason: 'gmgn_realized_cost_unavailable' } : {}) } } };
 }
 function pending(selected = selection(), reason = 'scan_pending') {
   const body = activity(selected, null);
   body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'pending', reason };
+  body.realizedAccounting!.status = 'pending';
+  body.realizedAccounting!.coverage.reason = reason;
   return body;
 }
 const response = (body: unknown, status = 200, retryAfter?: string) => ({ ok: status >= 200 && status < 300, status,
@@ -37,6 +42,7 @@ describe('fair token-card realized profit loading', () => {
     });
     const loader = createKolTokenPnlLoader({ fetcher }), results = selections.map(item => loader(item, signal()));
     await vi.advanceTimersByTimeAsync(999);
+    expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/activity?pnl=true'))).toBe(true);
     expect(calls).toEqual(selections.map(item => item.tokenAddress)); expect(peak).toBe(1);
     await vi.advanceTimersByTimeAsync(11);
     expect((await Promise.all(results)).every(result => result.status === 'ready')).toBe(true);
@@ -127,5 +133,59 @@ describe('fair token-card realized profit loading', () => {
     for (const value of [null, '', ' ', 'NaN']) expect(verifiedTokenRealizedPnl(activity(selection(), value))).toBeNull();
     const incomplete = activity(); incomplete.coverage.complete = false; expect(verifiedTokenRealizedPnl(incomplete)).toBeNull();
     expect(kolTokenPnlKey(selection())).not.toBe(kolTokenPnlKey({ ...selection(), lastTradeAt: '2026-10-14T12:01:00Z' }));
+  });
+  it('uses David’s validated GMGN realized value even when indexed FIFO profit is unavailable', async () => {
+    const selected = { walletAddress: '0x7a2363a401b2340c7941dd2eeff0196a5078d2e6', tokenAddress: '0xba5dd6b869512f7f3acaf565e5c6dde076727777', lastTradeAt: date };
+    const body = activity(selected, '348.80'); body.summary.realizedProfitUsd = null;
+    body.inventory!.coverage.balance = '8136698.140676733293235668';
+    expect(verifiedTokenRealizedPnl(body)).toBe(348.8);
+    const fetcher = vi.fn().mockResolvedValue(response(body)), loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selected, signal())).toEqual({ activity: body, status: 'ready' });
+    expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/activity?pnl=true'), expect.objectContaining({ cache: 'no-store' }));
+  });
+  it.each(['missing', 'pending', 'source', 'policy', 'wallet', 'token', 'transactions', 'balance', 'proof', 'staleProof', 'futureProof', 'futureProvider', 'invalidProvider', 'invalidBalance'] as const)
+    ('does not substitute FIFO totals when GMGN accounting is %s', variant => {
+      const body = activity(); body.summary.realizedProfitUsd = '999';
+      if (variant === 'missing') delete body.realizedAccounting;
+      if (variant === 'pending') body.realizedAccounting!.status = 'pending';
+      if (variant === 'source') Object.assign(body.realizedAccounting!, { source: 'indexed' });
+      if (variant === 'policy') Object.assign(body.realizedAccounting!, { policy: 'observed_fifo' });
+      if (variant === 'wallet') body.realizedAccounting!.walletAddress = selection(3).tokenAddress;
+      if (variant === 'token') body.realizedAccounting!.tokenAddress = selection(3).tokenAddress;
+      if (variant === 'transactions') body.realizedAccounting!.coverage.transactionsComplete = false;
+      if (variant === 'balance') body.realizedAccounting!.coverage.balanceMatched = false;
+      if (variant === 'proof') delete body.inventory;
+      if (variant === 'staleProof') body.inventory!.coverage.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'futureProof') body.inventory!.coverage.checkedAt = new Date(Date.now() + 1001).toISOString();
+      if (variant === 'futureProvider') body.realizedAccounting!.checkedAt = new Date(Date.now() + 1001).toISOString();
+      if (variant === 'invalidProvider') body.realizedAccounting!.checkedAt = 'invalid';
+      if (variant === 'invalidBalance') body.inventory!.coverage.balance = '-1';
+      expect(verifiedTokenRealizedPnl(body)).toBeNull();
+    });
+  it('accepts a small server clock skew and rejects malformed nondecimal provider totals', () => {
+    const body = activity();
+    body.realizedAccounting!.checkedAt = body.inventory!.coverage.checkedAt = new Date(Date.now() + 1000).toISOString();
+    expect(verifiedTokenRealizedPnl(body)).toBe(30);
+    for (const value of ['0x10', 'Infinity', '1_000', 'true']) {
+      body.realizedAccounting!.realizedProfitUsd = value;
+      expect(verifiedTokenRealizedPnl(body)).toBeNull();
+    }
+  });
+  it('honors provider cooldowns without retrying early or caching pending values', async () => {
+    const body = activity(); body.summary.realizedProfitUsd = '999';
+    body.realizedAccounting!.status = 'pending'; body.realizedAccounting!.realizedProfitUsd = null;
+    body.realizedAccounting!.retryAfterMs = 75_000; body.realizedAccounting!.coverage.reason = 'provider_rate_limited';
+    const fetcher = vi.fn().mockResolvedValueOnce(response(body)).mockResolvedValue(response(activity()));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selection(), signal())).toEqual({ activity: body, status: 'pending', retryAfterMs: 75_000 });
+    expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+    expect((await loader(selection(), signal())).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('keeps terminal GMGN unavailability data for explanation and preserves valid transaction details', async () => {
+    const body = activity(selection(), null); body.summary.realizedProfitUsd = '999';
+    const fetcher = vi.fn().mockResolvedValue(response(body)), loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selection(), signal())).toEqual({ activity: body, status: 'unavailable' });
+    expect(verifiedTokenRealizedPnl(body)).toBeNull();
+    expect((await loader(selection(), signal())).status).toBe('unavailable'); expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

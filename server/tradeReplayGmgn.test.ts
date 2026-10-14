@@ -86,6 +86,15 @@ describe('existing-key GMGN replay provider', () => {
     const estimated = await missing.load(activity()); expect(estimated.status).toBe('estimated'); expect(estimated.final).toBeNull();
     expect(estimated.coverage.exactFinal).toBe(false); expect(estimated.events[0].investedUsd).toBe('100');
   });
+  it.each(['buy_amount_cur', 'sell_amount_cur'] as const)('preserves supplied invalid %s through normalization without using a matching current cycle', async field => {
+    for (const invalid of [null, '', 'not-a-number']) {
+      const { load } = setup(async url => ({ data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null }
+        : { list: [{ ...aggregate(), [field]: invalid }] } }), { directory: path.join(directory, field + String(invalid)) });
+      const result = await load(activity());
+      expect(result.final).toBeNull(); expect(result.coverage.exactFinal).toBe(false);
+      expect(result.coverage.reason).toBe('aggregate_snapshot_unreconciled');
+    }
+  });
   it('coalesces the same pair and token-wide lookups across different wallets', async () => {
     const { load, request } = setup(); const left = activity(), right = activity(other);
     const results = await Promise.all([load(left), load(structuredClone(left)), load(right)]);
@@ -93,6 +102,40 @@ describe('existing-key GMGN replay provider', () => {
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
     expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1);
     expect(request).toHaveBeenCalledTimes(3);
+  });
+  it('reuses complete matched profile history for three minutes while keeping replay and aggregate freshness at fifteen seconds', async () => {
+    let clock = time; const { load, request } = setup(undefined, { now: () => clock });
+    expect((await load(activity(), { historicalRealized: true })).status).toBe('ready');
+    clock += 20_000;
+    expect((await load(activity(), { historicalRealized: true })).status).toBe('ready');
+    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
+    expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2);
+    expect((await load(activity())).status).toBe('ready');
+    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
+  });
+  it.each(['movement', 'currency', 'expired'] as const)('refreshes profile historical data after %s changes', async variant => {
+    let clock = time; const { load, request } = setup(undefined, { now: () => clock });
+    await load(activity(), { historicalRealized: true }); clock += variant === 'expired' ? 180_001 : 20_000;
+    const changed = activity(); changed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    if (variant === 'movement') changed.inventory!.events[0].tokenAmount = '11';
+    if (variant === 'currency') changed.trades[0].quoteTokenAddress = token;
+    await load(changed, { historicalRealized: true });
+    expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2);
+  });
+  it('isolates in-flight profile history reuse from replay work under the same two-job limit', async () => {
+    let clock = time, finish!: (value: any) => void;
+    const { load, request } = setup(async url => {
+      if (url.pathname.endsWith('wallet_activity')) return { data: { activities: [providerRow()], next: null } };
+      if (clock === time) return { data: { list: [aggregate()] } };
+      return new Promise(resolve => { finish = resolve; });
+    }, { now: () => clock });
+    await load(activity()); clock += 20_000;
+    const profile = load(activity(), { historicalRealized: true });
+    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2));
+    const replay = load(activity());
+    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(2));
+    finish({ data: { list: [aggregate()] } });
+    expect((await profile).status).toBe('ready'); expect((await replay).status).toBe('ready');
   });
   it('reuses fresh persisted public caches and strips extra upstream fields and credentials', async () => {
     const { load, request } = setup(async url => ({ data: url.pathname.endsWith('wallet_activity')

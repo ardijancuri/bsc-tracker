@@ -22,6 +22,18 @@ describe('Chinese app language', () => {
       expect(translated, english).not.toMatch(/[<>]/);
     }
   });
+  it('translates GMGN realized profit policy and provider coverage notices', () => {
+    for (const label of [
+      'GMGN realized P&L includes marked transfer-out gains and fees.',
+      'GMGN realized P&L includes marked transfer-out gains and fees. Estimated from matched GMGN activity; a reported position total is unavailable.',
+      'Loading GMGN realized P&L…',
+      'GMGN realized P&L is unavailable for this position with the current API key.',
+      'GMGN realized P&L is unavailable because the provider is not configured.',
+      'GMGN realized P&L is unavailable because transfer costs or fee data are missing.',
+      'GMGN realized P&L is unavailable until wallet movements and balance are verified.',
+      'GMGN realized P&L could not be verified for this token.',
+    ]) expect(translate(label, 'zh-CN')).not.toBe(label);
+  });
   it('covers every static translation used in the UI', () => {
     for (const file of ['App.tsx', 'Intelligence.tsx', 'LegalPages.tsx', 'LanguageSelect.tsx', 'lib.ts']) {
       const source = ts.createSourceFile(file, readFileSync(new URL(file, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

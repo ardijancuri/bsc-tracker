@@ -184,8 +184,12 @@ export function buildTradeReplayGmgnAccounting(activity: KolTokenActivity, gmgnA
       quantities[group[0].kind] += group.reduce((sum, event) => sum + numeric(event.tokenAmount)!, 0);
       gross[group[0].kind] += numeric(rows.get(key)?.cost_usd) ?? NaN;
     }
-    const quantitiesMatch = sameQuantity(numeric(row.current_buy_amount ?? row.buy_amount_cur) ?? NaN, quantities.buy)
-      && sameQuantity(numeric(row.current_sell_amount ?? row.sell_amount_cur) ?? NaN, quantities.sell)
+    // current_* quantities restart after a position is fully sold. The *_cur
+    // totals span the history represented by the transaction counts and costs.
+    // Validate the full-history fields when supplied, without substituting a
+    // matching current-cycle value for malformed or contradictory history.
+    const quantitiesMatch = sameQuantity(numeric(Object.hasOwn(row, 'buy_amount_cur') ? row.buy_amount_cur : row.current_buy_amount) ?? NaN, quantities.buy)
+      && sameQuantity(numeric(Object.hasOwn(row, 'sell_amount_cur') ? row.sell_amount_cur : row.current_sell_amount) ?? NaN, quantities.sell)
       && sameQuantity(numeric(row.history_transfer_in_amount) ?? NaN, quantities.transfer_in)
       && sameQuantity(numeric(row.history_transfer_out_amount) ?? NaN, quantities.transfer_out);
     const countsMatch = numeric(row.buy_tx_count_cur) === counts.buy && numeric(row.sell_tx_count_cur) === counts.sell

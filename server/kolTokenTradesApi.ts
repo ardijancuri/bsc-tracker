@@ -6,6 +6,7 @@ import { nonStockTokenSql } from './stockToken.js';
 import { summarizeKolTokenTrades, type IndexedKolTokenTrade } from './kolTokenTrades.js';
 import { currentKolTokenInventory } from './kolTokenInventory.js';
 import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
+import { currentKolTokenGmgnPnl } from './kolTokenGmgnPnl.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 export const kolTokenHistoryLimit = 2000;
@@ -13,7 +14,7 @@ const pairWhere = `t.wallet_address=$1 AND t.token_address=$2 AND k.is_tracked A
   AND t.timestamp<=now() AND ${nonStockTokenSql('t.token_address')}`;
 
 export function registerKolTokenTradesRoutes(app: FastifyInstance) {
-  app.get<{ Params: { address: string; token: string }; Querystring: { replay?: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
+  app.get<{ Params: { address: string; token: string }; Querystring: { replay?: string; pnl?: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
     const wallet = addressSchema.safeParse(request.params.address), token = addressSchema.safeParse(request.params.token);
     if (!wallet.success || !token.success) return reply.code(400).send({ error: 'Invalid KOL or token address' });
     const values = [wallet.data, token.data];
@@ -65,8 +66,13 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
       coverage: { source: 'indexed', indexedTradeCount, returnedTradeCount: result.trades.length, complete,
         historyLimit: kolTokenHistoryLimit, costsIncluded: false }, generatedAt: new Date().toISOString(),
     };
-    if (request.query.replay === 'true') response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
+    if (request.query.replay === 'true') {
+      response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
+      const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting);
+      if (request.query.pnl === 'true') response.realizedAccounting = realized;
+    } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response);
     if (response.inventory?.coverage.status === 'pending') reply.header('Retry-After', '1');
+    if (response.realizedAccounting?.status === 'pending') reply.header('Retry-After', String(Math.ceil((response.realizedAccounting.retryAfterMs ?? 1000) / 1000)));
     return reply.header('Cache-Control', 'no-store').send(response);
   });
 }

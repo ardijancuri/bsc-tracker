@@ -13,7 +13,8 @@ import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
-import { requestKolTokenPnl } from './kolTokenPnlRequest';
+import { gmgnRealizedPnlDescription, kolTokenPnlKey, requestKolTokenPnl, tokenRealizedPnlUnavailableNotice, verifiedTokenRealizedPnl } from './kolTokenPnlRequest';
+import { tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
 import './tokenMarket.css';
 import './kolTokenTradeModal.css';
 
@@ -62,6 +63,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     const controller = new AbortController();
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const pair = kolTokenPnlKey({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null });
     setActivity(current => current?.kol.address.toLowerCase() === kol.address.toLowerCase()
       && current.token.address.toLowerCase() === token.address.toLowerCase() ? current : null);
     const load = async () => {
@@ -70,12 +72,20 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         // Resumed modals can carry the token's global last trade from another
         // wallet. Only the exact-pair activity response dates this selection.
         const result = await requestKolTokenPnl({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null }, controller.signal,
-          { priority: 'foreground', onActivity: value => { if (active) { setActivity(value); setError(false); } } });
+          { priority: 'foreground', onActivity: value => { if (active) {
+            const status = verifiedTokenRealizedPnl(value) !== null ? 'ready'
+              : value.realizedAccounting?.status === 'pending' || value.inventory?.coverage?.status === 'pending' ? 'pending' : 'unavailable';
+            setActivity(current => tokenPnlStateAfterLoad({ pair, activity: current, busy: true }, pair, { activity: value, status }).activity);
+            setError(false);
+          } } });
         if (!active) return;
         setActivityBusy(result.status === 'pending');
-        if (result.activity) { setActivity(result.activity); setError(false); }
+        if (result.activity) {
+          setActivity(current => tokenPnlStateAfterLoad({ pair, activity: current, busy: true }, pair, result).activity);
+          setError(false);
+        }
         else if (result.status === 'unavailable') { setActivity(null); setError(true); }
-        if (result.status === 'pending') timer = setTimeout(() => void load(), Math.max(3000, result.retryAfterMs ?? 3000));
+        timer = setTimeout(() => void load(), result.status === 'pending' ? Math.max(3000, result.retryAfterMs ?? 3000) : 60_000);
       } catch { if (active) { setActivityBusy(false); setError(true); } }
     };
     void load();
@@ -86,8 +96,8 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const summary = activity?.summary;
-  const profit = summary?.realizedProfitUsd;
-  const profitClass = profit == null ? '' : Number(profit) >= 0 ? 'positive' : 'negative';
+  const profit = verifiedTokenRealizedPnl(activity);
+  const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';
 
   useEffect(() => {
     const element = transactionList.current;
@@ -121,11 +131,12 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
-        <div className="kol-trade-profit" aria-busy={activityBusy}><span>{t('Realized P&L')}</span><strong className={profitClass}>{profit == null && activityBusy ? '…' : money(profit, true)}</strong></div>
-        <dl className="kol-trade-summary"><div><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
+        <div className="kol-trade-profit" aria-busy={activityBusy} title={t(gmgnRealizedPnlDescription(activity))}><span>{t('Realized P&L')}</span><strong className={profitClass}>{profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
+        <p className="kol-trade-coverage">{t(gmgnRealizedPnlDescription(activity))}</p>
+        <dl className="kol-trade-summary"><div title={t('Indexed buy amount. GMGN realized P&L also includes transfer gains and fees.')}><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div title={t('Indexed sell amount. Transfer-out values are included in GMGN realized P&L.')}><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
         {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
-        {activity && activityBusy && profit == null && <p className="kol-trade-coverage" role="status">{t('Loading trade details…')}</p>}
-        {activity && !activityBusy && activity.coverage.complete && profit == null && <p className="kol-trade-coverage">{t('Profit is unavailable where trade prices or purchase costs are missing.')}</p>}
+        {activity && activityBusy && profit === null && <p className="kol-trade-coverage" role="status">{t('Loading GMGN realized P&L…')}</p>}
+        {activity && !activityBusy && profit === null && <p className="kol-trade-coverage">{t(tokenRealizedPnlUnavailableNotice(activity))}</p>}
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
         {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
@@ -141,6 +152,6 @@ function TradeReceipt({ trade }: { trade: KolTokenTrade }) {
   const amount = trade.valuationStatus === 'valued' ? trade.amountUsd : null;
   const valuationNote = trade.valuationStatus === 'shared_quote' ? t('Transaction spend could not be allocated to this token') : amount == null ? t('Trade valuation unavailable') : undefined;
   return <div className="kol-trade-receipt">
-    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{trade.realizedProfitUsd != null ? <b className={Number(trade.realizedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(trade.realizedProfitUsd, true)}</b> : shortAddress(trade.txHash)}</span></span>
+    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{shortAddress(trade.txHash)}</span></span>
   </div>;
 }

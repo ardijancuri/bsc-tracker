@@ -33,10 +33,11 @@ describe('GMGN account request budget', () => {
       .rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 125_000 });
   });
   it('honors header and body reset times and safely bounds missing or extreme delays', () => {
-    expect(gmgnRetryMs(new Headers({ 'X-RateLimit-Reset': String(now / 1000 + 5) }), { reset_at: now / 1000 + 90 }, now)).toBe(90_000);
-    expect(gmgnRetryMs(new Headers(), { reset_at: now + 300_000 }, now)).toBe(300_000);
-    expect(gmgnRetryMs(new Headers({ 'Retry-After': '2' }), {}, now)).toBe(2000);
-    expect(gmgnRetryMs(new Headers({ 'Retry-After': new Date(now + 120_000).toUTCString() }), {}, now)).toBe(120_000);
+    expect(gmgnRetryMs(new Headers({ 'X-RateLimit-Reset': String(now / 1000 + 5) }), { reset_at: now / 1000 + 90 }, now)).toBe(91_000);
+    expect(gmgnRetryMs(new Headers(), { reset_at: now + 300_000 }, now)).toBe(301_000);
+    expect(gmgnRetryMs(new Headers({ 'Retry-After': '2' }), {}, now)).toBe(3000);
+    expect(gmgnRetryMs(new Headers({ 'Retry-After': new Date(now + 120_000).toUTCString() }), {}, now)).toBe(121_000);
+    expect(gmgnRetryMs(new Headers({ 'X-RateLimit-Reset': String(now / 1000) }), {}, now + 375)).toBe(1000);
     expect(gmgnRetryMs(new Headers(), { reset_at: 'unknown' }, now)).toBe(60_000);
     expect(gmgnRetryMs(new Headers(), { reset_at: now / 1000 + 9999 }, now)).toBe(600_000);
   });
@@ -95,10 +96,31 @@ describe('GMGN HTTP adapter', () => {
   });
   it.each([429, 200])('persists cooldown from an HTTP %i/body429 response and stops requests during it', async status => {
     const { request, fetcher, query } = dependencies(Response.json({ code: 429, reset_at: now / 1000 + 120 }, { status }));
-    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 120_000 });
-    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 120_000 });
+    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 121_000 });
+    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 121_000 });
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(query.mock.calls.some(([sql, values]) => sql.startsWith('UPDATE') && values[1] === 120_000)).toBe(true);
+    expect(query.mock.calls.some(([sql, values]) => sql.startsWith('UPDATE') && values[1] === 121_000)).toBe(true);
+  });
+  it('blocks another caller through the reset buffer without sending an early request that could renew the ban', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now + 375);
+    let pausedUntil = 0;
+    const reset = now / 1000 + 5;
+    const query = vi.fn(async (sql: string, values: unknown[]) => {
+      const delay = Math.max(0, pausedUntil - Date.now());
+      if (sql.startsWith('WITH clock')) return { rows: delay ? [] : [{ delay: 0 }] };
+      if (sql.startsWith('UPDATE')) { pausedUntil = Date.now() + Number(values[1]); return { rows: [] }; }
+      return { rows: delay ? [{ delay }] : [] };
+    });
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ code: 429, reset_at: reset }, { status: 429 }))
+      .mockResolvedValue(Response.json({ code: 0, data: { recovered: true } }));
+    const first = createGmgnRequester({ query, fetcher }), second = createGmgnRequester({ query, fetcher });
+    await expect(first(url, { apiKey: 'same-account' })).rejects.toMatchObject({ retryAfterMs: 5625 });
+    vi.setSystemTime(reset * 1000 + 500);
+    await expect(second(url, { apiKey: 'same-account' })).rejects.toMatchObject({ reason: 'rate_limited', retryAfterMs: 500 });
+    expect(fetcher).toHaveBeenCalledOnce();
+    vi.setSystemTime(reset * 1000 + 1000);
+    await expect(second(url, { apiKey: 'same-account' })).resolves.toMatchObject({ data: { recovered: true } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it.each([401, 403])('cools down HTTP %i rejection without leaking upstream error text', async status => {
     const { request, fetcher } = dependencies(Response.json({ message: 'secret-is-private' }, { status }));

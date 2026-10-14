@@ -12,12 +12,27 @@ export interface KolTokenActivity {
   inventory?: { version: 1; events: InventoryEvent[]; coverage: InventoryCoverage };
   /** Requested only for share/export preparation, with provider coverage explicit. */
   replayAccounting?: TradeReplayAccounting;
+  /** Requested by profile P&L, with GMGN transfer/fee policy kept separate from FIFO. */
+  realizedAccounting?: KolTokenRealizedAccounting;
   coverage: {
     source: 'indexed'; indexedTradeCount: number; returnedTradeCount: number;
     /** Complete indexed history, not a claim that every on-chain movement is indexed. */
     complete: boolean; historyLimit: number; costsIncluded: false;
   };
   generatedAt: string;
+}
+
+export interface KolTokenRealizedAccounting {
+  version: 1;
+  source: 'gmgn';
+  policy: 'gmgn_realized_profit_v1';
+  walletAddress: string;
+  tokenAddress: string;
+  status: 'ready' | 'pending' | 'unavailable';
+  checkedAt: string;
+  realizedProfitUsd: string | null;
+  coverage: { transactionsComplete: boolean; balanceMatched: boolean; reason?: string };
+  retryAfterMs?: number;
 }
 
 /** Accounting snapshots include transfers without representing them as swaps. */
