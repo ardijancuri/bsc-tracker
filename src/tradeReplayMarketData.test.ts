@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyReplayMarketChart, replayEndTimestamp, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, replayEndTimestamp, validReplayCurrentQuote, type TradeReplayData } from './tradeReplayData';
 import type { ReplayMarketChart } from '../shared/replayChart';
 
 const token = '0x2222222222222222222222222222222222222222';
@@ -128,11 +128,24 @@ describe('finer observed replay history', () => {
     expect(applyReplayMarketChart(retained, earlierQuote, now).chart.points.map(point => point.priceUsd)).toEqual([10]);
   });
 
-  it('rejects stale, future, pre-fill or invalid current quotes rather than reusing activity snapshot prices', () => {
+  it('allows one second of server quote-time skew but rejects larger future quotes and future historical observations', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    for (const skew of [150, 1000, 1001, 2000]) {
+      const quote = { timestamp: new Date(now + skew).toISOString(), priceUsd: '12' };
+      const observed = chart(); observed.currentQuote = quote;
+      observed.points.push({ timestamp: new Date(now + 100).toISOString(), priceUsd: '99' });
+      const replay = applyReplayMarketChart(original, observed, now);
+      expect(Boolean(replay.currentQuote), String(skew)).toBe(skew <= 1000);
+      expect(Boolean(validReplayCurrentQuote(replay, now)), String(skew)).toBe(skew <= 1000);
+      expect(replay.chart.points.some(point => point.priceUsd === 99), String(skew)).toBe(false);
+    }
+  });
+
+  it('rejects stale, excessively future, pre-fill or invalid current quotes rather than reusing activity snapshot prices', () => {
     const original = data(); original.trades[1].tokenAmount = .5;
     for (const currentQuote of [
       { timestamp: new Date(now - 180_001).toISOString(), priceUsd: '12' },
-      { timestamp: new Date(now + 1).toISOString(), priceUsd: '12' },
+      { timestamp: new Date(now + 2000).toISOString(), priceUsd: '12' },
       { timestamp: '2026-10-11T10:00:00Z', priceUsd: '12' },
       { timestamp: new Date(now).toISOString(), priceUsd: '0' },
       { timestamp: 'invalid', priceUsd: '12' },
