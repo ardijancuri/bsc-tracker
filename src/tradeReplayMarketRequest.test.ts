@@ -186,7 +186,27 @@ describe('bounded replay historical-market preparation', () => {
     const result = await replayMarketData(data(), new AbortController().signal);
     expect(result.preparationStatus).toBe('ready'); expect(result.data.chart.source).toBe('GMGN historical samples');
     expect(result.data.chart.sparseHistory).toBe(true); expect(result.data.currentQuote?.priceUsd).toBe(7);
-    expect(result.notice).toMatch(/rate limited/); expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+    expect(result.notice).toBe('Market observations are sparse. Prices and P&L between observations are estimates.');
+    expect(result.accountingNotice).toBe(accountingExactNotice);
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['queued', 'rate_limited'] as const)('clears a %s background-refresh notice when cached observations already cover a verified closed replay', async loadStatus => {
+    const activity = gmgnActivity(), closed = inventoryActivity(false);
+    activity.trades = closed.trades; activity.inventory = closed.inventory;
+    Object.assign(activity.replayAccounting!.events[1], { remainingTokenAmount: '0', remainingCostBasisUsd: '0',
+      cumulativeRealizedProfitUsd: '3.8', soldUsd: '5' });
+    Object.assign(activity.replayAccounting!.final!, { remainingTokenAmount: '0', remainingCostBasisUsd: '0',
+      cumulativeRealizedProfitUsd: '3.8', soldUsd: '5', reportedProfitUsd: '3.8', reportedRoi: String(3.8 / 1.2) });
+    const observed = { ...chart(), points: chart().points.slice(0, 11), loadStatus, retryAfterMs: 30_000 };
+    const fetcher = vi.fn((url: string) => Promise.resolve(response(url.endsWith('/activity?replay=true') ? activity : observed)));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await replayMarketData(data(), new AbortController().signal);
+    expect(fetcher.mock.calls[1][0]).toMatch(/replay-chart\?end=current$/);
+    expect(result.preparationStatus).toBe('ready'); expect(result.data.position.status).toBe('closed');
+    expect(result.notice).toBeNull(); expect(result.accountingNotice).toBe(accountingExactNotice);
+    expect(result.data.chart.source).toBe('GMGN historical samples');
+    expect(result.retryAfterMs).toBeUndefined(); expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each(['response', 'retained'] as const)('waits for post-trade observations when %s history ends a day before the current quote', async mode => {

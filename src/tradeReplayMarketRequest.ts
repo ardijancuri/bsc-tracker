@@ -13,6 +13,9 @@ export const inventoryUnavailableNotice = 'Profit is unavailable until wallet mo
 export const accountingUnavailableNotice = 'GMGN profit and ROI are unavailable for this replay.';
 export const accountingEstimateNotice = 'Profit and ROI use estimated GMGN accounting; exact final totals are unavailable.';
 export const accountingExactNotice = 'GMGN final profit and ROI are verified. Earlier values are estimates.';
+const historyLoadingNotice = 'Historical market data is still loading; the replay is using available data.';
+const historyRateLimitedNotice = 'Historical market data is rate limited; the replay is using available data.';
+const sparseHistoryNotice = 'Market observations are sparse. Prices and P&L between observations are estimates.';
 
 export function replayUsesRecordedPrices(data: TradeReplayData) {
   return data.source.chart.toLowerCase().includes('recorded fill') || !data.chart.points.length;
@@ -173,8 +176,7 @@ async function replayHistory(data: TradeReplayData, current: boolean, signal: Ab
       const delay = typeof chart.retryAfterMs === 'number' && Number.isFinite(chart.retryAfterMs) && chart.retryAfterMs > 0
         ? Math.max(1000, chart.retryAfterMs) : 3000;
       const notice = chart.loadStatus === 'rate_limited'
-        ? 'Historical market data is rate limited; the replay is using available data.'
-        : 'Historical market data is still loading; the replay is using available data.';
+        ? historyRateLimitedNotice : historyLoadingNotice;
       // Genuine cached observations are already useful. Keep their original
       // timestamps through a provider cooldown rather than fetching them again.
       if (pending && chart.source !== 'unavailable' && chart.points.length) return { charts, notice, pending: true, retryAfterMs: delay };
@@ -184,9 +186,9 @@ async function replayHistory(data: TradeReplayData, current: boolean, signal: Ab
       }
       if (chart.source === 'unavailable' || chart.partialHistory || !chart.points.length
         || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution)) return { charts, notice: unavailable, pending: false };
-      return { charts, notice: chart.sparseHistory ? 'Market observations are sparse. Prices and P&L between observations are estimates.' : null, pending: false };
+      return { charts, notice: chart.sparseHistory ? sparseHistoryNotice : null, pending: false };
     }
-    return { charts, notice: 'Historical market data is still loading; the replay is using available data.', pending: true, retryAfterMs: 1000 };
+    return { charts, notice: historyLoadingNotice, pending: true, retryAfterMs: 1000 };
   } catch {
     return { charts, notice: signal.aborted ? 'Historical market data timed out; the replay is using available data.' : problem, pending: true, retryAfterMs: 1000 };
   }
@@ -244,7 +246,12 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     const pending = activity.pending || history.pending || historyTailPending || aggregatePending || request.signal.aborted;
     const preparationStatus = ready ? 'ready' : pending ? 'pending' : 'unavailable';
     let notice = history.notice;
-    if (historyTailPending && !history.pending) notice = 'Historical market data is still loading; the replay is using available data.';
+    if (historyTailPending && !history.pending) notice = historyLoadingNotice;
+    // A background refresh need not block a verified replay whose available
+    // observations already cover its window. Keep interpolation provenance.
+    if (preparationStatus === 'ready' && (notice === historyLoadingNotice || notice === historyRateLimitedNotice)) {
+      notice = selected.chart.sparseHistory ? sparseHistoryNotice : null;
+    }
     if (notice === 'Historical market data is unavailable for this replay.' && replayUsesRecordedPrices(selected)) notice = currentQuote ? currentQuoteEstimateNotice : recordedPriceEstimateNotice;
     return { data: selected, notice, preparationStatus,
       ...(preparationStatus === 'pending' ? { retryAfterMs: Math.max(historyTailPending ? 3000 : 1000,
