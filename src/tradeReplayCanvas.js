@@ -98,9 +98,10 @@ function textBounds(ctx, value, font) {
 }
 
 function displayedProfit(state) {
-  return state.totalPnl !== null
-    ? { pnl: state.totalPnl, roi: state.totalRoi }
-    : { pnl: state.pnl, roi: state.roi };
+  const total = finite(state.totalPnl, null);
+  return total !== null
+    ? { pnl: total, roi: finite(state.totalRoi, null) }
+    : { pnl: finite(state.pnl, null), roi: finite(state.roi, null) };
 }
 
 function drawBrandMark(ctx, mark, x, y, width, height, color) {
@@ -1118,8 +1119,10 @@ export class ReplayCanvas {
 
   drawChart(ctx, progress, state) {
     const { pnl } = displayedProfit(state);
-    const chartColor = pnl === null ? COLOR.gold : pnl >= 0 ? COLOR.green : COLOR.red;
-    const chartRgb = pnl === null ? '240,185,11' : pnl >= 0 ? '22,199,132' : '246,70,93';
+    // A verified ending does not establish profit in an earlier unknown-cost
+    // frame. Keep those observations neutral until the displayed P&L is known.
+    const chartColor = pnl === null ? COLOR.muted : pnl >= 0 ? COLOR.green : COLOR.red;
+    const chartRgb = pnl === null ? '169,166,154' : pnl >= 0 ? '22,199,132' : '246,70,93';
     const chartProgress = this.chartProgress(progress);
     const cameraRange = this.cameraAt(chartProgress);
     const left = 42;

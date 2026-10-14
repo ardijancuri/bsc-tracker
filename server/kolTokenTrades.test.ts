@@ -26,6 +26,16 @@ const withInventory = (trades: IndexedKolTokenTrade[], evidence: KolTokenInvento
   summarizeKolTokenTrades(trades, wallet, token, '1000', true, at, evidence);
 
 describe('transfer-aware KOL token inventory', () => {
+  it('keeps completed realized gains when a later unpriced buy makes the remaining cost unavailable', () => {
+    const trades = [trade('1', 'buy', '2', '20'), trade('2', 'sell', '2', '50'), trade('3', 'buy', '1', null)];
+    for (const result of [summarizeKolTokenTrades(trades, wallet, token, '1000', true, now), withInventory(trades, inventory('1'))]) {
+      expect(result.summary).toMatchObject({ realizedProfitUsd: '30', investedUsd: null, soldUsd: '50', remainingCostBasisUsd: null,
+        valuedSellCount: 1, excludedSellCount: 0 });
+    }
+    trades.push(trade('4', 'sell', '1', '40'));
+    expect(withInventory(trades, inventory('0')).summary.realizedProfitUsd).toBeNull();
+  });
+
   it('removes transferred FIFO cost before a later sale without adding proceeds or realized profit', () => {
     const result = withInventory([trade('1', 'buy', '2', '20'), trade('2', 'buy', '4', '80'), trade('4', 'sell', '2', '50')],
       inventory('1', [transfer('3', '-3')]));

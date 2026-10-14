@@ -31,13 +31,25 @@ export function kolTradeMarkers(candles: MarketCandle[], trades: ChartTrade[], i
   }));
 }
 
-export function tradeVisibleRange(candles: MarketCandle[], trades: ChartTrade[], interval: CandleInterval = '5m') {
-  const times = trades.map(trade => Date.parse(trade.timestamp) / 1000).filter(Number.isFinite);
-  if (!times.length || !candles.length) return null;
-  const first = Math.min(...times), last = Math.max(...times);
-  if (last < candles[0].time || first >= candles.at(-1)!.time + seconds[interval]) return null;
-  let startIndex = 0, endIndex = 0;
-  for (let i = 0; i < candles.length; i++) { if (candles[i].time <= first) startIndex = i; if (candles[i].time <= last) endIndex = i; }
-  const padding = Math.max(8, Math.ceil((endIndex - startIndex) * .15));
-  return { from: Math.max(0, startIndex - padding), to: Math.min(candles.length + 2, Math.max(startIndex + 25, endIndex + padding)) };
+/** Symmetric logical space keeps short trade histories compact and centered,
+ * including at the first/last loaded candle. Only observed trade bars focus it. */
+export function tradeVisibleRange(candles: MarketCandle[], trades: ChartTrade[], interval: CandleInterval = '5m', plotWidth = 480) {
+  if (!candles.length) return null;
+  let firstIndex = Infinity, lastIndex = -1;
+  for (const trade of trades) {
+    if (trade.side !== 'buy' && trade.side !== 'sell') continue;
+    const time = Date.parse(trade.timestamp) / 1000;
+    if (!Number.isFinite(time)) continue;
+    let lo = 0, hi = candles.length - 1, index = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (candles[mid].time <= time) { index = mid; lo = mid + 1; } else hi = mid - 1; }
+    const candle = candles[index];
+    if (!candle || time >= candle.time + seconds[interval]) continue;
+    firstIndex = Math.min(firstIndex, index); lastIndex = Math.max(lastIndex, index);
+  }
+  if (lastIndex < 0) return null;
+  const width = Number.isFinite(plotWidth) && plotWidth > 0 ? plotWidth : 480;
+  const tradeSpan = lastIndex - firstIndex + 1, padding = Math.max(8, Math.ceil(tradeSpan * .15));
+  const visibleSpan = Math.max(40, Math.ceil(width / 12), tradeSpan + padding * 2);
+  const center = (firstIndex + lastIndex) / 2;
+  return { from: center - visibleSpan / 2, to: center + visibleSpan / 2 };
 }

@@ -66,6 +66,7 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
         historyLimit: kolTokenHistoryLimit, costsIncluded: false }, generatedAt: new Date().toISOString(),
     };
     if (request.query.replay === 'true') response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
+    if (response.inventory?.coverage.status === 'pending') reply.header('Retry-After', '1');
     return reply.header('Cache-Control', 'no-store').send(response);
   });
 }

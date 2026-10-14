@@ -45,9 +45,13 @@ function data(): TradeReplayData {
         feesUsd: 9.2, feeInclusiveCostUsd: 139.2, reportedProfitUsd: 200.8, reportedRoi: 200.8 / 139.2, priceUsd: 4, timestamp: at(240) } },
   };
 }
-async function replay(payload = data()) {
-  const context = new Proxy({}, { get: (_target, key) => key === 'measureText' ? (value: string) => ({ width: value.length * 20 })
-    : key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : () => undefined });
+interface Drawing { strokes: { width: number; color: unknown }[]; gradients: string[]; text: { value: string; color: unknown }[] }
+async function replay(payload = data(), drawing?: Drawing) {
+  const context = new Proxy<Record<string, unknown>>({}, { get: (target, key) => key in target ? target[String(key)]
+    : key === 'measureText' ? (value: string) => ({ width: value.length * 20 })
+    : key === 'stroke' ? () => drawing?.strokes.push({ width: Number(target.lineWidth), color: target.strokeStyle })
+    : key === 'fillText' ? (value: string) => drawing?.text.push({ value, color: target.fillStyle })
+    : key === 'createLinearGradient' ? () => ({ addColorStop: (_offset: number, color: string) => drawing?.gradients.push(color) }) : () => undefined });
   const renderer = new ReplayCanvas({ getContext: () => context } as unknown as HTMLCanvasElement);
   await renderer.setData(payload);
   return renderer;
@@ -62,6 +66,55 @@ function progressAt(renderer: ReplayCanvas, seconds: number) {
 }
 
 describe('GMGN profit in every replay frame', () => {
+  it.each(['gain', 'loss'] as const)('uses neutral unknown-cost frames and the displayed %s color at the verified ending', async direction => {
+    const payload = data();
+    payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
+    payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
+    if (direction === 'loss') {
+      payload.replayAccounting!.final!.cumulativeRealizedProfitUsd = -327.7;
+      payload.replayAccounting!.final!.reportedProfitUsd = -200.8;
+      payload.replayAccounting!.final!.reportedRoi = -200.8 / 139.2;
+    }
+    const drawing: Drawing = { strokes: [], gradients: [], text: [] };
+    const renderer = await replay(payload, drawing);
+    for (const progress of [.9, 1, .9, 1]) {
+      drawing.strokes.length = drawing.gradients.length = drawing.text.length = 0;
+      const state = renderer.snapshot(progress);
+      renderer.render(progress);
+      const color = progress === .9 ? '#a9a69a' : direction === 'gain' ? '#16c784' : '#f6465d';
+      const rgb = progress === .9 ? '169,166,154' : direction === 'gain' ? '22,199,132' : '246,70,93';
+      expect(drawing.strokes.find(stroke => stroke.width === 8)?.color).toBe(color);
+      expect(drawing.gradients).toContain(`rgba(${rgb},0.18)`);
+      expect(drawing.strokes.some(stroke => stroke.width === 8 && stroke.color === '#f0b90b')).toBe(false);
+      if (progress === .9) {
+        expect(state.totalPnl).toBeNull();
+        expect(drawing.text.some(text => text.value === '—')).toBe(true);
+      } else {
+        expect(state.totalPnl).toBe(direction === 'gain' ? 200.8 : -200.8);
+        expect(drawing.text.some(text => /^[+−]\$200\.80$/.test(text.value) && text.color === color)).toBe(true);
+      }
+    }
+  });
+
+  it('changes the line with fee-inclusive displayed profit and reproduces colors when seeking backward', async () => {
+    const drawing: Drawing = { strokes: [], gradients: [], text: [] };
+    const renderer = await replay(data(), drawing);
+    const first = renderer.eventProgress(0), sold = renderer.eventProgress(1);
+    for (const progress of [first, sold, 1, sold, first]) {
+      drawing.strokes.length = drawing.gradients.length = drawing.text.length = 0;
+      const state = renderer.snapshot(progress);
+      expect(state.totalPnl).not.toBeNull();
+      const color = state.totalPnl! >= 0 ? '#16c784' : '#f6465d';
+      const rgb = state.totalPnl! >= 0 ? '22,199,132' : '246,70,93';
+      renderer.render(progress);
+      expect(drawing.strokes.find(stroke => stroke.width === 8)?.color).toBe(color);
+      expect(drawing.gradients).toContain(`rgba(${rgb},0.18)`);
+      expect(drawing.text.some(text => /^[+−]\$/.test(text.value) && text.color === color)).toBe(true);
+    }
+    expect(renderer.snapshot(first).totalPnl).toBe(-5);
+    expect(renderer.snapshot(sold).totalPnl).toBeGreaterThan(0);
+  });
+
   it('credits marked outgoing gain only when revealed and includes fees exactly once', async () => {
     const renderer = await replay();
     const before = renderer.snapshot(progressAt(renderer, 120) - 1e-6);

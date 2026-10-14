@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { TokenChart } from '../shared/intelligence';
-import { marketHistoryViewport, TokenPriceChart } from './TokenPriceChart';
+import { marketHistoryViewport, tradeChartViewport, TokenPriceChart } from './TokenPriceChart';
 import { TokenMarketPanel } from './TokenMarketPanel';
 
 const state = vi.hoisted(() => ({ chart: null as TokenChart | null, error: false, retry: vi.fn(), useTokenChart: vi.fn() }));
@@ -69,6 +69,36 @@ describe('complete token history viewport', () => {
     const range = marketHistoryViewport(history(count), null)!;
     expect((range.from + range.to) / 2).toBe((count - 1) / 2);
     expect(-range.from).toBeCloseTo(range.to - (count - 1), 10);
+  });
+});
+
+describe('initial trade modal viewport', () => {
+  const history = (count: number) => Array.from({ length: count }, (_, index) => ({ time: 1791586800 + index * 60, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }));
+  it('keeps a four-candle history narrow and centered before activity finishes', () => {
+    const range = tradeChartViewport(history(4), [], '1m', 620)!;
+    expect(620 / (range.to - range.from)).toBeLessThanOrEqual(12);
+    expect((1.5 - range.from) / (range.to - range.from)).toBeCloseTo(.5, 10);
+    expect(range.from).toBeLessThan(0);
+    expect(range.to).toBeGreaterThan(3);
+  });
+  it('centers the recent context when selected trades are outside the available history', () => {
+    const candles = history(400);
+    const range = tradeChartViewport(candles, [{ id: 'older', side: 'buy', timestamp: new Date((candles[0].time - 60) * 1000).toISOString() }], '1m', 620)!;
+    expect((range.from + range.to) / 2).toBe((250 + 399) / 2);
+    expect(range.from).toBeLessThan(250);
+    expect(range.to).toBeGreaterThan(399);
+  });
+  it('centers the whole short history even when the KOL traded only its early candles', () => {
+    const candles = history(15);
+    const trades = [{ id: 'buy', side: 'buy' as const, timestamp: new Date(candles[0].time * 1000).toISOString() },
+      { id: 'sell', side: 'sell' as const, timestamp: new Date(candles[3].time * 1000).toISOString() }];
+    const range = tradeChartViewport(candles, trades, '1m', 620)!;
+    expect((range.from + range.to) / 2).toBe(7);
+    expect(-range.from).toBeCloseTo(range.to - 14, 10);
+    expect(620 / (range.to - range.from)).toBeLessThanOrEqual(12);
+  });
+  it('waits for genuine candles', () => {
+    expect(tradeChartViewport([], [], '1m', 620)).toBeNull();
   });
 });
 

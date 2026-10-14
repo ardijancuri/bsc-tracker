@@ -22,6 +22,17 @@ export function marketHistoryViewport(candles: MarketCandle[], previous: MarketH
   return { from: center - span / 2, to: center + span / 2 };
 }
 
+export function tradeChartViewport(candles: MarketCandle[], trades: ChartTrade[], interval: CandleInterval, plotWidth = 480) {
+  // Young tokens can fit their whole candle history without widening the bars.
+  if (candles.length <= Math.max(40, Math.ceil(plotWidth / 12))) return marketHistoryViewport(candles, null, plotWidth);
+  const focused = tradeVisibleRange(candles, trades, interval, plotWidth);
+  if (focused) return focused;
+  // Activity can finish after the candles. Keep that first view compact too.
+  const offset = Math.max(0, candles.length - 150);
+  const recent = marketHistoryViewport(candles.slice(offset), null, plotWidth);
+  return recent ? { from: recent.from + offset, to: recent.to + offset } : null;
+}
+
 export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean }) {
   const { chart: data, error, retry } = useTokenChart(address, interval, true, 'chart', fullHistory);
   const container = useRef<HTMLDivElement>(null);
@@ -33,6 +44,8 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
   const fitted = useRef<string | null>(null);
   const previousHistory = useRef<MarketHistoryBounds | null>(null);
   const tradeRange = useRef<{ from: number; to: number } | null>(null);
+  const tradeSelection = useRef<ChartTrade[]>([]);
+  const fittingFrame = useRef(0);
   const [hover, setHover] = useState<MarketCandle | null>(null);
   const showVolume = data?.volumeCurrency !== 'unknown';
   const marketCandles = useMemo(() => marketCapCandles(data?.candles ?? [], data?.marketCapSupply), [data]);
@@ -94,16 +107,20 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       if (nextWidth <= 0) return;
       if (Math.abs(nextWidth - width) > 1 && focusTrades && tradeRange.current) {
         cancelAnimationFrame(resizeFrame);
-        resizeFrame = requestAnimationFrame(() => { if (tradeRange.current) instance.timeScale().setVisibleLogicalRange(tradeRange.current); });
+        resizeFrame = requestAnimationFrame(() => {
+          const range = tradeChartViewport([...candleLookup.current.values()], tradeSelection.current, interval, instance.timeScale().width() || nextWidth);
+          if (range) { tradeRange.current = range; instance.timeScale().setVisibleLogicalRange(range); }
+        });
       }
       width = nextWidth;
     });
     observer.observe(container.current);
-    return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); markers.current?.detach(); markers.current = null; instance.remove(); chart.current = null; candles.current = null; volume.current = null; };
+    return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(fittingFrame.current); markers.current?.detach(); markers.current = null; instance.remove(); chart.current = null; candles.current = null; volume.current = null; };
   }, [address, interval, focusTrades, showVolume]);
 
   useEffect(() => {
     if (!chart.current || !candles.current) return;
+    tradeSelection.current = trades ?? [];
     candleLookup.current = new Map(marketCandles.map(c => [c.time, c]));
     candles.current.setData(marketCandles.map(c => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
     volume.current?.setData(marketCandles.filter(c => Number.isFinite(c.volume) && c.volume >= 0).map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#39cb8f70' : '#f1767a70' })));
@@ -120,12 +137,26 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       return;
     }
     const history = `${data?.partialHistory ? 'partial' : 'full'}:${trades?.length}:${trades?.[0]?.id}:${trades?.at(-1)?.id}`;
-    if (fitted.current !== history && marketCandles.length) {
-      const end = marketCandles.length - 1;
-      tradeRange.current = tradeVisibleRange(marketCandles, trades ?? [], interval);
-      chart.current.timeScale().setVisibleLogicalRange(tradeRange.current || { from: Math.max(0, end - 149), to: end + 3 });
+    const previous = previousHistory.current;
+    const insertedHistory = previous && marketCandles.length && (marketCandles[0].time < previous.firstTime ||
+      marketCandles.length > previous.count && marketCandles.at(-1)!.time <= previous.lastTime);
+    if ((fitted.current !== history || insertedHistory) && marketCandles.length) {
+      tradeRange.current = tradeChartViewport(marketCandles, trades ?? [], interval, chart.current.timeScale().width() || container.current?.clientWidth || 480);
+      if (tradeRange.current) chart.current.timeScale().setVisibleLogicalRange(tradeRange.current);
+      // The first price labels can change the plot width after setData. Refit
+      // after that layout so the centered range uses the actual candle pane.
+      cancelAnimationFrame(fittingFrame.current);
+      fittingFrame.current = requestAnimationFrame(() => {
+        const instance = chart.current;
+        if (!instance || !tradeRange.current) return;
+        const range = tradeChartViewport([...candleLookup.current.values()], tradeSelection.current, interval, instance.timeScale().width() || container.current?.clientWidth || 480);
+        if (range) { tradeRange.current = range; instance.timeScale().setVisibleLogicalRange(range); }
+      });
       fitted.current = history;
     }
+    if (marketCandles.length) previousHistory.current = {
+      firstTime: marketCandles[0].time, lastTime: marketCandles.at(-1)!.time, count: marketCandles.length,
+    };
   }, [data, marketCandles, address, interval, trades, focusTrades, showVolume]);
 
   return <div className="token-price-chart">

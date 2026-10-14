@@ -31,9 +31,50 @@ describe('KOL chart trade markers', () => {
 describe('KOL chart history selection', () => {
   it('focuses around actual trades while preserving context and handling missing history', () => {
     const candles = Array.from({ length: 100 }, (_, i) => candle(i * 300));
-    expect(tradeVisibleRange(candles, [trade('1', 50 * 300), trade('2', 55 * 300)])).toEqual({ from: 42, to: 75 });
+    expect(tradeVisibleRange(candles, [trade('1', 50 * 300), trade('2', 55 * 300)])).toEqual({ from: 32.5, to: 72.5 });
     expect(tradeVisibleRange(candles, [trade('1', -301)])).toBeNull();
     expect(tradeVisibleRange(candles, [trade('1', 100 * 300)])).toBeNull();
     expect(tradeVisibleRange(candles, [])).toBeNull();
+  });
+  it('keeps four new-token minute candles centered at normal spacing instead of stretching them', () => {
+    const candles = Array.from({ length: 4 }, (_, i) => candle(i * 60));
+    const trades = [trade('buy', 0), trade('sell', 180, 'sell')];
+    const range = tradeVisibleRange(candles, trades, '1m', 720)!;
+    expect(range).toEqual({ from: -28.5, to: 31.5 });
+    const x = (index: number) => (index - range.from) / (range.to - range.from) * 720;
+    expect((x(0) + x(3)) / 2).toBe(360);
+    expect(x(1) - x(0)).toBe(12);
+  });
+  it.each([0, 99])('centers a trade at candle %s without clamping away the empty side', index => {
+    const candles = Array.from({ length: 100 }, (_, i) => candle(i * 300));
+    expect(tradeVisibleRange(candles, [trade('buy', index * 300)], '5m', 480)).toEqual({ from: index - 20, to: index + 20 });
+  });
+  it('scales the visible range to plot width while keeping the same trade center', () => {
+    const candles = Array.from({ length: 100 }, (_, i) => candle(i * 300));
+    const trades = [trade('buy', 50 * 300), trade('sell', 55 * 300, 'sell')];
+    expect(tradeVisibleRange(candles, trades, '5m', 240)).toEqual({ from: 32.5, to: 72.5 });
+    expect(tradeVisibleRange(candles, trades, '5m', 960)).toEqual({ from: 12.5, to: 92.5 });
+  });
+  it('includes the full long trade span and equal context on both sides', () => {
+    const candles = Array.from({ length: 500 }, (_, i) => candle(i * 300));
+    const range = tradeVisibleRange(candles, [trade('buy', 10 * 300), trade('sell', 410 * 300, 'sell')], '5m', 480)!;
+    expect((range.from + range.to) / 2).toBe(210);
+    expect(10 - range.from).toBe(range.to - 410);
+    expect(range.from).toBeLessThan(10); expect(range.to).toBeGreaterThan(410);
+  });
+  it('focuses only observed trade bars when history partially overlaps or contains gaps', () => {
+    const candles = [candle(0), candle(60), candle(180)];
+    const trades = [trade('before', -60), trade('buy', 60), trade('gap', 120), trade('after', 240), trade('unknown', 180, 'unknown')];
+    expect(tradeVisibleRange(candles, trades, '1m', 480)).toEqual({ from: -19, to: 21 });
+    expect(tradeVisibleRange(candles, [trade('gap', 120), trade('after', 240)], '1m', 480)).toBeNull();
+  });
+  it.each([0, -1, NaN, Infinity])('uses the compact default when plot width is %s', width => {
+    expect(tradeVisibleRange([candle(0)], [trade('buy', 0)], '5m', width)).toEqual({ from: -20, to: 20 });
+  });
+  it('returns no trade focus for absent candles or invalid trades without changing input data', () => {
+    const candles = [candle(0)], original = JSON.stringify(candles);
+    expect(tradeVisibleRange([], [trade('buy', 0)])).toBeNull();
+    expect(tradeVisibleRange(candles, [{ id: 'invalid', timestamp: 'bad', side: 'buy' }, trade('unknown', 0, 'unknown')])).toBeNull();
+    expect(JSON.stringify(candles)).toBe(original);
   });
 });

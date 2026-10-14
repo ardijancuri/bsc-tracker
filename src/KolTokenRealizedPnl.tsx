@@ -1,54 +1,65 @@
 import { useEffect, useState } from 'react';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import { getLocale, t } from './i18n';
+import { kolTokenPnlKey, requestKolTokenPnl, verifiedTokenRealizedPnl, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
 export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt }: {
   walletAddress: string; tokenAddress: string; lastTradeAt: string | null;
 }) {
   const wallet = walletAddress.toLowerCase(), token = tokenAddress.toLowerCase();
-  const pair = `${wallet}:${token}`;
-  const [result, setResult] = useState<{ pair: string; activity: KolTokenActivity | null } | null>(null);
+  const pair = kolTokenPnlKey({ walletAddress: wallet, tokenAddress: token, lastTradeAt });
+  const [result, setResult] = useState<{ pair: string; activity: KolTokenActivity | null; busy: boolean } | null>(null);
 
   useEffect(() => {
     let active = true;
     let controller: AbortController | null = null;
-    setResult(null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setResult(current => current?.pair === pair ? { ...current, busy: true } : { pair, activity: null, busy: true });
     const refresh = async () => {
       controller?.abort();
       const request = new AbortController();
       controller = request;
-      const timeout = window.setTimeout(() => request.abort(), 20_000);
+      setResult(current => current?.pair === pair ? { ...current, busy: true } : { pair, activity: null, busy: true });
       try {
-        const response = await fetch(`/api/kols/${encodeURIComponent(wallet)}/tokens/${encodeURIComponent(token)}/activity`, { signal: request.signal });
-        if (!response.ok) throw new Error('Token P&L unavailable');
-        const activity: KolTokenActivity = await response.json();
-        if (activity.kol.address.toLowerCase() !== wallet || activity.token.address.toLowerCase() !== token) throw new Error('Token P&L mismatch');
-        if (active && controller === request) setResult({ pair, activity });
+        const loaded = await requestKolTokenPnl({ walletAddress: wallet, tokenAddress: token, lastTradeAt }, request.signal);
+        if (active && controller === request) {
+          setResult(current => tokenPnlStateAfterLoad(current, pair, loaded));
+          timer = setTimeout(() => void refresh(), loaded.status === 'pending' ? Math.max(3000, loaded.retryAfterMs ?? 3000) : 60_000);
+        }
       } catch {
-        if (active && controller === request) setResult({ pair, activity: null });
-      } finally {
-        window.clearTimeout(timeout);
+        if (active && controller === request) {
+          setResult(current => tokenPnlStateAfterLoad(current, pair, { activity: null, status: 'pending' }));
+          timer = setTimeout(() => void refresh(), 5000);
+        }
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
-    return () => { active = false; controller?.abort(); window.clearInterval(timer); };
+    return () => { active = false; controller?.abort(); if (timer) clearTimeout(timer); };
   }, [wallet, token, pair, lastTradeAt]);
 
   const current = result?.pair === pair ? result : null;
-  const activity = current?.activity;
-  const value = activity?.coverage.complete ? activity.summary.realizedProfitUsd : null;
-  const amount = value == null ? NaN : Number(value);
+  return <KolTokenRealizedPnlValue activity={current?.activity ?? null} busy={!current || current.busy} />;
+}
+
+export function KolTokenRealizedPnlValue({ activity, busy }: { activity: KolTokenActivity | null; busy: boolean }) {
+  const amount = verifiedTokenRealizedPnl(activity) ?? NaN;
   const valid = Number.isFinite(amount);
   const color = valid ? amount > 0 ? 'positive' : amount < 0 ? 'negative' : '' : '';
   const formatted = valid ? new Intl.NumberFormat(getLocale(), {
     style: 'currency', currency: 'USD', notation: Math.abs(amount) >= 1000 ? 'compact' : 'standard',
     maximumFractionDigits: 2, signDisplay: 'exceptZero',
-  }).format(amount) : current ? '—' : '…';
+  }).format(amount) : busy ? '…' : '—';
   const title = valid ? t('Realized P&L from indexed trades in this token. Gas fees are excluded.')
-    : current ? t('Profit is unavailable where trade prices or purchase costs are missing.') : t('Loading trade details…');
+    : busy ? t('Loading trade details…') : t('Profit is unavailable where trade prices or purchase costs are missing.');
 
-  return <span className="token-card-profit" title={title} aria-busy={!current}>
+  return <span className="token-card-profit" title={title} aria-busy={busy}>
     <span>{t('Realized P&L')}</span><strong className={color}>{formatted}</strong>
   </span>;
+}
+
+export function tokenPnlStateAfterLoad(current: { pair: string; activity: KolTokenActivity | null; busy: boolean } | null,
+  pair: string, loaded: KolTokenPnlResult) {
+  const changedTrade = loaded.activity && current?.activity && Date.parse(loaded.activity.summary.lastTradeAt ?? '') !== Date.parse(current.activity.summary.lastTradeAt ?? '');
+  const retained = loaded.status === 'pending' && !changedTrade && current?.pair === pair && verifiedTokenRealizedPnl(current.activity) !== null ? current.activity : null;
+  return { pair, activity: loaded.status === 'ready' ? loaded.activity : retained, busy: loaded.status === 'pending' };
 }

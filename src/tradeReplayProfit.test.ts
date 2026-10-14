@@ -349,7 +349,7 @@ describe('trade replay profit colors and position labels', () => {
     ['positive', '#16c784', '22,199,132'],
     ['negative', '#f6465d', '246,70,93'],
     ['zero', '#16c784', '22,199,132'],
-    ['unavailable', '#f0b90b', '240,185,11'],
+    ['unavailable', '#a9a69a', '169,166,154'],
   ] as const)('colors the actual chart line and area from %s displayed profit', async (variant, color, rgb) => {
     const payload = data();
     if (variant === 'negative') payload.chart.points[1] = { timestamp: at(30), priceUsd: .5, marketCapUsd: 500 };

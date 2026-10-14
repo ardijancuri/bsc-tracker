@@ -84,6 +84,7 @@ describe('KOL token activity API', () => {
     const app = Fastify(); registerKolTokenTradesRoutes(app);
     try {
       const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity`);
+      expect(response.headers['retry-after']).toBe('1');
       expect(response.json()).toMatchObject({ summary: { investedUsd: '20', soldUsd: '50', realizedProfitUsd: null, remainingTokenAmount: null, remainingCostBasisUsd: null, status: 'unknown' },
         inventory: { coverage: { complete: false, reconciled: false, status: 'pending', reason: 'scan_pending' } } });
     } finally { await app.close(); }
