@@ -1,4 +1,8 @@
 import Fastify from 'fastify';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketChart } from '../shared/replayChart.js';
 import type { TokenChart } from '../shared/intelligence.js';
@@ -24,12 +28,24 @@ const market = (): ReplayMarketChart => ({ address: token, period: 'replay', sou
 const liveMarket = (): TokenChart => ({ address: token, period: '1m', source: 'gmgn', resolution: '1m',
   candles: [{ time: base + 600, open: 5, high: 7, low: 5, close: 7, volume: 10 }], points: [],
   updatedAt: iso(base + 615), pending: false, stale: false });
+const historyDirectories: string[] = [];
+async function historyDirectory() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'bscan-replay-history-'));
+  historyDirectories.push(directory); return directory;
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
 }
-afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
+afterEach(async () => {
+  vi.resetAllMocks(); vi.unstubAllEnvs();
+  for (const directory of historyDirectories.splice(0)) {
+    const resolved = path.resolve(directory);
+    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('bscan-replay-history-')) throw Error('Unsafe test cleanup path');
+    await rm(resolved, { recursive: true, force: true });
+  }
+});
 
 describe('replay historical market sampling', () => {
   it('places only the opening boundary and actual completed closes on their correct times', () => {
@@ -383,6 +399,125 @@ describe('replay chart job cache', () => {
     now = 15_001;
     await cache(token, 1, 2, true);
     expect(loader).toHaveBeenCalledTimes(2);
+  });
+  it('retains completed history across live-quote refreshes and discloses only the uncovered tail', async () => {
+    let now = (base + 615) * 1000;
+    const original = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const quoted: ReplayMarketChart = { ...original, source: 'unavailable', points: [],
+      loadStatus: 'rate_limited', retryAfterMs: 60_000, currentQuote: { timestamp: iso(base + 631), priceUsd: '8' } };
+    const loader = vi.fn().mockResolvedValueOnce(original).mockResolvedValueOnce(quoted);
+    const cache = createReplayChartCache(loader, () => now);
+    await cache(token, (base + 15) * 1000, (base + 135) * 1000, true);
+    now += 16_000;
+    const replay = await cache(token, (base + 15) * 1000, (base + 135) * 1000, true);
+    expect(replay).toMatchObject({ source: 'geckoterminal', resolution: '1m', points: original.points,
+      updatedAt: original.updatedAt, currentQuote: quoted.currentQuote, sparseHistory: true, loadStatus: 'rate_limited', retryAfterMs: 60_000 });
+    expect(replay.points.some(point => point.timestamp === quoted.currentQuote!.timestamp)).toBe(false);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+  it('never revives or retimestamps the previous current quote when the refresh fails', async () => {
+    let now = (base + 615) * 1000;
+    const original = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const loader = vi.fn().mockResolvedValueOnce(original).mockRejectedValueOnce(new MarketProviderDeferred('rate_limited', 60_000));
+    const cache = createReplayChartCache(loader, () => now);
+    await cache(token, (base + 15) * 1000, (base + 135) * 1000, true);
+    now += 16_000;
+    const replay = await cache(token, (base + 15) * 1000, (base + 135) * 1000, true);
+    expect(replay).toMatchObject({ source: 'geckoterminal', points: original.points, updatedAt: original.updatedAt,
+      loadStatus: 'rate_limited', retryAfterMs: 60_000 });
+    expect(replay.currentQuote).toBeUndefined();
+    now += 1000;
+    expect(await cache(token, (base + 15) * 1000, (base + 135) * 1000, true)).toMatchObject({ retryAfterMs: 59_000 });
+    expect(loader).toHaveBeenCalledTimes(2);
+    now += 59_001;
+    await cache(token, (base + 15) * 1000, (base + 135) * 1000, true);
+    expect(loader).toHaveBeenCalledTimes(3);
+  });
+  it('serves remembered observations while unique refresh work is busy without reviving the old quote', async () => {
+    let now = (base + 615) * 1000;
+    const held = deferred<ReplayMarketChart | null>();
+    const original = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const loader = vi.fn().mockResolvedValueOnce(original).mockImplementation(() => held.promise);
+    const cache = createReplayChartCache(loader, () => now), first = (base + 15) * 1000, last = (base + 135) * 1000;
+    await cache(token, first, last, true);
+    now += 16_000;
+    const one = cache(token, first, last + 1000, true), two = cache(wallet, first, last, true);
+    expect(await cache(token, first, last, true)).toMatchObject({ source: 'geckoterminal', points: original.points,
+      loadStatus: 'queued', retryAfterMs: 3000 });
+    expect((await cache(token, first, last, true)).currentQuote).toBeUndefined();
+    expect(loader).toHaveBeenCalledTimes(3);
+    held.resolve(null); await Promise.all([one, two]);
+  });
+  it.each(['address', 'period'] as const)('never grafts a fresh quote with the wrong %s onto retained history', async field => {
+    let now = (base + 615) * 1000;
+    const original = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const quote = { ...market(), source: 'unavailable', points: [], currentQuote: { timestamp: iso(base + 631), priceUsd: '900' },
+      ...(field === 'address' ? { address: wallet } : { period: '1m' }) } as ReplayMarketChart;
+    const loader = vi.fn().mockResolvedValueOnce(original).mockResolvedValueOnce(quote);
+    const cache = createReplayChartCache(loader, () => now), first = (base + 15) * 1000, last = (base + 135) * 1000;
+    await cache(token, first, last, true);
+    now += 16_000;
+    const replay = await cache(token, first, last, true);
+    expect(replay).toMatchObject({ address: token, period: 'replay', source: 'geckoterminal', points: original.points });
+    expect(replay.currentQuote).toBeUndefined();
+  });
+  it('recovers genuine history after process restart without persisting current quotes or supply', async () => {
+    const directory = await historyDirectory();
+    let now = (base + 615) * 1000;
+    const original = { ...market(), marketCapSupply: '1000000000', currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const first = (base + 15) * 1000, last = (base + 135) * 1000;
+    await createReplayChartCache(vi.fn().mockResolvedValue(original), () => now, directory)(token, first, last, true);
+    const files = await readdir(directory);
+    expect(files).toHaveLength(1);
+    const persisted = JSON.parse(await readFile(path.join(directory, files[0]), 'utf8'));
+    expect(persisted.value.chart.points).toEqual(original.points);
+    expect(persisted.value.chart.currentQuote).toBeUndefined();
+    expect(persisted.value.chart.marketCapSupply).toBeUndefined();
+    now += 16_000;
+    const quote: ReplayMarketChart = { ...original, source: 'unavailable', points: [], currentQuote: { timestamp: iso(base + 631), priceUsd: '9' } };
+    const loader = vi.fn().mockResolvedValue(quote), restarted = createReplayChartCache(loader, () => now, directory);
+    expect(await restarted(token, first, last, true)).toMatchObject({ source: 'geckoterminal', points: original.points,
+      currentQuote: quote.currentQuote, sparseHistory: true });
+    expect(loader).toHaveBeenCalledOnce();
+    expect((await restarted(token, first, last + 60_000, true)).source).toBe('unavailable');
+    expect((await restarted(token, first, last, false)).source).toBe('unavailable');
+    expect((await restarted(wallet, first, last, true)).source).toBe('unavailable');
+  });
+  it.each(['checksum', 'key', 'address', 'source', 'resolution', 'future', 'futureAtSave', 'unordered', 'zero', 'start', 'end', 'expired', 'size'] as const)
+    ('rejects %s persisted observations instead of using them as replay history', async variant => {
+      const directory = await historyDirectory();
+      const now = (base + 615) * 1000, first = (base + 15) * 1000, last = (base + 135) * 1000;
+      await createReplayChartCache(vi.fn().mockResolvedValue(market()), () => now, directory)(token, first, last, true);
+      const file = path.join(directory, (await readdir(directory))[0]);
+      const envelope = JSON.parse(await readFile(file, 'utf8'));
+      if (variant === 'key') envelope.value.key += ':different';
+      if (variant === 'address') envelope.value.chart.address = wallet;
+      if (variant === 'source') envelope.value.chart.source = 'recorded';
+      if (variant === 'resolution') envelope.value.chart.resolution = '1d';
+      if (variant === 'future') envelope.value.chart.points[1].timestamp = iso(base + 616);
+      if (variant === 'futureAtSave') envelope.value.savedAt = (base + 170) * 1000;
+      if (variant === 'unordered') envelope.value.chart.points.reverse();
+      if (variant === 'zero') envelope.value.chart.points[0].priceUsd = '0';
+      if (variant === 'start') envelope.value.chart.points[0].timestamp = iso(base + 16);
+      if (variant === 'end') envelope.value.chart.points[1].timestamp = iso(base + 134);
+      if (variant === 'expired') envelope.value.savedAt = now - 24 * 3_600_000;
+      envelope.checksum = variant === 'checksum' ? 'tampered' : createHash('sha256').update(JSON.stringify(envelope.value)).digest('hex');
+      await writeFile(file, variant === 'size' ? ' '.repeat(400 * 1024 + 1) : JSON.stringify(envelope));
+      const loader = vi.fn().mockResolvedValue(null);
+      const replay = await createReplayChartCache(loader, () => now, directory)(token, first, last, true);
+      expect(replay).toMatchObject({ source: 'unavailable', points: [] });
+      expect(loader).toHaveBeenCalledOnce();
+    });
+  it('does not refresh retained-history lifetime just because live quotes succeed', async () => {
+    let now = (base + 615) * 1000;
+    const original = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const loader = vi.fn().mockResolvedValueOnce(original).mockResolvedValue(null);
+    const cache = createReplayChartCache(loader, () => now), first = (base + 15) * 1000, last = (base + 135) * 1000;
+    await cache(token, first, last, true);
+    now += 16_000;
+    expect((await cache(token, first, last, true)).points).toEqual(original.points);
+    now = (base + 615) * 1000 + 24 * 3_600_000;
+    expect(await cache(token, first, last, true)).toMatchObject({ source: 'unavailable', points: [] });
   });
 });
 

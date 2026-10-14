@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, Send, Share2 } from 'lucide-react';
+import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2 } from 'lucide-react';
 import ReplayCanvas from './tradeReplayCanvas';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
 import type { TradeReplayData } from './tradeReplayData';
 import { currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 import { startReplaySession } from './tradeReplaySession';
+import { ReplayPreparationError, requirePreparedReplay } from './tradeReplayPreparation';
 import { shareableTradeReplay, shareTradeReplayFile, tradeReplayXIntent } from './tradeReplaySharing';
 import { t } from './i18n';
 import './tradeReplay.css';
@@ -43,6 +44,9 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const [notice, setNotice] = useState('');
   const [marketNotice, setMarketNotice] = useState('');
   const [copied, setCopied] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [retryAt, setRetryAt] = useState(0);
+  const [retrySeconds, setRetrySeconds] = useState(0);
   const exporting = exportProgress !== null;
   const kolName = data.kol.name ?? 'KOL';
   const tokenName = data.token.symbol ?? t('Token');
@@ -60,7 +64,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
 
   useEffect(() => {
     alive.current = true;
-    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setMarketNotice(''); setExportProgress(0);
+    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setMarketNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0);
     progress.current = 0;
     // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
     // encoder repaint or replace the file prepared by the next setup.
@@ -69,7 +73,6 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
       prepare: async signal => {
         const [market] = await Promise.all([replayMarketData(data, signal), loadReplayFonts()]);
         if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
-        await renderer.setData(market.data);
         if (!signal.aborted) {
           const notices = market.notice ? [t(market.notice)] : [];
           if (replayUsesRecordedPrices(market.data) && !market.data.currentQuote && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
@@ -81,6 +84,8 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
           if (market.accountingNotice) notices.push(t(market.accountingNotice));
           if (notices.length) setMarketNotice(notices.join(' '));
         }
+        requirePreparedReplay(market);
+        await renderer.setData(market.data);
       },
       record: (signal, onProgress) => recordTradeReplay(renderer, `${kolName}-${tokenName}`, signal, onProgress),
       onReady: () => { player.current = renderer; renderer.render(0); paintPreview(renderer); setReady(true); },
@@ -89,6 +94,10 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
       onError: problem => {
         if (renderer.data) { renderer.render(1); paintPreview(renderer); progress.current = 1; setSeek(1); }
         setError(problem instanceof Error ? t(problem.message) : t('Video export failed.'));
+        if (problem instanceof ReplayPreparationError && problem.retryAfterMs) {
+          setRetryAt(Date.now() + problem.retryAfterMs);
+          setRetrySeconds(Math.ceil(problem.retryAfterMs / 1000));
+        }
       },
       onFinish: () => setExportProgress(null),
     });
@@ -98,7 +107,15 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
       cancelAnimationFrame(frame.current);
       if (player.current === renderer) player.current = null;
     };
-  }, [data, kolName, tokenName, paintPreview]);
+  }, [data, kolName, tokenName, paintPreview, attempt]);
+
+  useEffect(() => {
+    if (!retryAt) return;
+    const update = () => setRetrySeconds(Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [retryAt]);
 
   useEffect(() => {
     content.current?.focus();
@@ -213,6 +230,7 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
             {error && <p className="trade-replay-error" role="alert">{error}</p>}
+            {error && !exporting && <button type="button" className="trade-replay-retry" disabled={retrySeconds > 0} onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /> {retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t('Retry replay')}</button>}
           </div>
         </div>
   </section>;

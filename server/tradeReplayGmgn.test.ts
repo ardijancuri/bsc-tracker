@@ -100,7 +100,7 @@ describe('existing-key GMGN replay provider', () => {
       : { list: [{ ...aggregate(), apiKey: 'upstream-secret' }] } }));
     await load(activity()); await load(activity()); expect(request).toHaveBeenCalledTimes(2);
     const second = setup(); expect((await second.load(activity())).status).toBe('ready'); expect(second.request).not.toHaveBeenCalled();
-    const files = await readdir(directory); expect(files.length).toBe(2);
+    const files = await readdir(directory); expect(files.length).toBe(3);
     const contents = (await Promise.all(files.map(file => readFile(path.join(directory, file), 'utf8')))).join('');
     expect(contents).not.toMatch(/private-test-key|upstream-secret|untrusted-metadata/); expect(contents).toContain('checksum');
   });
@@ -110,6 +110,72 @@ describe('existing-key GMGN replay provider', () => {
     const newer = activity(); newer.inventory!.coverage.toBlock = '120'; newer.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     expect((await load(newer)).inventoryBlockNumber).toBe('120'); expect(request).toHaveBeenCalledTimes(2);
     clock += 1001; await load(newer); expect(request).toHaveBeenCalledTimes(4);
+  });
+  it('retains canonical-matched completed historical values during a later cooldown without carrying an old exact final or price', async () => {
+    let clock = time, paused = false;
+    const { load, request } = setup(async url => {
+      if (paused) throw new MarketProviderDeferred('rate_limited', 300_000);
+      return { data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null } : { list: [aggregate()] } };
+    }, { now: () => clock });
+    expect((await load(activity())).status).toBe('ready');
+    clock += 16_000; paused = true;
+    const refreshed = activity(); refreshed.inventory!.coverage.toBlock = '120'; refreshed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const result = await load(refreshed);
+    expect(result).toMatchObject({ status: 'estimated', checkedAt: new Date(clock).toISOString(), inventoryBlockNumber: '120', final: null,
+      coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false, reason: 'historical_cache_provider_rate_limited' } });
+    expect(result.events).toHaveLength(1); expect(result.events[0]).toMatchObject({ investedUsd: '100', feesUsd: '1', remainingCostBasisUsd: '101', feeInclusiveCostUsd: '101' });
+    expect(result.retryAfterMs).toBeUndefined(); expect(request).toHaveBeenCalledTimes(3);
+    const restarted = setup(async () => { throw new MarketProviderDeferred('rate_limited', 300_000); }, { now: () => clock + 1000 });
+    expect(await restarted.load(refreshed)).toMatchObject({ status: 'estimated', final: null, coverage: { exactFinal: false } });
+    expect(restarted.request).toHaveBeenCalledOnce();
+  });
+  it('falls back to all five matched historical checkpoints rather than only the last fill during quota cooldown', async () => {
+    let clock = time, paused = false;
+    const payload = activity(), rows: ReturnType<typeof providerRow>[] = [];
+    payload.trades = []; payload.inventory!.events = [];
+    for (let index = 0; index < 5; index++) {
+      const hash = '0x' + String(index + 1).padStart(64, '0'), at = timestamp + index;
+      const row = { ...providerRow(), tx_hash: hash, timestamp: at };
+      rows.push(row);
+      const trade = { ...activity().trades[0], id: `trade-${index}`, txHash: hash, timestamp: new Date(at * 1000).toISOString(), blockNumber: String(100 + index) };
+      payload.trades.push(trade);
+      payload.inventory!.events.push({ ...activity().inventory!.events[0], id: `event-${index}`, tradeId: trade.id, txHash: hash,
+        timestamp: trade.timestamp, blockNumber: trade.blockNumber, remainingTokenAmount: String((index + 1) * 10) });
+    }
+    payload.inventory!.coverage.balance = '50'; payload.summary.remainingTokenAmount = '50';
+    const { load } = setup(async url => {
+      if (paused) throw new MarketProviderDeferred('rate_limited', 60_000);
+      return { data: url.pathname.endsWith('wallet_activity') ? { activities: rows, next: null } : { list: [] } };
+    }, { now: () => clock });
+    await load(payload); clock += 16_000; paused = true;
+    payload.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const result = await load(payload);
+    expect(result).toMatchObject({ status: 'estimated', final: null, coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false } });
+    expect(result.events).toHaveLength(5); expect(result.events.at(-1)).toMatchObject({ investedUsd: '500', feesUsd: '5', remainingCostBasisUsd: '505', feeInclusiveCostUsd: '505' });
+  });
+  it.each(['movement', 'quote', 'expired'])('refuses retained historical fallback after %s changes', async variant => {
+    let clock = time, paused = false;
+    const { load } = setup(async url => {
+      if (paused) throw new MarketProviderDeferred('rate_limited', 60_000);
+      return { data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null } : { list: [aggregate()] } };
+    }, { now: () => clock });
+    await load(activity()); clock += variant === 'expired' ? 600_001 : 16_000; paused = true;
+    const changed = activity(); changed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    if (variant === 'movement') changed.inventory!.events[0].tokenAmount = '11';
+    if (variant === 'quote') changed.trades[0].quoteTokenAddress = other;
+    const result = await load(changed);
+    expect(result.status).toBe('pending'); expect(result.coverage.transactionsComplete).toBe(false); expect(result.coverage.exactFinal).toBe(false);
+    expect(result.final).toBeNull();
+  });
+  it('does not retain a historical estimate when fees were unknown or refreshed rows disagree with canonical coverage', async () => {
+    let clock = time, paused = false;
+    const { load } = setup(async url => {
+      if (paused) throw new MarketProviderDeferred('busy', 1000);
+      return { data: url.pathname.endsWith('wallet_activity') ? { activities: [{ ...providerRow(), gas_usd: null }], next: null } : { list: [] } };
+    }, { now: () => clock });
+    await load(activity()); clock += 16_000; paused = true;
+    const result = await load(activity()); expect(result.status).toBe('pending'); expect(result.final).toBeNull();
+    expect(result.coverage.transactionsComplete).toBe(false);
   });
   it('resumes successful pages after a deferral and includes the returned cursor instead of restarting', async () => {
     let stage = 0;

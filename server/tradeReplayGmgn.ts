@@ -15,7 +15,8 @@ interface History {
   cursor: string | null; cursors: string[]; complete: boolean; pages: number; updatedAt: number;
 }
 interface Traders { version: 1; token: string; sort: Sort; rows: Record<string, unknown>[]; checkedAt: number }
-interface ProviderData { history: History; aggregate: Record<string, unknown> | null; checkedAt: number; aggregateOnly?: boolean; pending?: { reason: string; retryAfterMs: number }; failure?: string }
+interface ProviderData { history: History; aggregate: Record<string, unknown> | null; checkedAt: number; aggregateOnly?: boolean;
+  fallbackHistory?: History; pending?: { reason: string; retryAfterMs: number }; failure?: string }
 const addressRe = /^0x[0-9a-f]{40}$/;
 const hashRe = /^0x[0-9a-f]{64}$/;
 const ttlMs = 15_000;
@@ -87,7 +88,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'replay-gmgn'),
   now = Date.now, budgetMs = 8000, apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
 }: { request?: Requester; builder?: Builder; directory?: string; now?: () => number; budgetMs?: number; apiKey?: () => string } = {}) {
-  const histories = new Map<string, History>(), traders = new Map<string, Traders>();
+  const histories = new Map<string, History>(), completedHistories = new Map<string, History>(), traders = new Map<string, Traders>();
   const jobs = new Map<string, Promise<ProviderData>>(), traderJobs = new Map<string, Promise<Traders>>();
   let active = 0;
   async function read<T>(name: string): Promise<T | null> {
@@ -103,10 +104,9 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
   const validTime = (time: unknown, ttl: number) => typeof time === 'number' && Number.isFinite(time) && time <= now() && now() - time < ttl;
   const freshHistory = (wallet: string, token: string, signature: string): History => ({ version: 1, wallet, token, signature,
     rows: [], cursor: null, cursors: [], complete: false, pages: 0, updatedAt: now() });
-  async function historyFor(wallet: string, token: string, signature: string) {
-    const key = `${wallet}-${token}`, stored = histories.get(key) ?? await read<History>('activity-' + key);
+  function validHistory(stored: History | null | undefined, wallet: string, token: string, signature: string, ttl: number): History | null {
     if (stored?.version === 1 && stored.wallet === wallet && stored.token === token && stored.signature === signature
-      && validTime(stored.updatedAt, stored.complete ? ttlMs : resumeTtlMs) && Array.isArray(stored.cursors) && stored.cursors.length <= 200
+      && validTime(stored.updatedAt, ttl) && Array.isArray(stored.cursors) && stored.cursors.length <= 200
       && stored.cursors.every(cursor => typeof cursor === 'string' && cursor.length <= 4096) && new Set(stored.cursors).size === stored.cursors.length
       && (stored.cursor === null || typeof stored.cursor === 'string' && stored.cursor.length <= 4096) && typeof stored.complete === 'boolean'
       && Number.isInteger(stored.pages) && stored.pages >= 0 && stored.pages <= 200
@@ -114,10 +114,18 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
       try {
         stored.rows = activityRows(stored.rows, wallet, token, now());
         if (new Set(stored.rows.map(activityKey)).size !== stored.rows.length) throw Error('duplicate cached activity');
-        remember(histories, key, stored, 24); return stored;
+        return stored;
       } catch { /* Discard malformed records. */ }
     }
-    const fresh = freshHistory(wallet, token, signature); remember(histories, key, fresh, 24); return fresh;
+    return null;
+  }
+  async function historyFor(wallet: string, token: string, signature: string) {
+    const key = `${wallet}-${token}`, stored = histories.get(key) ?? await read<History>('activity-' + key);
+    const completed = stored?.complete ? stored : completedHistories.get(key) ?? await read<History>('completed-activity-' + key);
+    const fallback = completed?.complete ? validHistory(completed, wallet, token, signature, resumeTtlMs) : null;
+    if (fallback) remember(completedHistories, key, fallback, 24); else completedHistories.delete(key);
+    const history = validHistory(stored, wallet, token, signature, stored?.complete ? ttlMs : resumeTtlMs) ?? freshHistory(wallet, token, signature);
+    remember(histories, key, history, 24); return { history, fallback };
   }
   async function topTraders(token: string, sort: Sort, key: string, signal: AbortSignal): Promise<Traders> {
     const name = `${token}-${sort}`;
@@ -141,10 +149,10 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
   }
   async function fetchData(wallet: string, token: string, signature: string, key: string): Promise<ProviderData> {
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(Error('provider_timeout')), Math.max(1, Math.min(8000, budgetMs)));
-    const signal = controller.signal; let history = freshHistory(wallet, token, signature);
+    const signal = controller.signal; let history = freshHistory(wallet, token, signature), fallbackHistory: History | null = null;
     let aggregate: Record<string, unknown> | null = null, checkedAt = now();
     try {
-      history = await bounded(historyFor(wallet, token, signature), signal);
+      const cached = await bounded(historyFor(wallet, token, signature), signal); history = cached.history; fallbackHistory = cached.fallback;
       while (!history.complete) {
         signal.throwIfAborted();
         if (history.pages >= 200 || history.rows.length >= maxRows) throw Error('provider_history_limit');
@@ -167,6 +175,10 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
         history = { ...history, rows: [...combined.values()], cursor: next, cursors: next ? [...history.cursors, next] : history.cursors,
           pages: history.pages + 1, complete: next === null, updatedAt: now() };
         remember(histories, `${wallet}-${token}`, history, 24); await bounded(save('activity-' + `${wallet}-${token}`, history), signal);
+        if (history.complete) {
+          remember(completedHistories, `${wallet}-${token}`, history, 24);
+          await bounded(save('completed-activity-' + `${wallet}-${token}`, history), signal);
+        }
       }
       for (const sort of ['amount_percentage', 'profit', 'buy_volume_cur'] as const) {
         const entry = await bounded(topTraders(token, sort, key, signal), signal);
@@ -175,21 +187,34 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
       }
       return { history, aggregate, checkedAt: aggregate ? checkedAt : history.updatedAt };
     } catch (error) {
-      if (error instanceof MarketProviderDeferred) return { history, aggregate, checkedAt, aggregateOnly: history.complete, pending: { reason: error.reason === 'rate_limited' ? 'provider_rate_limited' : 'provider_busy', retryAfterMs: error.retryAfterMs } };
+      if (error instanceof MarketProviderDeferred) return { history, aggregate, checkedAt, aggregateOnly: history.complete,
+        ...(!history.complete && fallbackHistory ? { fallbackHistory } : {}), pending: { reason: error.reason === 'rate_limited' ? 'provider_rate_limited' : 'provider_busy', retryAfterMs: error.retryAfterMs } };
       if (signal.aborted || error instanceof Error && (error.message === 'provider_timeout' || ['AbortError', 'TimeoutError'].includes(error.name)))
-        return { history, aggregate, checkedAt, aggregateOnly: history.complete, pending: { reason: 'provider_timeout', retryAfterMs: 1000 } };
+        return { history, aggregate, checkedAt, aggregateOnly: history.complete,
+          ...(!history.complete && fallbackHistory ? { fallbackHistory } : {}), pending: { reason: 'provider_timeout', retryAfterMs: 1000 } };
       return { history, aggregate, checkedAt, aggregateOnly: history.complete, failure: error instanceof GmgnHttpError ? `provider_http_${error.status}`
         : error instanceof Error && ['provider_response_invalid', 'provider_cursor_invalid', 'provider_activity_conflict', 'provider_history_limit'].includes(error.message) ? error.message : 'provider_unavailable' };
     } finally { clearTimeout(timer); }
   }
   function result(activity: KolTokenActivity, data?: ProviderData, reason?: string): TradeReplayAccounting {
     const checkedAt = new Date(data?.checkedAt ?? now()).toISOString();
+    const usablePrefix = (value: TradeReplayAccounting) => {
+      const last = value.events.at(-1);
+      return value.coverage.transactionsComplete && value.coverage.balanceMatched && last && [last.remainingTokenAmount, last.remainingCostBasisUsd,
+        last.cumulativeRealizedProfitUsd, last.investedUsd, last.soldUsd, last.transferOutIncomeUsd, last.feesUsd, last.feeInclusiveCostUsd].every(field => field !== null);
+    };
+    if (data?.fallbackHistory && data.pending && data.pending.reason !== 'canonical_snapshot_changed') {
+      // Only historical transaction values are reused. A fresh canonical proof
+      // must match the entire fingerprint; no cached price/final accompanies it.
+      const fallback = builder(activity, data.fallbackHistory.rows, { activitiesComplete: true, aggregateRow: null, checkedAt, now: now() });
+      if (usablePrefix(fallback)) {
+        fallback.status = 'estimated'; fallback.final = null; fallback.coverage.exactFinal = false;
+        fallback.coverage.reason = `historical_cache_${data.pending.reason}`; return fallback;
+      }
+    }
     const value = builder(activity, data?.history.rows ?? [], { activitiesComplete: data?.history.complete ?? false,
       aggregateRow: data?.aggregate, checkedAt, now: now() });
-    const last = value.events.at(-1);
-    const usableEstimate = data?.aggregateOnly && data.history.complete && value.coverage.transactionsComplete && value.coverage.balanceMatched
-      && data.pending?.reason !== 'canonical_snapshot_changed' && last && [last.remainingTokenAmount, last.remainingCostBasisUsd,
-        last.cumulativeRealizedProfitUsd, last.investedUsd, last.soldUsd, last.transferOutIncomeUsd, last.feesUsd, last.feeInclusiveCostUsd].every(field => field !== null);
+    const usableEstimate = data?.aggregateOnly && data.history.complete && usablePrefix(value) && data.pending?.reason !== 'canonical_snapshot_changed';
     if (usableEstimate && (data.pending || data.failure)) {
       value.status = 'estimated'; value.final = null; value.coverage.exactFinal = false;
       value.coverage.reason = `aggregate_${data.pending?.reason ?? data.failure}`; return value;
