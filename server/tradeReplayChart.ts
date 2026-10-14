@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { ReplayMarketChart } from '../shared/replayChart.js';
+import type { TokenChart } from '../shared/intelligence.js';
 import { pool } from './db.js';
 import { geckoFetch, MarketProviderDeferred } from './geckoApi.js';
 import { gmgnRequest } from './gmgnApi.js';
-import { parseCandles, selectChartPools } from './tokenChart.js';
+import { currentMarketChart, parseCandles, selectChartPools } from './tokenChart.js';
 import { nonStockTokenSql } from './stockToken.js';
 
 const addressPattern = /^0x[0-9a-f]{40}$/;
 const requestBudgetMs = 20_000;
 const contextMs = 5 * 60_000;
+const currentCacheMs = 15_000;
 const gmgnPageBars = 100;
 const gmgnResolutions = [['30s', 30], ['1m', 60], ['5m', 300], ['15m', 900], ['1h', 3600]] as const;
 type JsonRequest = (url: URL, signal: AbortSignal, headers?: Record<string, string>) => Promise<any>;
@@ -107,12 +109,34 @@ function gmgnBars(rows: unknown, from: number, to: number): SampleBar[] {
   return bars;
 }
 
+/** A forming bar is a live quote only; its eventual close is not yet history. */
+function formingQuote(bars: SampleBar[], seconds: number, now: number): ReplayMarketChart['currentQuote'] {
+  const bar = bars.filter(row => Number.isInteger(row.time) && row.time * 1000 <= now && (row.time + seconds) * 1000 > now
+    && validNumber(row.close)).sort((a, b) => b.time - a.time)[0];
+  return bar ? { timestamp: new Date(now).toISOString(), priceUsd: String(bar.close) } : undefined;
+}
+
+function recentChartQuote(chart: TokenChart | null, address: string, now: number): ReplayMarketChart['currentQuote'] {
+  const updated = Date.parse(chart?.updatedAt ?? '');
+  if (!chart || chart.address !== address || chart.resolution !== '1m' || chart.pending || chart.stale
+    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source)
+    || !Number.isFinite(updated) || updated > now || now - updated > 30_000) return undefined;
+  const formed = formingQuote(chart.candles, 60, now);
+  if (formed) return { ...formed, timestamp: new Date(updated).toISOString() };
+  const bar = chart.candles.filter(row => Number.isInteger(row.time) && row.time >= 0 && validNumber(row.close) && (row.time + 60) * 1000 <= now)
+    .sort((a, b) => b.time - a.time)[0];
+  const boundary = bar ? (bar.time + 60) * 1000 : NaN;
+  return bar && now - boundary <= 180_000 ? { timestamp: new Date(boundary).toISOString(), priceUsd: String(bar.close) } : undefined;
+}
+
 export interface ReplayChartProviderOptions {
   gmgnKey?: string;
   gmgnRequest?: JsonRequest;
   geckoRequest?: JsonRequest;
   signal?: AbortSignal;
   now?: number;
+  current?: boolean;
+  currentChartRequest?: (address: string, signal: AbortSignal) => Promise<TokenChart | null>;
 }
 
 /** Prefer the finest genuine history that fits bounded work. Never split coarse bars. */
@@ -122,7 +146,31 @@ export async function fetchTradeReplayChart(address: string, first: number, last
     throw new Error('Invalid replay history range');
   }
   const signal = options.signal ?? AbortSignal.timeout(requestBudgetMs);
-  const from = Math.max(0, first - contextMs), targetTo = Math.min(now, last + contextMs);
+  const from = Math.max(0, first - contextMs), targetTo = options.current ? now : Math.min(now, last + contextMs);
+  let currentQuote: ReplayMarketChart['currentQuote'];
+  const readNow = () => options.now ?? Date.now();
+  // Independently coalesced live work starts alongside historical paging. A
+  // timed-out history window must not discard a successfully obtained quote.
+  const quoteJob = options.current ? (async () => {
+    try {
+      const current = await withinBudget((options.currentChartRequest ?? (async (token, requestSignal) =>
+        (await withinBudget(currentMarketChart(token, '1m', 'chart'), requestSignal)).chart))(address, signal), signal);
+      return recentChartQuote(current, address, readNow());
+    } catch { return undefined; }
+  })() : null;
+  const finish = async (history: ReplayMarketChart | null): Promise<ReplayMarketChart | null> => {
+    if (quoteJob && !currentQuote) currentQuote = await quoteJob;
+    if (currentQuote && Date.parse(currentQuote.timestamp) < last) currentQuote = undefined;
+    const result = history ?? (currentQuote ? unavailable(address) : null);
+    if (!result || !currentQuote) return result;
+    const finalObservation = Date.parse(result.points.at(-1)?.timestamp ?? '');
+    const interval = gmgnResolutions.find(([resolution]) => resolution === result.resolution)?.[1];
+    const uncoveredTail = Number.isFinite(finalObservation) && interval !== undefined
+      && Date.parse(currentQuote.timestamp) - finalObservation > interval * 1000;
+    return { ...result, currentQuote, ...(uncoveredTail ? { sparseHistory: true } : {}) };
+  };
+  const historyEnd = (bars: SampleBar[], seconds: number) => options.current
+    ? Math.max(last, ...bars.filter(bar => (bar.time + seconds) * 1000 <= now).map(bar => (bar.time + seconds) * 1000)) : last;
   const chart = (points: ReplayMarketChart['points'], source: ReplayMarketChart['source'], resolution: string, poolAddress?: string, sparseHistory = false): ReplayMarketChart => ({
     address, period: 'replay', candles: [], points, source, resolution, poolAddress,
     updatedAt: new Date(now).toISOString(), pending: false, stale: false,
@@ -158,14 +206,16 @@ export async function fetchTradeReplayChart(address: string, first: number, last
           const body = await withinBudget((options.gmgnRequest ?? requestGmgn)(url, resolutionSignal, { 'X-APIKEY': options.gmgnKey }), resolutionSignal);
           if (body?.code !== 0) throw new Error('Replay market provider rejected history');
           const rows = gmgnBars(Array.isArray(body?.data) ? body.data : body?.data?.list, pageFrom, to);
+          if (options.current && page === 0) currentQuote ??= formingQuote(rows, seconds, readNow());
           if (!rows.length) break;
           for (const bar of rows) bars.set(bar.time, bar);
-          const points = replayPointsFromBars([...bars.values()], seconds, first, last, now);
-          if (points) return chart(points, 'gmgn', resolution);
+          const observations = [...bars.values()], end = historyEnd(observations, seconds);
+          const points = replayPointsFromBars(observations, seconds, first, end, now);
+          if (points) return finish(chart(points, 'gmgn', resolution));
           const oldest = Math.min(...rows.map(bar => bar.time)) * 1000;
           if (oldest <= first) {
-            const sparse = replaySparsePointsFromBars([...bars.values()], seconds, first, last, now);
-            if (sparse) return chart(sparse, 'gmgn', resolution, undefined, true);
+            const sparse = replaySparsePointsFromBars(observations, seconds, first, end, now);
+            if (sparse) return finish(chart(sparse, 'gmgn', resolution, undefined, true));
             break;
           }
           if (oldest - 1 >= to) break;
@@ -174,12 +224,18 @@ export async function fetchTradeReplayChart(address: string, first: number, last
       } catch (problem) {
         // Retrying another interval/provider during a cooldown adds work without
         // recovering history. Preserve the explicit retry contract for the UI.
-        if (problem instanceof MarketProviderDeferred) throw problem;
+        if (problem instanceof MarketProviderDeferred) {
+          if (options.current) {
+            const quoted = await finish(unavailable(address, problem));
+            if (quoted?.currentQuote) return quoted;
+          }
+          throw problem;
+        }
         // Unavailable fine history can still use a genuine coarser source.
       }
     }
   }
-  if (signal.aborted) return null;
+  if (signal.aborted) return finish(null);
   const request = options.geckoRequest ?? requestGecko;
   try {
     const discovery = new URL(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${address}/pools`);
@@ -199,15 +255,17 @@ export async function fetchTradeReplayChart(address: string, first: number, last
           if (problem instanceof ReplayMarketHttpError && [404, 422].includes(problem.status)) break;
           throw problem;
         }
-        const rows = parseCandles(body?.data?.attributes?.ohlcv_list, Math.floor(from / 1000), Math.min(before, Math.floor(now / 1000) - 60));
+        const rows = parseCandles(body?.data?.attributes?.ohlcv_list, Math.floor(from / 1000), Math.min(before, Math.floor(now / 1000) - (options.current ? 0 : 60)));
+        if (options.current && page === 0) currentQuote ??= formingQuote(rows, 60, readNow());
         if (!rows.length) break;
         for (const bar of rows) bars.set(bar.time, bar);
-        const points = replayPointsFromBars([...bars.values()], 60, first, last, now);
-        if (points) return chart(points, 'geckoterminal', '1m', poolAddress);
+        const observations = [...bars.values()], end = historyEnd(observations, 60);
+        const points = replayPointsFromBars(observations, 60, first, end, now);
+        if (points) return finish(chart(points, 'geckoterminal', '1m', poolAddress));
         const oldest = Math.min(...rows.map(bar => bar.time));
         if (oldest * 1000 <= first) {
-          const sparse = replaySparsePointsFromBars([...bars.values()], 60, first, last, now);
-          if (sparse) return chart(sparse, 'geckoterminal', '1m', poolAddress, true);
+          const sparse = replaySparsePointsFromBars(observations, 60, first, end, now);
+          if (sparse) return finish(chart(sparse, 'geckoterminal', '1m', poolAddress, true));
           break;
         }
         if (oldest - 1 >= before) break;
@@ -215,10 +273,16 @@ export async function fetchTradeReplayChart(address: string, first: number, last
       }
     }
   } catch (problem) {
-    if (problem instanceof MarketProviderDeferred) throw problem;
+    if (problem instanceof MarketProviderDeferred) {
+      if (options.current) {
+        const quoted = await finish(unavailable(address, problem));
+        if (quoted?.currentQuote) return quoted;
+      }
+      throw problem;
+    }
     // Keep provider gaps unavailable rather than inventing observations.
   }
-  return null;
+  return finish(null);
 }
 
 function unavailable(address: string, deferred?: MarketProviderDeferred): ReplayMarketChart {
@@ -230,22 +294,25 @@ function unavailable(address: string, deferred?: MarketProviderDeferred): Replay
 
 /** Historical windows are immutable; cache failures briefly and bound unique in-flight work. */
 export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now = Date.now) {
-  const saved = new Map<string, { chart: ReplayMarketChart; until: number }>();
+  const saved = new Map<string, { chart: ReplayMarketChart; until: number; retryAt?: number }>();
   const jobs = new Map<string, Promise<ReplayMarketChart>>();
-  return async (address: string, first: number, last: number): Promise<ReplayMarketChart> => {
-    const key = `${address}:${first}:${last}`;
+  return async (address: string, first: number, last: number, current = false): Promise<ReplayMarketChart> => {
+    const key = `${address}:${first}:${last}:${current ? 'current' : 'closed'}`;
     const cached = saved.get(key);
     if (cached && cached.until > now()) return cached.chart.loadStatus === 'queued' || cached.chart.loadStatus === 'rate_limited'
-      ? { ...cached.chart, retryAfterMs: Math.max(1000, cached.until - now()) } : cached.chart;
+      ? { ...cached.chart, retryAfterMs: Math.max(1000, (cached.retryAt ?? cached.until) - now()) } : cached.chart;
     const pending = jobs.get(key);
     if (pending) return pending;
     if (jobs.size >= 2) return unavailable(address, new MarketProviderDeferred('busy', 3000));
     const job = (async () => {
       let chart: ReplayMarketChart;
-      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(), signal: AbortSignal.timeout(requestBudgetMs) }) ?? unavailable(address); }
+      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(), signal: AbortSignal.timeout(requestBudgetMs), current }) ?? unavailable(address); }
       catch (problem) { chart = unavailable(address, problem instanceof MarketProviderDeferred ? problem : undefined); }
       if (saved.size >= 250) saved.delete(saved.keys().next().value!);
-      saved.set(key, { chart, until: now() + (chart.points.length ? 3_600_000 : chart.retryAfterMs ?? 30_000) });
+      const deferred = chart.loadStatus === 'queued' || chart.loadStatus === 'rate_limited';
+      const lifetime = current && chart.currentQuote ? currentCacheMs : current && !deferred ? 5000
+        : chart.points.length ? 3_600_000 : chart.retryAfterMs ?? 30_000;
+      saved.set(key, { chart, until: now() + lifetime, retryAt: deferred ? now() + (chart.retryAfterMs ?? 30_000) : undefined });
       return chart;
     })().finally(() => jobs.delete(key));
     jobs.set(key, job);
@@ -255,9 +322,11 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
 const cachedReplayChart = createReplayChartCache(fetchTradeReplayChart);
 
 export function registerTradeReplayChartRoutes(app: FastifyInstance) {
-  app.get<{ Params: { address: string; token: string } }>('/api/kols/:address/tokens/:token/replay-chart', async (request, reply) => {
+  app.get<{ Params: { address: string; token: string }; Querystring: { end?: string } }>('/api/kols/:address/tokens/:token/replay-chart', async (request, reply) => {
     const wallet = request.params.address.toLowerCase(), token = request.params.token.toLowerCase();
     if (!addressPattern.test(wallet) || !addressPattern.test(token)) return reply.code(400).send({ error: 'Invalid KOL or token address' });
+    if (request.query.end !== undefined && request.query.end !== 'current') return reply.code(400).send({ error: 'Invalid replay ending' });
+    const current = request.query.end === 'current';
     const result = await pool.query(`SELECT MIN(t.timestamp) AS first,MAX(t.timestamp) AS last,
       CASE WHEN v.total_supply_raw>0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at>now()-interval '2 days'
         THEN (v.total_supply_raw/power(10::numeric,v.decimals))::text END AS supply
@@ -267,8 +336,8 @@ export function registerTradeReplayChartRoutes(app: FastifyInstance) {
       GROUP BY v.address`, [wallet, token]);
     const row = result.rows[0];
     if (!row) return reply.code(404).send({ error: 'KOL token activity not found' });
-    const chart = await cachedReplayChart(token, new Date(row.first).getTime(), new Date(row.last).getTime());
-    return reply.header('Cache-Control', chart.points.length ? 'public, max-age=60' : 'no-store')
+    const chart = await cachedReplayChart(token, new Date(row.first).getTime(), new Date(row.last).getTime(), current);
+    return reply.header('Cache-Control', !current && chart.points.length ? 'public, max-age=60' : 'no-store')
       .send({ ...chart, marketCapSupply: row.supply ?? null });
   });
 }

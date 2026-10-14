@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { TradeReplayData } from './tradeReplayData';
-import { recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
+import { currentPriceUnavailableNotice, currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 
 const token = '0x2222222222222222222222222222222222222222';
 const now = Date.parse('2026-10-11T12:00:00Z');
@@ -114,6 +114,50 @@ describe('bounded replay historical-market preparation', () => {
     expect(result.data.chart.source).toBe('GMGN historical samples'); expect(replayUsesRecordedPrices(result.data)).toBe(false);
     expect(result.notice).toBe('Market observations are sparse. Prices and P&L between observations are estimates.');
     expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('requests a current endpoint only for a checked or complete recorded open position', async () => {
+    for (const variant of ['recorded-open', 'checked-open', 'checked-closed'] as const) {
+      const original = data();
+      if (variant !== 'checked-open') original.trades[1].tokenAmount = .5;
+      if (variant === 'checked-open') original.position.status = 'open';
+      if (variant === 'checked-closed') original.position.status = 'closed';
+      const fetcher = vi.fn().mockResolvedValue(response(chart())); vi.stubGlobal('fetch', fetcher);
+      await replayMarketData(original, new AbortController().signal);
+      expect(fetcher.mock.calls[0][0].endsWith('?end=current')).toBe(variant !== 'checked-closed');
+    }
+  });
+
+  it('keeps a quote-only endpoint and discloses interpolation from fills when market history is unavailable', async () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const unavailable = { ...deferredChart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } };
+    const fetcher = vi.fn().mockResolvedValue(response(unavailable)); vi.stubGlobal('fetch', fetcher);
+    const result = await replayMarketData(original, new AbortController().signal);
+    expect(result.data.currentQuote).toEqual({ timestamp: new Date(now).toISOString(), priceUsd: 12, marketCapUsd: 12000 });
+    expect(result.data.trades).toBe(original.trades); expect(result.data.chart.source).toBe('Recorded fills');
+    expect(result.notice).toBe(currentQuoteEstimateNotice); expect(result.currentPriceNotice).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('reports that current price is unavailable instead of treating later observations or an activity field as current', async () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const observed = chart(); observed.points.push({ timestamp: new Date(now - 60_000).toISOString(), priceUsd: '50' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(observed)));
+    const result = await replayMarketData(original, new AbortController().signal);
+    expect(result.data.chart.points.at(-1)?.priceUsd).toBe(50); expect(result.data.currentQuote).toBeUndefined();
+    expect(result.data.token.priceUsd).toBe(9); expect(result.currentPriceNotice).toBe(currentPriceUnavailableNotice);
+  });
+
+  it('does not keep a current quote that expires while waiting on the shared retry budget', async () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const queued = { ...deferredChart('queued', 3000), currentQuote: { timestamp: new Date(now - 179_000).toISOString(), priceUsd: '12' } };
+    const fetcher = vi.fn().mockResolvedValueOnce(response(queued)).mockResolvedValue(response(deferredChart()));
+    vi.stubGlobal('fetch', fetcher);
+    const pending = replayMarketData(original, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(3000);
+    const result = await pending;
+    expect(result.data.currentQuote).toBeUndefined(); expect(result.currentPriceNotice).toBe(currentPriceUnavailableNotice);
+    expect(result.notice).toBe(recordedPriceEstimateNotice); expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it('terminates bad-address and missing-pair HTTP responses and does not request malformed addresses', async () => {

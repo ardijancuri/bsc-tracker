@@ -237,4 +237,6 @@ export const chinese: Record<string, string> = {
   'Historical market data could not be loaded; the replay is using available data.': '无法加载历史市场数据，回放正在使用现有数据。',
   'Market history is unavailable. Estimated P&L uses recorded trade prices.': '市场历史数据不可用。估算盈亏使用已记录的交易价格。',
   'Market observations are sparse. Prices and P&L between observations are estimates.': '市场观测数据稀疏。观测点之间的价格与盈亏为估算值。',
+  'Current market price is unavailable. This replay ends at the last recorded trade.': '当前市场价格暂不可用。此回放止于最后一笔已记录交易。',
+  'Market history is unavailable. Prices between recorded trades and the current quote are estimates.': '市场历史数据不可用。已记录交易与当前报价之间的价格为估算值。',
 };

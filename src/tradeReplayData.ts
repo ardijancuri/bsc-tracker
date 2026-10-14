@@ -36,24 +36,70 @@ export interface TradeReplayData {
   source: { chart: string; tradesComplete: boolean };
   realizedAccounting?: { available: boolean };
   generatedAt: string;
+  currentQuote?: { timestamp: string; priceUsd: number; marketCapUsd: number | null };
 }
 
 export type ReplayActivity = KolTokenActivity;
 
+/** Checked ending balances win; otherwise use only complete, consistent recorded quantities. */
+export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' | 'trades'>): boolean {
+  if (data.position.status === 'open' || data.position.status === 'closed') return data.position.status === 'open';
+  if (!data.source.tradesComplete || !data.position.tradesComplete || !data.trades.length) return false;
+  let bought = 0, sold = 0;
+  for (const trade of data.trades) {
+    const quantity = replayNumber(trade.tokenAmount);
+    if (quantity === null) return false;
+    if (trade.side === 'buy') bought += quantity;
+    else if (trade.side === 'sell') sold += quantity;
+    else return false;
+    if (!Number.isFinite(bought) || !Number.isFinite(sold) || sold > bought + Math.max(Number.MIN_VALUE, bought * 1e-10)) return false;
+  }
+  return bought - sold > Math.max(Number.MIN_VALUE, bought * 1e-10);
+}
+
+function checkedCurrentQuote(data: TradeReplayData, quote: ReplayMarketChart['currentQuote'] | TradeReplayData['currentQuote'], supply: number | null, now: number) {
+  if (!quote || !replayIsOpen(data)) return undefined;
+  const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
+  const lastFill = Date.parse(data.trades.at(-1)?.timestamp ?? '');
+  if (price === null || !Number.isFinite(time) || !Number.isFinite(lastFill) || time < lastFill || time > now || now - time > 180_000) return undefined;
+  return { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) };
+}
+
+export function validReplayCurrentQuote(data: TradeReplayData, now = Date.now()) {
+  return checkedCurrentQuote(data, data.currentQuote, data.chart.marketCapSupply, now);
+}
+
+function sparseQuoteTail(chart: TradeReplayData['chart'], currentQuote: TradeReplayData['currentQuote']) {
+  if (chart.sparseHistory) return true;
+  if (!currentQuote || !chart.points.length || chart.source.toLowerCase().includes('recorded fill')) return false;
+  const intervalSeconds: Record<string, number> = { '30s': 30, '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+  const seconds = intervalSeconds[chart.resolution];
+  const lastObservation = Date.parse(chart.points.at(-1)!.timestamp), currentTime = Date.parse(currentQuote.timestamp);
+  return Boolean(seconds && Number.isFinite(lastObservation) && currentTime - lastObservation > seconds * 1000);
+}
+
 /** Observed history covering the selected window can replace the preview;
  * it never changes the selected wallet, executions, or accounting snapshot. */
 export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarketChart, now = Date.now()): TradeReplayData {
-  if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || chart.source === 'unavailable'
-    || chart.partialHistory || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution) || !data.trades.length) return data;
+  if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || !data.trades.length) return data;
+  const open = replayIsOpen(data);
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
+  const currentQuote = checkedCurrentQuote(data, chart.currentQuote, supply, now) ?? checkedCurrentQuote(data, data.currentQuote, supply, now);
+  let selected = currentQuote ? { ...data, currentQuote, chart: { ...data.chart, marketCapSupply: supply,
+    points: data.chart.points.filter(point => Date.parse(point.timestamp) <= Date.parse(currentQuote.timestamp))
+      .map(point => ({ ...point, marketCapUsd: scaledPrice(point.priceUsd, supply) })) } } : data;
+  if (currentQuote && sparseQuoteTail(selected.chart, currentQuote)) selected.chart.sparseHistory = true;
+  if (!currentQuote && data.currentQuote) { selected = { ...data }; delete selected.currentQuote; }
+  if (chart.source === 'unavailable' || chart.partialHistory || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution)) return selected;
+  const observationEnd = currentQuote ? Date.parse(currentQuote.timestamp) : now;
   const byTime = new Map<number, TradeReplayData['chart']['points'][number]>();
   for (const point of chart.points) {
     const time = Date.parse(point.timestamp), price = replayNumber(point.priceUsd);
-    if (Number.isFinite(time) && time <= now && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
+    if (Number.isFinite(time) && time <= now && (!open || time <= observationEnd) && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
   }
   const points = [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point);
   const first = Date.parse(data.trades[0].timestamp), last = Date.parse(data.trades.at(-1)!.timestamp);
-  if (!points.length || Date.parse(points[0].timestamp) > first || Date.parse(points.at(-1)!.timestamp) < last) return data;
+  if (!points.length || Date.parse(points[0].timestamp) > first || Date.parse(points.at(-1)!.timestamp) < last) return selected;
   for (const time of [first, last]) {
     const after = points.findIndex(point => Date.parse(point.timestamp) >= time);
     if (after > 0 && Date.parse(points[after].timestamp) !== time) {
@@ -65,9 +111,12 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
   }
   const start = points.findIndex(point => Date.parse(point.timestamp) === first);
   const end = points.findIndex(point => Date.parse(point.timestamp) === last);
-  if (start < 0 || end < start) return data;
+  if (start < 0 || end < start) return selected;
   const source = chart.source === 'gmgn' ? 'GMGN historical samples' : 'GeckoTerminal historical samples';
-  return { ...data, chart: { points: points.slice(Math.max(0, start - 1), end + 1), marketCapSupply: supply, resolution: chart.resolution, source, sparseHistory: chart.sparseHistory }, source: { ...data.source, chart: source } };
+  const selectedChart = { points: points.slice(Math.max(0, start - 1), open ? undefined : end + 1), marketCapSupply: supply,
+    resolution: chart.resolution, source, sparseHistory: chart.sparseHistory || data.chart.sparseHistory };
+  if (sparseQuoteTail(selectedChart, currentQuote)) selectedChart.sparseHistory = true;
+  return { ...selected, chart: selectedChart, source: { ...data.source, chart: source } };
 }
 
 export function replayNumber(value: unknown, allowZero = false): number | null {
@@ -149,6 +198,26 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
       cumulativeRealizedProfitUsd: replaySignedNumber(trade.cumulativeRealizedProfitUsd) };
   });
 
+  const complete = activity.coverage.complete && trades.length === activity.trades.length;
+  const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
+    && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';
+  const checkedAt = validPosition && position?.checkedAt ? Date.parse(position.checkedAt) : NaN;
+  const fresh = Number.isFinite(checkedAt) && now - checkedAt <= 180_000 && now - checkedAt >= -60_000;
+  const balance = fresh ? replayNumber(position?.balance, true) : null;
+  let bought = 0, sold = 0, reconciled = complete && trades.length > 0 && balance !== null
+    && activity.trades.every(trade => trade.valuationStatus === 'valued');
+  for (const trade of trades) {
+    if (trade.tokenAmount === null || trade.amountUsd === null) reconciled = false;
+    if (trade.side === 'buy') bought += trade.tokenAmount ?? 0;
+    else sold += trade.tokenAmount ?? 0;
+    if (sold > bought + Math.max(Number.MIN_VALUE, bought * 1e-10)) reconciled = false;
+  }
+  const tolerance = Math.max(Number.MIN_VALUE, Math.max(bought, sold, balance ?? 0) * 1e-10);
+  const flowMatched = reconciled && Math.abs(bought - sold - (balance ?? 0)) <= tolerance;
+  const replayPosition: TradeReplayData['position'] = { status: balance === null ? 'unknown' : balance === 0 ? 'closed' : 'open',
+    tokenBalance: balance, tradeFlowMatched: flowMatched, tradesComplete: complete, checkedAt: fresh ? position?.checkedAt ?? null : null };
+  const open = replayIsOpen({ trades, position: replayPosition, source: { chart: '', tradesComplete: complete } });
+
   const pointsByTime = new Map<number, TradeReplayData['chart']['points'][number]>();
   const addPoint = (time: number, rawPrice: unknown) => {
     const price = replayNumber(rawPrice);
@@ -169,10 +238,9 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   // Recent-only charts must never be extrapolated backward as historical prices.
   if (trades.length && (Date.parse(points[0]?.timestamp ?? '') > Date.parse(trades[0].timestamp)
     || Date.parse(points.at(-1)?.timestamp ?? '') < Date.parse(trades.at(-1)!.timestamp))) points = [];
-  // Bound every trade recap to its recorded events, including an unknown or
-  // currently open wallet. Hours of later market history are not part of the
-  // selected KOL's trade sequence. Endpoints use the sampled market line;
-  // execution route prices remain separate from it.
+  // Closed recaps stop at their final fill. Open recaps may preserve actual
+  // later observations; a separate fresh currentQuote is still required to
+  // claim a current endpoint. Activity token fields never supply that quote.
   if (points.length && trades.length) {
     for (const timestamp of [trades[0].timestamp, trades.at(-1)!.timestamp]) {
       const time = Date.parse(timestamp);
@@ -188,29 +256,13 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     const last = points.findIndex(point => Date.parse(point.timestamp) === Date.parse(trades.at(-1)!.timestamp));
     // One prior genuine sample gives the chart context without adding a long
     // lead-in or inventing a price before the available history begins.
-    if (first >= 0 && last >= first) points = points.slice(Math.max(0, first - 1), last + 1);
+    if (first >= 0 && last >= first) points = points.slice(Math.max(0, first - 1), open ? undefined : last + 1);
     else points = [];
   }
-  const complete = activity.coverage.complete && trades.length === activity.trades.length;
-  const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
-    && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';
-  const checkedAt = validPosition && position?.checkedAt ? Date.parse(position.checkedAt) : NaN;
-  const fresh = Number.isFinite(checkedAt) && now - checkedAt <= 180_000 && now - checkedAt >= -60_000;
-  const balance = fresh ? replayNumber(position?.balance, true) : null;
-  let bought = 0, sold = 0, reconciled = complete && trades.length > 0 && balance !== null
-    && activity.trades.every(trade => trade.valuationStatus === 'valued');
-  for (const trade of trades) {
-    if (trade.tokenAmount === null || trade.amountUsd === null) reconciled = false;
-    if (trade.side === 'buy') bought += trade.tokenAmount ?? 0;
-    else sold += trade.tokenAmount ?? 0;
-    if (sold > bought + Math.max(Number.MIN_VALUE, bought * 1e-10)) reconciled = false;
-  }
-  const tolerance = Math.max(Number.MIN_VALUE, Math.max(bought, sold, balance ?? 0) * 1e-10);
-  const flowMatched = reconciled && Math.abs(bought - sold - (balance ?? 0)) <= tolerance;
   const chartSource = points.length ? (selectedChart?.source === 'recorded' ? 'Recorded observations' : 'Historical market samples') : 'Recorded fills';
   return {
     kol, token: { ...token, priceUsd: replayNumber(token.priceUsd), marketCapUsd: replayNumber(token.marketCapUsd) }, trades,
-    position: { status: balance === null ? 'unknown' : balance === 0 ? 'closed' : 'open', tokenBalance: balance, tradeFlowMatched: flowMatched, tradesComplete: complete, checkedAt: fresh ? position?.checkedAt ?? null : null },
+    position: replayPosition,
     chart: { points, marketCapSupply: supply, resolution: selectedChart?.resolution ?? '', source: chartSource },
     source: { chart: chartSource, tradesComplete: complete }, generatedAt: new Date(now).toISOString(),
     realizedAccounting: { available: complete && replaySignedNumber(activity.summary.realizedProfitUsd) !== null },

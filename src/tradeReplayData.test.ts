@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
-import { prepareTradeReplayData, replayNumber, replaySignedNumber } from './tradeReplayData';
+import { prepareTradeReplayData, replayIsOpen, replayNumber, replaySignedNumber } from './tradeReplayData';
 import { replayFileName } from './tradeReplayExport';
 import ReplayCanvas from './tradeReplayCanvas';
 
@@ -117,14 +117,35 @@ describe('trade replay factual boundary', () => {
     expect(data.chart.points.some(point => point.priceUsd >= 99)).toBe(false);
     expect(data.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:09:00Z');
   });
-  it('ends open and unknown-balance recaps at the final recorded trade rather than a later market quote', () => {
+  it('preserves genuine post-fill samples only for open positions without treating activity fields as a live quote', () => {
     const later = { ...chart.candles[1], time: chart.candles[1].time + 300, close: 50 };
     for (const selectedPosition of [null, { ...position, status: 'Holding' as const, balance: '50' }]) {
       const data = prepareTradeReplayData(activity(), { ...chart, candles: [...chart.candles, later] }, selectedPosition, now)!;
-      expect(data.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:09:00Z');
-      expect(data.chart.points.at(-1)?.priceUsd).toBeCloseTo(3.8);
-      expect(data.chart.points.every(point => Date.parse(point.timestamp) <= Date.parse(data.trades.at(-1)!.timestamp))).toBe(true);
+      const open = selectedPosition !== null;
+      expect(data.chart.points.at(-1)?.timestamp).toBe(open ? '2026-10-11T10:15:00.000Z' : '2026-10-11T10:09:00Z');
+      expect(data.chart.points.at(-1)?.priceUsd).toBeCloseTo(open ? 50 : 3.8);
+      expect(data.currentQuote).toBeUndefined(); expect(replayIsOpen(data)).toBe(open);
     }
+  });
+  it('uses complete remaining recorded lots as open status when no checked balance is available', () => {
+    const payload = activity(); payload.trades[1].tokenAmount = '50';
+    const later = { ...chart.candles[1], time: chart.candles[1].time + 300, close: 50 };
+    const prepared = prepareTradeReplayData(payload, { ...chart, candles: [...chart.candles, later] }, null, now)!;
+    expect(prepared.position.status).toBe('unknown'); expect(replayIsOpen(prepared)).toBe(true);
+    expect(prepared.chart.points.at(-1)?.priceUsd).toBe(50); expect(prepared.currentQuote).toBeUndefined();
+    expect(replayIsOpen({ ...prepared, position: { ...prepared.position, status: 'closed' } })).toBe(false);
+    expect(replayIsOpen({ ...prepared, position: { ...prepared.position, status: 'open' }, source: { ...prepared.source, tradesComplete: false } })).toBe(true);
+  });
+  it('withholds inferred open status for missing, incomplete or oversold quantities and preserves tiny real lots', () => {
+    const payload = activity(); payload.trades[1].tokenAmount = '50';
+    const prepared = prepareTradeReplayData(payload, chart, null, now)!;
+    for (const invalid of [
+      { ...prepared, source: { ...prepared.source, tradesComplete: false } },
+      { ...prepared, position: { ...prepared.position, tradesComplete: false } },
+      { ...prepared, trades: prepared.trades.map((trade, index) => index === 0 ? { ...trade, tokenAmount: null } : trade) },
+      { ...prepared, trades: prepared.trades.map((trade, index) => index === 1 ? { ...trade, tokenAmount: 101 } : trade) },
+    ]) expect(replayIsOpen(invalid)).toBe(false);
+    expect(replayIsOpen({ ...prepared, trades: prepared.trades.map(trade => ({ ...trade, tokenAmount: trade.tokenAmount! * 1e-15 })) })).toBe(true);
   });
   it('does not use an unfinished candle close to project a market price through the latest fill', () => {
     const current = Date.parse('2026-10-11T10:09:30Z');

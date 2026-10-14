@@ -1,12 +1,14 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayMarketChart } from '../shared/replayChart.js';
+import type { TokenChart } from '../shared/intelligence.js';
 import { createReplayChartCache, fetchTradeReplayChart, registerTradeReplayChartRoutes, replayPointsFromBars, replaySparsePointsFromBars } from './tradeReplayChart.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 
-const mocks = vi.hoisted(() => ({ query: vi.fn(), geckoFetch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ query: vi.fn(), geckoFetch: vi.fn(), currentMarketChart: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
 vi.mock('./geckoApi.js', async original => ({ ...await original<typeof import('./geckoApi.js')>(), geckoFetch: mocks.geckoFetch }));
+vi.mock('./tokenChart.js', async original => ({ ...await original<typeof import('./tokenChart.js')>(), currentMarketChart: mocks.currentMarketChart }));
 const token = '0x' + '1'.repeat(40), wallet = '0x' + '2'.repeat(40), poolAddress = '0x' + '3'.repeat(40);
 const base = 1791654000;
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -19,6 +21,9 @@ const geckoBody = { data: { attributes: { ohlcv_list: marketRows } } };
 const market = (): ReplayMarketChart => ({ address: token, period: 'replay', source: 'geckoterminal', resolution: '1m',
   candles: [], points: [{ timestamp: iso(base), priceUsd: '1' }, { timestamp: iso(base + 180), priceUsd: '4' }],
   updatedAt: iso(base + 600), pending: false, stale: false });
+const liveMarket = (): TokenChart => ({ address: token, period: '1m', source: 'gmgn', resolution: '1m',
+  candles: [{ time: base + 600, open: 5, high: 7, low: 5, close: 7, volume: 10 }], points: [],
+  updatedAt: iso(base + 615), pending: false, stale: false });
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
@@ -329,6 +334,134 @@ describe('replay chart job cache', () => {
     expect(await cache(token, 1, 2)).toMatchObject({ source: 'geckoterminal', resolution: '1m' });
     expect(loader).toHaveBeenCalledTimes(2);
   });
+  it('coalesces current windows separately and refreshes live quotes after fifteen seconds', async () => {
+    let now = 0;
+    const ready = deferred<ReplayMarketChart | null>();
+    const current = { ...market(), currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const loader = vi.fn().mockImplementationOnce(() => ready.promise).mockResolvedValue(current);
+    const cache = createReplayChartCache(loader, () => now);
+    const first = cache(token, 1, 2, true), duplicate = cache(token, 1, 2, true);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(loader.mock.calls[0][3]).toMatchObject({ current: true });
+    ready.resolve(current);
+    expect(await first).toBe(current); expect(await duplicate).toBe(current);
+    now = 14_999;
+    expect(await cache(token, 1, 2, true)).toBe(current);
+    expect(loader).toHaveBeenCalledOnce();
+    await cache(token, 1, 2);
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(loader.mock.calls[1][3]).toMatchObject({ current: false });
+    now = 15_001;
+    await cache(token, 1, 2, true);
+    expect(loader).toHaveBeenCalledTimes(3);
+    now = 3_000_000;
+    await cache(token, 1, 2);
+    expect(loader).toHaveBeenCalledTimes(3);
+  });
+  it('retries current windows without a current quote after five seconds', async () => {
+    let now = 0;
+    const loader = vi.fn().mockResolvedValue(market());
+    const cache = createReplayChartCache(loader, () => now);
+    await cache(token, 1, 2, true);
+    now = 4999;
+    await cache(token, 1, 2, true);
+    expect(loader).toHaveBeenCalledOnce();
+    now = 5001;
+    await cache(token, 1, 2, true);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+  it('does not retain a live quote for the duration of a long historical-provider cooldown', async () => {
+    let now = 0;
+    const quoted: ReplayMarketChart = { ...market(), source: 'unavailable', points: [], loadStatus: 'rate_limited', retryAfterMs: 60_000,
+      currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } };
+    const loader = vi.fn().mockResolvedValue(quoted);
+    const cache = createReplayChartCache(loader, () => now);
+    await cache(token, 1, 2, true);
+    now = 1000;
+    expect(await cache(token, 1, 2, true)).toMatchObject({ retryAfterMs: 59_000 });
+    expect(loader).toHaveBeenCalledOnce();
+    now = 15_001;
+    await cache(token, 1, 2, true);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('current open-replay observations', () => {
+  it('continues completed history after the final fill and keeps a forming close as a separate current quote', async () => {
+    const gmgnRequest = vi.fn(async (url: URL) => {
+      expect(Number(url.searchParams.get('to'))).toBe((base + 615) * 1000);
+      return { code: 0, data: [...Array.from({ length: 20 }, (_, index) => bar(index * 30, 1, 2)), bar(600, 2, 9)] };
+    });
+    const chart = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, geckoRequest: vi.fn(), currentChartRequest: async () => null, now: (base + 615) * 1000 });
+    expect(chart).toMatchObject({ source: 'gmgn', resolution: '30s', currentQuote: { timestamp: iso(base + 615), priceUsd: '9' } });
+    expect(chart?.points.at(-1)).toEqual({ timestamp: iso(base + 600), priceUsd: '2' });
+    expect(chart?.sparseHistory).toBeUndefined();
+    expect(chart?.points.some(point => point.priceUsd === '9' || Date.parse(point.timestamp) > (base + 615) * 1000)).toBe(false);
+  });
+  it('does not append a current quote or fetch the live market for a closed replay', async () => {
+    const gmgnRequest = vi.fn(async () => ({ code: 0, data: [bar(0), bar(30), bar(60), bar(600, 2, 9)] }));
+    const currentChartRequest = vi.fn();
+    const chart = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 75) * 1000,
+      { gmgnKey: 'key', gmgnRequest, currentChartRequest, geckoRequest: vi.fn(), now: (base + 615) * 1000 });
+    expect(chart?.currentQuote).toBeUndefined();
+    expect(chart?.points.at(-1)?.timestamp).toBe(iso(base + 90));
+    expect(currentChartRequest).not.toHaveBeenCalled();
+  });
+  it('retains a genuine current quote even when historical coverage is unavailable', async () => {
+    const currentChartRequest = vi.fn().mockResolvedValue(liveMarket());
+    const chart = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, currentChartRequest, geckoRequest: async () => ({ data: [] }), now: (base + 615) * 1000 });
+    expect(chart).toMatchObject({ source: 'unavailable', points: [], currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } });
+    expect(currentChartRequest).toHaveBeenCalledOnce();
+  });
+  it('discloses an uncovered tail between old observations and an independent current quote', async () => {
+    const rows = [bar(0), bar(30), bar(60)];
+    const chart = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 75) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest: async () => ({ code: 0, data: rows }),
+        currentChartRequest: async () => liveMarket(), geckoRequest: vi.fn(), now: (base + 615) * 1000 });
+    expect(chart).toMatchObject({ source: 'gmgn', resolution: '30s', sparseHistory: true,
+      currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } });
+    expect(chart?.points).toEqual(replayPointsFromBars(rows, 30, (base + 15) * 1000, (base + 90) * 1000, (base + 615) * 1000));
+  });
+  it('timestamps a fresh completed one-minute quote at its actual closing boundary', async () => {
+    const chart = liveMarket(); chart.candles[0].time = base + 540;
+    const result = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, currentChartRequest: async () => chart, geckoRequest: async () => ({ data: [] }), now: (base + 615) * 1000 });
+    expect(result?.currentQuote).toEqual({ timestamp: iso(base + 600), priceUsd: '7' });
+  });
+  it('rejects stale, pending, future, unrelated and synthetic current-chart quotes', async () => {
+    const original = liveMarket();
+    const variants: TokenChart[] = [
+      { ...original, updatedAt: iso(base + 580) }, { ...original, updatedAt: iso(base + 616) },
+      { ...original, stale: true }, { ...original, pending: true }, { ...original, address: wallet },
+      { ...original, source: 'quote' }, { ...original, source: 'recorded' },
+      { ...original, candles: [{ ...original.candles[0], time: base + 660 }] },
+      { ...original, candles: [{ ...original.candles[0], time: base + 300 }] },
+      { ...original, candles: [{ ...original.candles[0], close: 0 }] },
+    ];
+    for (const current of variants) {
+      expect(await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+        { current: true, currentChartRequest: async () => current, geckoRequest: async () => ({ data: [] }), now: (base + 615) * 1000 })).toBeNull();
+    }
+  });
+  it('does not use a cached current quote timestamp from before the final fill', async () => {
+    const current = { ...liveMarket(), updatedAt: iso(base + 610) };
+    expect(await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 614) * 1000,
+      { current: true, currentChartRequest: async () => current, geckoRequest: async () => ({ data: [] }), now: (base + 615) * 1000 })).toBeNull();
+  });
+  it('starts live work alongside history and preserves a successful quote when history is aborted', async () => {
+    const controller = new AbortController(), held = deferred<unknown>();
+    const currentChartRequest = vi.fn().mockResolvedValue(liveMarket());
+    const gmgnRequest = vi.fn(() => held.promise);
+    const pending = fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, geckoRequest: vi.fn(), currentChartRequest, signal: controller.signal, now: (base + 615) * 1000 });
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    expect(currentChartRequest).toHaveBeenCalledOnce(); expect(gmgnRequest).toHaveBeenCalledOnce();
+    controller.abort();
+    expect(await pending).toMatchObject({ source: 'unavailable', points: [], currentQuote: { timestamp: iso(base + 615), priceUsd: '7' } });
+    held.resolve({ code: 0, data: [] });
+  });
 });
 
 describe('KOL replay chart route', () => {
@@ -336,6 +469,8 @@ describe('KOL replay chart route', () => {
     const app = Fastify(); registerTradeReplayChartRoutes(app);
     try {
       expect((await app.inject(`/api/kols/bad/tokens/${token}/replay-chart`)).statusCode).toBe(400);
+      expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/replay-chart?end=tomorrow`)).statusCode).toBe(400);
+      expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/replay-chart?end=1799999999`)).statusCode).toBe(400);
       expect(mocks.query).not.toHaveBeenCalled();
       mocks.query.mockResolvedValue({ rows: [] });
       expect((await app.inject(`/api/kols/${wallet}/tokens/${token}/replay-chart`)).statusCode).toBe(404);
@@ -357,5 +492,25 @@ describe('KOL replay chart route', () => {
       expect(mocks.query.mock.calls[0][0]).toContain('k.is_tracked');
       expect(response.headers['cache-control']).toBe('public, max-age=60');
     } finally { await app.close(); }
+  });
+  it('bounds current endings to server time and disables browser caching', async () => {
+    vi.useFakeTimers(); vi.setSystemTime((base + 615) * 1000);
+    vi.stubEnv('GMGN_API_KEY', ''); vi.stubEnv('GMGN_CHART_API_KEY', '');
+    const currentToken = '0x' + '7'.repeat(40);
+    mocks.currentMarketChart.mockResolvedValue({ chart: null, pending: false });
+    mocks.query.mockResolvedValue({ rows: [{ first: iso(base + 15), last: iso(base + 135), supply: '1000' }] });
+    const latest = Array.from({ length: 11 }, (_, index) => [base + index * 60, 1, 9, 1, index === 10 ? 9 : 2, 10]);
+    mocks.geckoFetch.mockImplementation(async (url: URL) => {
+      if (!url.pathname.endsWith('/pools')) expect(Number(url.searchParams.get('before_timestamp'))).toBe(base + 615);
+      return { ok: true, json: async () => url.pathname.endsWith('/pools') ? { data: [poolRow(poolAddress, currentToken)] } : { data: { attributes: { ohlcv_list: latest } } } };
+    });
+    const app = Fastify(); registerTradeReplayChartRoutes(app);
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${currentToken}/replay-chart?end=current`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ source: 'geckoterminal', currentQuote: { timestamp: iso(base + 615), priceUsd: '9' }, marketCapSupply: '1000' });
+      expect(response.json().points.at(-1)).toEqual({ timestamp: iso(base + 600), priceUsd: '2' });
+      expect(response.headers['cache-control']).toBe('no-store');
+    } finally { await app.close(); vi.useRealTimers(); }
   });
 });

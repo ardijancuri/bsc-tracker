@@ -3,7 +3,7 @@ import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, Send, Share2
 import ReplayCanvas from './tradeReplayCanvas';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
 import type { TradeReplayData } from './tradeReplayData';
-import { recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
+import { currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayMarketData, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay, shareTradeReplayFile, tradeReplayXIntent } from './tradeReplaySharing';
 import { t } from './i18n';
@@ -72,7 +72,11 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
         await renderer.setData(market.data);
         if (!signal.aborted) {
           const notices = market.notice ? [t(market.notice)] : [];
-          if (replayUsesRecordedPrices(market.data) && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
+          if (replayUsesRecordedPrices(market.data) && !market.data.currentQuote && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
+          if (replayUsesRecordedPrices(market.data) && market.data.currentQuote && market.notice !== currentQuoteEstimateNotice) notices.push(t(currentQuoteEstimateNotice));
+          const sparseNotice = 'Market observations are sparse. Prices and P&L between observations are estimates.';
+          if (market.data.chart.sparseHistory && market.notice !== sparseNotice) notices.push(t(sparseNotice));
+          if (market.currentPriceNotice) notices.push(t(market.currentPriceNotice));
           if (notices.length) setMarketNotice(notices.join(' '));
         }
       },

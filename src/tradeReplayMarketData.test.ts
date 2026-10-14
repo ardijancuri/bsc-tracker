@@ -52,4 +52,86 @@ describe('finer observed replay history', () => {
     expect(replay.chart.marketCapSupply).toBeNull(); expect(replay.chart.points.every(point => point.marketCapUsd === null)).toBe(true);
     expect(replay.position.status).toBe('unknown'); expect(replay.position.tradeFlowMatched).toBe(false);
   });
+
+  it('retains open post-fill observations up to a separate genuine current quote without changing trade accounting', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const observed = chart();
+    observed.points.push(
+      { timestamp: '2026-10-11T11:58:00Z', priceUsd: '10' },
+      { timestamp: '2026-10-11T11:59:30Z', priceUsd: '50' },
+    );
+    observed.currentQuote = { timestamp: '2026-10-11T11:59:00Z', priceUsd: '12' };
+    const replay = applyReplayMarketChart(original, observed, now);
+    expect(replay.trades).toBe(original.trades); expect(replay.position).toBe(original.position);
+    expect(replay.realizedAccounting).toBe(original.realizedAccounting); expect(replay.trades).toHaveLength(2);
+    expect(replay.chart.points.at(-1)?.timestamp).toBe('2026-10-11T11:58:00.000Z');
+    expect(replay.chart.points.some(point => point.priceUsd === 50)).toBe(false);
+    expect(replay.currentQuote).toEqual({ timestamp: '2026-10-11T11:59:00.000Z', priceUsd: 12, marketCapUsd: 12000 });
+    expect(replay.chart.points.some(point => point.timestamp === replay.currentQuote!.timestamp)).toBe(false);
+  });
+
+  it('keeps closed histories ending at the final fill and ignores a current quote returned by the server', () => {
+    const original = data(), observed = chart();
+    observed.currentQuote = { timestamp: new Date(now).toISOString(), priceUsd: '99' };
+    observed.points.push({ timestamp: new Date(now - 60_000).toISOString(), priceUsd: '50' });
+    const replay = applyReplayMarketChart(original, observed, now);
+    expect(replay.currentQuote).toBeUndefined();
+    expect(replay.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:09:45.000Z');
+    expect(replay.chart.points.some(point => point.priceUsd === 50)).toBe(false);
+  });
+
+  it('accepts a fresh current endpoint even when history is unavailable without calling fills historical observations', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const unavailable = { ...chart(), source: 'unavailable' as const, points: [], currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } };
+    const replay = applyReplayMarketChart(original, unavailable, now);
+    expect(replay.chart.source).toBe('Recorded fills'); expect(replay.source.chart).toBe('Recorded fills');
+    expect(replay.chart.points).toEqual([]); expect(replay.trades).toBe(original.trades);
+    expect(replay.currentQuote?.marketCapUsd).toBe(12000);
+    expect(replay.token.priceUsd).toBe(9);
+    const retained = { ...original, chart: { ...original.chart, source: 'Historical market samples', points: [
+      { timestamp: '2026-10-11T11:58:00Z', priceUsd: 10, marketCapUsd: 10000 },
+      { timestamp: '2026-10-11T12:00:00Z', priceUsd: 20, marketCapUsd: 20000 },
+    ] } };
+    const earlierQuote = { ...unavailable, currentQuote: { timestamp: '2026-10-11T11:59:00Z', priceUsd: '12' } };
+    expect(applyReplayMarketChart(retained, earlierQuote, now).chart.points.map(point => point.priceUsd)).toEqual([10]);
+  });
+
+  it('rejects stale, future, pre-fill or invalid current quotes rather than reusing activity snapshot prices', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    for (const currentQuote of [
+      { timestamp: new Date(now - 180_001).toISOString(), priceUsd: '12' },
+      { timestamp: new Date(now + 1).toISOString(), priceUsd: '12' },
+      { timestamp: '2026-10-11T10:00:00Z', priceUsd: '12' },
+      { timestamp: new Date(now).toISOString(), priceUsd: '0' },
+      { timestamp: 'invalid', priceUsd: '12' },
+    ]) {
+      const replay = applyReplayMarketChart(original, { ...chart(), currentQuote }, now);
+      expect(replay.currentQuote).toBeUndefined(); expect(replay.token.priceUsd).toBe(9);
+    }
+    const unknownSupply = { ...original, chart: { ...original.chart, marketCapSupply: null } };
+    const replay = applyReplayMarketChart(unknownSupply, { ...chart(), marketCapSupply: null, currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } }, now);
+    expect(replay.currentQuote?.marketCapUsd).toBeNull();
+  });
+
+  it('discloses a gap from genuine old observations to the current quote for accepted and retained history', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    const observed = { ...chart(), currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '12' } };
+    const accepted = applyReplayMarketChart(original, observed, now);
+    expect(accepted.chart.sparseHistory).toBe(true);
+    expect(accepted.chart.points.at(-1)?.timestamp).toBe('2026-10-11T10:10:00.000Z');
+
+    const retained = { ...original, chart: { ...original.chart, source: 'Historical market samples', resolution: '1m', points: [
+      { timestamp: '2026-10-11T11:50:00Z', priceUsd: 10, marketCapUsd: 10000 },
+    ] } };
+    const quoteOnly = { ...observed, source: 'unavailable' as const, points: [] };
+    const fallback = applyReplayMarketChart(retained, quoteOnly, now);
+    expect(fallback.chart.sparseHistory).toBe(true); expect(fallback.chart.points.map(point => point.priceUsd)).toEqual([10]);
+    expect(retained.chart.sparseHistory).toBeUndefined();
+
+    const recent = { ...retained, chart: { ...retained.chart, points: [
+      { timestamp: '2026-10-11T11:59:00Z', priceUsd: 10, marketCapUsd: 10000 },
+    ] } };
+    expect(applyReplayMarketChart(recent, quoteOnly, now).chart.sparseHistory).not.toBe(true);
+    expect(applyReplayMarketChart({ ...recent, chart: { ...recent.chart, sparseHistory: true } }, quoteOnly, now).chart.sparseHistory).toBe(true);
+  });
 });

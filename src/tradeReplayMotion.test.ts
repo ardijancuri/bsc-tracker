@@ -136,7 +136,7 @@ describe('handoff replay canvas geometry', () => {
     expect(motion.markerPosition(3, 1)).toEqual(expect.objectContaining({ ts: marker.ts, x: marker.x, y: marker.y, marketValue: marker.marketValue, visible: true, alpha: 1 }));
   });
 
-  it.each(['open', 'unknown'] as const)('ends an %s position recap at the final recorded fill rather than later chart quotes', async status => {
+  it.each(['open', 'unknown'] as const)('keeps an %s recap at the final fill when no explicit fresh current quote is available', async status => {
     const payload = data();
     payload.position = { ...payload.position, status, tokenBalance: status === 'open' ? 1 : null, tradeFlowMatched: false };
     payload.chart.points.at(-1)!.priceUsd = 999; payload.chart.points.at(-1)!.marketCapUsd = 999000;
@@ -145,6 +145,51 @@ describe('handoff replay canvas geometry', () => {
     expect(renderer.snapshot(1).currentPrice).toBe(50);
     expect(motion.viewportAt(1)).toEqual(motion.viewportAt(renderer.eventProgress(3)));
     expect(motion.storyVertices.some(point => point.priceUsd === 999)).toBe(false);
+  });
+
+  it('continues an open position through post-trade observations to the current quote, then holds the final view', async () => {
+    const payload = data();
+    payload.trades = payload.trades.slice(0, 3);
+    payload.position = { ...payload.position, status: 'open', tokenBalance: 1 };
+    payload.currentQuote = { timestamp: at(3600), priceUsd: 9.5, marketCapUsd: 9500 };
+    payload.generatedAt = at(3600);
+    const { renderer, motion } = await replay(payload);
+    const lastFill = renderer.eventProgress(2);
+    expect(motion.timeAt(lastFill)).toBe(start + 60000);
+    expect(motion.timeAt(.8)).toBeGreaterThan(start + 60000);
+    expect(motion.timeAt(1)).toBe(start + 3600000);
+    expect(renderer.snapshot(1).currentPrice).toBe(9.5);
+    expect(renderer.snapshot(1).currentCap).toBe(9500);
+    expect(motion.viewportAt(.85).startQ).toBeGreaterThan(motion.viewportAt(lastFill).startQ);
+    expect(motion.viewportAt(1)).toEqual(motion.viewportAt(.94));
+    expect(renderer.snapshot(1).currentEventIndex).toBe(2);
+    expect(motion.storyVertices.some(point => point.ts === start + 300000)).toBe(true);
+    const expected = { view: motion.viewportAt(.8), state: renderer.snapshot(.8) };
+    for (const progress of [1, .25, .9, 0, .8]) renderer.render(progress);
+    expect({ view: motion.viewportAt(.8), state: renderer.snapshot(.8) }).toEqual(expected);
+  });
+
+  it('animates a single still-open buy to its current quote without adding another transaction', async () => {
+    const payload = data();
+    payload.trades = payload.trades.slice(0, 1);
+    payload.position = { ...payload.position, status: 'open', tokenBalance: 1 };
+    payload.currentQuote = { timestamp: at(3600), priceUsd: 4, marketCapUsd: 4000 };
+    const { renderer, motion } = await replay(payload);
+    expect(renderer.eventProgress(0)).toBe(0);
+    expect(motion.timeAt(.5)).toBeGreaterThan(start);
+    expect(renderer.snapshot(1).time).toBe(at(3600));
+    expect(renderer.snapshot(1).currentPrice).toBe(4);
+    expect(renderer.snapshot(1).currentEventIndex).toBe(0);
+    expect(motion.markerPosition(1, 1)).toBeNull();
+  });
+
+  it('ignores a current quote for a closed position and preserves its final sell geometry', async () => {
+    const payload = data();
+    payload.currentQuote = { timestamp: at(3600), priceUsd: 999, marketCapUsd: 999000 };
+    const { renderer, motion } = await replay(payload);
+    expect(renderer.snapshot(1).time).toBe(at(300));
+    expect(renderer.snapshot(1).currentPrice).toBe(50);
+    expect(motion.viewportAt(1)).toEqual(motion.viewportAt(renderer.eventProgress(3)));
   });
 
   it('uses one composite quote for the visible tip, live value and current price guide', async () => {

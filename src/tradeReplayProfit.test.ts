@@ -149,6 +149,43 @@ describe('trade replay rolling recorded-position profit', () => {
     expect(exit.currentPrice).toBe(2);
   });
 
+  it.each(['Historical market samples', 'Recorded fills'])('marks open lots at the current quote after the last sale using %s', async source => {
+    const payload = data();
+    payload.trades = payload.trades.slice(0, 3);
+    payload.position = { ...payload.position, status: 'open', tokenBalance: 50, tradeFlowMatched: source !== 'Recorded fills' };
+    payload.chart.points = source === 'Recorded fills' ? [] : payload.chart.points.slice(0, 5);
+    payload.chart.source = payload.source.chart = source;
+    payload.currentQuote = { timestamp: at(3600), priceUsd: 8, marketCapUsd: 8000 };
+    payload.generatedAt = at(3600);
+    const renderer = await replay(payload);
+    const lastSale = renderer.snapshot(renderer.eventProgress(2));
+    const final = renderer.snapshot(1);
+    expect(lastSale.totalPnl).toBe(400);
+    expect(final.time).toBe(at(3600));
+    expect(final.currentPrice).toBe(8); expect(final.currentCap).toBe(8000);
+    expect(final.holdings).toBe(50); expect(final.remainingCostBasis).toBe(150);
+    expect(final.realizedPnl).toBe(350); expect(final.unrealizedPnl).toBe(250);
+    expect(final.totalPnl).toBe(600); expect(final.totalRoi).toBe(1.5);
+    expect(final.invested).toBe(lastSale.invested); expect(final.proceeds).toBe(lastSale.proceeds);
+    expect(final.currentEventIndex).toBe(2);
+    expect(renderer.snapshot(.8).totalPnl).not.toBe(lastSale.totalPnl);
+    expect(renderer.snapshot(.94)).toEqual(final);
+    if (source === 'Recorded fills') expect(final.pnl).toBeNull();
+  });
+
+  it('colors the post-trade line and gradient from current estimated profit rather than the last fill profit', async () => {
+    const payload = data();
+    payload.trades = payload.trades.slice(0, 1);
+    payload.chart.points = [];
+    payload.chart.source = payload.source.chart = 'Recorded fills';
+    payload.currentQuote = { timestamp: at(3600), priceUsd: .5, marketCapUsd: 500 };
+    const { renderer, drawing } = await recordedReplay(payload);
+    expect(renderer.snapshot(1).totalPnl).toBe(-50);
+    drawing.clear(); renderer.render(1);
+    expect(drawing.strokes.some(stroke => stroke.color === '#f6465d' && stroke.width === 8)).toBe(true);
+    expect(drawing.gradients.some(gradient => gradient.stops.some(([, color]) => color.includes('246,70,93')))).toBe(true);
+  });
+
   it.each(['unknown', 'mismatched'] as const)('keeps %s wallet P&L withheld while allowing labelled recorded-trade estimates', async variant => {
     const payload = data();
     if (variant === 'mismatched') payload.position = { ...payload.position, status: 'open', tokenBalance: 999, checkedAt: at(360) };

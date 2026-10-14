@@ -1,10 +1,13 @@
 import type { ReplayMarketChart } from '../shared/replayChart';
-import { applyReplayMarketChart, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, replayIsOpen, validReplayCurrentQuote, type TradeReplayData } from './tradeReplayData';
+export { replayIsOpen } from './tradeReplayData';
 
 const preparationBudgetMs = 22_000;
 const maximumAttempts = 6;
 const addressPattern = /^0x[0-9a-f]{40}$/i;
 export const recordedPriceEstimateNotice = 'Market history is unavailable. Estimated P&L uses recorded trade prices.';
+export const currentQuoteEstimateNotice = 'Market history is unavailable. Prices between recorded trades and the current quote are estimates.';
+export const currentPriceUnavailableNotice = 'Current market price is unavailable. This replay ends at the last recorded trade.';
 
 export function replayUsesRecordedPrices(data: TradeReplayData) {
   return data.source.chart.toLowerCase().includes('recorded fill') || !data.chart.points.length;
@@ -13,6 +16,7 @@ export function replayUsesRecordedPrices(data: TradeReplayData) {
 export interface ReplayMarketRequestResult {
   data: TradeReplayData;
   notice: string | null;
+  currentPriceNotice?: string;
 }
 
 function cancelled() {
@@ -48,10 +52,16 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   signal.addEventListener('abort', abort, { once: true });
   const deadline = Date.now() + preparationBudgetMs;
   const timeout = setTimeout(abort, preparationBudgetMs);
-  const fallback = (notice: string): ReplayMarketRequestResult => ({ data,
-    notice: notice === 'Historical market data is unavailable for this replay.' && replayUsesRecordedPrices(data)
-      ? recordedPriceEstimateNotice : notice });
-  const url = `/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/replay-chart`;
+  let available = data;
+  const result = (selected: TradeReplayData, notice: string | null): ReplayMarketRequestResult => {
+    const open = replayIsOpen(selected), currentQuote = validReplayCurrentQuote(selected);
+    if (!currentQuote && selected.currentQuote) { selected = { ...selected }; delete selected.currentQuote; }
+    return { data: selected, notice, ...(open && !currentQuote ? { currentPriceNotice: currentPriceUnavailableNotice } : {}) };
+  };
+  const fallback = (notice: string): ReplayMarketRequestResult => result(available,
+    notice === 'Historical market data is unavailable for this replay.' && replayUsesRecordedPrices(available)
+      ? validReplayCurrentQuote(available) ? currentQuoteEstimateNotice : recordedPriceEstimateNotice : notice);
+  const url = `/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/replay-chart${replayIsOpen(data) ? '?end=current' : ''}`;
   try {
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       const response = await withinRequest(fetch(url, { signal: request.signal }), request.signal);
@@ -63,6 +73,8 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
         || chart.period !== 'replay' || !Array.isArray(chart.points)) {
         return fallback('Historical market data could not be loaded; the replay is using available data.');
       }
+      const previous = available;
+      if (response.ok) available = applyReplayMarketChart(available, chart);
       const transient = response.ok && chart.source === 'unavailable' && (chart.loadStatus === 'queued' || chart.loadStatus === 'rate_limited');
       if (transient) {
         const notice = chart.loadStatus === 'rate_limited'
@@ -76,9 +88,9 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
         continue;
       }
       if (!response.ok) return fallback('Historical market data could not be loaded; the replay is using available data.');
-      const selected = applyReplayMarketChart(data, chart);
-      return selected === data ? fallback('Historical market data is unavailable for this replay.')
-        : { data: selected, notice: chart.sparseHistory ? 'Market observations are sparse. Prices and P&L between observations are estimates.' : null };
+      if (available === previous || chart.source === 'unavailable' || chart.partialHistory || !chart.points.length
+        || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution)) return fallback('Historical market data is unavailable for this replay.');
+      return result(available, chart.sparseHistory ? 'Market observations are sparse. Prices and P&L between observations are estimates.' : null);
     }
     return fallback('Historical market data is still loading; the replay is using available data.');
   } catch {
