@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { parseGmgnProfits } from './gmgnPnl.js';
+import { legacyGmgnProfitKey, parseGmgnProfits } from './gmgnPnl.js';
 
 const wallet = '0x1234567890123456789012345678901234567890';
 const other = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+
+describe('legacy GMGN snapshot opt-in', () => {
+  it('keeps the worker from consuming the shared app key unless legacy snapshots are explicitly enabled', () => {
+    for (const setting of [undefined, '', 'false', '0']) {
+      expect(legacyGmgnProfitKey({ GMGN_API_KEY: 'private-test-key', GMGN_LEGACY_PROFIT_SNAPSHOTS: setting })).toBeUndefined();
+    }
+    expect(legacyGmgnProfitKey({ GMGN_API_KEY: ' private-test-key ', GMGN_LEGACY_PROFIT_SNAPSHOTS: 'true' })).toBe('private-test-key');
+    expect(legacyGmgnProfitKey({ GMGN_CHART_API_KEY: 'chart-key', GMGN_LEGACY_PROFIT_SNAPSHOTS: 'true' })).toBeUndefined();
+    expect(legacyGmgnProfitKey({ GMGN_API_KEY: ' ', GMGN_LEGACY_PROFIT_SNAPSHOTS: 'true' })).toBeUndefined();
+  });
+});
 
 describe('GMGN profit parsing', () => {
   it('preserves explicit zero and marks missing wallets as unavailable', () => {

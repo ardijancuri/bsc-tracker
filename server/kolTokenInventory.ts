@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { KolTokenInventoryEvidence, KolTokenInventoryTransfer } from '../shared/kolTokenTrades.js';
 import { pool } from './db.js';
 import { hasRecognizedSwap, transferTopic, walletSwapFlows } from './swap.js';
+import { createInventoryRpc } from './kolTokenInventoryRpc.js';
 
 type Trade = { txHash: string; side: string; tokenAmount: string | null; blockNumber: string | null; blockHash?: string | null; transactionIndex?: number | null };
 type Movement = KolTokenInventoryTransfer & { blockHash: string };
@@ -40,17 +41,7 @@ function bounded<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
     });
   });
 }
-let requestId = 0;
-const rpcRequest: Rpc = async (method, params, signal) => {
-  const response = await fetch(process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-    body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }),
-  });
-  if (!response.ok) throw new Error('Inventory RPC unavailable');
-  const body = await response.json();
-  if (body.error || body.result == null) throw new Error('Inventory RPC unavailable');
-  return body.result;
-};
+const rpcRequest: Rpc = createInventoryRpc();
 export const persistCanonicalInventoryTransfers: Persist = async (events, endpoint, verify, signal) => {
   if (!events.length) return;
   const acquired = pool.connect().then(client => { if (signal.aborted) { client.release(); throw signal.reason; } return client; });
@@ -240,8 +231,10 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
               if (responses.some(value => !Array.isArray(value))) throw new Error('movement_scan_unavailable');
               rows = responses.flat();
             } catch (problem) {
-              if (!signal.aborted && state.pageSize > 512) {
-                state.pageSize = Math.max(512, Math.floor(state.pageSize / 2)); state.successfulPages = 0; continue;
+              if (problem instanceof Error && problem.message === 'inventory_history_unavailable') throw problem;
+              const minimum = problem instanceof Error && problem.message === 'inventory_range_too_large' ? 1 : 512;
+              if (!signal.aborted && state.pageSize > minimum) {
+                state.pageSize = Math.max(minimum, Math.floor(state.pageSize / 2)); state.successfulPages = 0; continue;
               }
               throw problem;
             }

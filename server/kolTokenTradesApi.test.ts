@@ -55,6 +55,7 @@ describe('KOL token activity API', () => {
       expect(response.statusCode).toBe(200); expect(response.json().summary.realizedProfitUsd).toBe('30');
       if (pnl === 'true') {
         expect(mocks.pnl).toHaveBeenCalledOnce(); expect(mocks.pnl.mock.calls[0][1]).toBeUndefined();
+        expect(mocks.pnl.mock.calls[0][2]).toEqual({ foreground: true });
         expect(response.json().realizedAccounting).toMatchObject({ policy: 'gmgn_realized_profit_v1', status: 'ready', realizedProfitUsd: '70' });
       } else { expect(mocks.pnl).not.toHaveBeenCalled(); expect(response.json().realizedAccounting).toBeUndefined(); }
       expect(mocks.replay).not.toHaveBeenCalled();

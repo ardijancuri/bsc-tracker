@@ -11,6 +11,11 @@ export type GmgnProfit = {
 const walletRe = /^0x[a-fA-F0-9]{40}$/;
 const decimalRe = /^-?(?:\d+)(?:\.\d+)?$/;
 
+/** Legacy 7d/30d snapshots are not used by the public 24h leaderboard. */
+export function legacyGmgnProfitKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.GMGN_LEGACY_PROFIT_SNAPSHOTS === 'true' ? env.GMGN_API_KEY?.trim() || undefined : undefined;
+}
+
 function decimal(value: unknown): string | null {
   if (value == null || value === '') return null;
   const result = String(value);

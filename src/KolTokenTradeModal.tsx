@@ -13,7 +13,7 @@ import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
-import { kolTokenPnlKey, requestKolTokenPnl, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
+import { displayedTokenPnl, kolTokenPnlKey, requestKolTokenPnl, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
 import { tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
 import './tokenMarket.css';
 import './kolTokenTradeModal.css';
@@ -101,7 +101,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const summary = activity?.summary;
-  const profit = verifiedTokenPositionPnl(activity);
+  const profit = displayedTokenPnl(activity);
   const priceTime = tokenPositionPnlPriceTime(activity);
   const profitDescription = t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
   const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';

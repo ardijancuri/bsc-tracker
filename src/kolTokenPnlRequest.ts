@@ -14,10 +14,11 @@ export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
 }
 
 export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
-  return activity?.realizedAccounting?.position?.status === 'open' ? 'Est. profit' : 'Realized P&L';
+  return activity?.realizedAccounting?.position?.status === 'open'
+    && (verifiedTokenPositionPnl(activity) !== null || verifiedTokenRealizedPnl(activity) === null) ? 'Est. profit' : 'Realized P&L';
 }
 export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
-  return activity?.realizedAccounting?.position?.status === 'open'
+  return tokenPositionPnlLabel(activity) === 'Est. profit'
     ? 'Estimated total profit includes realized gains, the current value of remaining tokens, marked transfer-out gains and fees.'
     : gmgnRealizedPnlDescription(activity);
 }
@@ -57,6 +58,21 @@ export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now 
       ? sold + outgoing + remaining * price - cost : null;
   if (expected === null || !Number.isFinite(expected) || Math.abs(value - expected) > Math.max(1e-6, Math.abs(expected) * 1e-8)) return null;
   return value;
+}
+
+/** A current quote can be temporarily unavailable without invalidating verified
+ * historical gains. Keep that realized value visible under its own label while
+ * the loader continues to update the open-position estimate. */
+export function displayedTokenPnl(activity: KolTokenActivity | null, now = Date.now()) {
+  return verifiedTokenPositionPnl(activity, now)
+    ?? (activity?.realizedAccounting?.position?.status === 'open' ? verifiedTokenRealizedPnl(activity, now) : null);
+}
+
+const retryableInventoryReasons = new Set(['inventory_rpc_unavailable', 'canonical_block_unavailable',
+  'canonical_receipt_unavailable', 'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale']);
+export function terminalTokenInventoryFailure(activity: KolTokenActivity | null) {
+  const proof = activity?.inventory?.coverage;
+  return proof?.status === 'unavailable' && !retryableInventoryReasons.has(proof.reason ?? '');
 }
 
 export function tokenPositionPnlUnavailableNotice(activity: KolTokenActivity | null) {
@@ -99,6 +115,7 @@ export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now 
 
 export function tokenRealizedPnlUnavailableNotice(activity: KolTokenActivity | null) {
   const accounting = activity?.realizedAccounting, reason = accounting?.coverage?.reason;
+  if (reason === 'inventory_history_unavailable') return 'Historical transaction data is unavailable.';
   if (reason === 'gmgn_position_not_found') return 'GMGN realized P&L is unavailable for this position with the current API key.';
   if (['gmgn_not_configured', 'gmgn_key_unavailable', 'provider_key_unavailable'].includes(reason ?? '')) return 'GMGN realized P&L is unavailable because the provider is not configured.';
   if (['gmgn_realized_cost_unavailable', 'quote_or_fee_unavailable', 'transfer_fee_schema_unavailable'].includes(reason ?? '')) return 'GMGN realized P&L is unavailable because transfer costs or fee data are missing.';
@@ -222,13 +239,15 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
               for (const client of job.clients) client.onActivity?.(body);
               const proof = body.inventory?.coverage;
               const accounting = body.realizedAccounting;
+              // A terminal canonical-history failure cannot be fixed by polling
+              // a downstream provider's pending status indefinitely.
+              if (terminalTokenInventoryFailure(body)) return { activity: body, status: 'unavailable' };
               const retryAfter = Math.max(accounting?.retryAfterMs ?? 0, accounting?.position?.retryAfterMs ?? 0);
               const provisional = Number.isFinite(retryAfter) && retryAfter > 0;
               if (verifiedTokenPositionPnl(body, now()) !== null && !provisional) return { activity: body, status: 'ready' };
               pending = accounting?.status === 'pending' || (accounting?.status === 'ready' && accounting.position?.status === 'open')
                 || provisional
-                || proof?.status === 'pending' || ['inventory_rpc_unavailable', 'canonical_block_unavailable', 'canonical_receipt_unavailable',
-                'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale'].includes(proof?.reason ?? '');
+                || proof?.status === 'pending' || retryableInventoryReasons.has(proof?.reason ?? '');
               if (Number.isFinite(retryAfter) && retryAfter > 0) providerDelay = Math.max(1000, retryAfter);
               if (!pending) return { activity, status: 'unavailable' };
             }

@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pool } from './db.js';
 import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 
 type Priority = GeckoPriority | (() => GeckoPriority);
-type Query = (sql: string, values: unknown[]) => Promise<{ rows: { delay: number }[] }>;
+type Pause = { delay: number; pauseStatus?: number | string | null };
+type Query = (sql: string, values: unknown[]) => Promise<{ rows: Pause[] }>;
 const priorityOf = (priority: Priority) => typeof priority === 'function' ? priority() : priority;
 // Free accounts allow five weighted units/second. Use two, without bursts,
 // across token history, replay history, and the worker's wallet-profit calls.
@@ -11,7 +12,13 @@ const unitSpacingMs = 500;
 const budgetKey = (apiKey: string) => `gmgn_api_budget:${createHash('sha256').update(apiKey).digest('hex').slice(0, 16)}`;
 
 export class GmgnHttpError extends Error {
-  constructor(readonly status: number) { super(`GMGN request failed: HTTP ${status}`); }
+  constructor(readonly status: number, readonly retryAfterMs?: number) { super(`GMGN request failed: HTTP ${status}`); }
+}
+
+function pauseError(pause: Pause) {
+  const status = Number(pause.pauseStatus), delay = Number(pause.delay);
+  return status === 401 || status === 403
+    ? new GmgnHttpError(status, delay) : new MarketProviderDeferred('rate_limited', delay);
 }
 
 /** Bound both queue residence and network work; cancelled queued jobs never dispatch. */
@@ -45,7 +52,7 @@ export function createGmgnQueue<T>() {
   };
 }
 
-export async function reserveGmgnSlot(apiKey: string, weight: 2 | 3 | 5, priority: GeckoPriority, query: Query = (sql, values) => pool.query(sql, values)) {
+export async function reserveGmgnSlot(apiKey: string, weight: 1 | 2 | 3 | 5, priority: GeckoPriority, query: Query = (sql, values) => pool.query(sql, values)) {
   const spacing = weight * unitSpacingMs;
   const result = await query(`WITH clock AS (
       SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS ms
@@ -61,10 +68,10 @@ export async function reserveGmgnSlot(apiKey: string, weight: 2 | 3 | 5, priorit
   [budgetKey(apiKey), spacing, priority === 'metadata' ? 0 : 1500]);
   if (result.rows.length) return result.rows[0].delay;
   const pause = await query(`SELECT greatest(0,COALESCE((value->>'pausedUntil')::bigint,0)
-    -floor(extract(epoch FROM clock_timestamp())*1000)::bigint)::integer AS delay
+    -floor(extract(epoch FROM clock_timestamp())*1000)::bigint)::integer AS delay, value->>'pauseStatus' AS "pauseStatus"
     FROM worker_state WHERE key=$1`, [budgetKey(apiKey)]);
   const delay = Number(pause.rows[0]?.delay) || 0;
-  throw new MarketProviderDeferred(delay > 0 ? 'rate_limited' : 'busy', delay || spacing);
+  throw delay > 0 ? pauseError({ ...pause.rows[0], delay }) : new MarketProviderDeferred('busy', spacing);
 }
 
 export function gmgnRetryMs(headers: Headers, body: any, now = Date.now()) {
@@ -84,7 +91,7 @@ export function gmgnRetryMs(headers: Headers, body: any, now = Date.now()) {
 }
 
 export interface GmgnRequestOptions {
-  apiKey: string; weight?: 2 | 3 | 5; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
+  apiKey: string; weight?: 1 | 2 | 3 | 5; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
   method?: 'GET' | 'POST'; body?: unknown;
 }
 
@@ -113,10 +120,17 @@ export function createGmgnRequester({ query = (sql, values) => pool.query(sql, v
       const delay = await cancellable(reserveGmgnSlot(apiKey, options.weight ?? 2, priorityOf(priority), query), signal);
       if (delay) await cancellable(new Promise(resolve => setTimeout(resolve, delay)), signal);
       signal.throwIfAborted();
-      const pause = await cancellable(query(`SELECT (value->>'pausedUntil')::bigint-floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS delay
+      const pause = await cancellable(query(`SELECT (value->>'pausedUntil')::bigint-floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS delay,
+        value->>'pauseStatus' AS "pauseStatus"
         FROM worker_state WHERE key=$1 AND (value->>'pausedUntil')::bigint>floor(extract(epoch FROM clock_timestamp())*1000)::bigint`, [budgetKey(apiKey)]), signal);
-      if (pause.rows.length) throw new MarketProviderDeferred('rate_limited', Number(pause.rows[0].delay));
-      const response = await fetcher(url, { method: options.method ?? 'GET', headers: {
+      if (pause.rows.length) throw pauseError(pause.rows[0]);
+      // Exist-auth calls require a timestamp within five seconds and a unique
+      // client ID. Prepare both after all queue/budget waits, including for the
+      // unsigned wallet-profits POST, without changing the caller's URL/body.
+      const authenticatedUrl = new URL(url.href);
+      authenticatedUrl.searchParams.set('timestamp', String(Math.floor(now() / 1000)));
+      authenticatedUrl.searchParams.set('client_id', randomUUID());
+      const response = await fetcher(authenticatedUrl, { method: options.method ?? 'GET', headers: {
         Accept: 'application/json', 'X-APIKEY': apiKey, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       }, ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]) });
       let body: any;
@@ -125,11 +139,14 @@ export function createGmgnRequester({ query = (sql, values) => pool.query(sql, v
       const unauthorized = [401, 403].includes(response.status) || [401, 403].includes(Number(body?.code));
       if (rateLimited || unauthorized) {
         const retryAfterMs = rateLimited ? gmgnRetryMs(response.headers, body, now()) : 300_000;
-        await query(`UPDATE worker_state SET value=jsonb_set(value,'{pausedUntil}',to_jsonb(
-          greatest(COALESCE((value->>'pausedUntil')::bigint,0),floor(extract(epoch FROM clock_timestamp())*1000)::bigint+$2::bigint))),updated_at=now()
-          WHERE key=$1`, [budgetKey(apiKey), retryAfterMs]);
+        const status = rateLimited ? 429 : [401, 403].includes(response.status) ? response.status : Number(body.code);
+        await query(`UPDATE worker_state SET value=value || jsonb_build_object(
+          'pausedUntil',greatest(COALESCE((value->>'pausedUntil')::bigint,0),floor(extract(epoch FROM clock_timestamp())*1000)::bigint+$2::bigint),
+          'pauseStatus',CASE WHEN COALESCE((value->>'pausedUntil')::bigint,0)>floor(extract(epoch FROM clock_timestamp())*1000)::bigint+$2::bigint
+            THEN value->'pauseStatus' ELSE to_jsonb($3::integer) END),updated_at=now()
+          WHERE key=$1`, [budgetKey(apiKey), retryAfterMs, status]);
         if (rateLimited) throw new MarketProviderDeferred('rate_limited', retryAfterMs);
-        throw new GmgnHttpError(response.status === 200 ? Number(body.code) : response.status);
+        throw new GmgnHttpError(status, retryAfterMs);
       }
       if (!response.ok) throw new GmgnHttpError(response.status);
       if (body?.code !== 0) throw new Error('GMGN returned an invalid API response');

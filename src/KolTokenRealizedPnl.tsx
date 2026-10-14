@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import { getLocale, t } from './i18n';
-import { kolTokenPnlKey, requestKolTokenPnl, tokenPnlMovementsMatch, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl, type KolTokenPnlResult } from './kolTokenPnlRequest';
+import { displayedTokenPnl, kolTokenPnlKey, requestKolTokenPnl, terminalTokenInventoryFailure, tokenPnlMovementsMatch, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
 export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt, eager = false }: {
   walletAddress: string; tokenAddress: string; lastTradeAt: string | null; eager?: boolean;
@@ -53,7 +53,7 @@ export function KolTokenRealizedPnl({ walletAddress, tokenAddress, lastTradeAt, 
 }
 
 export function KolTokenRealizedPnlValue({ activity, busy, elementRef }: { activity: KolTokenActivity | null; busy: boolean; elementRef?: Ref<HTMLSpanElement> }) {
-  const amount = verifiedTokenPositionPnl(activity) ?? NaN;
+  const amount = displayedTokenPnl(activity) ?? NaN;
   const valid = Number.isFinite(amount);
   const color = valid ? amount > 0 ? 'positive' : amount < 0 ? 'negative' : '' : '';
   const formatted = valid ? new Intl.NumberFormat(getLocale(), {
@@ -71,10 +71,14 @@ export function KolTokenRealizedPnlValue({ activity, busy, elementRef }: { activ
 
 export function tokenPnlStateAfterLoad(current: { pair: string; activity: KolTokenActivity | null; busy: boolean } | null,
   pair: string, loaded: KolTokenPnlResult) {
-  if (verifiedTokenPositionPnl(loaded.activity) !== null) return { pair, activity: loaded.activity, busy: loaded.status === 'pending' };
+  if (terminalTokenInventoryFailure(loaded.activity)) return { pair, activity: loaded.activity, busy: false };
+  // A fresh realized-only response also renews canonical proof. Keeping the
+  // older object here would let its proof expire during a prolonged quote
+  // outage even though the server keeps returning verified historical gains.
+  if (displayedTokenPnl(loaded.activity) !== null) return { pair, activity: loaded.activity, busy: loaded.status === 'pending' };
   const changedTrade = loaded.activity && current?.activity && Date.parse(loaded.activity.summary.lastTradeAt ?? '') !== Date.parse(current.activity.summary.lastTradeAt ?? '');
   const unchangedMovements = !loaded.activity || current?.activity && tokenPnlMovementsMatch(current.activity, loaded.activity);
   const retained = loaded.status === 'pending' && !changedTrade && unchangedMovements && current?.pair === pair
-    && verifiedTokenPositionPnl(current.activity) !== null ? current.activity : null;
+    && displayedTokenPnl(current.activity) !== null ? current.activity : null;
   return { pair, activity: loaded.status === 'pending' ? retained ?? loaded.activity : loaded.activity, busy: loaded.status === 'pending' };
 }

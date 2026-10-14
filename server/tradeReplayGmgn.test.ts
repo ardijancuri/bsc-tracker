@@ -203,19 +203,22 @@ describe('existing-key GMGN replay provider', () => {
     expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1);
     expect(request).toHaveBeenCalledTimes(3);
   });
-  it('reuses complete matched history across profile and replay for three minutes while refreshing aggregate prices after fifteen seconds', async () => {
+  it('returns verified fee-inclusive profile cash flows without optional rankings, while replay still loads a current aggregate', async () => {
     let clock = time; const { load, request } = setup(undefined, { now: () => clock });
-    expect((await load(activity(), { historicalRealized: true })).status).toBe('ready');
+    const initial = await load(activity(), { historicalRealized: true });
+    expect(initial).toMatchObject({ status: 'estimated', final: null, coverage: { transactionsComplete: true, balanceMatched: true } });
+    expect(initial.events[0]).toMatchObject({ feesUsd: '1', feeInclusiveCostUsd: '101' });
     clock += 20_000;
-    expect((await load(activity(), { historicalRealized: true })).status).toBe('ready');
+    expect((await load(activity(), { historicalRealized: true })).status).toBe('estimated');
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
-    expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2);
+    expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(0);
     expect((await load(activity())).status).toBe('ready');
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
+    expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(1);
   });
   it.each(['movement', 'currency', 'expired'] as const)('refreshes profile historical data after %s changes', async variant => {
     let clock = time; const { load, request } = setup(undefined, { now: () => clock });
-    await load(activity(), { historicalRealized: true }); clock += variant === 'expired' ? 180_001 : 20_000;
+    await load(activity(), { historicalRealized: true }); clock += variant === 'expired' ? 7 * 24 * 60 * 60 * 1000 : 20_000;
     const changed = activity(); changed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     if (variant === 'movement') changed.inventory!.events[0].tokenAmount = '11';
     if (variant === 'currency') changed.trades[0].quoteTokenAddress = token;
@@ -230,9 +233,9 @@ describe('existing-key GMGN replay provider', () => {
       return new Promise(resolve => { finish = resolve; });
     }, { now: () => clock });
     await load(activity()); clock += 20_000;
-    const profile = load(activity(), { historicalRealized: true });
-    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2));
     const replay = load(activity());
+    await vi.waitFor(() => expect(routes(request).filter(route => route.endsWith('token_top_traders'))).toHaveLength(2));
+    const profile = load(activity(), { historicalRealized: true });
     expect(routes(request).filter(route => route.endsWith('wallet_activity'))).toHaveLength(1);
     finish({ data: { list: [aggregate()] } });
     expect((await profile).status).toBe('ready'); expect((await replay).status).toBe('ready');
@@ -302,13 +305,32 @@ describe('existing-key GMGN replay provider', () => {
       if (paused) throw new MarketProviderDeferred('rate_limited', 60_000);
       return { data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null } : { list: [aggregate()] } };
     }, { now: () => clock });
-    await load(activity()); clock += variant === 'expired' ? 600_001 : 16_000; paused = true;
+    await load(activity()); clock += variant === 'expired' ? 7 * 24 * 60 * 60 * 1000 : 16_000; paused = true;
     const changed = activity(); changed.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     if (variant === 'movement') changed.inventory!.events[0].tokenAmount = '11';
     if (variant === 'quote') changed.trades[0].quoteTokenAddress = other;
     const result = await load(changed);
     expect(result.status).toBe('pending'); expect(result.coverage.transactionsComplete).toBe(false); expect(result.coverage.exactFinal).toBe(false);
     expect(result.final).toBeNull();
+  });
+  it('reuses yesterday\'s complete history after restart for profile without any provider request or invented current price', async () => {
+    const first = setup(); await first.load(activity());
+    const clock = time + 24 * 60 * 60 * 1000, fresh = activity();
+    fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString(); fresh.inventory!.coverage.toBlock = '1000';
+    const restarted = setup(async () => { throw new MarketProviderDeferred('rate_limited', 60_000); }, { now: () => clock });
+    const result = await restarted.load(fresh, { historicalRealized: true });
+    expect(result).toMatchObject({ status: 'estimated', inventoryBlockNumber: '1000', checkedAt: new Date(clock).toISOString(), final: null,
+      coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false } });
+    expect(result.events[0]).toMatchObject({ investedUsd: '100', feesUsd: '1', feeInclusiveCostUsd: '101' });
+    expect(restarted.request).not.toHaveBeenCalled();
+  });
+  it.each(['rate_limit', 'http_error'] as const)('retains yesterday\'s history for replay during %s without retaining its exact final', async failure => {
+    const first = setup(); await first.load(activity());
+    const clock = time + 24 * 60 * 60 * 1000, fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const restarted = setup(async () => { throw failure === 'rate_limit' ? new MarketProviderDeferred('rate_limited', 60_000) : new GmgnHttpError(503); }, { now: () => clock });
+    const result = await restarted.load(fresh);
+    expect(result).toMatchObject({ status: 'estimated', final: null, coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: false } });
+    expect(result.events[0].feeInclusiveCostUsd).toBe('101');
   });
   it('does not retain a historical estimate when fees were unknown or refreshed rows disagree with canonical coverage', async () => {
     let clock = time, paused = false;
@@ -369,6 +391,27 @@ describe('existing-key GMGN replay provider', () => {
     const forged = JSON.parse(await readFile(target, 'utf8')); forged.value.rows[0].token.address = other;
     forged.checksum = createHash('sha256').update(JSON.stringify(forged.value)).digest('hex'); await writeFile(target, JSON.stringify(forged));
     const again = setup(); expect((await again.load(activity())).status).toBe('ready'); expect(again.request).toHaveBeenCalledOnce();
+  });
+  it('keeps a foreground slot available while profile history is loading', async () => {
+    vi.useFakeTimers(); let clock = time;
+    const { load, request } = setup(async () => new Promise(() => {}), { now: () => clock, budgetMs: 1000 });
+    const profile = load(activity(), { historicalRealized: true });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(priorityOf(request.mock.calls[0][1])).toBe('prefetch');
+    expect(await load(activity(other), { historicalRealized: true })).toMatchObject({ status: 'pending', coverage: { reason: 'provider_busy' } });
+    expect(request).toHaveBeenCalledOnce();
+    const modal = load(activity(other), { historicalRealized: true, foreground: true });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(priorityOf(request.mock.calls[1][1])).toBe('chart');
+    const joined = load(activity(), { historicalRealized: true, foreground: true });
+    expect(priorityOf(request.mock.calls[0][1])).toBe('chart');
+    expect(await load(activity('0x' + '6'.repeat(40)), { historicalRealized: true, foreground: true }))
+      .toMatchObject({ status: 'pending', coverage: { reason: 'provider_busy' } });
+    clock += 1000; await vi.advanceTimersByTimeAsync(1000);
+    expect((await profile).status).toBe('pending');
+    expect((await modal).status).toBe('pending');
+    expect((await joined).status).toBe('pending');
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it('caps distinct jobs at2 and bounds stalled requests even when an injected requester ignores abort', async () => {
     vi.useFakeTimers(); let clock = time;

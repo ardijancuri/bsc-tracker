@@ -5,12 +5,15 @@ import { kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity, type KolTokenReal
 import type { ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
 import { currentMarketChart } from './tokenChart.js';
+import { currentTokenPositionQuote } from './tokenPositionQuote.js';
+import { currentTokenGmgnPositionQuote } from './tokenGmgnPositionQuote.js';
 
-type Loader = (activity: KolTokenActivity) => Promise<TradeReplayAccounting>;
+type Loader = (activity: KolTokenActivity, options?: { foreground?: () => boolean }) => Promise<TradeReplayAccounting>;
 interface PositionQuote { priceUsd: string; timestamp: string }
 interface PositionQuoteResult { quote?: PositionQuote; reason?: string; retryAfterMs?: number }
 type QuoteLoader = (token: string) => Promise<PositionQuoteResult>;
-type Entry = { version: 1; fingerprint: string; observedAt: number; expiresAt: number; value: KolTokenRealizedAccounting };
+type Entry = { version: 1; fingerprint: string; observedAt: number; expiresAt: number; refreshAfter?: number; value: KolTokenRealizedAccounting };
+const historicalRetentionMs = 7 * 24 * 60 * 60 * 1000;
 const address = /^0x[0-9a-f]{40}$/;
 const hash = /^0x[0-9a-f]{64}$/i;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -144,19 +147,19 @@ export function realizedAccountingFromReplay(activity: KolTokenActivity, account
 
 /** Historical totals survive quote refreshes while their canonical inputs remain
  * unchanged. Provider concurrency, priority and rate budget stay in the replay loader. */
-export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmgnAccounting(activity, { historicalRealized: true }), now = Date.now,
+export function createKolTokenGmgnPnl({ load = (activity, options) => currentTradeReplayGmgnAccounting(activity, { historicalRealized: true, foreground: options?.foreground }), now = Date.now,
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'realized-gmgn'),
   ttlMs = 600_000, maxEntries = 128, budgetMs = 8500,
   readCacheFile = (file: string) => readFile(file, 'utf8'), publishCacheFile = rename, loadQuote,
 }: { load?: Loader; now?: () => number; directory?: string | null; ttlMs?: number; maxEntries?: number; budgetMs?: number;
   readCacheFile?: (file: string) => Promise<string>; publishCacheFile?: (from: string, to: string) => Promise<void>; loadQuote?: QuoteLoader } = {}) {
-  const cache = new Map<string, Entry>(), jobs = new Map<string, Promise<KolTokenRealizedAccounting>>();
+  const cache = new Map<string, Entry>(), jobs = new Map<string, { foreground: boolean; work: Promise<KolTokenRealizedAccounting> }>();
   const publications = new Map<string, Promise<void>>();
   const quality = (value: KolTokenRealizedAccounting) => value.status !== 'ready' ? 0 : value.coverage.reason === 'gmgn_activity_estimate' ? 1 : 2;
   const durationFor = (value: KolTokenRealizedAccounting) => value.status === 'ready' ? quality(value) === 2 ? ttlMs : Math.min(ttlMs, value.retryAfterMs ?? 15_000)
     : value.status === 'pending' ? value.retryAfterMs ?? 1000 : 60_000;
   const remember = (key: string, entry: Entry) => { cache.delete(key); cache.set(key, entry); while (cache.size > maxEntries) cache.delete(cache.keys().next().value!); };
-  function valid(entry: Entry | null, key: string, activity: KolTokenActivity) {
+  function valid(entry: Entry | null, key: string, activity: KolTokenActivity, retainHistory = false) {
     const position = entry?.value?.position, quantity = numeric(position?.remainingTokenAmount), basis = numeric(position?.remainingCostBasisUsd), cost = numeric(position?.feeInclusiveCostUsd);
     const flows = position?.cashFlow;
     const snapshot = { remainingTokenAmount: position?.remainingTokenAmount ?? null, remainingCostBasisUsd: position?.remainingCostBasisUsd ?? null,
@@ -166,7 +169,9 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
     const positionValid = position && quantity !== null && (basis !== null || position.remainingCostBasisUsd === null) && cost !== null && validCashFlow
       && position.status === (quantity === 0 ? 'closed' : 'open') && (quantity > 0 || basis === 0);
     return entry?.version === 1 && entry.fingerprint === key && Number.isFinite(entry.observedAt) && entry.observedAt <= now()
-      && !!entry.value?.coverage && Number.isFinite(entry.expiresAt) && entry.expiresAt > now() && entry.expiresAt - entry.observedAt <= durationFor(entry.value)
+      && !!entry.value?.coverage && Number.isFinite(entry.expiresAt) && entry.expiresAt >= entry.observedAt && entry.expiresAt - entry.observedAt <= durationFor(entry.value)
+      && (entry.expiresAt > now() || retainHistory && entry.value.status === 'ready' && now() - entry.observedAt < historicalRetentionMs)
+      && (entry.refreshAfter === undefined || Number.isFinite(entry.refreshAfter) && entry.refreshAfter >= entry.observedAt)
       && entry.value?.version === 1 && entry.value.source === 'gmgn' && entry.value.policy === 'gmgn_realized_profit_v1' && !!entry.value.coverage
       && entry.value.walletAddress === activity.kol.address.toLowerCase() && entry.value.tokenAddress === activity.token.address.toLowerCase()
       && (entry.value.status === 'ready' ? positionValid && (knownRealized(snapshot, quantity!) !== null || entry.value.realizedProfitUsd === null && quantity! > 0)
@@ -182,7 +187,7 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
     } catch { return null; }
   }
   async function save(key: string, entry: Entry) {
-    if (!directory || entry.value.status !== 'ready') return;
+    if (!directory) return;
     // Serialize publication for this history. A newer verified entry must land
     // after older writes so an app restart reads the latest persisted total.
     const previous = publications.get(key) ?? Promise.resolve();
@@ -190,6 +195,9 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
       if (cache.get(key) !== entry) return;
       const file = path.join(directory, key + '.json'), temporary = file + '.' + randomUUID() + '.tmp';
       try {
+        // An explicit contradictory refresh invalidates the old persisted
+        // accounting too; a process restart must not resurrect that evidence.
+        if (entry.value.status !== 'ready') { await unlink(file).catch(() => {}); return; }
         await mkdir(directory, { recursive: true }); await writeFile(temporary, JSON.stringify({ checksum: digest(entry), value: entry })); await publishCacheFile(temporary, file);
         const files = (await readdir(directory)).filter(name => /^[0-9a-f]{64}\.json$/.test(name));
         if (files.length > maxEntries) {
@@ -203,13 +211,13 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
     try { await work; } finally { if (publications.get(key) === work) publications.delete(key); }
   }
   const datedValue = (entry: Entry) => ({ ...entry.value, checkedAt: new Date(now()).toISOString(),
-    ...(entry.value.status === 'pending' || quality(entry.value) === 1 && entry.value.retryAfterMs !== undefined ? { retryAfterMs: Math.max(1000, entry.expiresAt - now()) } : {}) });
+    ...(entry.value.status === 'pending' || quality(entry.value) === 1 && entry.value.retryAfterMs !== undefined ? { retryAfterMs: Math.max(1000, (entry.refreshAfter ?? entry.expiresAt) - now()) } : {}) });
   function confirmedValue(key: string, activity: KolTokenActivity, candidate?: KolTokenRealizedAccounting) {
     const latest = cache.get(key);
-    return latest?.value.status === 'ready' && valid(latest, key, activity) && (!candidate || quality(latest.value) >= quality(candidate))
+    return latest?.value.status === 'ready' && valid(latest, key, activity, true) && (!candidate || quality(latest.value) >= quality(candidate))
       ? datedValue(latest) : null;
   }
-  const historical = async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>): Promise<KolTokenRealizedAccounting> => {
+  const historical = async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>, foreground = false): Promise<KolTokenRealizedAccounting> => {
     if (!inventoryReady(activity, now())) {
       const value = base(activity, now()), reason = activity.inventory?.coverage.reason;
       value.status = activity.inventory?.coverage.status === 'pending' || transient(reason) ? 'pending' : 'unavailable';
@@ -227,25 +235,28 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
     if (supplied && 'version' in supplied) {
       const confirmed = realizedAccountingFromReplay(activity, supplied, now());
       if (confirmed.status === 'ready') {
-        if (valid(stored ?? null, key, activity) && quality(stored!.value) > quality(confirmed)) {
+        if (valid(stored ?? null, key, activity, true) && quality(stored!.value) > quality(confirmed)) {
           remember(key, stored!); return datedValue(stored!);
         }
         const observedAt = now(), entry: Entry = { version: 1, fingerprint: key, observedAt, expiresAt: observedAt + durationFor(confirmed), value: confirmed };
         remember(key, entry); await save(key, entry); return confirmedValue(key, activity) ?? confirmed;
       }
     }
-    if (valid(stored ?? null, key, activity)) {
+    const retained = stored?.value.status === 'ready' && valid(stored, key, activity, true) ? stored : null;
+    if (valid(stored ?? null, key, activity) || retained && (retained.refreshAfter ?? retained.expiresAt) > now()) {
       remember(key, stored!); return datedValue(stored!);
     }
-    if (cache.get(key) === stored) cache.delete(key);
-    const existing = jobs.get(key); if (existing) return existing;
-    if (jobs.size >= 2 && !supplied) { const value = base(activity, now()); value.status = 'pending'; value.retryAfterMs = 1000;
-      value.coverage.reason = 'provider_busy'; return value; }
+    if (retained) remember(key, retained);
+    else if (cache.get(key) === stored) cache.delete(key);
+    const existing = jobs.get(key); if (existing) { if (foreground) existing.foreground = true; return retained ? datedValue(retained) : existing.work; }
+    if (jobs.size >= (foreground ? 2 : 1) && !supplied) { const value = base(activity, now()); value.status = 'pending'; value.retryAfterMs = 1000;
+      value.coverage.reason = 'provider_busy'; return retained ? datedValue(retained) : value; }
+    const job = { foreground, work: null as unknown as Promise<KolTokenRealizedAccounting> };
     const work = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined, value: KolTokenRealizedAccounting;
       try {
         const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error('provider_timeout')), budgetMs); });
-        const accounting = await Promise.race([supplied ?? load(activity), timeout]);
+        const accounting = await Promise.race([supplied ?? load(activity, { foreground: () => job.foreground }), timeout]);
         value = realizedAccountingFromReplay(activity, accounting, now());
       } catch (error) { value = base(activity, now()); value.status = 'pending'; value.retryAfterMs = 1000;
         value.coverage.reason = error instanceof Error && error.message === 'provider_timeout' ? 'provider_timeout' : 'provider_unavailable'; }
@@ -254,18 +265,31 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
       // present was supplied by a newer replay snapshot while this job waited;
       // A newly reported total may upgrade a concurrently supplied estimate;
       // an estimate must never displace a validated reported total.
-      const confirmed = confirmedValue(key, activity, value);
+      const confirmed = cache.get(key) !== retained ? confirmedValue(key, activity, value) : null;
       if (confirmed) return confirmed;
+      // Provider refresh deadlines do not invalidate immutable, reconciled
+      // transaction costs. Keep their original observation date and never copy
+      // an old market quote into a new one while a refresh is unavailable.
+      const providerAccessUnavailable = /^(provider_http_(401|403)|provider_key_unavailable|gmgn_not_configured|gmgn_key_unavailable)$/.test(value.coverage.reason ?? '');
+      const retainDuringRefresh = value.status === 'ready' || providerAccessUnavailable
+        || transient(value.coverage.reason) && value.coverage.reason !== 'canonical_snapshot_changed';
+      if (retained && valid(retained, key, activity, true) && quality(value) < quality(retained.value) && retainDuringRefresh) {
+        const entry = { ...retained, refreshAfter: now() + Math.max(1000, Math.min(300_000, value.retryAfterMs ?? (providerAccessUnavailable ? 60_000 : 15_000))) };
+        remember(key, entry); await save(key, entry); return datedValue(entry);
+      }
       const observedAt = now(), duration = durationFor(value);
       const entry: Entry = { version: 1, fingerprint: key, observedAt, expiresAt: observedAt + duration, value };
       remember(key, entry); await save(key, entry); return confirmedValue(key, activity) ?? value;
     })();
-    jobs.set(key, work);
-    try { return await work; } finally { if (jobs.get(key) === work) jobs.delete(key); }
+    job.work = work; jobs.set(key, job);
+    void work.finally(() => { if (jobs.get(key) === job) jobs.delete(key); }).catch(() => {});
+    // A fresh canonical proof with the exact same history is sufficient to
+    // display retained historical cash flows while the provider refresh runs.
+    return retained ? datedValue(retained) : work;
   };
   const quoteJobs = new Map<string, Promise<PositionQuoteResult>>();
-  return async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>, options: { markPosition?: boolean } = {}): Promise<KolTokenRealizedAccounting> => {
-    const historicalValue = await historical(activity, supplied), position = historicalValue.position;
+  return async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>, options: { markPosition?: boolean; foreground?: boolean } = {}): Promise<KolTokenRealizedAccounting> => {
+    const historicalValue = await historical(activity, supplied, options.foreground), position = historicalValue.position;
     if (options.markPosition === false || historicalValue.status !== 'ready' || !position || position.status === 'closed') return historicalValue;
     const value = { ...historicalValue, position: { ...position } };
     let retained: KolTokenProfitPosition | null = null;
@@ -309,9 +333,25 @@ export function createKolTokenGmgnPnl({ load = activity => currentTradeReplayGmg
 }
 
 /** Reuse chart jobs/cache while keeping card valuation below foreground charts. */
-export async function loadCurrentPositionQuote(token: string, { loadChart = currentMarketChart, now: clock = Date.now }: {
-  loadChart?: typeof currentMarketChart; now?: () => number;
+export async function loadCurrentPositionQuote(token: string, { loadChart = currentMarketChart, loadSpotQuote = currentTokenPositionQuote,
+  loadGmgnSpotQuote = currentTokenGmgnPositionQuote, now: clock = Date.now }: {
+  loadChart?: typeof currentMarketChart; loadSpotQuote?: QuoteLoader; loadGmgnSpotQuote?: QuoteLoader; now?: () => number;
 } = {}): Promise<PositionQuoteResult> {
+  // Position valuation only needs a current price. A batched spot request does
+  // not compete with the main chart's expensive OHLC history preparation.
+  const startedAt = clock();
+  let unavailableSpot: PositionQuoteResult = { reason: 'current_quote_unavailable', retryAfterMs: 3000 };
+  for (const load of [loadSpotQuote, loadGmgnSpotQuote]) {
+    try {
+      const spot = await load(token), at = Date.parse(spot.quote?.timestamp ?? '');
+      if (spot.quote && numeric(spot.quote.priceUsd) !== null && Number(spot.quote.priceUsd) > 0
+        && Number.isFinite(at) && at <= clock() && clock() - at <= kolTokenPositionQuoteMaxAgeMs) return spot;
+      if (spot.reason) unavailableSpot = { reason: spot.reason, retryAfterMs: spot.retryAfterMs ?? 3000 };
+    } catch { /* Continue to independent price evidence. */ }
+  }
+  // The adapter has a 2.5s mark budget. Avoid launching full-history work after
+  // lightweight lookups already used it; their own caches can warm for retry.
+  if (clock() - startedAt >= 2200) return unavailableSpot;
   const result = await loadChart(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
   const chart = result.chart, now = clock(), updated = Date.parse(chart?.updatedAt ?? '');
   const unavailable = { reason: result.loadStatus === 'rate_limited' ? 'quote_rate_limited' : 'current_quote_unavailable', retryAfterMs: result.retryAfterMs ?? 3000 };

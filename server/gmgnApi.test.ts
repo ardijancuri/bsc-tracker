@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createGmgnQueue, createGmgnRequester, gmgnRetryMs, reserveGmgnSlot } from './gmgnApi.js';
+import { createGmgnQueue, createGmgnRequester, GmgnHttpError, gmgnRetryMs, reserveGmgnSlot } from './gmgnApi.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 
 const url = new URL('https://openapi.gmgn.ai/v1/market/token_kline?chain=bsc');
@@ -7,6 +7,11 @@ const now = 2_000_000_000_000;
 afterEach(() => vi.useRealTimers());
 
 describe('GMGN account request budget', () => {
+  it('reserves one weighted unit for lightweight token-info prices using the shared limiter', async () => {
+    await reserveGmgnSlot('test-key', 1, 'prefetch', async (_sql, values) => {
+      expect(values.slice(1)).toEqual([500, 1500]); return { rows: [{ delay: 0 }] };
+    });
+  });
   it('paces documented route weights and uses the same private hashed account row for app and worker', async () => {
     const keys: unknown[] = [];
     await reserveGmgnSlot('private-test-key', 2, 'chart', async (_sql, values) => {
@@ -74,11 +79,11 @@ describe('GMGN account request budget', () => {
 
 describe('GMGN HTTP adapter', () => {
   function dependencies(response: Response) {
-    let pauseMs = 0;
+    let pauseMs = 0, pauseStatus: number | undefined;
     const query = vi.fn(async (sql: string, values: unknown[]) => {
       if (sql.startsWith('WITH clock')) return { rows: pauseMs ? [] : [{ delay: 0 }] };
-      if (sql.startsWith('UPDATE')) { pauseMs = Number(values[1]); return { rows: [] }; }
-      if (sql.includes('greatest(0')) return { rows: pauseMs ? [{ delay: pauseMs }] : [] };
+      if (sql.startsWith('UPDATE')) { pauseMs = Number(values[1]); pauseStatus = Number(values[2]); return { rows: [] }; }
+      if (sql.includes('greatest(0')) return { rows: pauseMs ? [{ delay: pauseMs, pauseStatus }] : [] };
       return { rows: [] };
     });
     const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => response);
@@ -87,12 +92,44 @@ describe('GMGN HTTP adapter', () => {
   it('keeps credentials in the server-side header and supports the weighted worker POST through the same adapter', async () => {
     const { request, fetcher } = dependencies(Response.json({ code: 0, data: { list: [] } }));
     const value = await request(url, { apiKey: ' server-test-key ', method: 'POST', body: { chain: 'bsc' }, weight: 3 });
-    expect(fetcher.mock.calls[0][0]).toBe(url);
+    const sentUrl = fetcher.mock.calls[0][0] as URL;
+    expect(sentUrl).not.toBe(url);
+    expect(sentUrl.origin + sentUrl.pathname).toBe(url.origin + url.pathname);
+    expect(sentUrl.searchParams.get('chain')).toBe('bsc');
+    expect(sentUrl.searchParams.get('timestamp')).toBe(String(now / 1000));
+    expect(sentUrl.searchParams.get('client_id')).toMatch(/^[a-f0-9-]{36}$/);
+    expect(url.searchParams.has('timestamp')).toBe(false);
+    expect(url.searchParams.has('client_id')).toBe(false);
     const options = fetcher.mock.calls[0][1] as RequestInit;
     expect(options.headers).toMatchObject({ 'X-APIKEY': 'server-test-key', 'Content-Type': 'application/json' });
     expect(options.body).toBe('{"chain":"bsc"}');
     expect(JSON.stringify(value)).not.toContain('server-test-key');
     expect(url.href).not.toContain('server-test-key');
+  });
+  it('refreshes authentication after a queue wait longer than the five-second server window', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    let finish!: (value: Response) => void;
+    const query = vi.fn(async (sql: string) => ({ rows: sql.startsWith('WITH clock') ? [{ delay: 0 }] : [] }));
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }))
+      .mockResolvedValue(Response.json({ code: 0, data: { recovered: true } }));
+    const request = createGmgnRequester({ query, fetcher });
+    const first = request(url, { apiKey: 'key' });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const queuedUrl = new URL(url.href);
+    queuedUrl.searchParams.set('timestamp', String(now / 1000));
+    queuedUrl.searchParams.set('client_id', 'previous-request-id');
+    const second = request(queuedUrl, { apiKey: 'key' });
+    await vi.advanceTimersByTimeAsync(6000);
+    finish(Response.json({ code: 0, data: {} }));
+    await Promise.all([first, second]);
+    const sent = fetcher.mock.calls.map(([input]) => input as URL);
+    expect(sent[1].searchParams.get('timestamp')).toBe(String(Math.floor(Date.now() / 1000)));
+    expect(Number(sent[1].searchParams.get('timestamp')) - Number(sent[0].searchParams.get('timestamp'))).toBeGreaterThanOrEqual(6);
+    expect(sent[1].searchParams.get('client_id')).toMatch(/^[a-f0-9-]{36}$/);
+    expect(sent[1].searchParams.get('client_id')).not.toBe(sent[0].searchParams.get('client_id'));
+    expect(sent[1].searchParams.get('client_id')).not.toBe('previous-request-id');
+    expect(queuedUrl.searchParams.get('timestamp')).toBe(String(now / 1000));
+    expect(queuedUrl.searchParams.get('client_id')).toBe('previous-request-id');
   });
   it.each([429, 200])('persists cooldown from an HTTP %i/body429 response and stops requests during it', async status => {
     const { request, fetcher, query } = dependencies(Response.json({ code: 429, reset_at: now / 1000 + 120 }, { status }));
@@ -122,11 +159,28 @@ describe('GMGN HTTP adapter', () => {
     await expect(second(url, { apiKey: 'same-account' })).resolves.toMatchObject({ data: { recovered: true } });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
-  it.each([401, 403])('cools down HTTP %i rejection without leaking upstream error text', async status => {
+  it.each([401, 403])('preserves HTTP %i during shared cooldown instead of misreporting a rate limit', async status => {
     const { request, fetcher } = dependencies(Response.json({ message: 'secret-is-private' }, { status }));
     await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toThrow(`GMGN request failed: HTTP ${status}`);
-    await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toMatchObject({ retryAfterMs: 300_000 });
+    await expect(request(url, { apiKey: 'secret-is-private' })).rejects.toMatchObject({ status, retryAfterMs: 300_000 });
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('recognizes a body-only auth rejection without persisting upstream text or credentials', async () => {
+    const { request, fetcher, query } = dependencies(Response.json({ code: 403, message: 'private-upstream-context' }));
+    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ status: 403, retryAfterMs: 300_000 });
+    await expect(request(url, { apiKey: 'key' })).rejects.toBeInstanceOf(GmgnHttpError);
+    const update = query.mock.calls.find(([sql]) => sql.startsWith('UPDATE'))!;
+    expect(update[1].slice(1)).toEqual([300_000, 403]);
+    expect(JSON.stringify(update)).not.toContain('private-upstream-context');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('honors an auth cooldown recorded by another process after this caller reserved a slot', async () => {
+    const query = vi.fn(async (sql: string) => ({ rows: sql.startsWith('WITH clock') ? [{ delay: 0 }]
+      : [{ delay: 240_000, pauseStatus: '401' }] }));
+    const fetcher = vi.fn();
+    const request = createGmgnRequester({ query, fetcher });
+    await expect(request(url, { apiKey: 'key' })).rejects.toMatchObject({ status: 401, retryAfterMs: 240_000 });
+    expect(fetcher).not.toHaveBeenCalled();
   });
   it('bounds a queued request and aborts it before any DB reservation or network dispatch', async () => {
     let finish!: (value: Response) => void;

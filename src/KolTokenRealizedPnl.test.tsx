@@ -34,11 +34,58 @@ describe('KOL token realized profit display', () => {
     expect(cashOnlyHtml).toContain('Est. profit'); expect(cashOnlyHtml).toContain('+$70');
     body.realizedAccounting!.position.estimatedProfitUsd = null;
     const pending = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy />);
-    expect(pending).toContain('Updating estimated profit'); expect(pending).not.toContain('+$30');
+    expect(pending).toContain('Realized P&amp;L'); expect(pending).toContain('+$30');
+    expect(pending).not.toContain('Est. profit'); expect(pending).not.toContain('Price as of');
     body.inventory!.coverage.balance = '0'; body.realizedAccounting!.position.status = 'closed'; body.realizedAccounting!.position.remainingTokenAmount = '0';
     const closed = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy={false} />);
     expect(closed).toContain('Realized P&amp;L'); expect(closed).toContain('+$30'); expect(closed).not.toContain('Est. profit');
     expect(closed).not.toContain('Price as of');
+  });
+
+  it.each(['missing', 'stale', 'rateLimited'] as const)('keeps verified realized gains visible with the correct label during a %s open-position quote', variant => {
+    const body = activity('-12.5');
+    body.inventory!.coverage.balance = '10'; body.summary.status = 'open';
+    body.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: variant === 'stale' ? '27.5' : null,
+      estimatedRoi: null, unrealizedProfitUsd: null, priceUsd: variant === 'stale' ? '5' : null,
+      pricedAt: variant === 'stale' ? new Date(Date.now() - 180_001).toISOString() : null,
+      valuationSource: variant === 'stale' ? 'market' : null, remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20',
+      ...(variant === 'rateLimited' ? { reason: 'quote_rate_limited', retryAfterMs: 60_000 } : {}) };
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy />);
+    expect(html).toContain('Realized P&amp;L'); expect(html).toContain('-$12.50'); expect(html).toContain('negative');
+    expect(html).not.toContain('Est. profit'); expect(html).not.toContain('Price as of');
+    const current = { pair: 'pair', activity: body, busy: false };
+    expect(tokenPnlStateAfterLoad(current, 'pair', { activity: null, status: 'pending' }).activity).toBe(body);
+    body.inventory!.coverage.complete = false;
+    const incomplete = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={body} busy />);
+    expect(incomplete).not.toContain('-$12.50');
+  });
+
+  it('ends the busy state for a terminal inventory failure even if accounting was marked pending', () => {
+    const body = activity(null);
+    body.inventory!.coverage = { ...body.inventory!.coverage, status: 'unavailable', complete: false, reconciled: false, reason: 'inventory_balance_mismatch' };
+    body.realizedAccounting!.status = 'pending';
+    const state = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'pending' });
+    expect(state.busy).toBe(false);
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={state.activity} busy={state.busy} />);
+    expect(html).toContain('—'); expect(html).not.toContain('…');
+  });
+  it('adopts fresh realized-only proof during a quote outage instead of retaining an expiring snapshot', () => {
+    const previous = activity('20.47');
+    previous.inventory!.coverage.balance = '10'; previous.summary.status = 'open';
+    previous.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: null, estimatedRoi: null, unrealizedProfitUsd: null,
+      priceUsd: null, pricedAt: null, valuationSource: null, remainingTokenAmount: '10', remainingCostBasisUsd: '10', feeInclusiveCostUsd: '20',
+      reason: 'quote_rate_limited', retryAfterMs: 60_000 };
+    vi.advanceTimersByTime(179_000);
+    const fresh = structuredClone(previous), checkedAt = new Date(Date.now()).toISOString();
+    fresh.inventory!.coverage.checkedAt = checkedAt; fresh.realizedAccounting!.checkedAt = checkedAt;
+    const state = tokenPnlStateAfterLoad({ pair: 'pair', activity: previous, busy: true }, 'pair', { activity: fresh, status: 'pending' });
+    expect(state.activity).toBe(fresh);
+    vi.advanceTimersByTime(2000);
+    expect(verifiedTokenRealizedPnl(previous)).toBeNull();
+    expect(verifiedTokenRealizedPnl(state.activity)).toBe(20.47);
+    const retained = tokenPnlStateAfterLoad(state, 'pair', { activity: null, status: 'pending' });
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={retained.activity} busy={retained.busy} />);
+    expect(html).toContain('+$20.47'); expect(html).toContain('Realized P&amp;L'); expect(html).not.toContain('…');
   });
 
   it('shows pending verification as loading rather than falsely diagnosing missing purchase costs', () => {

@@ -75,7 +75,7 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
         response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
         const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: request.query.pnl === 'true' });
         if (request.query.pnl === 'true') response.realizedAccounting = realized;
-      } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response);
+      } else if (request.query.pnl === 'true') response.realizedAccounting = await currentKolTokenGmgnPnl(response, undefined, { foreground: !background });
       return response;
     };
     // Every poll rereads indexed evidence. New swaps, corrected quantities/costs,

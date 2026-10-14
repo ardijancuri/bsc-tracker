@@ -16,7 +16,7 @@ interface History {
 }
 interface Traders { version: 1; token: string; sort: Sort; rows: Record<string, unknown>[]; checkedAt: number }
 interface RankingHints { version: 1; wallet: string; token: string; signature: string; successful?: Sort; misses: Partial<Record<Sort, number>>; updatedAt: number }
-interface Job { foreground: boolean; work: Promise<ProviderData> }
+interface Job { foreground: boolean; historicalOnly: boolean; work: Promise<ProviderData> }
 interface ProviderData { history: History; aggregate: Record<string, unknown> | null; checkedAt: number; aggregateOnly?: boolean;
   fallbackHistory?: History; pending?: { reason: string; retryAfterMs: number }; failure?: string }
 const addressRe = /^0x[0-9a-f]{40}$/;
@@ -24,6 +24,7 @@ const hashRe = /^0x[0-9a-f]{64}$/;
 const ttlMs = 15_000;
 const historyTtlMs = 180_000;
 const resumeTtlMs = 600_000;
+const historicalRetentionMs = 7 * 24 * 60 * 60 * 1000;
 const maxRows = 10_000;
 const fields = ['token_amount', 'quote_amount', 'cost_usd', 'buy_cost_usd', 'gas_usd', 'gas_native', 'dex_usd', 'priority_fee', 'tip_fee', 'price_usd'] as const;
 const sorts = ['amount_percentage', 'profit', 'buy_volume_cur'] as const;
@@ -82,6 +83,13 @@ function fingerprint(activity: KolTokenActivity) {
     trades: activity.trades.map(trade => [trade.id, trade.side, trade.txHash, trade.timestamp, trade.blockNumber, trade.transactionIndex,
       trade.tokenAmount, trade.amountUsd, trade.priceUsd, trade.quoteTokenAddress, trade.quoteAmount, trade.quoteSymbol, trade.valuationStatus, trade.source]) });
 }
+function usableHistoricalCashFlow(value: TradeReplayAccounting) {
+  const last = value.events.at(-1);
+  const known = (field: string | null | undefined) => field !== null && field !== undefined && field.trim() !== '' && Number.isFinite(Number(field));
+  return value.coverage.transactionsComplete && value.coverage.balanceMatched && last && [last.remainingTokenAmount,
+    last.investedUsd, last.soldUsd, last.transferOutIncomeUsd, last.feesUsd, last.feeInclusiveCostUsd].every(known)
+    && (Number(last.remainingTokenAmount) > 0 || known(last.cumulativeRealizedProfitUsd));
+}
 function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
@@ -134,7 +142,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
   async function historyFor(wallet: string, token: string, signature: string) {
     const key = `${wallet}-${token}`, stored = histories.get(key) ?? await read<History>('activity-' + key);
     const completed = stored?.complete ? stored : completedHistories.get(key) ?? await read<History>('completed-activity-' + key);
-    const fallback = completed?.complete ? validHistory(completed, wallet, token, signature, resumeTtlMs) : null;
+    const fallback = completed?.complete ? validHistory(completed, wallet, token, signature, historicalRetentionMs) : null;
     if (fallback) remember(completedHistories, key, fallback, 24); else completedHistories.delete(key);
     const history = validHistory(stored, wallet, token, signature, stored?.complete ? historyTtlMs : resumeTtlMs)
       ?? freshHistory(wallet, token, signature);
@@ -177,12 +185,19 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     job.work = work; traderJobs.set(name, job);
     try { return await work; } finally { if (traderJobs.get(name) === job) traderJobs.delete(name); }
   }
-  async function fetchData(wallet: string, token: string, signature: string, key: string, priority: () => 'chart' | 'prefetch'): Promise<ProviderData> {
+  async function fetchData(activity: KolTokenActivity, wallet: string, token: string, signature: string, key: string, priority: () => 'chart' | 'prefetch', historicalOnly: () => boolean): Promise<ProviderData> {
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(Error('provider_timeout')), Math.max(1, Math.min(8000, budgetMs)));
     const signal = controller.signal; let history = freshHistory(wallet, token, signature), fallbackHistory: History | null = null;
     let aggregate: Record<string, unknown> | null = null, checkedAt = now();
     try {
       const cached = await bounded(historyFor(wallet, token, signature), signal); history = cached.history; fallbackHistory = cached.fallback;
+      // Full historical cash flows are immutable once independently matched to
+      // today's canonical movements and balance. Profile P&L needs no ranking
+      // request or old market mark to reuse them, even after a process restart.
+      const historicalResult = (candidate: History) => historicalOnly() && candidate.complete
+        && usableHistoricalCashFlow(builder(activity, candidate.rows, { activitiesComplete: true, aggregateRow: null,
+          checkedAt: new Date(now()).toISOString(), now: now() }));
+      if (fallbackHistory && historicalResult(fallbackHistory)) return { history: fallbackHistory, aggregate: null, checkedAt: now() };
       while (!history.complete) {
         signal.throwIfAborted();
         if (history.pages >= 200 || history.rows.length >= maxRows) throw Error('provider_history_limit');
@@ -210,6 +225,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
           await bounded(save('completed-activity-' + `${wallet}-${token}`, history), signal);
         }
       }
+      if (historicalResult(history)) return { history, aggregate: null, checkedAt: now() };
       const ranking = await bounded(rankingHints(wallet, token, signature), signal);
       const ordered = ranking.successful ? [ranking.successful, ...sorts.filter(sort => sort !== ranking.successful)] : sorts;
       for (const sort of ordered) {
@@ -230,31 +246,28 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
       if (signal.aborted || error instanceof Error && (error.message === 'provider_timeout' || ['AbortError', 'TimeoutError'].includes(error.name)))
         return { history, aggregate, checkedAt, aggregateOnly: history.complete,
           ...(!history.complete && fallbackHistory ? { fallbackHistory } : {}), pending: { reason: 'provider_timeout', retryAfterMs: 1000 } };
-      return { history, aggregate, checkedAt, aggregateOnly: history.complete, failure: error instanceof GmgnHttpError ? `provider_http_${error.status}`
+      return { history, aggregate, checkedAt, aggregateOnly: history.complete,
+        ...(!history.complete && fallbackHistory ? { fallbackHistory } : {}), failure: error instanceof GmgnHttpError ? `provider_http_${error.status}`
         : error instanceof Error && ['provider_response_invalid', 'provider_cursor_invalid', 'provider_activity_conflict', 'provider_history_limit'].includes(error.message) ? error.message : 'provider_unavailable' };
     } finally { clearTimeout(timer); }
   }
   function result(activity: KolTokenActivity, data?: ProviderData, reason?: string): TradeReplayAccounting {
     const checkedAt = new Date(data?.checkedAt ?? now()).toISOString();
-    const usablePrefix = (value: TradeReplayAccounting) => {
-      const last = value.events.at(-1);
-      const known = (field: string | null | undefined) => field !== null && field !== undefined && field.trim() !== '' && Number.isFinite(Number(field));
-      return value.coverage.transactionsComplete && value.coverage.balanceMatched && last && [last.remainingTokenAmount,
-        last.investedUsd, last.soldUsd, last.transferOutIncomeUsd, last.feesUsd, last.feeInclusiveCostUsd].every(known)
-        && (Number(last.remainingTokenAmount) > 0 || known(last.cumulativeRealizedProfitUsd));
-    };
-    if (data?.fallbackHistory && data.pending && data.pending.reason !== 'canonical_snapshot_changed') {
+    if (data?.fallbackHistory && (data.pending || data.failure === 'provider_unavailable' || /^provider_http_(429|5\d\d)$/.test(data.failure ?? ''))
+      && data.pending?.reason !== 'canonical_snapshot_changed') {
       // Only historical transaction values are reused. A fresh canonical proof
       // must match the entire fingerprint; no cached price/final accompanies it.
       const fallback = builder(activity, data.fallbackHistory.rows, { activitiesComplete: true, aggregateRow: null, checkedAt, now: now() });
-      if (usablePrefix(fallback)) {
+      if (usableHistoricalCashFlow(fallback)) {
         fallback.status = 'estimated'; fallback.final = null; fallback.coverage.exactFinal = false;
-        fallback.coverage.reason = `historical_cache_${data.pending.reason}`; fallback.retryAfterMs = data.pending.retryAfterMs; return fallback;
+        fallback.coverage.reason = `historical_cache_${data.pending?.reason ?? data.failure}`;
+        if (data.pending) fallback.retryAfterMs = data.pending.retryAfterMs;
+        return fallback;
       }
     }
     const value = builder(activity, data?.history.rows ?? [], { activitiesComplete: data?.history.complete ?? false,
       aggregateRow: data?.aggregate, checkedAt, now: now() });
-    const usableEstimate = data?.aggregateOnly && data.history.complete && usablePrefix(value) && data.pending?.reason !== 'canonical_snapshot_changed';
+    const usableEstimate = data?.aggregateOnly && data.history.complete && usableHistoricalCashFlow(value) && data.pending?.reason !== 'canonical_snapshot_changed';
     if (usableEstimate && (data.pending || data.failure)) {
       value.status = 'estimated'; value.final = null; value.coverage.exactFinal = false;
       value.coverage.reason = `aggregate_${data.pending?.reason ?? data.failure}`;
@@ -265,7 +278,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     if (data?.failure || reason) { value.status = 'unavailable'; value.final = null; value.coverage.exactFinal = false; value.coverage.reason = data?.failure ?? reason; }
     return value;
   }
-  return async (activity: KolTokenActivity, options: { historicalRealized?: boolean } = {}): Promise<TradeReplayAccounting> => {
+  return async (activity: KolTokenActivity, options: { historicalRealized?: boolean; foreground?: boolean | (() => boolean) } = {}): Promise<TradeReplayAccounting> => {
     const wallet = activity.kol.address.toLowerCase(), token = activity.token.address.toLowerCase(), key = apiKey();
     if (!addressRe.test(wallet) || !addressRe.test(token)) return result(activity, undefined, 'invalid_pair');
     if (!key) return result(activity, undefined, 'provider_key_unavailable');
@@ -279,17 +292,21 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
       return value;
     }
     const historicalRealized = options.historicalRealized === true;
+    const foreground = () => !historicalRealized || (typeof options.foreground === 'function' ? options.foreground() : options.foreground === true);
     const signature = fingerprint(activity), jobKey = `${wallet}-${token}`;
     let job = jobs.get(jobKey);
     if (!job) {
-      if (active >= 2) { const value = result(activity); value.status = 'pending'; value.coverage.reason = 'provider_busy'; value.retryAfterMs = 1000; return value; }
+      // Profile work leaves one slot for the trade the user opens. Same-pair
+      // joins still promote the existing job without reserving another slot.
+      if (active >= (foreground() ? 2 : 1)) { const value = result(activity); value.status = 'pending'; value.coverage.reason = 'provider_busy'; value.retryAfterMs = 1000; return value; }
       active++;
-      job = { foreground: !historicalRealized, work: null as unknown as Promise<ProviderData> };
+      job = { foreground: foreground(), historicalOnly: historicalRealized, work: null as unknown as Promise<ProviderData> };
       const selected = job;
-      job.work = fetchData(wallet, token, signature, key, () => selected.foreground ? 'chart' : 'prefetch'); jobs.set(jobKey, job);
+      job.work = fetchData(activity, wallet, token, signature, key, () => selected.foreground || foreground() ? 'chart' : 'prefetch', () => selected.historicalOnly); jobs.set(jobKey, job);
       void job.work.finally(() => { active--; if (jobs.get(jobKey) === job) jobs.delete(jobKey); });
     }
-    if (!historicalRealized) job.foreground = true;
+    if (foreground()) job.foreground = true;
+    if (!historicalRealized) job.historicalOnly = false;
     const data = await job.work;
     return result(activity, data.history.signature === signature ? data : { ...data, aggregate: null, pending: { reason: 'canonical_snapshot_changed', retryAfterMs: 1000 } });
   };

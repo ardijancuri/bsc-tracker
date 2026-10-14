@@ -5,7 +5,7 @@ import { downloadTokenImage, downloadTokenMetadataImage, onchainTokenImage, type
 import { ensureSeeds } from './seeds.js';
 import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
 import { calculateLeaderboard, calculate24hLeaderboard } from './pnl.js';
-import { fetchGmgnProfits, type GmgnProfit } from './gmgnPnl.js';
+import { fetchGmgnProfits, legacyGmgnProfitKey, type GmgnProfit } from './gmgnPnl.js';
 import { readBlockRange } from './blockRange.js';
 import { last24hStart } from './dayWindow.js';
 import { isMemeToken } from './memeToken.js';
@@ -701,7 +701,7 @@ async function leaderboardLoop() {
           valued_sell_count=EXCLUDED.valued_sell_count,excluded_sell_count=EXCLUDED.excluded_sell_count,updated_at=now()`, [JSON.stringify(windowStats)]);
       await setState('leaderboard_24h', { windowStart, windowEnd: new Date(windowEnd).toISOString(), source: 'window_trades', wallets: wallets.length });
       await notifyUpdate();
-      const apiKey = process.env.GMGN_API_KEY?.trim();
+      const apiKey = legacyGmgnProfitKey();
       let stats: Array<{ walletAddress: string; period: string; realizedProfitUsd: string | number | null; unrealizedProfitUsd: string | null }>;
       if (apiKey) {
         const gmgnStats: GmgnProfit[] = [];

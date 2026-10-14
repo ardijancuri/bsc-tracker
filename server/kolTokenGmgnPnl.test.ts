@@ -57,25 +57,41 @@ afterEach(async () => {
 });
 
 describe('profile position quotes during chart refresh', () => {
+  const noSpotQuote = async () => ({});
   function chart(): TokenChart {
     return { address: token, period: '1m', source: 'gmgn', resolution: '1m', updatedAt: new Date(time - 45_000).toISOString(),
       pending: false, stale: true, points: [], candles: [{ time: time / 1000 - 60, open: 20, high: 20, low: 20, close: 20, volume: 1 }] };
   }
+  it('uses a recent independent spot quote without requesting chart history', async () => {
+    const loadChart = vi.fn(async () => ({ chart: chart(), pending: false }));
+    const quote = { priceUsd: '25', timestamp: new Date(time - 10_000).toISOString() };
+    expect(await loadCurrentPositionQuote(token, { loadSpotQuote: async () => ({ quote }), loadGmgnSpotQuote: noSpotQuote, loadChart, now: () => time })).toEqual({ quote });
+    expect(loadChart).not.toHaveBeenCalled();
+  });
+  it.each(['expired', 'future', 'invalid'] as const)('falls back to chart evidence when an independent spot quote is %s', async variant => {
+    const quote = { priceUsd: '25', timestamp: at };
+    if (variant === 'expired') quote.timestamp = new Date(time - 180_001).toISOString();
+    if (variant === 'future') quote.timestamp = new Date(time + 1).toISOString();
+    if (variant === 'invalid') quote.priceUsd = '0x100';
+    const selected = chart(), loadChart = vi.fn(async () => ({ chart: selected, pending: false }));
+    expect(await loadCurrentPositionQuote(token, { loadSpotQuote: async () => ({ quote }), loadGmgnSpotQuote: noSpotQuote, loadChart, now: () => time }))
+      .toEqual({ quote: { priceUsd: '20', timestamp: selected.updatedAt } });
+  });
   it('uses a recently observed genuine price while the chart refresh is queued', async () => {
     const selected = chart(), loadChart = vi.fn(async () => ({ chart: selected, pending: true, loadStatus: 'queued' as const, retryAfterMs: 3000 }));
-    expect(await loadCurrentPositionQuote(token, { loadChart, now: () => time })).toEqual({ quote: { priceUsd: '20', timestamp: selected.updatedAt } });
+    expect(await loadCurrentPositionQuote(token, { loadChart, loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time })).toEqual({ quote: { priceUsd: '20', timestamp: selected.updatedAt } });
     expect(loadChart).toHaveBeenCalledExactlyOnceWith(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
   });
   it('does not advance the observation date when a cached partial candle closes', async () => {
     const selected = chart(), loadChart = async () => ({ chart: selected, pending: true });
-    const beforeClose = await loadCurrentPositionQuote(token, { loadChart, now: () => time - 20_000 });
-    const afterClose = await loadCurrentPositionQuote(token, { loadChart, now: () => time + 20_000 });
+    const beforeClose = await loadCurrentPositionQuote(token, { loadChart, loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time - 20_000 });
+    const afterClose = await loadCurrentPositionQuote(token, { loadChart, loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time + 20_000 });
     expect(beforeClose.quote?.timestamp).toBe(selected.updatedAt);
     expect(afterClose).toEqual(beforeClose);
   });
   it('uses the completed candle boundary when it predates chart retrieval', async () => {
     const selected = chart(); selected.updatedAt = at; selected.candles[0].time = time / 1000 - 120;
-    const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: false }), now: () => time });
+    const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: false }), loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time });
     expect(result.quote?.timestamp).toBe(new Date(time - 60_000).toISOString());
   });
   it.each(['expired-chart', 'expired-candle', 'future-chart', 'future-candle', 'candle-after-observation', 'wrong-token', 'wrong-source', 'wrong-resolution', 'invalid-price', 'zero-price', 'invalid-date', 'empty'] as const)(
@@ -93,7 +109,7 @@ describe('profile position quotes during chart refresh', () => {
       if (variant === 'zero-price') selected.candles[0].close = 0;
       if (variant === 'invalid-date') selected.updatedAt = 'invalid';
       if (variant === 'empty') selected.candles = [];
-      const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: true, loadStatus: 'rate_limited', retryAfterMs: 60_000 }), now: () => time });
+      const result = await loadCurrentPositionQuote(token, { loadChart: async () => ({ chart: selected, pending: true, loadStatus: 'rate_limited', retryAfterMs: 60_000 }), loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time });
       expect(result).toEqual({ reason: 'quote_rate_limited', retryAfterMs: 60_000 });
     });
 });
@@ -176,6 +192,19 @@ describe('GMGN historical realized P&L adapter', () => {
     value.events.at(-1)!.cumulativeRealizedProfitUsd = null;
     expect(realizedAccountingFromReplay(selected, value, time).realizedProfitUsd).toBeNull();
   });
+  it('uses lightweight GMGN token info when the independent pool has no USD quote, without loading candles', async () => {
+    const quote = { priceUsd: '12', timestamp: at }, loadChart = vi.fn();
+    const gmgnSpot = vi.fn(async () => ({ quote }));
+    expect(await loadCurrentPositionQuote(token, { loadSpotQuote: async () => ({}), loadGmgnSpotQuote: gmgnSpot, loadChart, now: () => time })).toEqual({ quote });
+    expect(gmgnSpot).toHaveBeenCalledExactlyOnceWith(token); expect(loadChart).not.toHaveBeenCalled();
+  });
+  it('does not launch full chart work when lightweight quotes exhausted the mark budget', async () => {
+    let clock = time;
+    const loadChart = vi.fn(), slow = async () => { clock += 1500; return { reason: 'current_quote_unavailable', retryAfterMs: 3000 }; };
+    expect(await loadCurrentPositionQuote(token, { loadSpotQuote: slow, loadGmgnSpotQuote: slow, loadChart, now: () => clock }))
+      .toEqual({ reason: 'current_quote_unavailable', retryAfterMs: 3000 });
+    expect(loadChart).not.toHaveBeenCalled();
+  });
 });
 
 describe('bounded durable historical realized cache', () => {
@@ -189,13 +218,14 @@ describe('bounded durable historical realized cache', () => {
     expect((await run(activity())).coverage.reason).toBeUndefined();
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(stored);
   });
-  it('expires a derived total after fifteen seconds so a provider lookup can upgrade it to reported accounting', async () => {
+  it('keeps a derived total visible while refreshing it to reported accounting after fifteen seconds', async () => {
     let clock = time; const exact = accounting(activity(), true); exact.final!.remainingCostBasisUsd = '43.4'; exact.final!.cumulativeRealizedProfitUsd = '74.4';
     const load = vi.fn().mockResolvedValueOnce(accounting()).mockResolvedValue(exact);
     const run = createKolTokenGmgnPnl({ load, directory, now: () => clock });
     const first = await run(activity()); expect(first.realizedProfitUsd).toBe('73.4'); expect(first.retryAfterMs).toBeUndefined();
     clock += 14_999; expect((await run(activity())).realizedProfitUsd).toBe('73.4'); expect(load).toHaveBeenCalledOnce();
-    clock += 1; expect((await run(activity())).realizedProfitUsd).toBe('74.4'); expect(load).toHaveBeenCalledTimes(2);
+    clock += 1; expect((await run(activity())).realizedProfitUsd).toBe('73.4'); expect(load).toHaveBeenCalledTimes(2);
+    await vi.waitFor(async () => expect((await run(activity())).realizedProfitUsd).toBe('74.4'));
     expect((await run(activity())).coverage.reason).toBeUndefined();
   });
   it('decrements a derived aggregate cooldown instead of resetting it on every cached read', async () => {
@@ -204,7 +234,9 @@ describe('bounded durable historical realized cache', () => {
     const run = createKolTokenGmgnPnl({ load, directory: null, now: () => clock });
     expect(await run(activity())).toMatchObject({ status: 'ready', retryAfterMs: 2500, coverage: { reason: 'gmgn_activity_estimate' } });
     clock += 1000; expect((await run(activity())).retryAfterMs).toBe(1500); expect(load).toHaveBeenCalledOnce();
-    clock += 1500; const ready = await run(activity()); expect(ready.coverage.reason).toBeUndefined(); expect(ready.retryAfterMs).toBeUndefined();
+    clock += 1500; expect((await run(activity())).coverage.reason).toBe('gmgn_activity_estimate');
+    await vi.waitFor(async () => expect((await run(activity())).coverage.reason).toBeUndefined());
+    expect((await run(activity())).retryAfterMs).toBeUndefined();
     expect(load).toHaveBeenCalledTimes(2);
   });
   it('lets a completed reported lookup upgrade an estimate supplied while that lookup was still running', async () => {
@@ -287,7 +319,7 @@ describe('bounded durable historical realized cache', () => {
     const load = async (selected: KolTokenActivity) => { const value = accounting(); value.walletAddress = selected.kol.address; return value; };
     const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => time });
     const second = activity(); second.kol.address = '0x' + '3'.repeat(40);
-    const first = run(activity()), other = run(second);
+    const first = run(activity()), other = run(second, undefined, { foreground: true });
     await vi.waitFor(() => expect(loadQuote).toHaveBeenCalledOnce()); finish({ quote: { priceUsd: '20', timestamp: at } });
     expect((await first).position!.estimatedProfitUsd).toBe('111'); expect((await other).position!.estimatedProfitUsd).toBe('111');
     vi.useFakeTimers(); const stalled = createKolTokenGmgnPnl({ load, loadQuote: async () => new Promise(() => {}), directory: null, now: () => time });
@@ -330,7 +362,7 @@ describe('bounded durable historical realized cache', () => {
     const load = vi.fn((selected: KolTokenActivity) => load.mock.calls.length === 1 ? new Promise<TradeReplayAccounting>(resolve => { finish = resolve; }) : Promise.resolve(accounting(selected)));
     const run = createKolTokenGmgnPnl({ load, directory: null, now: () => time });
     const old = activity(), first = run(old), joined = run(activity());
-    const changed = activity(); changed.trades[0].quoteAmount = '106'; const newer = run(changed);
+    const changed = activity(); changed.trades[0].quoteAmount = '106'; const newer = run(changed, undefined, { foreground: true });
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
     finish(accounting(old));
     expect((await first).realizedProfitUsd).toBe('73.4'); expect(await joined).toEqual(await first);
@@ -338,6 +370,20 @@ describe('bounded durable historical realized cache', () => {
     // GMGN's explicitly reported sale basis remains fixed at $21.2.
     expect((await newer).realizedProfitUsd).toBe('73'); expect(load).toHaveBeenCalledTimes(2);
     expect((await run(changed)).realizedProfitUsd).toBe('73');
+  });
+  it('promotes the existing background accounting job when its trade modal opens', async () => {
+    let finish!: (value: TradeReplayAccounting) => void, foreground: (() => boolean) | undefined;
+    const load = vi.fn(async (_activity: KolTokenActivity, options?: { foreground?: () => boolean }) => {
+      foreground = options?.foreground; return new Promise<TradeReplayAccounting>(resolve => { finish = resolve; });
+    });
+    const run = createKolTokenGmgnPnl({ load, directory: null, now: () => time });
+    const profile = run(activity()); await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    expect(foreground?.()).toBe(false);
+    const modal = run(activity(), undefined, { foreground: true });
+    await vi.waitFor(() => expect(foreground?.()).toBe(true));
+    finish(accounting());
+    expect((await profile).realizedProfitUsd).toBe('73.4'); expect((await modal).realizedProfitUsd).toBe('73.4');
+    expect(load).toHaveBeenCalledOnce();
   });
   it('honors pending cooldowns, retries after expiry, and bounds unknown provider work', async () => {
     let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => {
@@ -436,13 +482,76 @@ describe('bounded durable historical realized cache', () => {
     expect(await readdir(directory)).toEqual([]);
     clock += 60_000; await run(activity()); expect(load).toHaveBeenCalledTimes(2);
   });
-  it('expires a ready result after ten minutes even when fresh canonical history is unchanged', async () => {
+  it('refreshes a ready result after ten minutes while preserving unchanged historical profit', async () => {
     let clock = time;
     const load = vi.fn(async () => { const value = accounting(); value.checkedAt = new Date(clock).toISOString(); return value; });
-    const run = createKolTokenGmgnPnl({ load, directory, now: () => clock });
+    const run = createKolTokenGmgnPnl({ load, directory: null, now: () => clock });
     expect((await run(activity())).status).toBe('ready');
     clock += 600_000; const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
     expect((await run(fresh)).status).toBe('ready'); expect(load).toHaveBeenCalledTimes(2);
+  });
+  it.each(['reported', 'derived'] as const)('preserves %s cash flows through a provider outage and restart without renewing an expired market quote', async quality => {
+    let clock = time;
+    const first = createKolTokenGmgnPnl({ directory, now: () => clock });
+    await first(activity(), accounting(activity(), quality === 'reported'));
+    clock += 24 * 60 * 60 * 1000;
+    const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    fresh.inventory!.coverage.toBlock = '1000'; fresh.inventory!.coverage.blockHash = hash(1000);
+    const load = vi.fn(async (selected: KolTokenActivity) => {
+      const deferred = accounting(selected); deferred.status = 'pending'; deferred.checkedAt = new Date(clock).toISOString();
+      deferred.inventoryBlockNumber = '1000'; deferred.inventoryBlockHash = hash(1000);
+      deferred.retryAfterMs = 60_000; deferred.coverage.reason = 'provider_rate_limited'; return deferred;
+    });
+    const run = createKolTokenGmgnPnl({ load, directory, now: () => clock });
+    expect(await run(fresh)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', checkedAt: new Date(clock).toISOString(),
+      position: { estimatedProfitUsd: null, priceUsd: null, pricedAt: null, feeInclusiveCostUsd: '109', cashFlow: { transferOutIncomeUsd: '80', feesUsd: '9' } } });
+    await vi.waitFor(async () => {
+      const file = path.join(directory, (await readdir(directory)).find(name => name.endsWith('.json'))!);
+      expect(JSON.parse(await readFile(file, 'utf8')).value.refreshAfter).toBe(clock + 60_000);
+    });
+    const restarted = createKolTokenGmgnPnl({ load, directory, now: () => clock });
+    expect((await restarted(fresh)).realizedProfitUsd).toBe('73.4'); expect(load).toHaveBeenCalledOnce();
+  });
+  it('does not retain historical accounting beyond its bounded retention', async () => {
+    let clock = time; const unavailable = vi.fn(async () => { throw Error('provider_unavailable'); });
+    await createKolTokenGmgnPnl({ directory, now: () => clock })(activity(), accounting(activity(), true));
+    clock += 7 * 24 * 60 * 60 * 1000;
+    const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const restarted = createKolTokenGmgnPnl({ directory, load: unavailable, now: () => clock });
+    expect(await restarted(fresh)).toMatchObject({ status: 'pending', realizedProfitUsd: null });
+  });
+  it.each(['provider_http_401', 'provider_http_403', 'provider_key_unavailable', 'gmgn_not_configured', 'gmgn_key_unavailable'] as const)
+    ('retains verified historical gains through %s without renewing an old quote', async reason => {
+      let clock = time; await createKolTokenGmgnPnl({ directory, now: () => clock })(activity(), accounting(activity(), true));
+      clock += 24 * 60 * 60 * 1000;
+      const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+      const load = vi.fn(async () => {
+        const failed = accounting(); failed.checkedAt = new Date(clock).toISOString(); failed.status = 'unavailable';
+        failed.coverage.reason = reason; return failed;
+      });
+      const run = createKolTokenGmgnPnl({ directory, load, now: () => clock });
+      expect(await run(fresh)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4',
+        position: { estimatedProfitUsd: null, priceUsd: null, pricedAt: null } });
+      await vi.waitFor(async () => {
+        const file = path.join(directory, (await readdir(directory)).find(name => name.endsWith('.json'))!);
+        expect(JSON.parse(await readFile(file, 'utf8')).value).toMatchObject({ observedAt: time, refreshAfter: clock + 60_000 });
+      });
+      const restarted = createKolTokenGmgnPnl({ directory, load, now: () => clock });
+      expect((await restarted(fresh)).realizedProfitUsd).toBe('73.4'); expect(load).toHaveBeenCalledOnce();
+    });
+  it('discards a retained total from memory and disk when refreshed provider history explicitly contradicts it', async () => {
+    let clock = time; await createKolTokenGmgnPnl({ directory, now: () => clock })(activity(), accounting(activity(), true));
+    clock += 600_000;
+    const fresh = activity(); fresh.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    const load = vi.fn(async () => {
+      const contradictory = accounting(); contradictory.checkedAt = new Date(clock).toISOString(); contradictory.status = 'unavailable';
+      contradictory.coverage.reason = 'provider_transaction_mismatch'; return contradictory;
+    });
+    const run = createKolTokenGmgnPnl({ directory, load, now: () => clock });
+    expect((await run(fresh)).realizedProfitUsd).toBe('73.4');
+    await vi.waitFor(async () => expect(await readdir(directory)).toEqual([]));
+    expect(await run(fresh)).toMatchObject({ status: 'unavailable', realizedProfitUsd: null, coverage: { reason: 'provider_transaction_mismatch' } });
+    expect((await createKolTokenGmgnPnl({ directory, load, now: () => clock })(fresh)).realizedProfitUsd).toBeNull();
   });
   it('bounds persisted and in-memory historical results to the configured count', async () => {
     const load = vi.fn(async (selected: KolTokenActivity) => { const value = accounting(); value.walletAddress = selected.kol.address; return value; });

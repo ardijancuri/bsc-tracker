@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { createKolTokenPnlLoader, kolTokenPnlKey, verifiedTokenPositionPnl, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
+import { createKolTokenPnlLoader, displayedTokenPnl, kolTokenPnlKey, tokenPositionPnlDescription, tokenPositionPnlLabel, verifiedTokenPositionPnl, verifiedTokenRealizedPnl, type KolTokenPnlSelection } from './kolTokenPnlRequest';
 
 const wallet = '0x' + '1'.repeat(40), date = '2026-10-14T12:00:00Z';
 const selection = (index = 2): KolTokenPnlSelection => ({ walletAddress: wallet, tokenAddress: '0x' + index.toString(16).padStart(40, '0'), lastTradeAt: date });
@@ -107,6 +107,23 @@ describe('fair token-card realized profit loading', () => {
     await vi.advanceTimersByTimeAsync(2999); expect(fetcher).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1); expect((await result).status).toBe('ready');
     expect(fetcher).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('displays realized gains while continuing to retry a current quote, then switches to the estimated total', async () => {
+    const missing = openPosition(); missing.realizedAccounting!.position!.estimatedProfitUsd = null;
+    missing.realizedAccounting!.position!.retryAfterMs = 3000;
+    expect(displayedTokenPnl(missing)).toBe(30); expect(tokenPositionPnlLabel(missing)).toBe('Realized P&L');
+    expect(tokenPositionPnlDescription(missing)).toContain('GMGN realized');
+    const seen: { amount: number | null; label: string }[] = [];
+    const fetcher = vi.fn().mockResolvedValueOnce(response(missing)).mockResolvedValue(response(openPosition()));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    const result = loader(selection(), signal(), { priority: 'foreground', onActivity: body => seen.push({ amount: displayedTokenPnl(body), label: tokenPositionPnlLabel(body) }) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([{ amount: 30, label: 'Realized P&L' }]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await result).status).toBe('ready');
+    expect(seen).toEqual([{ amount: 30, label: 'Realized P&L' }, { amount: 70, label: 'Est. profit' }]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it.each(['stale', 'future', 'undated', 'invalidPrice', 'balanceMismatch', 'unknownSource', 'missingTotal'] as const)
@@ -242,6 +259,15 @@ describe('fair token-card realized profit loading', () => {
       expect((await loader(selection(), signal())).status).toBe('unavailable'); expect(fetcher).toHaveBeenCalledTimes(2);
     }
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not keep terminal inventory failures pending because downstream accounting has a retry time', async () => {
+    const body = pending();
+    body.inventory!.coverage.status = 'unavailable'; body.inventory!.coverage.reason = 'inventory_balance_mismatch';
+    body.realizedAccounting!.retryAfterMs = 3000;
+    const fetcher = vi.fn().mockResolvedValue(response(body)), loader = createKolTokenPnlLoader({ fetcher });
+    expect(await loader(selection(), signal())).toEqual({ activity: body, status: 'unavailable' });
+    expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
   });
 
   it('never caches an older or missing last-trade snapshot under a new token-card version', async () => {
