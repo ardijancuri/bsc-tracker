@@ -3,7 +3,6 @@ import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, S
 import ReplayCanvas from './tradeReplayCanvas';
 import { downloadTradeReplay, recordTradeReplay } from './tradeReplayExport';
 import type { TradeReplayData } from './tradeReplayData';
-import { currentQuoteEstimateNotice, recordedPriceEstimateNotice, replayUsesRecordedPrices } from './tradeReplayMarketRequest';
 import { startReplaySession } from './tradeReplaySession';
 import { ReplayPreparationError, prepareReplayForShare } from './tradeReplayPreparation';
 import { shareableTradeReplay, shareTradeReplayFile, tradeReplayXIntent } from './tradeReplaySharing';
@@ -42,7 +41,6 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
   const [sharePending, setSharePending] = useState(false);
   const [imagePending, setImagePending] = useState(false);
   const [notice, setNotice] = useState('');
-  const [marketNotice, setMarketNotice] = useState('');
   const [copied, setCopied] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [retryAt, setRetryAt] = useState(0);
@@ -64,24 +62,16 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
 
   useEffect(() => {
     alive.current = true;
-    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setMarketNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0);
+    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0);
     progress.current = 0;
     // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
     // encoder repaint or replace the file prepared by the next setup.
     const renderer = new ReplayCanvas(document.createElement('canvas'));
     const session = startReplaySession({
       prepare: async signal => {
-        const [market] = await Promise.all([prepareReplayForShare(data, signal, { onResult: market => {
-          const notices = market.notice ? [t(market.notice)] : [];
-          if (replayUsesRecordedPrices(market.data) && !market.data.currentQuote && market.notice !== recordedPriceEstimateNotice) notices.push(t(recordedPriceEstimateNotice));
-          if (replayUsesRecordedPrices(market.data) && market.data.currentQuote && market.notice !== currentQuoteEstimateNotice) notices.push(t(currentQuoteEstimateNotice));
-          const sparseNotice = 'Market observations are sparse. Prices and P&L between observations are estimates.';
-          if (market.data.chart.sparseHistory && market.notice !== sparseNotice) notices.push(t(sparseNotice));
-          if (market.currentPriceNotice) notices.push(t(market.currentPriceNotice));
-          if (market.inventoryNotice) notices.push(t(market.inventoryNotice));
-          if (market.accountingNotice) notices.push(t(market.accountingNotice));
-          setMarketNotice(notices.join(' '));
-        }, onWait: retryAt => { setRetryAt(retryAt); setRetrySeconds(retryAt ? Math.ceil((retryAt - Date.now()) / 1000) : 0); } }), loadReplayFonts()]);
+        const [market] = await Promise.all([prepareReplayForShare(data, signal, {
+          onWait: retryAt => { setRetryAt(retryAt); setRetrySeconds(retryAt ? Math.ceil((retryAt - Date.now()) / 1000) : 0); },
+        }), loadReplayFonts()]);
         if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
         await renderer.setData(market.data);
       },
@@ -222,8 +212,6 @@ export default function TradeReplayShare({ data }: { data: TradeReplayData }) {
             {fileShareAvailable && <button type="button" disabled={sharePending || exporting} onClick={() => void share()}><span className="trade-replay-social-icon"><Share2 size={19} /></span><span>{t(sharePending ? 'Sharing…' : 'Share trade')}</span></button>}
           </div>
           <div className="trade-replay-status" aria-live="polite">
-            <p>{t('GMGN-style total P&L includes unrealized profit, marked transfer-out gains and fees. Return uses fee-inclusive cost. Earlier frames are estimates; verified GMGN totals apply at the ending.')}</p>
-            {marketNotice && <p role="status">{marketNotice}</p>}
             {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t('Preparing trade…')}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
