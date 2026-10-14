@@ -158,9 +158,9 @@ function fitFont(ctx, value, maxWidth, size, minSize, weight = 700) {
 function money(value, decimals = 2, compact = false) {
   const abs = Math.abs(finite(value));
   if (compact) {
-    if (abs >= 1e12) return `$${(abs / 1e12).toFixed(1)}T`;
-    if (abs >= 1e9) return `$${(abs / 1e9).toFixed(1)}B`;
-    if (abs >= 1e6) return `$${(abs / 1e6).toFixed(1)}M`;
+    if (abs >= 1e12) return `$${(abs / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `$${(abs / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `$${(abs / 1e6).toFixed(2)}M`;
     if (abs >= 1e3) return `$${(abs / 1e3).toFixed(1)}K`;
     return `$${abs.toLocaleString('en-US', { minimumFractionDigits: abs < 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
   }
@@ -452,7 +452,14 @@ export class ReplayCanvas {
     // chain timestamps differ by seconds. Actual timestamps remain the x-axis
     // and price lookup; these progress knots only set presentation pacing.
     if (this.trades.length >= 2) {
-      this.eventPhase = this.hasTail ? 0.68 : 0.84;
+      // A few quiet minutes after a day of trades should not consume the same
+      // four seconds as a full day of post-trade market history. Keep a short
+      // readable tail, scaling only by elapsed time so future prices cannot
+      // change the pacing of earlier fills. Every observation still appears.
+      const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd);
+      const totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
+      const tailPhase = clamp(0.26 * Math.sqrt(tailMs / totalMs), 0.04, 0.26);
+      this.eventPhase = this.hasTail ? this.currentEndPhase - tailPhase : 0.84;
       const gaps = this.trades.slice(1).map((trade, i) => Math.max(0, trade.ts - this.trades[i].ts));
       const minimumGap = Math.min(0.04, this.eventPhase / gaps.length * 0.82);
       const weighted = gaps.map((gap) => Math.log1p(gap / 1000) + 0.5);

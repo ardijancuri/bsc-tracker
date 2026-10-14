@@ -178,7 +178,7 @@ describe('GMGN profit in every replay frame', () => {
     payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
     payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
     const renderer = await replay(payload);
-    const earlier = renderer.snapshot(.8), later = renderer.snapshot(.9);
+    const earlier = renderer.snapshot(progressAt(renderer, 200)), later = renderer.snapshot(progressAt(renderer, 220));
     for (const state of [earlier, later]) {
       expect(state.realizedPnl).toBeNull(); expect(state.unrealizedPnl).toBeNull();
       expect(state.totalPnl).toBeCloseTo(80 + 60 + 50 * state.currentPrice - 139);
@@ -186,7 +186,7 @@ describe('GMGN profit in every replay frame', () => {
     }
     expect(later.totalPnl).not.toBe(earlier.totalPnl);
     expect(renderer.snapshot(1).totalPnl).toBe(200.8);
-    expect(renderer.snapshot(.8)).toEqual(earlier);
+    expect(renderer.snapshot(progressAt(renderer, 200))).toEqual(earlier);
   });
 
   it('withholds estimated profit when basis is known but fees are unavailable', async () => {

@@ -31,6 +31,7 @@ interface MotionMethods {
   markerRadius: number;
   storyVertices: { ts: number; q: number; priceUsd: number; marketCapUsd: number }[];
   timeAt(progress: number): number;
+  progressAtTime(timestamp: number): number;
   chartProgress(progress: number): number;
   viewportAt(progress: number): Viewport;
   valueAtTime(timestamp: number): { priceUsd: number; marketCapUsd: number };
@@ -57,6 +58,25 @@ function data(): TradeReplayData {
     source: { chart: 'Historical market samples', tradesComplete: true },
     generatedAt: at(360),
   };
+}
+
+function longPosition(tailSeconds = 8 * 60): TradeReplayData {
+  const payload = data(), tradeEnd = 32 * 3600, endpoint = tradeEnd + tailSeconds;
+  const times = [0, 8 * 3600, 16 * 3600, tradeEnd];
+  const prices = [8, 250, 600, 1400], amounts = [100, 20, 40, 30];
+  const realized = [0, 0, 23_680, 65_440];
+  payload.trades = payload.trades.map((trade, index) => ({ ...trade, timestamp: at(times[index]),
+    tokenAmount: amounts[index], amountUsd: prices[index] * amounts[index], priceUsd: prices[index], marketCapUsd: prices[index] * 1000,
+    cumulativeRealizedProfitUsd: realized[index] }));
+  payload.realizedAccounting = { available: true };
+  payload.position = { ...payload.position, status: 'open', tokenBalance: 50, checkedAt: at(endpoint) };
+  payload.chart.points = [
+    ...times.map((seconds, index) => ({ timestamp: at(seconds), priceUsd: prices[index], marketCapUsd: prices[index] * 1000 })),
+    ...[1402, 1425, 1418].map((price, index) => ({ timestamp: at(tradeEnd + tailSeconds * (index + 1) / 4), priceUsd: price, marketCapUsd: price * 1000 })),
+  ];
+  payload.currentQuote = { timestamp: at(endpoint), priceUsd: 1430, marketCapUsd: 1_430_000 };
+  payload.generatedAt = at(endpoint);
+  return payload;
 }
 
 interface PaintedArc {
@@ -182,6 +202,75 @@ describe('handoff replay canvas geometry', () => {
     expect(renderer.snapshot(1).currentEventIndex).toBe(0);
     expect(motion.markerPosition(1, 1)).toBeNull();
   });
+
+  it('plays a short post-trade tail briefly while preserving every market observation and the final result', async () => {
+    const payload = longPosition();
+    const { renderer, motion } = await replay(payload);
+    const lastFill = renderer.eventProgress(payload.trades.length - 1), endpoint = motion.chartProgress(1);
+    const tailDuration = (endpoint - lastFill) * renderer.getDuration();
+    expect(tailDuration).toBeGreaterThan(0); expect(tailDuration).toBeLessThan(1);
+    expect((1 - endpoint) * renderer.getDuration()).toBeLessThan(1);
+    for (const point of payload.chart.points) {
+      const time = Date.parse(point.timestamp), progress = motion.progressAtTime(time);
+      expect(motion.timeAt(progress)).toBeCloseTo(time, 0);
+      expect(motion.valueAtStory(progress).priceUsd).toBeCloseTo(point.priceUsd, 8);
+      expect(motion.storyVertices.some(vertex => vertex.ts === time && vertex.priceUsd === point.priceUsd)).toBe(true);
+    }
+    const final = renderer.snapshot(1);
+    expect(final.time).toBe(payload.currentQuote!.timestamp);
+    expect(final.currentPrice).toBe(1430); expect(final.currentCap).toBe(1_430_000);
+    expect(final.totalPnl).toBeCloseTo(66_000 + 50 * 1430 - 5800, 8);
+    expect(renderer.snapshot(endpoint)).toEqual(final);
+    let previous = motion.timeAt(0);
+    for (let frame = 1; frame <= 500; frame += 1) {
+      const time = motion.timeAt(frame / 500);
+      expect(Number.isFinite(time)).toBe(true); expect(time).toBeGreaterThanOrEqual(previous); previous = time;
+    }
+  });
+
+  it('gives a day of post-trade market history more playback time than a few minutes', async () => {
+    const brief = await replay(longPosition()), extended = await replay(longPosition(24 * 3600));
+    const tailSeconds = ({ renderer, motion }: Awaited<ReturnType<typeof replay>>) =>
+      (motion.chartProgress(1) - renderer.eventProgress(3)) * renderer.getDuration();
+    expect(tailSeconds(extended)).toBeGreaterThan(tailSeconds(brief) * 2);
+    expect(tailSeconds(extended)).toBeLessThan(4.1);
+    expect(extended.renderer.snapshot(1).currentPrice).toBe(brief.renderer.snapshot(1).currentPrice);
+    expect(extended.renderer.snapshot(1).totalPnl).toBe(brief.renderer.snapshot(1).totalPnl);
+    expect(extended.renderer.snapshot(1).time).toBe(at(56 * 3600));
+  });
+
+  it.each([0, 60])('keeps simultaneous fills and a %s-second ending finite and ordered', async tailSeconds => {
+    const payload = longPosition(tailSeconds);
+    payload.trades = payload.trades.map(trade => ({ ...trade, timestamp: at(0) }));
+    payload.chart.points = [{ timestamp: at(0), priceUsd: 1400, marketCapUsd: 1_400_000 }];
+    payload.currentQuote!.timestamp = at(tailSeconds); payload.generatedAt = at(tailSeconds);
+    payload.position.checkedAt = at(tailSeconds);
+    const { renderer, motion } = await replay(payload);
+    let previousEvent = -1, previousTime = start;
+    for (let index = 0; index < payload.trades.length; index += 1) {
+      const progress = renderer.eventProgress(index);
+      expect(Number.isFinite(progress)).toBe(true); expect(progress).toBeGreaterThan(previousEvent);
+      expect(motion.timeAt(progress)).toBe(start); previousEvent = progress;
+    }
+    for (let frame = 0; frame <= 100; frame += 1) {
+      const progress = frame / 100, time = motion.timeAt(progress);
+      expect(Number.isFinite(time)).toBe(true); expect(time).toBeGreaterThanOrEqual(previousTime); previousTime = time;
+      expect(Number.isFinite(renderer.snapshot(progress).currentCap)).toBe(true);
+    }
+    expect(renderer.snapshot(1).time).toBe(at(tailSeconds));
+    expect(renderer.snapshot(1).currentCap).toBe(1_430_000);
+  });
+
+  it.each([[1_400_000, '$1.40M'], [1_430_000, '$1.43M'], [1_430_000_000, '$1.43B'], [1_430_000_000_000, '$1.43T'], [14_300, '$14.3K']] as const)
+    ('shows enough precision to distinguish market-cap changes at %s', async (cap, expected) => {
+      const payload = longPosition();
+      payload.currentQuote = { ...payload.currentQuote!, priceUsd: cap / 1000, marketCapUsd: cap };
+      const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
+      const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
+      drawn.length = 0; renderer.render(1);
+      // The right-hand live market badge, separate from footer and fill labels.
+      expect(drawn.some(label => label.value === expected && label.x > 840 && label.y < 700)).toBe(true);
+    });
 
   it('ignores a current quote for a closed position and preserves its final sell geometry', async () => {
     const payload = data();
