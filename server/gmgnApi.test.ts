@@ -15,7 +15,11 @@ describe('GMGN account request budget', () => {
     await reserveGmgnSlot('private-test-key', 3, 'metadata', async (_sql, values) => {
       keys.push(values[0]); expect(values.slice(1)).toEqual([1500, 0]); return { rows: [{ delay: 0 }] };
     });
+    await reserveGmgnSlot('private-test-key', 5, 'prefetch', async (_sql, values) => {
+      keys.push(values[0]); expect(values.slice(1)).toEqual([2500, 1500]); return { rows: [{ delay: 0 }] };
+    });
     expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toBe(keys[2]);
     expect(keys[0]).toMatch(/^gmgn_api_budget:[a-f0-9]{16}$/);
     expect(keys[0]).not.toContain('private-test-key');
     await reserveGmgnSlot('rotated-test-key', 2, 'chart', async (_sql, values) => {

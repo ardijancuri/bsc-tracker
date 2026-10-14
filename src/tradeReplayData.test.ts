@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
-import { prepareTradeReplayData, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, replayNumber, replaySignedNumber } from './tradeReplayData';
+import { prepareTradeReplayData, replayAccountingIsFresh, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, replayNumber, replaySignedNumber, validReplayAccountingFinal } from './tradeReplayData';
 import { replayFileName } from './tradeReplayExport';
 import ReplayCanvas from './tradeReplayCanvas';
 
@@ -45,6 +45,83 @@ function inventoryActivity(): KolTokenActivity {
   ] };
   return payload;
 }
+
+function accountingActivity(): KolTokenActivity {
+  const payload = inventoryActivity(), inventory = payload.inventory!;
+  payload.replayAccounting = { version: 1, source: 'gmgn', policy: 'gmgn_total_profit_v1', walletAddress: wallet, tokenAddress: token,
+    status: 'ready', checkedAt: new Date(now).toISOString(), inventoryBlockNumber: inventory.coverage.toBlock,
+    inventoryBlockHash: inventory.coverage.blockHash, coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: true },
+    events: inventory.events.map((event, index) => ({ ...event, remainingCostBasisUsd: ['101', '50.5', '0'][index],
+      cumulativeRealizedProfitUsd: ['0', '198.5', '347'][index], soldUsd: index ? '249' : '0',
+      transferOutIncomeUsd: index === 2 ? '200' : '0', feesUsd: String(index + 1), feeInclusiveCostUsd: String(101 + index) })),
+    final: { remainingTokenAmount: '0', remainingCostBasisUsd: '0', cumulativeRealizedProfitUsd: '346', investedUsd: '100', soldUsd: '249',
+      transferOutIncomeUsd: '200', feesUsd: '3', feeInclusiveCostUsd: '103', reportedProfitUsd: '346', reportedRoi: String(346 / 103),
+      priceUsd: null, timestamp: new Date(now).toISOString() },
+  };
+  return payload;
+}
+
+describe('separate GMGN replay accounting', () => {
+  it('maps fee-inclusive costs and transfer gains without changing indexed trades or FIFO inventory, and keeps final totals separate', () => {
+    const payload = accountingActivity(), prepared = prepareTradeReplayData(payload, null, null, now)!;
+    expect(prepared.trades[1].amountUsd).toBe(250); expect(prepared.inventory?.events[1].soldUsd).toBe(250);
+    expect(prepared.inventory?.events.at(-1)?.cumulativeRealizedProfitUsd).toBe(200);
+    expect(prepared.replayAccounting?.events[0]).toMatchObject({ remainingCostBasisUsd: 101, feesUsd: 1, feeInclusiveCostUsd: 101, transferOutIncomeUsd: 0 });
+    expect(prepared.replayAccounting?.events[1]).toMatchObject({ cumulativeRealizedProfitUsd: 198.5, soldUsd: 249, feesUsd: 2 });
+    expect(prepared.replayAccounting?.events.at(-1)).toMatchObject({ cumulativeRealizedProfitUsd: 347, transferOutIncomeUsd: 200, feeInclusiveCostUsd: 103 });
+    expect(replayAccountingIsFresh(prepared, now)).toBe(true);
+    expect(validReplayAccountingFinal(prepared, now)).toMatchObject({ reportedProfitUsd: 346, reportedRoi: 346 / 103 });
+    expect(prepared.replayAccounting?.events[0].cumulativeRealizedProfitUsd).toBe(0);
+  });
+
+  it('preserves null unknown incoming costs and explicit zero costs without deriving them from totals', () => {
+    for (const basis of [null, '0']) {
+      const payload = accountingActivity(); payload.replayAccounting!.status = 'estimated';
+      payload.replayAccounting!.coverage.exactFinal = false; payload.replayAccounting!.final = null;
+      payload.replayAccounting!.events[1].remainingCostBasisUsd = basis;
+      const prepared = prepareTradeReplayData(payload, null, null, now)!;
+      expect(prepared.replayAccounting?.status).toBe('estimated');
+      expect(prepared.replayAccounting?.events[1].remainingCostBasisUsd).toBe(basis === null ? null : 0);
+      expect(validReplayAccountingFinal(prepared, now)).toBeNull();
+    }
+  });
+
+  it('rejects mismatched pairs, snapshots, canonical events, unsupported policy, incomplete coverage and stale provider data', () => {
+    for (const variant of ['wallet', 'token', 'block', 'hash', 'event', 'quantity', 'future', 'missing', 'policy', 'coverage', 'stale', 'final-balance', 'final-profit', 'final-roi', 'final-income', 'final-basis', 'final-fees', 'final-invested', 'final-cost'] as const) {
+      const payload = accountingActivity(), accounting = payload.replayAccounting!;
+      if (variant === 'wallet') accounting.walletAddress = token;
+      if (variant === 'token') accounting.tokenAddress = wallet;
+      if (variant === 'block') accounting.inventoryBlockNumber = '4';
+      if (variant === 'hash') accounting.inventoryBlockHash = `0x${'d'.repeat(64)}`;
+      if (variant === 'event') accounting.events[0].txHash = accounting.events[1].txHash;
+      if (variant === 'quantity') accounting.events[0].remainingTokenAmount = '99.999999999999999999';
+      if (variant === 'future') accounting.events[0].timestamp = new Date(now + 100).toISOString();
+      if (variant === 'missing') accounting.events.splice(1, 1);
+      if (variant === 'policy') Object.assign(accounting, { policy: 'other' });
+      if (variant === 'coverage') accounting.coverage.transactionsComplete = false;
+      if (variant === 'stale') accounting.checkedAt = new Date(now - 180_001).toISOString();
+      if (variant === 'final-balance') accounting.final!.remainingTokenAmount = '1';
+      if (variant === 'final-profit') accounting.final!.reportedProfitUsd = '999';
+      if (variant === 'final-roi') accounting.final!.reportedRoi = '99';
+      if (variant === 'final-income') accounting.final!.transferOutIncomeUsd = '999';
+      if (variant === 'final-basis') accounting.final!.remainingCostBasisUsd = null;
+      if (variant === 'final-fees') accounting.final!.feesUsd = null;
+      if (variant === 'final-invested') accounting.final!.investedUsd = null;
+      if (variant === 'final-cost') accounting.final!.investedUsd = '104';
+      const prepared = prepareTradeReplayData(payload, null, null, now)!;
+      expect(prepared.replayAccounting?.status, variant).toBe('unavailable');
+      expect(prepared.replayAccounting?.events, variant).toEqual([]); expect(validReplayAccountingFinal(prepared, now), variant).toBeNull();
+      expect(prepared.inventory?.coverage.reconciled, variant).toBe(true);
+    }
+  });
+
+  it('preserves explicit pending state for retries without revealing any monetary snapshots', () => {
+    const payload = accountingActivity(); payload.replayAccounting!.status = 'pending'; payload.replayAccounting!.retryAfterMs = 3000;
+    const prepared = prepareTradeReplayData(payload, null, null, now)!;
+    expect(prepared.replayAccounting).toMatchObject({ status: 'pending', retryAfterMs: 3000, events: [], final: null,
+      coverage: { transactionsComplete: false, balanceMatched: false, exactFinal: false } });
+  });
+});
 
 describe('authoritative replay inventory', () => {
   it('allows at most one second of server check-time skew while keeping chain events and executions strictly nonfuture', () => {

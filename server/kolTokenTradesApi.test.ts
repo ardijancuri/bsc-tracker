@@ -2,9 +2,10 @@ import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerKolTokenTradesRoutes, kolTokenHistoryLimit } from './kolTokenTradesApi.js';
 
-const mocks = vi.hoisted(() => ({ query: vi.fn(), inventory: vi.fn() }));
+const mocks = vi.hoisted(() => ({ query: vi.fn(), inventory: vi.fn(), replay: vi.fn() }));
 vi.mock('./db.js', () => ({ pool: { query: mocks.query } }));
 vi.mock('./kolTokenInventory.js', () => ({ currentKolTokenInventory: mocks.inventory }));
+vi.mock('./tradeReplayGmgn.js', () => ({ currentTradeReplayGmgnAccounting: mocks.replay }));
 const wallet = '0x664d6645a04be9e27a8b33088f85025f29d45dc1';
 const token = '0xdd806e436dda5588bf54061c11590c77ddc87777';
 const date = '2026-10-08T01:00:00Z';
@@ -32,12 +33,28 @@ describe('KOL token activity API', () => {
       const [identityCall, historyCall] = mocks.query.mock.calls;
       expect(identityCall[1]).toEqual([wallet, token]); expect(historyCall[1]).toEqual([wallet, token, kolTokenHistoryLimit]);
       expect(historyCall[0]).toContain('t.wallet_address=$1 AND t.token_address=$2');
+      expect(historyCall[0]).toContain('t.quote_token_address AS "quoteTokenAddress"');
       expect(historyCall[0]).toContain('k.is_tracked'); expect(historyCall[0]).toContain('t.block_number IS NOT NULL');
       expect(historyCall[0]).not.toContain("interval '24 hours'");
       expect(historyCall[0]).toContain('other.token_address<>t.token_address');
       expect(identityCall[0]).toContain("v.supply_checked_at>now()-interval '2 days'");
       expect(mocks.inventory).toHaveBeenCalledWith({ wallet, token, firstBlock: '100', decimals: 0, trades: history, tradesComplete: true });
       expect(response.json().inventory.coverage).toMatchObject({ complete: true, reconciled: true, balance: '0' });
+      expect(mocks.replay).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  it.each(['true', 'false', '1'])('requests additional GMGN accounting only for replay=%s when explicitly true', async replay => {
+    const app = Fastify(); registerKolTokenTradesRoutes(app);
+    mocks.query.mockResolvedValueOnce({ rows: [identity] }).mockResolvedValueOnce({ rows: history });
+    mocks.replay.mockResolvedValue({ version: 1, source: 'gmgn', status: 'pending', retryAfterMs: 1000, coverage: { exactFinal: false } });
+    try {
+      const response = await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?replay=${replay}`);
+      expect(response.statusCode).toBe(200);
+      if (replay === 'true') {
+        expect(mocks.replay).toHaveBeenCalledOnce();
+        expect(mocks.replay.mock.calls[0][0]).toMatchObject({ kol: { address: wallet }, token: { address: token }, inventory: { coverage: { reconciled: true } } });
+        expect(response.json().replayAccounting).toMatchObject({ status: 'pending', retryAfterMs: 1000 });
+      } else { expect(mocks.replay).not.toHaveBeenCalled(); expect(response.json().replayAccounting).toBeUndefined(); }
     } finally { await app.close(); }
   });
   it.each([['invalid', token, 400], [wallet, '0x123', 400], [wallet, 'x'.repeat(200), 414]])('rejects malformed wallet/token addresses without DB work', async (kol, address, status) => {

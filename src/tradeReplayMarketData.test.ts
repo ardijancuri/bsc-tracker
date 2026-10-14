@@ -20,6 +20,30 @@ function chart(): ReplayMarketChart {
     source: 'geckoterminal', resolution: '1m', marketCapSupply: '1000', pending: false, stale: false, updatedAt: new Date(now).toISOString() };
 }
 describe('finer observed replay history', () => {
+  it('freezes an independently validated GMGN final quote ahead of a later market endpoint and trims observations at that provider snapshot', () => {
+    const original = data(); original.trades[1].tokenAmount = .5;
+    original.position = { ...original.position, status: 'open', tokenBalance: .5, checkedAt: new Date(now).toISOString() };
+    const timestamp = new Date(now - 1000).toISOString();
+    original.inventory = { version: 1, events: [], coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '2',
+      blockHash: `0x${'f'.repeat(64)}`, checkedAt: new Date(now).toISOString(), balance: '0.5' } };
+    original.replayAccounting = { version: 1, source: 'gmgn', policy: 'gmgn_total_profit_v1', walletAddress: original.kol.address, tokenAddress: token,
+      status: 'ready', checkedAt: new Date(now).toISOString(), inventoryBlockNumber: '2', inventoryBlockHash: `0x${'f'.repeat(64)}`,
+      coverage: { transactionsComplete: true, balanceMatched: true, exactFinal: true }, events: [],
+      final: { remainingTokenAmount: .5, remainingCostBasisUsd: .6, cumulativeRealizedProfitUsd: 1.8, investedUsd: 1, soldUsd: 2.4,
+        transferOutIncomeUsd: 0, feesUsd: .2, feeInclusiveCostUsd: 1.2, reportedProfitUsd: 4.7, reportedRoi: 4.7 / 1.2, priceUsd: 7, timestamp } };
+    const observed = chart(); observed.currentQuote = { timestamp: new Date(now).toISOString(), priceUsd: '12' };
+    observed.points.push({ timestamp: new Date(now - 500).toISOString(), priceUsd: '99' });
+    const selected = applyReplayMarketChart(original, observed, now);
+    expect(selected.currentQuote).toEqual({ timestamp, priceUsd: 7, marketCapUsd: 7000 });
+    expect(selected.chart.points.some(point => point.priceUsd === 99)).toBe(false);
+    expect(selected.replayAccounting).toBe(original.replayAccounting); expect(selected.trades).toBe(original.trades);
+    original.replayAccounting.coverage.exactFinal = false; original.replayAccounting.status = 'estimated';
+    expect(applyReplayMarketChart(original, observed, now).currentQuote?.priceUsd).toBe(12);
+    original.replayAccounting.coverage.exactFinal = true; original.replayAccounting.status = 'ready';
+    original.inventory.coverage.reconciled = false;
+    expect(applyReplayMarketChart(original, observed, now).currentQuote?.priceUsd).toBe(12);
+  });
+
   it('covers and trims a closed replay through its last transfer rather than stopping at the final sale', () => {
     const original = data(); original.position.status = 'closed';
     original.inventory = { version: 1, coverage: { complete: true, reconciled: true, fromBlock: '1', toBlock: '3',

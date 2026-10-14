@@ -45,7 +45,7 @@ export function createGmgnQueue<T>() {
   };
 }
 
-export async function reserveGmgnSlot(apiKey: string, weight: 2 | 3, priority: GeckoPriority, query: Query = (sql, values) => pool.query(sql, values)) {
+export async function reserveGmgnSlot(apiKey: string, weight: 2 | 3 | 5, priority: GeckoPriority, query: Query = (sql, values) => pool.query(sql, values)) {
   const spacing = weight * unitSpacingMs;
   const result = await query(`WITH clock AS (
       SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS ms
@@ -81,7 +81,7 @@ export function gmgnRetryMs(headers: Headers, body: any, now = Date.now()) {
 }
 
 export interface GmgnRequestOptions {
-  apiKey: string; weight?: 2 | 3; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
+  apiKey: string; weight?: 2 | 3 | 5; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
   method?: 'GET' | 'POST'; body?: unknown;
 }
 

@@ -1,3 +1,5 @@
+import type { TradeReplayAccounting } from './tradeReplayAccounting.js';
+
 /** One KOL's indexed activity for one exact token contract, without a 24h cutoff. */
 export interface KolTokenActivity {
   kol: { address: string; name: string | null; avatarUrl: string | null; twitter: string | null; source: string; lastSeenAt: string | null };
@@ -8,6 +10,8 @@ export interface KolTokenActivity {
   trades: KolTokenTrade[];
   summary: KolTokenTradeSummary;
   inventory?: { version: 1; events: InventoryEvent[]; coverage: InventoryCoverage };
+  /** Requested only for share/export preparation, with provider coverage explicit. */
+  replayAccounting?: TradeReplayAccounting;
   coverage: {
     source: 'indexed'; indexedTradeCount: number; returnedTradeCount: number;
     /** Complete indexed history, not a claim that every on-chain movement is indexed. */
@@ -75,7 +79,7 @@ export interface KolTokenTrade {
   kolName: string | null; kolAvatarUrl: string | null; kolTwitter: string | null;
   tokenSymbol: string | null; tokenName: string | null; tokenLogoUrl: string | null;
   side: 'buy' | 'sell' | 'swap' | 'unknown'; tokenAmount: string | null;
-  quoteSymbol: string | null; quoteAmount: string | null; amountUsd: string | null;
+  quoteSymbol: string | null; quoteTokenAddress?: string | null; quoteAmount: string | null; amountUsd: string | null;
   priceUsd: string | null; marketCapUsd: string | null; timestamp: string;
   source: string; blockNumber: string | null; transactionIndex: number | null;
   valuationStatus: 'valued' | 'unpriced' | 'shared_quote' | 'invalid_quantity';

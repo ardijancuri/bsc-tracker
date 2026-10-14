@@ -2,6 +2,7 @@ import type { Position, TokenChart } from '../shared/intelligence';
 import type { InventoryCoverage, InventoryEvent, KolTokenActivity } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
 import type { ReplayMarketChart } from '../shared/replayChart';
+import type { ReplayAccountingEvent, ReplayAccountingFinal, ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting';
 
 export interface ReplayTrade {
   id: string;
@@ -22,6 +23,12 @@ export interface ReplayInventory {
   events: ReplayInventoryEvent[];
   coverage: InventoryCoverage;
 }
+type AccountingNumbers = { [Key in keyof ReplayAccountingSnapshot]: number | null };
+export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final'> & {
+  events: (Omit<ReplayAccountingEvent, keyof ReplayAccountingSnapshot> & AccountingNumbers)[];
+  final: (Omit<ReplayAccountingFinal, keyof ReplayAccountingSnapshot | 'reportedProfitUsd' | 'reportedRoi' | 'priceUsd'> & AccountingNumbers
+    & { reportedProfitUsd: number | null; reportedRoi: number | null; priceUsd: number | null }) | null;
+};
 
 export interface TradeReplayData {
   kol: Pick<Kol, 'address' | 'name' | 'avatarUrl' | 'twitter'>;
@@ -46,6 +53,7 @@ export interface TradeReplayData {
   generatedAt: string;
   currentQuote?: { timestamp: string; priceUsd: number; marketCapUsd: number | null };
   inventory?: ReplayInventory;
+  replayAccounting?: ReplayAccounting;
 }
 
 export type ReplayActivity = KolTokenActivity;
@@ -53,6 +61,104 @@ export type ReplayActivity = KolTokenActivity;
 // Server retrieval/check metadata can lead the client's clock slightly. This
 // tolerance never applies to chain movements, executions or historical bars.
 const serverClockSkewMs = 1000;
+
+export function unavailableReplayAccounting(data: { kol: { address: string }; token: { address: string } }, reason: string, now = Date.now()): ReplayAccounting {
+  return { version: 1, source: 'gmgn', policy: 'gmgn_total_profit_v1', walletAddress: data.kol.address, tokenAddress: data.token.address,
+    status: 'unavailable', checkedAt: new Date(now).toISOString(), inventoryBlockNumber: null, inventoryBlockHash: null,
+    events: [], final: null, coverage: { transactionsComplete: false, balanceMatched: false, exactFinal: false, reason } };
+}
+
+export function replayAccountingIsFresh(data: Pick<TradeReplayData, 'replayAccounting'>, now = Date.now()) {
+  const accounting = data.replayAccounting, time = Date.parse(accounting?.checkedAt ?? '');
+  return Boolean(accounting && ['ready', 'estimated'].includes(accounting.status)
+    && accounting.coverage.transactionsComplete && accounting.coverage.balanceMatched
+    && Number.isFinite(time) && time <= now + serverClockSkewMs && now - time <= 180_000);
+}
+
+export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now()) {
+  const accounting = data.replayAccounting, final = accounting?.final;
+  if (!final || accounting?.status !== 'ready' || !accounting.coverage.exactFinal || !replayAccountingIsFresh(data, now)
+    || !replayInventoryIsFresh(data, now)) return null;
+  const time = Date.parse(final.timestamp);
+  if (!Number.isFinite(time) || time < replayEndTimestamp(data) || time > now + serverClockSkewMs || now - time > 180_000) return null;
+  if (!accountingFinalMatches(final)) return null;
+  return final;
+}
+
+function accountingFinalMatches(final: NonNullable<ReplayAccounting['final']>) {
+  const { remainingTokenAmount: quantity, remainingCostBasisUsd: basis, cumulativeRealizedProfitUsd: realized,
+    investedUsd: invested, soldUsd: sold, transferOutIncomeUsd: transferred, feesUsd: fees,
+    feeInclusiveCostUsd: cost, reportedProfitUsd: profit, reportedRoi: roi, priceUsd: price } = final;
+  if (quantity === null || basis === null || realized === null || invested === null || sold === null || transferred === null || fees === null || cost === null || profit === null || roi === null
+    || quantity > 0 && price === null) return false;
+  const value = quantity === 0 ? 0 : quantity * price!;
+  const matches = (left: number, right: number) => Number.isFinite(left) && Number.isFinite(right)
+    && Math.abs(left - right) <= Math.max(1e-6, Math.max(Math.abs(left), Math.abs(right)) * 1e-8);
+  const costTolerance = Math.max(1e-6, Math.max(cost, invested + fees) * 1e-8);
+  return cost + costTolerance >= invested + fees
+    && matches(profit, realized + value - basis) && matches(profit, sold + transferred + value - cost) && matches(profit, roi * cost);
+}
+
+function canonicalDecimal(value: unknown) {
+  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value)) return null;
+  const [whole, fractional = ''] = value.split('.');
+  return `${whole.replace(/^0+(?=\d)/, '')}.${fractional.replace(/0+$/, '')}`;
+}
+
+function prepareReplayAccounting(activity: ReplayActivity, trades: ReplayTrade[], inventory: ReplayInventory | undefined, now: number): ReplayAccounting | undefined {
+  const raw = activity.replayAccounting;
+  if (!raw) return undefined;
+  const unavailable = (reason: string) => unavailableReplayAccounting(activity, reason, now);
+  const checkedAt = Date.parse(raw.checkedAt);
+  if (raw.version !== 1 || raw.source !== 'gmgn' || raw.policy !== 'gmgn_total_profit_v1'
+    || raw.walletAddress?.toLowerCase() !== activity.kol.address.toLowerCase() || raw.tokenAddress?.toLowerCase() !== activity.token.address.toLowerCase()
+    || !['ready', 'estimated', 'pending', 'unavailable'].includes(raw.status)
+    || !Number.isFinite(checkedAt) || checkedAt > now + serverClockSkewMs || now - checkedAt > 180_000 || !raw.coverage || !Array.isArray(raw.events)) return unavailable('invalid_gmgn_accounting');
+  if (raw.status === 'pending' || raw.status === 'unavailable') return { ...raw, events: [], final: null,
+    coverage: { ...raw.coverage, transactionsComplete: false, balanceMatched: false, exactFinal: false } };
+  if (!replayInventoryIsFresh({ inventory }, now) || raw.inventoryBlockNumber !== inventory!.coverage.toBlock
+    || raw.inventoryBlockHash?.toLowerCase() !== inventory!.coverage.blockHash?.toLowerCase()
+    || raw.coverage.transactionsComplete !== true || raw.coverage.balanceMatched !== true) return unavailable('unverified_gmgn_accounting');
+  const numberFields: (keyof ReplayAccountingSnapshot)[] = ['remainingTokenAmount', 'remainingCostBasisUsd', 'cumulativeRealizedProfitUsd',
+    'investedUsd', 'soldUsd', 'transferOutIncomeUsd', 'feesUsd', 'feeInclusiveCostUsd'];
+  let valid = true;
+  const snapshot = (value: ReplayAccountingSnapshot): AccountingNumbers => Object.fromEntries(numberFields.map(field => {
+    const parsed = field === 'cumulativeRealizedProfitUsd' ? replaySignedNumber(value[field]) : replayNumber(value[field], true);
+    if (value[field] !== null && parsed === null) valid = false;
+    return [field, parsed];
+  })) as AccountingNumbers;
+  const canonical = new Map(inventory!.events.map(event => [event.id, event]));
+  const rawInventory = new Map(activity.inventory!.events.map(event => [event.id, event]));
+  const seen = new Set<string>();
+  const events: ReplayAccounting['events'] = [];
+  for (const event of raw.events) {
+    const expected = canonical.get(event?.id), original = rawInventory.get(event?.id), time = Date.parse(event?.timestamp);
+    if (!event || !expected || seen.has(event.id) || event.kind !== expected.kind || event.tradeId !== expected.tradeId
+      || event.txHash?.toLowerCase() !== expected.txHash.toLowerCase() || !Number.isFinite(time) || time > now || time > checkedAt
+      || time !== Date.parse(expected.timestamp) || event.blockNumber !== expected.blockNumber
+      || event.transactionIndex !== expected.transactionIndex || event.logIndex !== expected.logIndex
+      || canonicalDecimal(event.remainingTokenAmount) === null || canonicalDecimal(event.remainingTokenAmount) !== canonicalDecimal(original?.remainingTokenAmount)) {
+      valid = false; continue;
+    }
+    seen.add(event.id); events.push({ ...event, ...snapshot(event) });
+  }
+  if (seen.size !== canonical.size) valid = false;
+  const order = new Map(inventory!.events.map((event, index) => [event.id, index]));
+  events.sort((left, right) => order.get(left.id)! - order.get(right.id)!);
+  let final: ReplayAccounting['final'] = null;
+  if (raw.final) {
+    const time = Date.parse(raw.final.timestamp), quantity = canonicalDecimal(raw.final.remainingTokenAmount);
+    const reportedProfitUsd = replaySignedNumber(raw.final.reportedProfitUsd), reportedRoi = replaySignedNumber(raw.final.reportedRoi);
+    const priceUsd = replayNumber(raw.final.priceUsd);
+    if (!Number.isFinite(time) || time < replayEndTimestamp({ trades, inventory })
+      || time > now + serverClockSkewMs || now - time > 180_000 || quantity === null || quantity !== canonicalDecimal(inventory!.coverage.balance)
+      || raw.final.reportedProfitUsd !== null && reportedProfitUsd === null || raw.final.reportedRoi !== null && reportedRoi === null
+      || raw.final.priceUsd !== null && priceUsd === null || quantity !== '0.' && priceUsd === null) valid = false;
+    final = { ...raw.final, ...snapshot(raw.final), reportedProfitUsd, reportedRoi, priceUsd };
+  }
+  if (!valid || raw.coverage.exactFinal && (raw.status !== 'ready' || !final || !accountingFinalMatches(final))) return unavailable('invalid_gmgn_accounting_events');
+  return { ...raw, events, final, coverage: { ...raw.coverage, exactFinal: raw.coverage.exactFinal === true && final !== null } };
+}
 
 /** Checked ending balances win; otherwise use only complete, consistent recorded quantities. */
 export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' | 'trades' | 'inventory'>): boolean {
@@ -103,11 +209,6 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
     || to === null || BigInt(coverage.scannedThroughBlock) !== to)) valid = false;
   if (coverage.initialBalanceSource === null && coverage.complete) valid = false;
   if (coverage.status != null && coverage.status !== 'verified' && (coverage.complete || coverage.reconciled)) valid = false;
-  const decimal = (value: unknown) => {
-    if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value)) return null;
-    const [whole, fractional = ''] = value.split('.');
-    return `${whole.replace(/^0+(?=\d)/, '')}.${fractional.replace(/0+$/, '')}`;
-  };
   const ids = new Set<string>(), matched = new Set<string>(), transferLogs = new Set<string>();
   const tradeById = new Map(trades.map(trade => [trade.id, trade]));
   const sourceTradeById = new Map(activity.trades.map(trade => [trade.id, trade]));
@@ -136,7 +237,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
       const sourceTrade = trade ? sourceTradeById.get(trade.id) : undefined;
       if (!trade || matched.has(trade.id) || trade.side !== event.kind || trade.txHash.toLowerCase() !== event.txHash.toLowerCase()
         || Date.parse(trade.timestamp) !== time || trade.tokenAmount !== numbers.tokenAmount
-        || decimal(sourceTrade?.tokenAmount) === null || decimal(sourceTrade?.tokenAmount) !== decimal(event.tokenAmount)
+        || canonicalDecimal(sourceTrade?.tokenAmount) === null || canonicalDecimal(sourceTrade?.tokenAmount) !== canonicalDecimal(event.tokenAmount)
         || sourceTrade?.blockNumber === null || !/^\d+$/.test(sourceTrade?.blockNumber ?? '') || BigInt(sourceTrade!.blockNumber!) !== block
         || sourceTrade?.transactionIndex != null && sourceTrade.transactionIndex !== event.transactionIndex) { valid = false; continue; }
       matched.add(trade.id);
@@ -161,7 +262,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
   }
   const balance = replayNumber(coverage.balance, true), remaining = events.at(-1)?.remainingTokenAmount;
   const finalRaw = (Array.isArray(inventory.events) ? inventory.events : []).find(event => event?.id === events.at(-1)?.id)?.remainingTokenAmount;
-  if (balance === null || remaining == null || decimal(coverage.balance) === null || decimal(coverage.balance) !== decimal(finalRaw)) valid = false;
+  if (balance === null || remaining == null || canonicalDecimal(coverage.balance) === null || canonicalDecimal(coverage.balance) !== canonicalDecimal(finalRaw)) valid = false;
   if (!valid) {
     coverage.complete = coverage.reconciled = false;
     coverage.reason = coverage.reason ?? (fresh ? 'invalid_inventory_events' : 'stale_inventory_snapshot');
@@ -169,7 +270,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
   return { version: 1, events, coverage };
 }
 
-function checkedCurrentQuote(data: TradeReplayData, quote: ReplayMarketChart['currentQuote'] | TradeReplayData['currentQuote'], supply: number | null, now: number) {
+function checkedCurrentQuote(data: TradeReplayData, quote: { timestamp: string; priceUsd: number | string } | undefined, supply: number | null, now: number) {
   if (!quote || !replayIsOpen(data)) return undefined;
   const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
   const lastFill = replayEndTimestamp(data);
@@ -178,7 +279,9 @@ function checkedCurrentQuote(data: TradeReplayData, quote: ReplayMarketChart['cu
 }
 
 export function validReplayCurrentQuote(data: TradeReplayData, now = Date.now()) {
-  return checkedCurrentQuote(data, data.currentQuote, data.chart.marketCapSupply, now);
+  const final = validReplayAccountingFinal(data, now);
+  return checkedCurrentQuote(data, final?.priceUsd ? { timestamp: final.timestamp, priceUsd: final.priceUsd } : undefined, data.chart.marketCapSupply, now)
+    ?? checkedCurrentQuote(data, data.currentQuote, data.chart.marketCapSupply, now);
 }
 
 function sparseQuoteTail(chart: TradeReplayData['chart'], currentQuote: TradeReplayData['currentQuote']) {
@@ -196,7 +299,10 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
   if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || !data.trades.length) return data;
   const open = replayIsOpen(data);
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
-  const currentQuote = checkedCurrentQuote(data, chart.currentQuote, supply, now) ?? checkedCurrentQuote(data, data.currentQuote, supply, now);
+  const accountingFinal = validReplayAccountingFinal(data, now);
+  const providerQuote = accountingFinal?.priceUsd ? { timestamp: accountingFinal.timestamp, priceUsd: accountingFinal.priceUsd } : undefined;
+  const currentQuote = checkedCurrentQuote(data, providerQuote, supply, now)
+    ?? checkedCurrentQuote(data, chart.currentQuote, supply, now) ?? checkedCurrentQuote(data, data.currentQuote, supply, now);
   let selected = currentQuote ? { ...data, currentQuote, chart: { ...data.chart, marketCapSupply: supply,
     points: data.chart.points.filter(point => Date.parse(point.timestamp) <= Date.parse(currentQuote.timestamp))
       .map(point => ({ ...point, marketCapUsd: scaledPrice(point.priceUsd, supply) })) } } : data;
@@ -312,6 +418,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
 
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
   const inventory = prepareReplayInventory(activity, trades, complete, now);
+  const replayAccounting = prepareReplayAccounting(activity, trades, inventory, now);
   const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
   const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
     && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';
@@ -384,5 +491,6 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     source: { chart: chartSource, tradesComplete: complete }, generatedAt: new Date(now).toISOString(),
     realizedAccounting: { available: complete && replaySignedNumber(activity.summary.realizedProfitUsd) !== null },
     ...(inventory ? { inventory } : {}),
+    ...(replayAccounting ? { replayAccounting } : {}),
   };
 }

@@ -331,6 +331,7 @@ export class ReplayCanvas {
     this.currentQuote = null;
     this.hasTail = false;
     this.inventoryEvents = [];
+    this.accountingEvents = [];
     this.eventProgresses = [];
     this.supply = null;
     this.fillOnly = false;
@@ -493,6 +494,11 @@ export class ReplayCanvas {
         }
       }
       return { ...event, q, tradeIndex };
+    });
+    const movementById = new Map(this.inventoryEvents.map(event => [event.id, event]));
+    this.accountingEvents = (data.replayAccounting?.events ?? []).map(event => {
+      const movement = movementById.get(event.id);
+      return { ...event, q: movement?.q ?? Infinity, tradeIndex: movement?.tradeIndex };
     });
 
     // Keep exact fill anchors separated horizontally, even for KOLs with a
@@ -976,11 +982,56 @@ export class ReplayCanvas {
       status = position.status === 'open' ? 'Open'
         : position.status === 'closed' ? 'Closed' : 'Unknown';
     }
-    return {
+    const state = {
       time: new Date(ts).toISOString(), invested: investedKnown ? invested : null, proceeds: proceedsKnown ? proceeds : null, holdings: quantitiesKnown ? holdings : null, pnl, roi,
       avgEntryCap, currentCap, currentPrice, currentEventIndex, status, recordedStatus, realizedPnl, realizedRoi,
       remainingCostBasis, unrealizedPnl, totalPnl, totalRoi,
     };
+    return this.data.replayAccounting ? this.gmgnSnapshot(p, state, ending, boughtTokens) : state;
+  }
+
+  gmgnSnapshot(progress, state, ending, boughtTokens) {
+    const accounting = this.data.replayAccounting;
+    const valid = ['ready', 'estimated'].includes(accounting.status)
+      && accounting.coverage.transactionsComplete && accounting.coverage.balanceMatched
+      && this.accountingEvents.length > 0 && this.accountingEvents.length === this.inventoryEvents.length
+      && this.accountingEvents.every(event => Number.isFinite(event.q));
+    // A requested GMGN result never silently falls back to the indexed ledger.
+    const unavailable = { ...state, pnl: null, roi: null, realizedPnl: null, realizedRoi: null,
+      remainingCostBasis: null, unrealizedPnl: null, totalPnl: null, totalRoi: null };
+    if (!valid) return unavailable;
+    let prefix = null;
+    for (const event of this.accountingEvents) {
+      if (event.q > progress + 1e-9 || event.tradeIndex !== undefined && event.tradeIndex > state.currentEventIndex) break;
+      prefix = event;
+    }
+    const completePrefix = prefix?.id === this.accountingEvents.at(-1)?.id;
+    const final = ending && completePrefix && accounting.coverage.exactFinal ? accounting.final : null;
+    const snapshot = final ?? prefix;
+    if (!snapshot) return unavailable;
+    const invested = finite(snapshot.investedUsd, null), proceeds = finite(snapshot.soldUsd, null);
+    const holdings = finite(snapshot.remainingTokenAmount, null);
+    const basis = finite(snapshot.remainingCostBasisUsd, null);
+    const realized = finite(snapshot.cumulativeRealizedProfitUsd, null);
+    const cost = finite(snapshot.feeInclusiveCostUsd, null);
+    const fees = finite(snapshot.feesUsd, null);
+    const value = holdings === 0 ? 0 : holdings !== null && state.currentPrice > 0 ? holdings * state.currentPrice : null;
+    const unrealized = value !== null && basis !== null ? value - basis : null;
+    let total = unrealized !== null && realized !== null && cost !== null && fees !== null ? realized + unrealized : null;
+    let roi = total !== null && cost > 0 ? total / cost : null;
+    // Exact provider totals belong only to the ending. A different selected
+    // price reprices the remaining quantity, without changing disposal gains.
+    const reported = finite(final?.reportedProfitUsd, null), referencePrice = positive(final?.priceUsd);
+    if (reported !== null && holdings !== null && (holdings === 0 || referencePrice !== null && value !== null)) {
+      const delta = holdings === 0 ? 0 : holdings * (state.currentPrice - referencePrice);
+      total = reported + delta;
+      const sameQuote = holdings === 0 || Math.abs(state.currentPrice - referencePrice) <= referencePrice * 1e-10;
+      roi = sameQuote ? finite(final.reportedRoi, cost > 0 ? total / cost : null) : cost > 0 ? total / cost : null;
+    }
+    return { ...state, invested, proceeds, holdings, remainingCostBasis: basis,
+      realizedPnl: realized, realizedRoi: realized !== null && cost > 0 ? realized / cost : null,
+      unrealizedPnl: unrealized, pnl: total, roi, totalPnl: total, totalRoi: roi,
+      avgEntryCap: invested !== null && boughtTokens > 0 && this.supply ? invested / boughtTokens * this.supply : null };
   }
 
   render(progress) {

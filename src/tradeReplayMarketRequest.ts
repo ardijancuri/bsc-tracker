@@ -1,6 +1,6 @@
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { TokenChart } from '../shared/intelligence';
-import { applyReplayMarketChart, prepareTradeReplayData, replayInventoryIsFresh, replayIsOpen, validReplayCurrentQuote, type ReplayActivity, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, prepareTradeReplayData, replayAccountingIsFresh, replayInventoryIsFresh, replayIsOpen, unavailableReplayAccounting, validReplayAccountingFinal, validReplayCurrentQuote, type ReplayActivity, type TradeReplayData } from './tradeReplayData';
 export { replayIsOpen } from './tradeReplayData';
 
 const preparationBudgetMs = 22_000;
@@ -11,6 +11,9 @@ export const recordedPriceEstimateNotice = 'Market history is unavailable. Estim
 export const currentQuoteEstimateNotice = 'Market history is unavailable. Prices between recorded trades and the current quote are estimates.';
 export const currentPriceUnavailableNotice = 'Current market price is unavailable. This replay ends at the last recorded wallet movement.';
 export const inventoryUnavailableNotice = 'Profit is unavailable until wallet movements and the balance are verified at the same block.';
+export const accountingUnavailableNotice = 'GMGN profit and ROI are unavailable for this replay.';
+export const accountingEstimateNotice = 'Profit and ROI use estimated GMGN accounting; exact final totals are unavailable.';
+export const accountingExactNotice = 'GMGN final profit and ROI are verified. Earlier values are estimates.';
 
 export function replayUsesRecordedPrices(data: TradeReplayData) {
   return data.source.chart.toLowerCase().includes('recorded fill') || !data.chart.points.length;
@@ -21,6 +24,7 @@ export interface ReplayMarketRequestResult {
   notice: string | null;
   currentPriceNotice?: string;
   inventoryNotice?: string;
+  accountingNotice?: string;
 }
 
 function cancelled() {
@@ -64,12 +68,13 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal): Pr
   if (signal.aborted) abort();
   const deadline = Date.now() + activityBudgetMs;
   const timeout = setTimeout(abort, activityBudgetMs);
-  let selected = withUnverifiedInventory(data, 'replay_activity_refresh_failed');
+  let selected = { ...withUnverifiedInventory(data, 'replay_activity_refresh_failed'),
+    replayAccounting: unavailableReplayAccounting(data, 'replay_activity_refresh_failed') };
   let longestAttemptMs = 0;
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const startedAt = Date.now();
-      const response = await withinRequest(fetch(`/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/activity`,
+      const response = await withinRequest(fetch(`/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/activity?replay=true`,
         { signal: refresh.signal, cache: 'no-store' }), refresh.signal);
       if (!response.ok) return selected;
       const activity: ReplayActivity = await withinRequest(response.json(), refresh.signal);
@@ -79,8 +84,8 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal): Pr
         || activity.token.address.toLowerCase() !== data.token.address.toLowerCase()
         || !Array.isArray(activity.trades) || !activity.coverage || !activity.summary) return selected;
       // A disappearing inventory contract cannot authorize legacy swap-only P&L.
-      if (!activity.inventory) activity.inventory = { version: 1, events: [],
-        coverage: { ...data.inventory!.coverage, complete: false, reconciled: false, reason: 'inventory_missing_from_refresh' } };
+      if (!activity.inventory && data.inventory) activity.inventory = { version: 1, events: [],
+        coverage: { ...data.inventory.coverage, complete: false, reconciled: false, reason: 'inventory_missing_from_refresh' } };
       const retainedChart: TokenChart | null = replayUsesRecordedPrices(data) ? null : {
         address: data.token.address, period: '5m', candles: [],
         points: data.chart.points.map(point => ({ timestamp: point.timestamp, priceUsd: String(point.priceUsd) })),
@@ -89,14 +94,18 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal): Pr
       };
       const prepared = prepareTradeReplayData(activity, retainedChart, null);
       if (!prepared?.trades.length) return selected;
-      selected = prepared;
-      if (prepared.chart.points.length) selected = { ...prepared, chart: { ...prepared.chart,
+      selected = { ...prepared, replayAccounting: prepared.replayAccounting ?? unavailableReplayAccounting(prepared, 'gmgn_accounting_missing') };
+      if (prepared.chart.points.length) selected = { ...selected, chart: { ...prepared.chart,
         source: data.chart.source, sparseHistory: data.chart.sparseHistory }, source: { ...prepared.source, chart: data.source.chart } };
-      if (replayInventoryIsFresh(selected) || activity.inventory.coverage.status !== 'pending' || attempt === 2) return selected;
+      const inventoryPending = activity.inventory?.coverage.status === 'pending';
+      const accountingPending = selected.replayAccounting.status === 'pending';
+      if ((!inventoryPending && !accountingPending) || attempt === 2) return selected;
       // A cold scan uses its full server budget. Avoid starting a further scan
       // when that observed duration plus paced retry cannot fit in this stage.
-      if (1000 + longestAttemptMs + 500 >= deadline - Date.now()) return selected;
-      await waitForRetry(1000, refresh.signal);
+      const reportedDelay = selected.replayAccounting.retryAfterMs;
+      const delay = accountingPending && typeof reportedDelay === 'number' && Number.isFinite(reportedDelay) && reportedDelay > 0 ? Math.max(1000, reportedDelay) : 1000;
+      if (delay + longestAttemptMs + 500 >= deadline - Date.now()) return selected;
+      await waitForRetry(delay, refresh.signal);
     }
     return selected;
   } catch {
@@ -119,19 +128,29 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   let available = data;
   const result = (selected: TradeReplayData, notice: string | null): ReplayMarketRequestResult => {
     if (selected.inventory && !replayInventoryIsFresh(selected)) selected = withUnverifiedInventory(selected, selected.inventory.coverage.reason ?? 'stale_inventory_snapshot');
+    if (selected.replayAccounting && (!replayAccountingIsFresh(selected) || !replayInventoryIsFresh(selected))) selected = { ...selected,
+      replayAccounting: unavailableReplayAccounting(selected, selected.replayAccounting.coverage.reason ?? 'gmgn_accounting_unavailable') };
     const open = replayIsOpen(selected), currentQuote = validReplayCurrentQuote(selected);
+    if (currentQuote) selected = { ...selected, currentQuote };
     if (!currentQuote && selected.currentQuote) { selected = { ...selected }; delete selected.currentQuote; }
-    const lastInventory = selected.inventory?.events.at(-1);
-    const inventoryMissing = selected.inventory && (!replayInventoryIsFresh(selected)
-      || lastInventory?.remainingCostBasisUsd == null || lastInventory.cumulativeRealizedProfitUsd == null);
+    const inventoryMissing = selected.inventory && !replayInventoryIsFresh(selected);
+    const exactFinal = validReplayAccountingFinal(selected);
+    const lastAccounting = selected.replayAccounting?.events.at(-1);
+    const endingAccountingKnown = lastAccounting && ['remainingTokenAmount', 'remainingCostBasisUsd', 'cumulativeRealizedProfitUsd',
+      'investedUsd', 'soldUsd', 'transferOutIncomeUsd', 'feesUsd', 'feeInclusiveCostUsd'].every(field => {
+      const value = lastAccounting[field as keyof typeof lastAccounting];
+      return typeof value === 'number' && Number.isFinite(value);
+    });
     return { data: selected, notice, ...(open && !currentQuote ? { currentPriceNotice: currentPriceUnavailableNotice } : {}),
-      ...(inventoryMissing ? { inventoryNotice: inventoryUnavailableNotice } : {}) };
+      ...(inventoryMissing ? { inventoryNotice: inventoryUnavailableNotice } : {}),
+      accountingNotice: exactFinal ? accountingExactNotice
+        : replayAccountingIsFresh(selected) && endingAccountingKnown ? accountingEstimateNotice : accountingUnavailableNotice };
   };
   const fallback = (notice: string): ReplayMarketRequestResult => result(available,
     notice === 'Historical market data is unavailable for this replay.' && replayUsesRecordedPrices(available)
       ? validReplayCurrentQuote(available) ? currentQuoteEstimateNotice : recordedPriceEstimateNotice : notice);
   try {
-    if (data.inventory) available = await refreshedActivity(data, request.signal);
+    available = await refreshedActivity(data, request.signal);
     if (signal.aborted) throw cancelled();
     const url = `/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/replay-chart${replayIsOpen(available) ? '?end=current' : ''}`;
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {

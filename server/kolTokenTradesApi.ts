@@ -5,6 +5,7 @@ import { pool } from './db.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { summarizeKolTokenTrades, type IndexedKolTokenTrade } from './kolTokenTrades.js';
 import { currentKolTokenInventory } from './kolTokenInventory.js';
+import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 export const kolTokenHistoryLimit = 2000;
@@ -12,7 +13,7 @@ const pairWhere = `t.wallet_address=$1 AND t.token_address=$2 AND k.is_tracked A
   AND t.timestamp<=now() AND ${nonStockTokenSql('t.token_address')}`;
 
 export function registerKolTokenTradesRoutes(app: FastifyInstance) {
-  app.get<{ Params: { address: string; token: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
+  app.get<{ Params: { address: string; token: string }; Querystring: { replay?: string } }>('/api/kols/:address/tokens/:token/activity', async (request, reply) => {
     const wallet = addressSchema.safeParse(request.params.address), token = addressSchema.safeParse(request.params.token);
     if (!wallet.success || !token.success) return reply.code(400).send({ error: 'Invalid KOL or token address' });
     const values = [wallet.data, token.data];
@@ -38,7 +39,7 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
       pool.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",
         k.display_name AS "kolName",k.avatar_url AS "kolAvatarUrl",k.twitter AS "kolTwitter",v.symbol AS "tokenSymbol",v.name AS "tokenName",
         CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
-        t.side,t.token_amount::text AS "tokenAmount",t.quote_symbol AS "quoteSymbol",t.quote_amount::text AS "quoteAmount",
+        t.side,t.token_amount::text AS "tokenAmount",t.quote_symbol AS "quoteSymbol",t.quote_token_address AS "quoteTokenAddress",t.quote_amount::text AS "quoteAmount",
         t.amount_usd::text AS "amountUsd",t.price_usd::text AS "priceUsd",t.timestamp,t.source,
         t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex",
         EXISTS(SELECT 1 FROM trades other JOIN tokens asset ON asset.address=other.token_address
@@ -64,6 +65,7 @@ export function registerKolTokenTradesRoutes(app: FastifyInstance) {
       coverage: { source: 'indexed', indexedTradeCount, returnedTradeCount: result.trades.length, complete,
         historyLimit: kolTokenHistoryLimit, costsIncluded: false }, generatedAt: new Date().toISOString(),
     };
+    if (request.query.replay === 'true') response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
     return reply.header('Cache-Control', 'no-store').send(response);
   });
 }
