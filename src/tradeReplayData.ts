@@ -50,6 +50,10 @@ export interface TradeReplayData {
 
 export type ReplayActivity = KolTokenActivity;
 
+// Server retrieval/check metadata can lead the client's clock slightly. This
+// tolerance never applies to chain movements, executions or historical bars.
+const serverClockSkewMs = 1000;
+
 /** Checked ending balances win; otherwise use only complete, consistent recorded quantities. */
 export function replayIsOpen(data: Pick<TradeReplayData, 'position' | 'source' | 'trades' | 'inventory'>): boolean {
   if (data.position.status === 'open' || data.position.status === 'closed') return data.position.status === 'open';
@@ -80,7 +84,7 @@ export function replayEndTimestamp(data: Pick<TradeReplayData, 'trades' | 'inven
 export function replayInventoryIsFresh(data: Pick<TradeReplayData, 'inventory'>, now = Date.now()): boolean {
   const checkedAt = Date.parse(data.inventory?.coverage.checkedAt ?? '');
   return Boolean(data.inventory && data.inventory.coverage.complete && data.inventory.coverage.reconciled
-    && Number.isFinite(checkedAt) && checkedAt <= now && now - checkedAt <= 180_000);
+    && Number.isFinite(checkedAt) && checkedAt <= now + serverClockSkewMs && now - checkedAt <= 180_000);
 }
 
 function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[], complete: boolean, now: number): ReplayInventory | undefined {
@@ -93,7 +97,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
   const from = /^\d+$/.test(coverage.fromBlock ?? '') ? BigInt(coverage.fromBlock!) : null;
   const to = /^\d+$/.test(coverage.toBlock ?? '') ? BigInt(coverage.toBlock!) : null;
   const checkedAt = Date.parse(coverage.checkedAt ?? '');
-  const fresh = Number.isFinite(checkedAt) && checkedAt <= now && now - checkedAt <= 180_000;
+  const fresh = Number.isFinite(checkedAt) && checkedAt <= now + serverClockSkewMs && now - checkedAt <= 180_000;
   if (from === null || to === null || from > to || !/^0x[0-9a-f]{64}$/i.test(coverage.blockHash ?? '') || !fresh) valid = false;
   if (coverage.scannedThroughBlock != null && (!/^\d+$/.test(coverage.scannedThroughBlock)
     || to === null || BigInt(coverage.scannedThroughBlock) !== to)) valid = false;
@@ -169,7 +173,7 @@ function checkedCurrentQuote(data: TradeReplayData, quote: ReplayMarketChart['cu
   if (!quote || !replayIsOpen(data)) return undefined;
   const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
   const lastFill = replayEndTimestamp(data);
-  if (price === null || !Number.isFinite(time) || !Number.isFinite(lastFill) || time < lastFill || time > now || now - time > 180_000) return undefined;
+  if (price === null || !Number.isFinite(time) || !Number.isFinite(lastFill) || time < lastFill || time > now + serverClockSkewMs || now - time > 180_000) return undefined;
   return { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) };
 }
 

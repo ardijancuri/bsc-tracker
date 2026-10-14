@@ -47,6 +47,25 @@ function inventoryActivity(): KolTokenActivity {
 }
 
 describe('authoritative replay inventory', () => {
+  it('allows at most one second of server check-time skew while keeping chain events and executions strictly nonfuture', () => {
+    for (const skew of [150, 1000, 1001, 2000]) {
+      const payload = inventoryActivity(); payload.inventory!.coverage.checkedAt = new Date(now + skew).toISOString();
+      const prepared = prepareTradeReplayData(payload, null, null, now)!;
+      expect(replayInventoryIsFresh(prepared, now), String(skew)).toBe(skew <= 1000);
+      expect(prepared.inventory!.coverage.reconciled, String(skew)).toBe(skew <= 1000);
+    }
+    const futureMovement = inventoryActivity();
+    futureMovement.inventory!.coverage.checkedAt = new Date(now + 150).toISOString();
+    futureMovement.inventory!.events.at(-1)!.timestamp = new Date(now + 100).toISOString();
+    expect(prepareTradeReplayData(futureMovement, null, null, now)!.inventory?.coverage.reconciled).toBe(false);
+    const futureTrade = inventoryActivity();
+    futureTrade.inventory!.coverage.checkedAt = new Date(now + 150).toISOString();
+    futureTrade.trades[1].timestamp = futureTrade.inventory!.events[1].timestamp = new Date(now + 100).toISOString();
+    const rejected = prepareTradeReplayData(futureTrade, null, null, now)!;
+    expect(rejected.trades).toHaveLength(1); expect(rejected.source.tradesComplete).toBe(false);
+    expect(rejected.inventory?.coverage.reconciled).toBe(false);
+  });
+
   it('preserves transfer-adjusted snapshots and canonical evidence without changing swaps or inventing sale proceeds', () => {
     const payload = inventoryActivity(); payload.inventory!.events.reverse();
     const prepared = prepareTradeReplayData(payload, null, { ...position, balance: '50', status: 'Holding' }, now)!;
