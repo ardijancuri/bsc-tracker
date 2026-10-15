@@ -38,8 +38,8 @@ export function tradeChartNeedsRefit(candles: MarketCandle[], previous: MarketHi
     candles.length !== previous.count || candles[0].time !== previous.firstTime || candles.at(-1)!.time !== previous.lastTime);
 }
 
-export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean }) {
-  const { chart: data, error, retry } = useTokenChart(address, interval, true, 'chart', fullHistory);
+export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false, enabled = true }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean; enabled?: boolean }) {
+  const { chart: data, error, retry } = useTokenChart(address, interval, enabled, 'chart', fullHistory);
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<'Candlestick'> | null>(null);

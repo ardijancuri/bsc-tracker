@@ -9,7 +9,7 @@ import './tokenMarket.css';
 
 type Market = { token: WatchEntry | null; period: WatchPeriod };
 
-export function TokenMarketPanel({ address, identity }: { address: string; identity: ReactNode }) {
+export function TokenMarketPanel({ address, identity, chartEnabled = true }: { address: string; identity: ReactNode; chartEnabled?: boolean }) {
   const period: WatchPeriod = '24h';
   const [interval, setInterval] = useState<CandleInterval>(defaultCandleInterval);
   const [market, setMarket] = useState<Market | null>(null);
@@ -44,7 +44,7 @@ export function TokenMarketPanel({ address, identity }: { address: string; ident
     </div></div>
     {error && <p className="profile-more-error" role="alert">{t('Token market data unavailable')}</p>}
     <div id="token-market-details" role="tabpanel" aria-labelledby={`token-market-${interval}`}>
-      <TokenPriceChart address={address} interval={interval} fullHistory />
+      <TokenPriceChart address={address} interval={interval} fullHistory enabled={chartEnabled} />
     </div>
   </section>;
 }

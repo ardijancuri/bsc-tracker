@@ -76,6 +76,12 @@ function indexedPlayer(duration = 15.5) {
 }
 
 describe('indexed replay video encoding', () => {
+  it('exports token replay frames with a token filename through the shared encoder', async () => {
+    const { player, render } = indexedPlayer(1);
+    const file = await recordTradeReplay(player, 'TOKEN-24h', new AbortController().signal, undefined, 'token');
+    expect(file.name).toBe('token-24h-token-replay.mp4'); expect(render).toHaveBeenCalledTimes(30);
+    expect(render).toHaveBeenLastCalledWith(1);
+  });
   it('encodes all 465 frames at exact 30fps timestamps through the final replay state', async () => {
     const { player, render, canvas } = indexedPlayer();
     const progress = vi.fn();
