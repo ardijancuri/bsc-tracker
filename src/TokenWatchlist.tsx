@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Check, Copy, Search } from 'lucide-react';
-import { FollowButton, useWatchlist } from './Intelligence';
+import { AlertSettings, FeatureIdentity, FollowButton, useWatchlist } from './Intelligence';
+import { loadWatchlist, watchlistIdentityChanged } from './watchlistClient';
+import { AccountWatchlistNotice, useAccount } from './Account';
 import { useTokenTranslation } from './TokenName';
-import { api, relativeTime, shortAddress } from './lib';
+import { relativeTime, shortAddress } from './lib';
 import { t } from './i18n';
 import { watchPeriods, type TokenChart, type WatchEntry, type Watchlist, type WatchPeriod } from '../shared/intelligence';
 import { PriceChange, WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
@@ -64,6 +66,8 @@ function WatchTokenRow({ token, period, onChart }: { token: WatchEntry; period: 
 
 export function TokenWatchlistPage() {
   const watch = useWatchlist();
+  const account = useAccount();
+  const [kind, setKind] = useState<'token' | 'kol'>('token');
   const [query, setQuery] = useState('');
   const [period, setPeriod] = useState<WatchPeriod>('24h');
   const [history, setHistory] = useState<Watchlist | null>(null);
@@ -75,18 +79,18 @@ export function TokenWatchlistPage() {
   const membership = watch.data.items.filter(item => item.kind === 'token').map(item => item.address).sort().join(',');
   useEffect(() => {
     setHistory(null); setHistoryError(false); setLoadingHistory(false);
-    if (period === '24h' || !watch.loaded || !membership) return;
+    if (kind !== 'token' || period === '24h' || !watch.loaded || watch.busy || !membership) return;
     let cancelled = false;
     const refresh = async () => {
       setLoadingHistory(true);
-      try { const value = await api<Watchlist>(`/api/watchlist?period=${period}`); if (!cancelled) { setHistory(value); setHistoryError(false); } }
-      catch { if (!cancelled) setHistoryError(true); }
+      try { const value = await loadWatchlist(`/api/watchlist?period=${period}`, account.state.user?.id || 'guest'); if (!cancelled) { setHistory(value); setHistoryError(false); } }
+      catch (reason) { if (!cancelled) { if (watchlistIdentityChanged(reason)) void account.refresh(); else setHistoryError(true); } }
       finally { if (!cancelled) setLoadingHistory(false); }
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 15000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [period, membership, watch.loaded]);
+  }, [kind, period, membership, watch.loaded, watch.busy, account.revision]);
   const tokens = useMemo(() => {
     const selected = new Map(history?.period === period ? history.items.map(item => [item.address, item]) : []);
     return watch.data.items.filter(item => item.kind === 'token').map(item => period === '24h' ? item : selected.get(item.address) || { ...item, periodChange: null, periodVolumeUsd: null, periodKolCount: undefined, priceHistory: [] });
@@ -97,7 +101,11 @@ export function TokenWatchlistPage() {
   const column = (key: WatchSortKey, label: string, className = '') => <th className={className} scope="col" aria-sort={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : 'none'}><button type="button" title={key === 'chart' ? t('Sort by chart price change') : undefined} onClick={() => setSort(current => ({ key, ascending: current.key === key ? !current.ascending : key === 'name' || key === 'address' }))}>
     {t(label)}{key === 'chart' && <> · {t(periodLabels[period])}</>}<WatchSortIcon direction={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : undefined} /></button></th>;
   return <div className="page token-watchlist-page">
-    <div className="token-watchlist-heading"><h1>{t('Token watchlist')}</h1></div>
+    <div className="token-watchlist-heading"><h1>{t('Watchlist')}</h1><AccountWatchlistNotice /></div>
+    <div className="watchlist-kind-tabs" role="tablist" aria-label={t('Favorites')}>
+      {(['token', 'kol'] as const).map(value => <button type="button" key={value} role="tab" id={`watchlist-${value}-tab`} aria-selected={kind === value} aria-controls={`watchlist-${value}-panel`} onClick={() => setKind(value)}>{t(value === 'token' ? 'Tokens' : 'KOLs')}<span>{watch.data.items.filter(item => item.kind === value).length}</span></button>)}
+    </div>
+    {kind === 'token' ? <section id="watchlist-token-panel" role="tabpanel" aria-labelledby="watchlist-token-tab">
     <div className="token-watchlist-toolbar"><div className="watch-search-actions"><label className="watch-token-search"><Search size={15} /><input aria-label={t('Search watched tokens')} placeholder={t('Search watched tokens')} value={query} onChange={event => setQuery(event.target.value)} /></label><Link className="feature-button" to="/tokens">{t('Add tokens')}</Link></div>
       <div className="watch-period-controls"><div className="watch-period-tabs feature-tabs" role="tablist" aria-label={t('Token time range')}>{watchPeriods.map(value => <button type="button" key={value} role="tab" aria-selected={period === value} aria-controls="watch-token-details" id={`watch-period-${value}`} onClick={() => setPeriod(value)}>{t(periodLabels[value])}</button>)}</div></div></div>
     {(watch.error || historyError) && <p className="profile-more-error" role="alert">{t(watch.error || 'Watchlist unavailable')}</p>}
@@ -106,5 +114,11 @@ export function TokenWatchlistPage() {
       {column('periodKolCount', 'KOLs', 'watch-extra')}{column('lastTradeAt', 'Last trade', 'watch-last-trade')}{column('chart', 'Chart', 'watch-chart')}
     </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
     {!visible.length && <div className="watch-token-empty"><strong>{!watch.loaded ? t('Loading…') : query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
+    </section> : <section id="watchlist-kol-panel" role="tabpanel" aria-labelledby="watchlist-kol-tab">
+      <div className="token-watchlist-toolbar"><Link className="feature-button" to="/leaderboard">{t('Add KOLs')}</Link></div>
+      <div className="data-table feature-table watch-kol-list">{watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><FollowButton kind="kol" address={item.address} label={item.name} /></div>)}</div>
+      {!watch.data.items.some(item => item.kind === 'kol') && <div className="watch-token-empty"><strong>{t(watch.loaded ? 'No followed KOLs' : 'Loading…')}</strong>{watch.loaded && <Link to="/leaderboard">{t('Star KOLs to add them here')}</Link>}</div>}
+    </section>}
+    <AlertSettings />
   </div>;
 }

@@ -7,56 +7,59 @@ import { TokenName } from './TokenName';
 import { WatchTokenDetails } from './WatchTokenVisuals';
 import { tokenChartIntent } from './tokenChartIntent';
 import { subscribeToUpdates } from './updateStream';
+import { accountCheckEvent, notifyWatchlistTabs, useAccount, watchlistSyncKey } from './Account';
+import { loadWatchlist, mutateWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import './tokenWatchlist.css';
 import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
 const emptyWatchlist: Watchlist = { items: [], preferences: defaultPreferences };
-async function mutate<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const response = await fetch(url, { method, headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Try again shortly');
-  return result as T;
-}
 type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void>; preferences: (value: AlertPreferences) => Promise<void>; clear: () => Promise<void> };
 const WatchContext = createContext<WatchContextValue | null>(null);
 export function WatchlistProvider({ children }: { children: ReactNode }) {
+  const account = useAccount();
   const [data, setData] = useState<Watchlist>(emptyWatchlist);
   const [loaded, setLoaded] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
   const current = useRef(data), locked = useRef(false), revision = useRef(0);
-  const accept = useCallback((value: Watchlist) => { current.current = value; setData(value); setLoaded(true); }, []);
+  const dataOwner = useRef<string | null>(null);
+  const auth = useRef(account); auth.current = account;
+  const accept = useCallback((value: Watchlist) => { dataOwner.current = auth.current.state.user?.id || 'guest'; current.current = value; setData(value); setLoaded(true); }, []);
   const refresh = useCallback(async () => {
-    if (locked.current) return;
+    if (locked.current || !auth.current.loaded || auth.current.checking || auth.current.busy || auth.current.unavailable) return;
     const version = revision.current;
-    try { const value = await api<Watchlist>('/api/watchlist'); if (!locked.current && version === revision.current) { accept(value); setError(null); } }
-    catch { if (!locked.current && version === revision.current) setError('Watchlist unavailable'); }
+    try { const value = await loadWatchlist('/api/watchlist', auth.current.state.user?.id || 'guest'); if (!locked.current && version === revision.current) { accept(value); setError(null); } }
+    catch (reason) { if (!locked.current && version === revision.current) { if (watchlistIdentityChanged(reason)) { await auth.current.refresh(); } else setError('Watchlist unavailable'); } }
   }, [accept]);
   useEffect(() => {
-    void refresh();
-    const focus = () => void refresh(); window.addEventListener('focus', focus);
-    const timer = window.setInterval(focus, 15000);
-    return () => { window.removeEventListener('focus', focus); window.clearInterval(timer); };
+    const invalidate = () => { revision.current++; locked.current = false; setBusy(false); };
+    const storage = (event: StorageEvent) => { if (event.key === watchlistSyncKey || event.key === null) { invalidate(); void refresh(); } };
+    window.addEventListener(accountCheckEvent, invalidate); window.addEventListener('storage', storage);
+    const timer = window.setInterval(() => void refresh(), 15000);
+    return () => { revision.current++; window.removeEventListener(accountCheckEvent, invalidate); window.removeEventListener('storage', storage); window.clearInterval(timer); };
   }, [refresh]);
-  const save = async (body: unknown) => {
-    if (locked.current) return;
-    locked.current = true; revision.current++; setBusy(true); setError(null);
-    try { accept(await mutate<Watchlist>('/api/watchlist', 'PUT', body)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save watchlist'); }
-    finally { locked.current = false; setBusy(false); }
+  useEffect(() => {
+    revision.current++; locked.current = false; setBusy(false); accept(emptyWatchlist); setLoaded(false); setError(null);
+  }, [account.revision, accept]);
+  useEffect(() => { if (account.loaded && !account.checking && !account.busy && !account.unavailable) void refresh(); }, [account.loaded, account.checking, account.busy, account.unavailable, account.revision, refresh]);
+  const save = async (url: string, method: 'PUT' | 'DELETE', body?: unknown) => {
+    if (locked.current || !loaded || account.checking || account.busy || account.unavailable) return;
+    locked.current = true; const version = ++revision.current; setBusy(true); setError(null);
+    try {
+      const value = await mutateWatchlist(url, method, account.state.user?.id || 'guest', body);
+      if (version === revision.current) { accept(value); notifyWatchlistTabs(); }
+    } catch (reason) {
+      if (version !== revision.current) return;
+      if (watchlistIdentityChanged(reason)) { await account.refresh(); return; }
+      setError(reason instanceof Error ? reason.message : 'Could not save watchlist');
+    } finally { if (version === revision.current) { locked.current = false; setBusy(false); } }
   };
   const toggle = async (kind: 'kol' | 'token', address: string) => {
     const key = address.toLowerCase();
-    const items = current.current.items.map(item => ({ kind: item.kind, address: item.address }));
-    const followed = items.some(item => item.kind === kind && item.address === key);
-    await save({ items: followed ? items.filter(item => item.kind !== kind || item.address !== key) : [...items, { kind, address: key }] });
+    const followed = current.current.items.some(item => item.kind === kind && item.address === key);
+    await save(`/api/watchlist/items/${kind}/${encodeURIComponent(key)}`, followed ? 'DELETE' : 'PUT');
   };
-  const clear = async () => {
-    if (locked.current) return;
-    locked.current = true; revision.current++; setBusy(true);
-    try { accept(await mutate<Watchlist>('/api/watchlist', 'DELETE')); setError(null); }
-    catch { setError('Could not clear watchlist'); }
-    finally { locked.current = false; setBusy(false); }
-  };
-  return <WatchContext.Provider value={{ data, busy, loaded, error, refresh, toggle, preferences: value => save({ preferences: value }), clear }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
+  const clear = () => save('/api/watchlist', 'DELETE');
+  const ownerMatches = dataOwner.current === (account.state.user?.id || 'guest');
+  return <WatchContext.Provider value={{ data: ownerMatches ? data : emptyWatchlist, busy: busy || account.checking || account.busy || account.unavailable, loaded: loaded && ownerMatches, error, refresh, toggle, preferences: value => save('/api/watchlist', 'PUT', { preferences: value }), clear }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
 }
 export function useWatchlist() { const value = useContext(WatchContext); if (!value) throw new Error('Watchlist provider missing'); return value; }
 export function FollowButton({ kind, address, label }: { kind: 'kol' | 'token'; address: string; label?: string | null }) {
@@ -73,7 +76,7 @@ export function FeatureTabs({ page }: { page: 'trades' | 'tokens' }) {
   const selected = tabs.some(([key]) => key === value) ? value : page;
   return <nav className="feature-tabs" aria-label={page === 'trades' ? t("Activity views") : t("Token views")}>{tabs.map(([key, title]) => <Link key={key} className={selected === key ? 'selected' : ''} aria-current={selected === key ? 'page' : undefined} to={`/${page}${key === page ? '' : `?view=${key}`}`}>{t(title)}</Link>)}</nav>;
 }
-function FeatureIdentity({ address, name, symbol, image, token = false }: { address: string; name: string | null; symbol?: string | null; image?: string | null; token?: boolean }) {
+export function FeatureIdentity({ address, name, symbol, image, token = false }: { address: string; name: string | null; symbol?: string | null; image?: string | null; token?: boolean }) {
   return <span className="identity"><span className={token ? 'token-avatar' : 'avatar'}><span>{(symbol || name || '?').slice(0, 1).toUpperCase()}</span>{image && <img src={image} alt="" onError={event => { event.currentTarget.style.display = 'none'; }} />}</span>{token ? <TokenName token={{ address, symbol, name }} addressSubtitle /> : <span className="identity-copy"><strong>{name || shortAddress(address)}</strong><small>{shortAddress(address)}</small></span>}</span>;
 }
 function FeatureEmpty({ children }: { children: ReactNode }) { return <div className="feature-empty">{children}</div>; }
@@ -137,7 +140,7 @@ export function RadarFeed({ watched = false }: { watched?: boolean }) {
   return <>{!watched && <AlertSettings watchlist={false} />}<div className="data-table feature-table">{pinned && <SignalRow signal={pinned} open />}{list.items.map(signal => <SignalRow key={signal.id} signal={signal} open={signal.id === selectedId} />)}{!list.items.length && !pinned && <FeatureEmpty>{list.loading ? t("Loading radar…") : list.error ? t("Radar unavailable") : watched ? t("No watched signals yet") : t("No signals yet")}</FeatureEmpty>}</div>
     {list.more && <button className="profile-load-more" disabled={list.busy} onClick={() => void list.loadMore()}>{list.busy ? t("Loading…") : t("Load more")}</button>}{list.moreError && <p className="profile-more-error">{t("Could not load more. Try again.")}</p>}</>;
 }
-function AlertSettings({ watchlist = true }: { watchlist?: boolean }) {
+export function AlertSettings({ watchlist = true }: { watchlist?: boolean }) {
   const watch = useWatchlist();
   const preferences = watch.data.preferences;
   const change = (value: Partial<AlertPreferences>) => void watch.preferences({ ...preferences, ...value });

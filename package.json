@@ -1,12 +1,12 @@
 {
   "name": "bscan",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "brand:export": "node scripts/export-app-brand.mjs",
     "dev": "vite --host 127.0.0.1",
-    "dev:api": "node --env-file-if-exists=.env --import tsx --watch server/index.ts",
+    "dev:api": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/index.ts",
     "dev:worker": "tsx watch server/worker.ts",
     "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "start": "node dist-server/index.js",
@@ -14,6 +14,7 @@
     "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
     "test:integration": "tsx server/intelligence.integration.ts",
+    "test:integration:auth": "tsx server/accountWatchlist.integration.ts",
     "test:integration:kol-profile": "tsx server/kolProfile.integration.ts"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.468.0",
     "mediabunny": "1.61.3",
+    "openid-client": "^6.8.8",
     "pg": "^8.13.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

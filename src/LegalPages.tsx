@@ -3,7 +3,7 @@ import { useEffect, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
 
-function LegalLayout({ title, children }: { title: string; children: ReactNode }) {
+function LegalLayout({ title, children, updated = 'Last updated October 4, 2026' }: { title: string; children: ReactNode; updated?: string }) {
   const [language] = useLanguage();
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -13,13 +13,13 @@ function LegalLayout({ title, children }: { title: string; children: ReactNode }
 
   return <article className="page legal-page">
     <Link className="back-link" to="/trades"><ChevronLeft size={15} aria-hidden="true" />{t("Back to kollens")}</Link>
-    <header className="legal-header"><span>{t("LEGAL")}</span><h1>{t(title)}</h1><p>{t("Last updated October 4, 2026")}</p></header>
+    <header className="legal-header"><span>{t("LEGAL")}</span><h1>{t(title)}</h1><p>{t(updated)}</p></header>
     <div className="legal-content">{children}</div>
   </article>;
 }
 
 export function PrivacyPolicyPage() {
-  return <LegalLayout title={t("Privacy Policy")}>
+  return <LegalLayout title={t("Privacy Policy")} updated="Last updated October 15, 2026">
     <p>{t("kollens is a public, read-only BNB Smart Chain analytics site. You can browse it without creating an account or connecting a wallet.")}</p>
 
     <section><h2>{t("Information shown on kollens")}</h2><p>{t("We display public wallet addresses, blockchain transactions, token data, and analytics derived from them. The tracked wallet roster also contains KOL names and X handles supplied to kollens, and may include publicly available profile images. A name or handle shown beside a wallet is not independent proof of who owns it.")}</p></section>
@@ -28,11 +28,11 @@ export function PrivacyPolicyPage() {
 
     <section><h2>{t('Language preference')}</h2><p>{t('Your language choice is saved in this browser’s local storage.')}</p></section>
 
-    <section><h2>{t("Watchlists")}</h2><p>{t("We store followed wallet and token addresses, filter settings, and a hashed browser-session secret. Watchlists belong to the browser that created them.")}</p><p>{t("Clear watchlist deletes your saved watchlist and preferences. Browser sessions expire after up to a year without a save. Clearing browser cookies loses access to that watchlist; cross-device recovery is unavailable.")}</p></section>
+    <section><h2>{t("Watchlists")}</h2><p>{t('Guest favorites and filter settings are saved for this browser using a hashed browser-session secret. Guest sessions expire after up to a year without a save. Clearing cookies loses access to guest favorites.')}</p><p>{t('Optional Telegram login saves favorites and filters to your account across devices and merges favorites already saved in your browser. We store your verified Telegram account identifier, display name, username, and profile image URL when provided. We do not request your phone number or permission to send messages.')}</p><p>{t('Login sessions use secure HttpOnly cookies and expire after 30 days. Logging out ends the current device session; account favorites stay saved. Clear watchlist removes favorites and resets filters without logging you out. Contact us to request account data deletion.')}</p></section>
 
     <section><h2>{t("How we use information")}</h2><p>{t("We use public data to display the trade feed, token pages, KOL profiles, and leaderboard. We use request information to deliver the site, diagnose problems, and protect the service. Where applicable, this processing supports our legitimate interest in operating and securing a public analytics service.")}</p></section>
 
-    <section><h2>{t("External services")}</h2><p>{t("Some token images load from external hosts, which may receive standard request information from your browser. Links to X, BscScan, and GMGN take you to services with their own privacy practices. Our hosting provider processes information needed to deliver kollens. We send public token names to MyMemory to provide cached English translations; these requests do not include your browser identifiers or watchlist.")}</p></section>
+    <section><h2>{t("External services")}</h2><p>{t("Some token images load from external hosts, which may receive standard request information from your browser. Links to X, BscScan, and GMGN take you to services with their own privacy practices. Our hosting provider processes information needed to deliver kollens. We send public token names to MyMemory to provide cached English translations; these requests do not include your browser identifiers or watchlist.")}</p><p>{t('If you choose Telegram login, Telegram handles authentication under its own privacy policy. Your favorites are stored by kollens and are not sent to Telegram.')}</p></section>
 
     <section><h2>{t("Retention and your choices")}</h2><p>{t("We keep indexed public blockchain data and roster information while they are needed to run the service. Operational logs are kept only as long as needed for service and security purposes. You may ask us about access, correction, or removal of off-chain profile information, or object to its use. Public blockchain records cannot be changed by kollens. Depending on where you live, you may also have a right to complain to a privacy regulator.")}</p></section>
 

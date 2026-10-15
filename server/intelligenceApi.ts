@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
@@ -10,13 +10,18 @@ import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type Ch
 import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
 import { registerKolTokenTradesRoutes } from './kolTokenTradesApi.js';
 import { tokenSupplyRequests } from './tokenSupply.js';
-export const hashSecret = (value: string) => createHash('sha256').update(value).digest('hex');
+import { resolveAuthUser, authSessionSecret } from './telegramAuth.js';
+import { hashSecret, sessionSecret, watchCookieName } from './watchSessionSecrets.js';
+export { hashSecret, sessionSecret } from './watchSessionSecrets.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 const preferencesSchema = z.object({ windowMinutes: z.union([z.literal(5), z.literal(10), z.literal(30)]), minBuyers: z.number().int().min(2).max(10), categories: z.array(z.enum(signalKinds)).max(5).transform(values => [...new Set(values)]), muted: z.boolean() }).strict();
 const watchSchema = z.object({ items: z.array(z.object({ kind: z.enum(['kol', 'token']), address: addressSchema }).strict()).max(200).optional(), preferences: preferencesSchema.optional() }).strict();
-const cookieName = 'bscan_watch';
-type Session = { id: string; preferences: typeof defaultPreferences };
+const cookieName = watchCookieName;
+type Session = { id: string; kind: 'guest' | 'account'; preferences: typeof defaultPreferences };
+const entryTable = (session: Session) => session.kind === 'account' ? 'account_watch_entries' : 'watch_entries';
+const ownerColumn = (session: Session) => session.kind === 'account' ? 'user_id' : 'session_id';
+const ownerTable = (session: Session) => session.kind === 'account' ? 'auth_users' : 'watch_sessions';
 const attempts = new Map<string, { count: number; until: number }>();
 function mutationAllowed(request: FastifyRequest, reply: FastifyReply) {
   const origin = request.headers.origin;
@@ -32,17 +37,26 @@ function mutationAllowed(request: FastifyRequest, reply: FastifyReply) {
   if (++state.count > 120) { reply.header('Retry-After', '60').code(429).send({ error: 'Try again shortly' }); return false; }
   return true;
 }
-export function sessionSecret(cookie: string | undefined) {
-  const matches = (cookie || '').split(';').map(value => value.trim()).filter(value => value.startsWith(`${cookieName}=`));
-  if (matches.length !== 1) return null;
-  const value = matches[0].slice(cookieName.length + 1);
-  return /^[0-9a-f]{64}$/.test(value) ? value : null;
-}
 async function getSession(request: FastifyRequest): Promise<Session | null> {
+  const user = await resolveAuthUser(request);
+  if (user) return { id: user.id, kind: 'account', preferences: user.preferences };
   const secret = sessionSecret(request.headers.cookie);
   if (!secret) return null;
   const result = await pool.query('SELECT id,preferences FROM watch_sessions WHERE secret_hash=$1 AND expires_at>now()', [hashSecret(secret)]);
-  return result.rows[0] ?? null;
+  return result.rows[0] ? { ...result.rows[0], kind: 'guest' } : null;
+}
+function ownerAllowed(request: FastifyRequest, reply: FastifyReply, session: Session | null) {
+  const expected = request.headers['x-watchlist-owner'];
+  if (expected !== undefined && expected !== (session?.kind === 'account' ? session.id : 'guest')) {
+    reply.code(409).send({ error: 'Your account changed. Refresh and try again.' }); return false;
+  }
+  if (!session || session.kind !== 'account') {
+    const hasAuthCookie = (request.headers.cookie || '').split(';').some(cookie => cookie.trim().startsWith('bscan_auth='));
+    if (hasAuthCookie && authSessionSecret(request.headers.cookie)) {
+      reply.code(401).send({ error: 'Your session expired. Log in again.' }); return false;
+    }
+  }
+  return true;
 }
 function privateResponse(reply: FastifyReply) { reply.header('Cache-Control', 'no-store').header('Vary', 'Cookie'); }
 function setSessionCookie(reply: FastifyReply, secret: string) {
@@ -53,7 +67,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
   const bucketSeconds = { '24h': 1800, '7d': 10800, '30d': 43200 }[period];
   const items = session || tokenAddress ? (await pool.query(`WITH entries AS (
     ${tokenAddress ? `SELECT 'token'::text AS kind,v.address FROM tokens v WHERE v.address=$1 AND EXISTS (
-      SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : 'SELECT kind,address FROM watch_entries WHERE session_id=$1'}
+      SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : `SELECT kind,address FROM ${entryTable(session!)} WHERE ${ownerColumn(session!)}=$1`}
     ) SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
     COALESCE(stats.latest_price,CASE WHEN v.price_source='onchain' THEN v.price_usd END) AS "priceUsd",
     stats.price_1h AS "price1hAgo",stats.price_24h AS "price24hAgo",
@@ -160,7 +174,10 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     privateResponse(reply);
     const period = request.query.period ?? '24h';
     if (!watchPeriods.includes(period as WatchPeriod)) return reply.code(400).send({ error: 'Invalid watchlist period' });
-    return watchlist(await getSession(request), period as WatchPeriod);
+    const session = await getSession(request);
+    const expected = request.headers['x-watchlist-owner'];
+    if (expected !== undefined && expected !== (session?.kind === 'account' ? session.id : 'guest')) return reply.code(409).send({ error: 'Your account changed. Refresh and try again.' });
+    return watchlist(session, period as WatchPeriod);
   });
   app.put('/api/watchlist', { bodyLimit: 32768 }, async (request, reply) => {
     privateResponse(reply);
@@ -168,6 +185,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const parsed = watchSchema.safeParse(request.body);
     if (!parsed.success || !parsed.data.items && !parsed.data.preferences) return reply.code(400).send({ error: 'Invalid watchlist' });
     const { items, preferences } = parsed.data;
+    let session = await getSession(request);
+    if (!ownerAllowed(request, reply, session)) return;
+    if (session?.kind === 'account' && items) return reply.code(409).send({ error: 'Refresh the page to update your account favorites.' });
     const unique = items ? [...new Map(items.map(item => [`${item.kind}:${item.address}`, item])).values()] : undefined;
     if (unique && ['kol', 'token'].some(kind => unique.filter(item => item.kind === kind).length > 100)) return reply.code(400).send({ error: 'Watch up to 100 KOLs and 100 tokens' });
     if (unique?.length) {
@@ -177,16 +197,17 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       const valid = new Set(known.rows.map(row => `${row.kind}:${row.address}`));
       if (unique.some(item => !valid.has(`${item.kind}:${item.address}`))) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
     }
-    let session = await getSession(request);
     const client = await pool.connect();
+    let createdSecret: string | null = null;
     try {
       await client.query('BEGIN');
       if (!session) {
         const secret = randomBytes(32).toString('hex');
         const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at) VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences`, [randomUUID(), hashSecret(secret)]);
-        session = result.rows[0]; setSessionCookie(reply, secret);
+        session = { ...result.rows[0], kind: 'guest' }; createdSecret = secret;
       }
-      await client.query('SELECT id FROM watch_sessions WHERE id=$1 FOR UPDATE', [session!.id]);
+      const locked = await client.query(`SELECT id FROM ${ownerTable(session!)} WHERE id=$1 FOR UPDATE`, [session!.id]);
+      if (!locked.rows.length) { await client.query('ROLLBACK'); return reply.code(409).send({ error: 'Your account changed. Refresh and try again.' }); }
       if (unique) {
         await client.query(`UPDATE tokens v SET market_cap_checked_at=now()-interval '31 minutes'
           WHERE v.address=ANY($1::text[]) AND NOT EXISTS(SELECT 1 FROM watch_entries w WHERE w.session_id=$2 AND w.kind='token' AND w.address=v.address)`,
@@ -194,17 +215,80 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         await client.query('DELETE FROM watch_entries WHERE session_id=$1', [session!.id]);
         for (const item of unique) await client.query('INSERT INTO watch_entries(session_id,kind,address) VALUES($1,$2,$3)', [session!.id, item.kind, item.address]);
       }
-      const updated = await client.query(`UPDATE watch_sessions SET preferences=COALESCE($2::jsonb,preferences),updated_at=now(),expires_at=now()+interval '1 year' WHERE id=$1 RETURNING id,preferences`, [session!.id, preferences ? JSON.stringify(preferences) : null]);
-      session = updated.rows[0];
+      const updated = await client.query(`UPDATE ${ownerTable(session!)} SET preferences=COALESCE($2::jsonb,preferences),updated_at=now()${session!.kind === 'guest' ? ",expires_at=now()+interval '1 year'" : ''} WHERE id=$1 RETURNING id,preferences`, [session!.id, preferences ? JSON.stringify(preferences) : null]);
+      session = { ...updated.rows[0], kind: session!.kind };
       if (preferences) await client.query(`INSERT INTO radar_profiles(profile,window_minutes,min_buyers) VALUES($1,$2,$3) ON CONFLICT(profile) DO NOTHING`, [`${preferences.windowMinutes}:${preferences.minBuyers}`, preferences.windowMinutes, preferences.minBuyers]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
+    if (createdSecret) setSessionCookie(reply, createdSecret);
     return watchlist(session);
+  });
+  // Individual changes compose across devices instead of replacing a stale list.
+  for (const method of ['PUT', 'DELETE'] as const) app.route<{ Params: { kind: string; address: string } }>({
+    method, url: '/api/watchlist/items/:kind/:address', bodyLimit: 1024,
+    handler: async (request, reply) => {
+      privateResponse(reply);
+      if (!mutationAllowed(request, reply)) return;
+      const parsed = addressSchema.safeParse(request.params.address), kind = request.params.kind;
+      if (!parsed.success || !['kol', 'token'].includes(kind)) return reply.code(400).send({ error: 'Invalid watchlist' });
+      const key = parsed.data;
+      let session = await getSession(request);
+      if (!ownerAllowed(request, reply, session)) return;
+      if (method === 'DELETE' && !session) return watchlist(null);
+      if (method === 'PUT') {
+        const known = kind === 'kol'
+          ? await pool.query('SELECT address FROM kols WHERE address=$1 AND is_tracked', [key])
+          : await pool.query(`SELECT v.address FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()}
+            AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [key]);
+        if (!known.rows.length) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
+      }
+      const client = await pool.connect();
+      let createdSecret: string | null = null;
+      try {
+        await client.query('BEGIN');
+        if (!session) {
+          createdSecret = randomBytes(32).toString('hex');
+          const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at)
+            VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences`, [randomUUID(), hashSecret(createdSecret)]);
+          session = { ...result.rows[0], kind: 'guest' };
+        }
+        const locked = await client.query(`SELECT id FROM ${ownerTable(session!)} WHERE id=$1 FOR UPDATE`, [session!.id]);
+        if (!locked.rows.length) { await client.query('ROLLBACK'); return reply.code(409).send({ error: 'Your account changed. Refresh and try again.' }); }
+        const table = entryTable(session!), owner = ownerColumn(session!);
+        if (method === 'PUT') {
+          const count = await client.query(`SELECT COUNT(*)::int AS count,
+            bool_or(address=$3) AS followed FROM ${table} WHERE ${owner}=$1 AND kind=$2`, [session!.id, kind, key]);
+          if (count.rows[0].count >= 100 && !count.rows[0].followed) {
+            await client.query('ROLLBACK'); return reply.code(400).send({ error: 'Watch up to 100 KOLs and 100 tokens' });
+          }
+          const inserted = await client.query(`INSERT INTO ${table}(${owner},kind,address) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING address`, [session!.id, kind, key]);
+          if (kind === 'token' && inserted.rows.length) await client.query(`UPDATE tokens SET market_cap_checked_at=now()-interval '31 minutes' WHERE address=$1`, [key]);
+        } else await client.query(`DELETE FROM ${table} WHERE ${owner}=$1 AND kind=$2 AND address=$3`, [session!.id, kind, key]);
+        await client.query(`UPDATE ${ownerTable(session!)} SET updated_at=now()${session!.kind === 'guest' ? ",expires_at=now()+interval '1 year'" : ''} WHERE id=$1`, [session!.id]);
+        await client.query('COMMIT');
+      } catch (error) { await client.query('ROLLBACK'); throw error; }
+      finally { client.release(); }
+      if (createdSecret) setSessionCookie(reply, createdSecret);
+      return watchlist(session);
+    },
   });
   app.delete('/api/watchlist', async (request, reply) => {
     privateResponse(reply); if (!mutationAllowed(request, reply)) return;
     const session = await getSession(request);
+    if (!ownerAllowed(request, reply, session)) return;
+    if (session?.kind === 'account') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT id FROM auth_users WHERE id=$1 FOR UPDATE', [session.id]);
+        await client.query('DELETE FROM account_watch_entries WHERE user_id=$1', [session.id]);
+        await client.query('UPDATE auth_users SET preferences=$2::jsonb,updated_at=now() WHERE id=$1', [session.id, JSON.stringify(defaultPreferences)]);
+        await client.query('COMMIT');
+      } catch (error) { await client.query('ROLLBACK'); throw error; }
+      finally { client.release(); }
+      return watchlist({ ...session, preferences: defaultPreferences });
+    }
     if (session) await pool.query('DELETE FROM watch_sessions WHERE id=$1', [session.id]);
     reply.header('Set-Cookie', `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
     return watchlist(null);
@@ -219,7 +303,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     values.push(preference.windowMinutes, preference.minBuyers);
     where.push('(s.window_minutes=0 OR s.window_minutes=$1 AND s.min_buyers=$2)');
     if (session) {
-      if (request.query.watched === '1') { values.push(session.id); where.push(`EXISTS(SELECT 1 FROM watch_entries e WHERE e.session_id=$${values.length} AND (e.kind='token' AND e.address=s.token_address OR e.kind='kol' AND e.address=ANY(s.wallet_addresses)))`); }
+      if (request.query.watched === '1') { values.push(session.id); where.push(`EXISTS(SELECT 1 FROM ${entryTable(session)} e WHERE e.${ownerColumn(session)}=$${values.length} AND (e.kind='token' AND e.address=s.token_address OR e.kind='kol' AND e.address=ANY(s.wallet_addresses)))`); }
       values.push(session.preferences.categories); where.push(`s.kind=ANY($${values.length}::text[])`);
     }
     for (const [filter, field] of [[request.query.token, 's.token_address'], [request.query.kol, 'wallet']] as const) {

@@ -1,5 +1,6 @@
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
+import { AccountButton, AccountProvider } from './Account';
 import { TokenMarketPanel } from './TokenMarketPanel';
 import { TokenReplayTrigger } from './TokenReplayTrigger';
 import { KolTokenRealizedPnl } from './KolTokenRealizedPnl';
@@ -155,7 +156,7 @@ function Header({ overview }: { overview: Overview }) {
       <span className="bnb-price" title={overview.bnbPriceAt ? t('Chainlink BNB/USD updated {time}', { time: localDate(overview.bnbPriceAt) }) : t("BNB/USD price unavailable")}><span>BNB</span><strong>{isFresh(overview.bnbPriceAt, 2 * 60 * 60_000) ? compact(overview.bnbPriceUsd, true) : '—'}</strong></span>
       <a className="header-x-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer" aria-label={t("kollens on X")} title={t("kollens on X")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z" /></svg></a>
     </div>
-    <div className="header-right"><LanguageSelect /><span className="chain-label"><ChainLogo /><span>{t("On BNB Chain")}</span></span><button className="header-search" onClick={() => setSearchOpen(true)} aria-label={t("Search")}><Search size={18} /><span>{t("Search")}</span><kbd>/</kbd></button><button className="mobile-menu icon-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label={t("Toggle menu")}><Menu size={21} /></button></div>
+    <div className="header-right"><span className="chain-label"><ChainLogo /><span>{t("On BNB Chain")}</span></span><LanguageSelect /><button className="header-search" onClick={() => setSearchOpen(true)} aria-label={t("Search")}><Search size={18} /><span>{t("Search")}</span><kbd>/</kbd></button><AccountButton /><button className="mobile-menu icon-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label={t("Toggle menu")}><Menu size={21} /></button></div>
   </div></header>{searchOpen && <SearchDialog close={() => setSearchOpen(false)} />}</>;
 }
 
@@ -407,7 +408,7 @@ export default function App() {
   const { pathname } = useLocation();
   useEffect(() => { document.documentElement.lang = language; if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) document.title = t('kollens — BSC KOL tracker'); }, [language, pathname]);
   const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
-  return <WatchlistProvider>
+  return <AccountProvider><WatchlistProvider>
     <Header overview={overview} />
     <WatchlistBanner />
     <main><Routes>
@@ -426,5 +427,5 @@ export default function App() {
       <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="57" height="12" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
-  </WatchlistProvider>;
+  </WatchlistProvider></AccountProvider>;
 }

@@ -573,7 +573,7 @@ async function refreshMarketCaps(): Promise<boolean> {
     WHERE (t.market_cap_checked_at IS NULL OR t.market_cap_checked_at < now() - interval '30 minutes')
       AND EXISTS (SELECT 1 FROM trades x JOIN kols k ON k.address=x.wallet_address
         WHERE x.token_address=t.address AND k.is_tracked AND x.block_number IS NOT NULL)
-    ORDER BY EXISTS(SELECT 1 FROM watch_entries w WHERE w.kind='token' AND w.address=t.address) DESC,
+    ORDER BY EXISTS(SELECT 1 FROM active_watch_entries w WHERE w.kind='token' AND w.address=t.address) DESC,
       (SELECT MAX(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 30`);
   const addresses = result.rows.map(row => row.address as string);
   if (!addresses.length) return false;

@@ -4,7 +4,7 @@ Public, read-only BNB Smart Chain KOL trade tracker. The 226 wallets and X handl
 
 ## Brand assets
 
-The approved source logo is preserved in `branding/kollens-approved/source.svg`. The white/yellow variants in `public/kollens-logo-{white,yellow}.svg` and `public/kollens-icon-{white,yellow}.svg` are the build's canonical assets. The app's header and footer both use the all-white logo directly. `npm run brand:export` regenerates only the favicons, touch icon, trade replay artwork and native-path fallbacks, and the website's social preview. Artwork URLs are versioned to avoid stale browser and social caches. The export runs before every production build. Final X assets are listed in `branding/README.md`.
+The approved source logo is preserved in `branding/kollens-approved/source.svg`. The white/yellow variants in `public/kollens-logo-{white,yellow}.svg` and `public/kollens-icon-{white,yellow}.svg` are the build's canonical assets. The app's header and footer both use the yellow K with white wordmark. `npm run brand:export` regenerates only the favicons, touch icon, trade replay artwork and native-path fallbacks, and the website's social preview. Artwork URLs are versioned to avoid stale browser and social caches. The export runs before every production build. Final X assets are listed in `branding/README.md`.
 
 Link previews use a 1200 × 630 PNG with the current gold K/white wordmark. Open Graph and X metadata point to the same `/social/kollens-preview-<PNG-content-hash>.png` pathname, so changed preview artwork receives a new URL independently of favicon versions. The legacy header-image path also serves the current artwork. Third-party previews already cached for a page can remain stale until that service fetches the page again.
 
@@ -28,6 +28,8 @@ KOL profiles exclude quote assets, LPs, dividend trackers, registered stock toke
 Use Node.js 22+, PostgreSQL 17, and a BSC node with HTTP and WebSocket RPC. Copy `.env.example` to a private `.env`, set `BSCAN_DB_PASSWORD`, and run `docker compose up -d --build` on the VPS. The API binds to loopback port 3300; PostgreSQL binds to loopback port 5434. RPC access remains private. `GET /api/health` checks the API and database. `GET /api/overview` reports roster and data freshness.
 
 For local development, configure a private `.env` with `DATABASE_URL` and optional `GMGN_CHART_API_KEY`, run `npm install`, then `npm run dev` and `npm run dev:api`. The API reads the local `.env` automatically. The worker runs with `npm run dev:worker`. Use `npm run check` and `npm test` to verify the code.
+
+Telegram login is optional. Configure the dedicated login bot's server-only OIDC credentials and registered callback using [Telegram login setup](docs/telegram-login.md). Empty credentials keep guest watchlists working without sign-in. Login credentials belong only to the API container; the worker does not receive them.
 
 ## KOL images
 
@@ -57,7 +59,7 @@ Chinese token detail pages show a short English name beneath the original title.
 
 `/trades?view=radar` shows 20 signals at a time with expandable transaction evidence. `/trades?view=watchlist` groups followed KOLs/tokens and their signals. Filters are saved in the same browser: 5/10/30 minute buying windows, 2–10 distinct buyers, categories. A new filter profile backfills the last day without alerting. Live triggers use confirmed chain order and a ten-minute cooldown. Imported activity is silent; corrected signals remain visible after a reorganization.
 
-A secure HttpOnly, SameSite=Strict cookie identifies an anonymous watchlist; the server stores its hash. No wallet connection or account signup is needed. Follow stars appear on profiles, token cards and leaderboard rows. Clearing Watchlist deletes its session and preferences. Cross-device recovery is deferred.
+A secure HttpOnly, SameSite=Strict cookie identifies an anonymous watchlist; the server stores its hash. No wallet connection or account signup is needed. Optional Telegram login saves the same favorite tokens, KOLs and filters to an account for access across devices. Sign-in merges guest favorites without duplicates; returning accounts retain their saved filters. Follow stars appear on profiles, token cards and leaderboard rows. Clearing Watchlist clears favorites and resets filters while retaining an authenticated login. Logout revokes this device's session and returns to an empty guest watchlist; account favorites remain saved. Each watchlist supports up to 100 tokens and 100 KOLs. An over-limit merge leaves both lists unchanged.
 
 Holding badges use confirmed `balanceOf` snapshots and tracked-wallet ERC-20 movements, including transactions initiated by other wallets. Initial positive balances establish Holding; later labels require matching movement evidence. Zero without a known sale, mixed/unexplained changes, RPC failures and snapshots more than five minutes old show Unknown. Exact quantities are available on expansion. Holdings do not alter the rolling 24-hour P&L calculation. Reconciliation uses four concurrent balance RPC calls and prioritizes new movements and watched positions.
 

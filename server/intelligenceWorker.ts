@@ -95,7 +95,9 @@ export async function collectSignals() {
       AND t.block_number <= $3 ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`,
     [[...new Set(trades.map(trade => trade.tokenAddress))], new Date(earliest).toISOString(), trades.at(-1)!.blockNumber]);
     const history: ObservedTrade[] = historyRows.rows.map(row => ({ ...row, timestamp: new Date(row.timestamp).toISOString() }));
-    const settings = await client.query(`SELECT DISTINCT preferences->>'windowMinutes' AS window, preferences->>'minBuyers' AS buyers FROM watch_sessions WHERE expires_at>now()`);
+    const settings = await client.query(`SELECT DISTINCT preferences->>'windowMinutes' AS window, preferences->>'minBuyers' AS buyers FROM (
+      SELECT preferences FROM watch_sessions WHERE expires_at>now() UNION ALL SELECT preferences FROM auth_users
+    ) watched`);
     const profiles = new Map([[profileKey(defaultPreferences), defaultPreferences]]);
     for (const row of settings.rows) {
       const preference = { ...defaultPreferences, windowMinutes: Number(row.window) as AlertPreferences['windowMinutes'], minBuyers: Number(row.buyers) };
@@ -181,9 +183,9 @@ export async function collectPositions() {
     LEFT JOIN LATERAL(SELECT * FROM position_snapshots WHERE wallet_address=p.wallet_address AND token_address=p.token_address ORDER BY block_number DESC LIMIT 1) s ON true
     WHERE (s.checked_at IS NULL OR s.checked_at<now()-interval '60 seconds' OR EXISTS(SELECT 1 FROM wallet_transfers m
       WHERE m.wallet_address=p.wallet_address AND m.token_address=p.token_address AND m.block_number>s.block_number AND m.block_number<=$1)) AND (
-      p.last_seen>now()-interval '24 hours' OR s.balance_raw>0 OR EXISTS(SELECT 1 FROM watch_entries WHERE address IN(p.wallet_address,p.token_address)))
+      p.last_seen>now()-interval '24 hours' OR s.balance_raw>0 OR EXISTS(SELECT 1 FROM active_watch_entries WHERE address IN(p.wallet_address,p.token_address)))
     ORDER BY CASE WHEN EXISTS(SELECT 1 FROM wallet_transfers m WHERE m.wallet_address=p.wallet_address AND m.token_address=p.token_address AND m.block_number>s.block_number AND m.block_number<=$1) THEN 0
-      WHEN EXISTS(SELECT 1 FROM watch_entries WHERE address IN(p.wallet_address,p.token_address)) THEN 1 ELSE 2 END,
+      WHEN EXISTS(SELECT 1 FROM active_watch_entries WHERE address IN(p.wallet_address,p.token_address)) THEN 1 ELSE 2 END,
       s.checked_at ASC NULLS FIRST,p.last_seen DESC LIMIT 128`, [height]);
   for (let offset = 0; offset < pairs.rows.length; offset += 4) {
     await Promise.all(pairs.rows.slice(offset, offset + 4).map(async row => {
@@ -240,7 +242,7 @@ export async function collectLaunches() {
     WHERE EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND token_address=v.address AND block_number IS NOT NULL)
     AND (l.checked_at IS NULL OR l.checked_at<now()-CASE WHEN l.platform IS NULL THEN interval '1 hour' ELSE interval '60 seconds' END)
     ORDER BY CASE WHEN EXISTS(SELECT 1 FROM launch_events e WHERE e.token_address=v.address AND e.block_number>COALESCE(l.block_number,0) AND e.kind IN('graduated','pool')) THEN 0
-      WHEN EXISTS(SELECT 1 FROM watch_entries w WHERE w.kind='token' AND w.address=v.address) THEN 1
+      WHEN EXISTS(SELECT 1 FROM active_watch_entries w WHERE w.kind='token' AND w.address=v.address) THEN 1
       WHEN l.checked_at IS NULL AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND timestamp>now()-interval '5 minutes' AND block_number IS NOT NULL) THEN 2
       WHEN l.stage='near_graduation' THEN 3
       WHEN l.stage='bonding' AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND timestamp>now()-interval '24 hours' AND block_number IS NOT NULL) THEN 4
