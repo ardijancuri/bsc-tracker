@@ -6,7 +6,7 @@
 .site-header .main-nav a,.site-header .main-nav a.active{color:#fff}
 .site-header :is(.header-search,.account-login){background:#1c2023;transition:background-color .15s,color .15s}
 .site-header :is(.header-search,.account-login):hover{background:#252b30}
-.site-header .header-search kbd{border:0;padding-inline:0}
+.site-header .header-search kbd{border:0;padding-inline:0 4px;font-size:13px}
 .site-header .main-nav .mobile-social-link{border:0;color:#fff;padding-inline:10px;background:#1c2023;transition:background-color .15s}
 .site-header .main-nav .mobile-social-link:hover{background:#252b30}
 @media(min-width:801px){.site-header .header-social{gap:17px}}
