@@ -63,6 +63,13 @@ export interface KolTokenBalanceProof {
 /** A profile quote may be the boundary of the latest completed one-minute bar. */
 export const kolTokenPositionQuoteMaxAgeMs = 180_000;
 
+/** Provider history is independent evidence when historical RPC reads cannot
+ * run. It must still match every indexed swap and a fresh current-chain balance.
+ * Contradictory canonical evidence and unfinished scans never qualify. */
+export function canUseGmgnHistoryFallback(reason: string | undefined): boolean {
+  return reason === 'inventory_history_unavailable' || reason === 'inventory_rpc_unavailable';
+}
+
 export interface KolTokenProfitPosition {
   status: 'open' | 'closed';
   estimatedProfitUsd: string | null;

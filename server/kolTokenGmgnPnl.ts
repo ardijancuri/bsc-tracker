@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity, type KolTokenRealizedAccounting, type KolTokenProfitPosition } from '../shared/kolTokenTrades.js';
+import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity, type KolTokenRealizedAccounting, type KolTokenProfitPosition } from '../shared/kolTokenTrades.js';
 import type { ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
 import { currentMarketChart } from './tokenChart.js';
@@ -224,7 +224,7 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     if (!inventoryReady(activity, now())) {
       // Missing historical node data can use separately identified GMGN history
       // and a fresh current-chain balance. Never override a contradictory scan.
-      if (activity.coverage.complete && activity.inventory?.coverage.reason === 'inventory_history_unavailable') {
+      if (activity.coverage.complete && canUseGmgnHistoryFallback(activity.inventory?.coverage.reason)) {
         return loadHistoryFallback(activity, { foreground });
       }
       const value = base(activity, now()), reason = activity.inventory?.coverage.reason;
@@ -296,6 +296,10 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     return retained ? datedValue(retained) : work;
   };
   const quoteJobs = new Map<string, Promise<PositionQuoteResult>>();
+  // Market marks are independent of the historical ledger. Remember their
+  // original timestamps so a later provider cooldown does not erase a still
+  // recent price, or force every wallet holding the same token to fetch it again.
+  const quotes = new Map<string, PositionQuote>();
   return async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>, options: { markPosition?: boolean; foreground?: boolean } = {}): Promise<KolTokenRealizedAccounting> => {
     const historicalValue = await historical(activity, supplied, options.foreground), position = historicalValue.position;
     if (options.markPosition === false || historicalValue.status !== 'ready' || !position || position.status === 'closed') return historicalValue;
@@ -304,19 +308,25 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     // movement supplies the quote boundary, never the current balance-read time.
     const lastMovementAt = historicalValue.coverage.verification === 'gmgn_history'
       ? historicalValue.coverage.lastMovementAt ?? null : undefined;
+    const token = activity.token.address.toLowerCase();
     let retained: KolTokenProfitPosition | null = null;
     if (position.priceUsd && position.pricedAt && position.valuationSource) {
       const marked = markedPosition(position, value.realizedProfitUsd!, { priceUsd: position.priceUsd, timestamp: position.pricedAt }, position.valuationSource, activity, now(), lastMovementAt);
       if (marked) {
         retained = marked;
-        if (!loadQuote || now() - Date.parse(position.pricedAt) <= 30_000) { value.position = marked; return value; }
       }
     }
+    const remembered = quotes.get(token);
+    if (remembered) {
+      const marked = markedPosition(position, value.realizedProfitUsd, remembered, 'market', activity, now(), lastMovementAt);
+      if (marked && (!retained || Date.parse(marked.pricedAt!) > Date.parse(retained.pricedAt!))) retained = marked;
+      if (now() - Date.parse(remembered.timestamp) > kolTokenPositionQuoteMaxAgeMs || Date.parse(remembered.timestamp) > now()) quotes.delete(token);
+    }
+    if (retained && (!loadQuote || now() - Date.parse(retained.pricedAt!) <= 30_000)) { value.position = retained; return value; }
     // Never extend a stored quote's timestamp when refreshing canonical proof.
     value.position = { ...position, estimatedProfitUsd: null, estimatedRoi: null, unrealizedProfitUsd: null,
       priceUsd: null, pricedAt: null, valuationSource: null, reason: 'current_quote_unavailable' };
     if (!loadQuote) return value;
-    const token = activity.token.address.toLowerCase();
     let job = quoteJobs.get(token);
     if (!job) {
       job = (async () => {
@@ -330,7 +340,14 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     try {
       const result = await job;
       const marked = result.quote ? markedPosition(value.position, value.realizedProfitUsd!, result.quote, 'market', activity, now(), lastMovementAt) : null;
-      if (marked) value.position = marked;
+      if (marked) {
+        value.position = retained && Date.parse(retained.pricedAt!) > Date.parse(marked.pricedAt!) ? retained : marked;
+        const previous = quotes.get(token);
+        if (!previous || Date.parse(result.quote!.timestamp) >= Date.parse(previous.timestamp)) {
+          quotes.delete(token); quotes.set(token, { ...result.quote! });
+          while (quotes.size > maxEntries) quotes.delete(quotes.keys().next().value!);
+        }
+      }
       else {
         if (retained && now() - Date.parse(retained.pricedAt!) <= kolTokenPositionQuoteMaxAgeMs) value.position = retained;
         value.position.reason = result.reason ?? 'current_quote_unavailable'; value.position.retryAfterMs = Math.max(1000, Math.min(300_000, result.retryAfterMs ?? 3000));

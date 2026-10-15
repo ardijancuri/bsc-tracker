@@ -2,6 +2,9 @@
 
 ## v1.2.0 — 2026-10-15
 
+- Improved KOL token P&L reliability: open positions show estimated profit, valid same-second transfers are accepted, and verified GMGN history can recover missing historical RPC data.
+- Added authenticated smart-account trade indexing and a bounded repair queue for missing swaps, with atomic persistence and reorg checks.
+- Improved P&L request scheduling and retries, retained recent verified values during provider cooldowns, and expire displayed values when their original proof or price becomes stale.
 - Added optional Telegram login with a visible account name and photo, device sessions, and logout.
 - Saved token and KOL favorites now sync across devices. Signing in merges guest favorites without duplicates; logging out preserves saved account favorites.
 - Account favorites retain background market-data refresh priority after guest favorites are merged.

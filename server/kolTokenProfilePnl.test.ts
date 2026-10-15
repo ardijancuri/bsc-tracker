@@ -48,6 +48,60 @@ describe('nonblocking profile PNL preparation', () => {
     await vi.advanceTimersByTimeAsync(75); expect(await slow).toBeNull();
     pending.resolve(activity()); await vi.advanceTimersByTimeAsync(0);
   });
+  it('keeps verified cards visible through refresh without duplicating work or renewing evidence', async () => {
+    const load = createKolTokenProfilePnl(), previous = activity(), pending = deferred();
+    const prepare = vi.fn().mockResolvedValueOnce(previous).mockImplementation(() => pending.work);
+    expect(await load('pair', 'revision', prepare)).toBe(previous);
+    await vi.advanceTimersByTimeAsync(10_000);
+    // Another card's poll must not evict reusable evidence for this one.
+    await load('other', 'revision', async () => activity());
+    const refreshing = load('pair', 'revision', prepare);
+    await vi.advanceTimersByTimeAsync(75);
+    expect(await refreshing).toMatchObject({ ...previous, realizedAccounting: { ...previous.realizedAccounting, retryAfterMs: 1000 } });
+    const repeated = load('pair', 'revision', prepare);
+    await vi.advanceTimersByTimeAsync(75);
+    expect(await repeated).toMatchObject(previous); expect(prepare).toHaveBeenCalledTimes(2);
+    expect(previous.inventory!.coverage.checkedAt).toBe(checkedAt);
+    expect(previous.realizedAccounting!.checkedAt).toBe(checkedAt);
+    expect(previous.realizedAccounting!.retryAfterMs).toBeUndefined();
+    const next = activity('90'); pending.resolve(next); await vi.advanceTimersByTimeAsync(0);
+    expect(await load('pair', 'revision', prepare)).toBe(next);
+  });
+  it('stops retaining a verified result when evidence expires or the new result contradicts it', async () => {
+    const load = createKolTokenProfilePnl(), previous = activity(), pending = deferred();
+    previous.inventory!.coverage.checkedAt = new Date(Date.now() - 169_900).toISOString();
+    const prepare = vi.fn().mockResolvedValueOnce(previous).mockImplementation(() => pending.work);
+    await load('pair', 'revision', prepare); await vi.advanceTimersByTimeAsync(10_000);
+    const refreshing = load('pair', 'revision', prepare); await vi.advanceTimersByTimeAsync(75);
+    expect(await refreshing).toMatchObject(previous);
+    const expired = load('pair', 'revision', prepare); await vi.advanceTimersByTimeAsync(75);
+    expect(await expired).toBeNull();
+    const rejected = activity(); rejected.realizedAccounting!.status = 'unavailable'; rejected.realizedAccounting!.realizedProfitUsd = null;
+    pending.resolve(rejected); await vi.advanceTimersByTimeAsync(0);
+    expect(await load('pair', 'revision', prepare)).toBe(rejected);
+  });
+  it('keeps a usable result while all preparation slots are occupied, then refreshes once a slot is free', async () => {
+    const load = createKolTokenProfilePnl({ maxJobs: 1 }), previous = activity(), pending = deferred();
+    const prepare = vi.fn().mockResolvedValueOnce(previous).mockResolvedValue(activity('90'));
+    await load('pair', 'revision', prepare); await vi.advanceTimersByTimeAsync(10_000);
+    const other = load('other', 'revision', () => pending.work); await vi.advanceTimersByTimeAsync(75);
+    expect(await other).toBeNull();
+    expect(await load('pair', 'revision', prepare)).toMatchObject(previous);
+    expect(await load('pair', 'revision', prepare)).toMatchObject(previous); expect(prepare).toHaveBeenCalledOnce();
+    pending.resolve(activity()); await vi.advanceTimersByTimeAsync(0);
+    expect(await load('pair', 'revision', prepare)).toMatchObject({ realizedAccounting: { realizedProfitUsd: '90' } });
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+  it('refreshes GMGN-history snapshots when the original history verification expires', async () => {
+    const load = createKolTokenProfilePnl(), previous = activity(), fresh = activity('90');
+    previous.inventory!.coverage.complete = false;
+    Object.assign(previous.realizedAccounting!.coverage, { verification: 'gmgn_history', historyCheckedAt: new Date(Date.now() - 29_500).toISOString(),
+      balanceProof: { checkedAt } });
+    const prepare = vi.fn().mockResolvedValueOnce(previous).mockResolvedValue(fresh);
+    expect(await load('pair', 'revision', prepare)).toBe(previous);
+    await vi.advanceTimersByTimeAsync(501);
+    expect(await load('pair', 'revision', prepare)).toBe(fresh); expect(prepare).toHaveBeenCalledTimes(2);
+  });
   it('does not publish an older revision over a newer completed response', async () => {
     vi.useFakeTimers();
     const load = createKolTokenProfilePnl(), previous = deferred(), prepareOld = vi.fn(() => previous.work);

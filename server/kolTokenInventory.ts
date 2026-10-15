@@ -5,6 +5,8 @@ import type { KolTokenInventoryEvidence, KolTokenInventoryTransfer } from '../sh
 import { pool } from './db.js';
 import { hasRecognizedSwap, transferTopic, walletSwapFlows } from './swap.js';
 import { createInventoryRpc } from './kolTokenInventoryRpc.js';
+import { requestKolTokenTradeRepair, type KolTokenTradeRepairHint } from './kolTokenTradeRepair.js';
+import { walletTransactionContext } from './smartAccountTrades.js';
 
 type Trade = { txHash: string; side: string; tokenAmount: string | null; blockNumber: string | null; blockHash?: string | null; transactionIndex?: number | null };
 type Movement = KolTokenInventoryTransfer & { blockHash: string };
@@ -70,8 +72,10 @@ export interface KolTokenInventoryRequest {
 /** Resume canonical movement scans independently of the indexed swap ledger.
  * Empty indexed transfer tables never establish coverage or an opening balance. */
 export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values) => pool.query(sql, values),
-  persist = persistCanonicalInventoryTransfers, directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'inventory'), budgetMs = 6000, now = Date.now, pageSize = 65_536,
-}: { rpc?: Rpc; query?: Query; persist?: Persist; directory?: string | null; budgetMs?: number; now?: () => number; pageSize?: number } = {}) {
+  persist = persistCanonicalInventoryTransfers, requestTradeRepair = requestKolTokenTradeRepair,
+  directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'inventory'), budgetMs = 6000, now = Date.now, pageSize = 65_536,
+}: { rpc?: Rpc; query?: Query; persist?: Persist; requestTradeRepair?: (hint: KolTokenTradeRepairHint) => Promise<void>;
+  directory?: string | null; budgetMs?: number; now?: () => number; pageSize?: number } = {}) {
   const states = new Map<string, State>(), jobs = new Map<string, Promise<KolTokenInventoryEvidence>>();
   const activeJobs = new Set<string>(), backgroundJobs = new Set<string>();
   const configuredPageSize = Number.isSafeInteger(pageSize) && pageSize > 0 ? Math.min(pageSize, 65_536) : 65_536;
@@ -191,7 +195,17 @@ export function createKolTokenInventory({ rpc = rpcRequest, query = (sql, values
               || !/^0x[0-9a-f]+$/i.test(transaction.value ?? '')) throw new Error('canonical_transaction_unavailable');
             const value = transaction.from.toLowerCase() === request.wallet ? BigInt(transaction.value) : 0n;
             if (walletSwapFlows(request.wallet, value, receipt.logs).has(request.token)
-              && (transaction.from.toLowerCase() === request.wallet || hasRecognizedSwap(receipt.logs))) throw new Error('unindexed_swap_pending');
+              && (transaction.from.toLowerCase() === request.wallet || hasRecognizedSwap(receipt.logs))) {
+              const context = walletTransactionContext(transaction, receipt, request.wallet);
+              if (context && walletSwapFlows(request.wallet, context.nativeValue, context.logs).has(request.token)) {
+                // Repair only this confirmed transaction. It remains excluded
+                // until the worker independently indexes it and a fresh request
+                // captures the updated trade history.
+                await bounded(requestTradeRepair({ txHash, walletAddress: request.wallet, tokenAddress: request.token,
+                  blockNumber: String(height), blockHash: canonical.hash }), signal).catch(() => {});
+              }
+              throw new Error('unindexed_swap_pending');
+            }
           }
           for (const observed of state!.page.logs.filter(log => log.transactionHash.toLowerCase() === txHash)) {
             const actual = (receipt.logs as Log[]).find(log => log.logIndex === observed.logIndex && log.address.toLowerCase() === request.token);

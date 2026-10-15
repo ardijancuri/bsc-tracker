@@ -19,6 +19,31 @@ const activity = (value: string | null, lastTradeAt = date): KolTokenActivity =>
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 describe('KOL token realized profit display', () => {
+  it('ends the initial spinner after the bounded pass and keeps delayed retries explicit until a value is ready', () => {
+    const body = activity(null); body.realizedAccounting!.status = 'pending';
+    const waiting = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'pending' }, true);
+    expect(waiting.busy).toBe(false); expect(waiting.delayed).toBe(true);
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={waiting.activity} busy={waiting.busy} delayed={waiting.delayed} />);
+    expect(html).toContain('Pending'); expect(html).toContain('Retrying automatically');
+    expect(html).not.toContain('Loading GMGN realized'); expect(html).not.toContain('$999');
+    const stillWaiting = tokenPnlStateAfterLoad(waiting, 'pair', { activity: body, status: 'pending' });
+    expect(stillWaiting.busy).toBe(false); expect(stillWaiting.delayed).toBe(true);
+    const ready = tokenPnlStateAfterLoad(stillWaiting, 'pair', { activity: activity('30'), status: 'ready' }, true);
+    expect(ready.delayed).toBe(false); expect(ready.busy).toBe(false);
+    expect(renderToStaticMarkup(<KolTokenRealizedPnlValue activity={ready.activity} busy={ready.busy} delayed={ready.delayed} />)).toContain('+$30');
+  });
+
+  it('shows a pending estimate instead of realized zero for a buy-only position with a missing current price', () => {
+    const body = activity('0'); body.inventory!.coverage.balance = '10'; body.summary.status = 'open';
+    body.realizedAccounting!.position = { status: 'open', estimatedProfitUsd: null, estimatedRoi: null, unrealizedProfitUsd: null,
+      priceUsd: null, pricedAt: null, valuationSource: null, remainingTokenAmount: '10', remainingCostBasisUsd: '20', feeInclusiveCostUsd: '20',
+      cashFlow: { investedUsd: '18', soldUsd: '0', transferOutIncomeUsd: '0', feesUsd: '2' }, reason: 'current_quote_unavailable', retryAfterMs: 3000 };
+    const state = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'pending' }, true);
+    const html = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={state.activity} busy={state.busy} delayed={state.delayed} />);
+    expect(html).toContain('Est. profit'); expect(html).toContain('Pending'); expect(html).not.toContain('$0');
+    expect(html).toContain('Retrying automatically');
+  });
+
   function historyFallback(value = '30') {
     const body = activity(value);
     body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason: 'inventory_history_unavailable' };
@@ -28,6 +53,24 @@ describe('KOL token realized profit display', () => {
         blockHash: '0x' + 'c'.repeat(64), checkedAt: date, balance: '0' } };
     return body;
   }
+
+  it('retains the original valid fallback through a proof-free cooldown without refreshing any timestamp', () => {
+    const original = historyFallback(), before = { pair: 'pair', activity: original, busy: false };
+    const waiting = structuredClone(original);
+    waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
+    waiting.realizedAccounting!.coverage = { verification: 'gmgn_history', transactionsComplete: false, balanceMatched: false, reason: 'provider_rate_limited' };
+    waiting.inventory!.coverage.toBlock = '3'; waiting.inventory!.coverage.blockHash = '0x' + 'f'.repeat(64);
+    vi.advanceTimersByTime(40_000); waiting.realizedAccounting!.checkedAt = new Date(Date.now()).toISOString();
+    const retained = tokenPnlStateAfterLoad(before, 'pair', { activity: waiting, status: 'pending' }, true);
+    expect(retained.activity).toBe(original); expect(retained.activity?.realizedAccounting?.checkedAt).toBe(date);
+    expect(retained.busy).toBe(false); expect(retained.delayed).toBe(true);
+    expect(renderToStaticMarkup(<KolTokenRealizedPnlValue activity={retained.activity} busy={retained.busy} delayed={retained.delayed} />)).toContain('+$30');
+    expect(tokenPnlStateAfterLoad(before, 'different-pair', { activity: waiting, status: 'pending' }, true).activity).toBe(waiting);
+    vi.advanceTimersByTime(140_001);
+    const expired = tokenPnlStateAfterLoad(retained, 'pair', { activity: waiting, status: 'pending' }, true);
+    expect(expired.activity).toBe(waiting);
+    expect(renderToStaticMarkup(<KolTokenRealizedPnlValue activity={expired.activity} busy={expired.busy} delayed={expired.delayed} />)).not.toContain('+$30');
+  });
 
   it('labels provider-history closed profit as an estimate and describes current balance verification honestly', () => {
     const body = historyFallback(), state = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'ready' });

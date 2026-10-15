@@ -1,9 +1,10 @@
-import { kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
+import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
 
 export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
 const address = /^0x[0-9a-f]{40}$/i;
 const requestBudgetMs = 20_000;
+const profileAttemptBudgetMs = 4000;
 const recentResultMs = 5000;
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const gmgnRealizedPnlNote = 'GMGN realized P&L includes marked transfer-out gains and fees.';
@@ -16,8 +17,9 @@ export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
 }
 
 export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
-  return activity?.realizedAccounting?.position?.status === 'open'
-    && (verifiedTokenPositionPnl(activity) !== null || verifiedTokenRealizedPnl(activity) === null) ? 'Est. profit'
+  return tokenPositionIsOpen(activity)
+    && (activity?.realizedAccounting?.position?.status === 'open' && verifiedTokenPositionPnl(activity) !== null
+      || verifiedTokenRealizedPnl(activity) === null || openPositionWithoutRealizedProceeds(activity)) ? 'Est. profit'
     : isGmgnHistoryFallback(activity) ? 'Est. realized P&L' : 'Realized P&L';
 }
 export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
@@ -27,7 +29,23 @@ export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
     : gmgnRealizedPnlDescription(activity);
 }
 export function tokenPositionPnlLoadingNotice(activity: KolTokenActivity | null) {
-  return activity?.realizedAccounting?.position?.status === 'open' ? 'Updating estimated profit…' : 'Loading GMGN realized P&L…';
+  return tokenPositionIsOpen(activity) ? 'Updating estimated profit…' : 'Loading GMGN realized P&L…';
+}
+export const tokenPositionPnlDelayedNotice = 'Profit data is taking longer to verify. Retrying automatically.';
+
+export function tokenPnlRefreshDelay(result: KolTokenPnlResult, consecutivePending: number) {
+  if (result.status !== 'pending') return 60_000;
+  const backoff = Math.min(30_000, 3000 * 2 ** Math.min(4, Math.max(0, consecutivePending - 1)));
+  return Math.max(backoff, Number.isFinite(result.retryAfterMs) ? result.retryAfterMs! : 0);
+}
+
+/** Observed buys can identify which detail the user is waiting for, but cannot
+ * supply a profit amount or override the verified accounting position. */
+function tokenPositionIsOpen(activity: KolTokenActivity | null) {
+  const position = activity?.realizedAccounting?.position;
+  if (position) return position.status === 'open';
+  return activity?.summary?.status === 'open'
+    || !!activity && activity.summary.buyCount > 0 && activity.summary.sellCount === 0;
 }
 export function tokenPositionPnlPriceTime(activity: KolTokenActivity | null) {
   const position = activity?.realizedAccounting?.position;
@@ -72,22 +90,65 @@ export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now 
  * the loader continues to update the open-position estimate. */
 export function displayedTokenPnl(activity: KolTokenActivity | null, now = Date.now()) {
   return verifiedTokenPositionPnl(activity, now)
-    ?? (activity?.realizedAccounting?.position?.status === 'open' ? verifiedTokenRealizedPnl(activity, now) : null);
+    ?? (activity?.realizedAccounting?.position?.status === 'open' && !openPositionWithoutRealizedProceeds(activity, now)
+      ? verifiedTokenRealizedPnl(activity, now) : null);
+}
+
+/** A delayed provider retry must not leave an old rendered amount on screen
+ * beyond its original proof or quote lifetime. This deadline triggers only a
+ * render, never a fresh verification or network request. */
+export function tokenPnlExpiresAt(activity: KolTokenActivity | null, now = Date.now()) {
+  if (displayedTokenPnl(activity, now) === null) return null;
+  const accounting = activity!.realizedAccounting!, coverage = accounting.coverage;
+  const timestamps = coverage.verification === 'gmgn_history'
+    ? [accounting.checkedAt, coverage.historyCheckedAt, coverage.balanceProof?.checkedAt, coverage.balanceProof?.blockTimestamp]
+    : [activity!.inventory!.coverage.checkedAt];
+  const deadlines = timestamps.map(value => Date.parse(value!) + 180_001);
+  if (accounting.position?.status === 'open' && verifiedTokenPositionPnl(activity, now) !== null) {
+    deadlines.push(Date.parse(accounting.position.pricedAt!) + kolTokenPositionQuoteMaxAgeMs + 1);
+  }
+  return Math.min(...deadlines);
+}
+
+/** Before the first disposal, a realized zero is not useful as a replacement
+ * for the open position's missing market mark. Keep waiting for its estimate;
+ * preserve all nonzero gains/losses and actual sell or transfer-out proceeds. */
+function openPositionWithoutRealizedProceeds(activity: KolTokenActivity | null, now = Date.now()) {
+  const position = activity?.realizedAccounting?.position, flow = position?.cashFlow;
+  const zero = (raw: unknown) => typeof raw === 'string' && decimal.test(raw.trim()) && Number(raw) === 0;
+  return position?.status === 'open' && verifiedTokenRealizedPnl(activity, now) === 0
+    && zero(flow?.soldUsd) && zero(flow?.transferOutIncomeUsd);
 }
 
 const retryableInventoryReasons = new Set(['inventory_rpc_unavailable', 'canonical_block_unavailable',
   'canonical_receipt_unavailable', 'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale']);
 export function terminalTokenInventoryFailure(activity: KolTokenActivity | null) {
   const proof = activity?.inventory?.coverage;
-  if (isGmgnHistoryFallback(activity)
-    && (activity!.realizedAccounting!.status === 'pending' || verifiedTokenAccounting(activity) !== null)) return false;
+  if (isGmgnHistoryFallback(activity)) {
+    return activity!.realizedAccounting!.status !== 'pending' && verifiedTokenAccounting(activity) === null;
+  }
   return proof?.status === 'unavailable' && !retryableInventoryReasons.has(proof.reason ?? '');
 }
 
 export function tokenPositionPnlUnavailableNotice(activity: KolTokenActivity | null) {
-  return activity?.realizedAccounting?.position?.status === 'open' && verifiedTokenAccounting(activity) !== null
-    ? 'Estimated profit is unavailable until a current token price is verified.'
-    : tokenRealizedPnlUnavailableNotice(activity);
+  if (!tokenPositionIsOpen(activity)) return tokenRealizedPnlUnavailableNotice(activity);
+  if (verifiedTokenAccounting(activity) !== null) return 'Estimated profit is unavailable until a current token price is verified.';
+  const reason = activity?.realizedAccounting?.coverage.reason;
+  if (reason === 'gmgn_position_not_found') return 'Estimated profit is unavailable for this position with the current API key.';
+  if (['gmgn_realized_cost_unavailable', 'quote_or_fee_unavailable', 'transfer_fee_schema_unavailable'].includes(reason ?? '')) {
+    return 'Estimated profit is unavailable because purchase costs or fee data are missing.';
+  }
+  return 'Estimated profit is unavailable until wallet movements, purchase costs and the current balance are verified.';
+}
+
+export function tokenPnlNeedsRetry(activity: KolTokenActivity) {
+  if (terminalTokenInventoryFailure(activity)) return false;
+  const proof = activity.inventory?.coverage, accounting = activity.realizedAccounting, position = accounting?.position;
+  const retryAfter = Math.max(accounting?.retryAfterMs ?? 0, position?.retryAfterMs ?? 0);
+  const retryQuote = accounting?.status === 'ready' && position?.status === 'open'
+    && (!position.reason || /^(current_quote_unavailable|quote_rate_limited|provider_(busy|rate_limited|timeout|unavailable)|provider_http_(429|5\d\d))$/.test(position.reason));
+  return accounting?.status === 'pending' || retryQuote || Number.isFinite(retryAfter) && retryAfter > 0
+    || proof?.status === 'pending' || retryableInventoryReasons.has(proof?.reason ?? '');
 }
 
 export function kolTokenPnlKey(selection: KolTokenPnlSelection) {
@@ -142,13 +203,13 @@ function freshProofTime(raw: unknown, now: number) {
   return Number.isFinite(time) && time <= now + 1000 && now - time <= 180_000;
 }
 
-/** This marker allows a separate provider-history path only when the node has
- * pruned the old history. It cannot override a canonical mismatch or failure. */
+/** Historical RPC outages can use independently checked provider history. This
+ * marker cannot override a canonical mismatch or an unfinished movement scan. */
 function isGmgnHistoryFallback(activity: KolTokenActivity | null) {
   const proof = activity?.inventory?.coverage, accounting = activity?.realizedAccounting;
   return !!activity && activity.coverage?.complete === true && activity.inventory?.version === 1
     && proof?.complete === false && proof.reconciled === false && proof.status === 'unavailable'
-    && proof.reason === 'inventory_history_unavailable' && accounting?.version === 1
+    && canUseGmgnHistoryFallback(proof.reason) && accounting?.version === 1
     && accounting.source === 'gmgn' && accounting.policy === 'gmgn_realized_profit_v1'
     && accounting.coverage?.verification === 'gmgn_history'
     && typeof activity.kol?.address === 'string' && address.test(activity.kol.address)
@@ -179,11 +240,21 @@ export function tokenRealizedPnlUnavailableNotice(activity: KolTokenActivity | n
 
 /** Transfer-only changes also invalidate a retained total, even when the last
  * indexed trade timestamp has stayed the same. */
-export function tokenPnlMovementsMatch(left: KolTokenActivity, right: KolTokenActivity) {
+function tokenPnlIndexedInputsMatch(left: KolTokenActivity, right: KolTokenActivity) {
   if (!left.inventory?.coverage || !right.inventory?.coverage || !Array.isArray(left.inventory.events) || !Array.isArray(right.inventory.events)
     || !Array.isArray(left.trades) || !Array.isArray(right.trades) || left.inventory.coverage.balance !== right.inventory.coverage.balance
     || left.inventory.coverage.fromBlock !== right.inventory.coverage.fromBlock
     || left.inventory.coverage.initialBalanceSource !== right.inventory.coverage.initialBalanceSource) return false;
+  const events = (activity: KolTokenActivity) => activity.inventory!.events.map(event => [event.id, event.kind, event.txHash,
+    event.timestamp, event.blockNumber, event.transactionIndex, event.logIndex, event.tokenAmount]);
+  const trades = (activity: KolTokenActivity) => activity.trades.map(trade => [trade.id, trade.side, trade.tokenAmount,
+    trade.amountUsd, trade.quoteAmount, trade.quoteSymbol, trade.quoteTokenAddress, trade.priceUsd, trade.source,
+    trade.txHash, trade.timestamp, trade.blockNumber, trade.transactionIndex, trade.valuationStatus]);
+  return JSON.stringify(events(left)) === JSON.stringify(events(right)) && JSON.stringify(trades(left)) === JSON.stringify(trades(right));
+}
+
+export function tokenPnlMovementsMatch(left: KolTokenActivity, right: KolTokenActivity) {
+  if (!tokenPnlIndexedInputsMatch(left, right)) return false;
   const oldAccounting = left.realizedAccounting, incoming = right.realizedAccounting;
   if (!oldAccounting || !incoming || incoming.version !== 1 || incoming.source !== 'gmgn' || incoming.policy !== 'gmgn_realized_profit_v1'
     || typeof incoming.walletAddress !== 'string' || typeof incoming.tokenAddress !== 'string'
@@ -206,12 +277,41 @@ export function tokenPnlMovementsMatch(left: KolTokenActivity, right: KolTokenAc
       || typeof nextProof.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(nextProof.blockHash)
       || oldProof.blockNumber === nextProof.blockNumber && oldProof.blockHash.toLowerCase() !== nextProof.blockHash.toLowerCase()) return false;
   }
-  const events = (activity: KolTokenActivity) => activity.inventory!.events.map(event => [event.id, event.kind, event.txHash,
-    event.timestamp, event.blockNumber, event.transactionIndex, event.logIndex, event.tokenAmount]);
-  const trades = (activity: KolTokenActivity) => activity.trades.map(trade => [trade.id, trade.side, trade.tokenAmount,
-    trade.amountUsd, trade.quoteAmount, trade.quoteSymbol, trade.quoteTokenAddress, trade.priceUsd, trade.source,
-    trade.txHash, trade.timestamp, trade.blockNumber, trade.transactionIndex, trade.valuationStatus]);
-  return JSON.stringify(events(left)) === JSON.stringify(events(right)) && JSON.stringify(trades(left)) === JSON.stringify(trades(right));
+  return true;
+}
+
+/** A provider cooldown has no replacement evidence. Keep an independently
+ * verified, unexpired original snapshot only when all indexed inputs are the
+ * same and the incoming response contains no partial/contradictory proof.
+ * Never merge proof fields into the pending response or refresh their dates. */
+export function tokenPnlMayRetainDuringProviderRetry(left: KolTokenActivity, right: KolTokenActivity, now = Date.now()) {
+  if (!isGmgnHistoryFallback(left) || !isGmgnHistoryFallback(right) || displayedTokenPnl(left, now) === null
+    || !tokenPnlIndexedInputsMatch(left, right) || left.inventory!.coverage.reason !== right.inventory!.coverage.reason
+    || !compatibleUnavailableHead(left.inventory!.coverage, right.inventory!.coverage)
+    || left.inventory!.coverage.scannedThroughBlock !== right.inventory!.coverage.scannedThroughBlock
+    || left.kol.address.toLowerCase() !== right.kol.address.toLowerCase()
+    || left.token.address.toLowerCase() !== right.token.address.toLowerCase()
+    || left.coverage.indexedTradeCount !== right.coverage.indexedTradeCount
+    || left.coverage.returnedTradeCount !== right.coverage.returnedTradeCount) return false;
+  const incoming = right.realizedAccounting!, coverage = incoming.coverage;
+  return incoming.status === 'pending' && incoming.realizedProfitUsd === null && incoming.position === undefined
+    && /^(provider_(busy|rate_limited|timeout|unavailable)|provider_http_(429|5\d\d))$/.test(coverage.reason ?? '')
+    && coverage.transactionsComplete === false && coverage.balanceMatched === false
+    && coverage.historyFingerprint === undefined && coverage.historyCheckedAt === undefined
+    && coverage.lastMovementAt === undefined && coverage.balanceProof === undefined;
+}
+
+/** A failed historical read can be retried against a later chain head without
+ * introducing a new ledger. A backwards head or same-height hash conflict is
+ * contradictory; a newer head never renews the retained snapshot's evidence. */
+function compatibleUnavailableHead(left: NonNullable<KolTokenActivity['inventory']>['coverage'], right: NonNullable<KolTokenActivity['inventory']>['coverage']) {
+  if (left.toBlock === null && right.toBlock === null) return left.blockHash === null && right.blockHash === null;
+  if (typeof left.toBlock !== 'string' || !/^[1-9]\d*$/.test(left.toBlock)
+    || typeof right.toBlock !== 'string' || !/^[1-9]\d*$/.test(right.toBlock)
+    || typeof left.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(left.blockHash)
+    || typeof right.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(right.blockHash)) return false;
+  const before = BigInt(left.toBlock), after = BigInt(right.toBlock);
+  return after > before || after === before && left.blockHash.toLowerCase() === right.blockHash.toLowerCase();
 }
 
 function cancelled() { return new DOMException('Token P&L request cancelled.', 'AbortError'); }
@@ -283,11 +383,17 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
       for (let attempt = 0; attempt < 6; attempt += 1) {
         const release = await slot(job);
         if (!timer) { deadline = now() + requestBudgetMs; timer = setTimeout(() => job.controller.abort(), requestBudgetMs); }
+        const request = new AbortController();
+        const abortRequest = () => request.abort(signal.reason);
+        signal.addEventListener('abort', abortRequest, { once: true });
+        // The profile endpoint returns 202 quickly while its server job keeps
+        // running. A stalled connection must not occupy every card's only slot.
+        const requestTimer = job.foreground ? undefined : setTimeout(() => request.abort(), profileAttemptBudgetMs);
         let response: Response | undefined, providerDelay = 0;
         try {
           signal.throwIfAborted();
           response = await bounded(fetcher(`/api/kols/${encodeURIComponent(walletAddress.toLowerCase())}/tokens/${encodeURIComponent(tokenAddress.toLowerCase())}/activity?pnl=true${job.foreground ? '' : '&profile=true'}`,
-            { signal, cache: 'no-store' }), signal);
+            { signal: request.signal, cache: 'no-store' }), request.signal);
           if (response.status === 202) {
             // Accepted profile work is still running on the server; its small
             // status response is not an activity snapshot to validate or cache.
@@ -296,7 +402,7 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
             pending = response.status === 429 || response.status >= 500;
             if (!pending) return { activity: null, status: 'unavailable' };
           } else {
-            const body: KolTokenActivity = await bounded(response.json(), signal);
+            const body: KolTokenActivity = await bounded(response.json(), request.signal);
             if (typeof body?.kol?.address !== 'string' || typeof body?.token?.address !== 'string'
               || body.kol.address.toLowerCase() !== walletAddress.toLowerCase() || body.token.address.toLowerCase() !== tokenAddress.toLowerCase()
               || !body.coverage || !body.summary || !Array.isArray(body.trades)) return { activity: null, status: 'unavailable' };
@@ -305,7 +411,6 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
             else {
               activity = body;
               for (const client of job.clients) client.onActivity?.(body);
-              const proof = body.inventory?.coverage;
               const accounting = body.realizedAccounting;
               // A terminal canonical-history failure cannot be fixed by polling
               // a downstream provider's pending status indefinitely.
@@ -313,9 +418,7 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
               const retryAfter = Math.max(accounting?.retryAfterMs ?? 0, accounting?.position?.retryAfterMs ?? 0);
               const provisional = Number.isFinite(retryAfter) && retryAfter > 0;
               if (verifiedTokenPositionPnl(body, now()) !== null && !provisional) return { activity: body, status: 'ready' };
-              pending = accounting?.status === 'pending' || (accounting?.status === 'ready' && accounting.position?.status === 'open')
-                || provisional
-                || proof?.status === 'pending' || retryableInventoryReasons.has(proof?.reason ?? '');
+              pending = tokenPnlNeedsRetry(body);
               if (Number.isFinite(retryAfter) && retryAfter > 0) providerDelay = Math.max(1000, retryAfter);
               if (!pending) return { activity, status: 'unavailable' };
             }
@@ -323,7 +426,11 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
         } catch {
           if (signal.aborted) break;
           pending = true;
-        } finally { release(); }
+        } finally {
+          if (requestTimer) clearTimeout(requestTimer);
+          signal.removeEventListener('abort', abortRequest);
+          release();
+        }
         delay = Math.max(retryDelay(response, attempt), providerDelay);
         if (attempt === 5 || delay >= deadline - now()) break;
         await pause(delay, signal);

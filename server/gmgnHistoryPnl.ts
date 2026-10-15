@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { KolTokenActivity, KolTokenBalanceProof, KolTokenRealizedAccounting, KolTokenTrade } from '../shared/kolTokenTrades.js';
+import { canUseGmgnHistoryFallback, type KolTokenActivity, type KolTokenBalanceProof, type KolTokenRealizedAccounting, type KolTokenTrade } from '../shared/kolTokenTrades.js';
 import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 import { currentKolTokenBalance } from './kolTokenBalance.js';
@@ -71,6 +71,17 @@ function indexedCash(trade: KolTokenTrade, row: Row): number | null {
   // same-transaction native gas/USD pair gives native FX without comparing units.
   return isNative && row.nativeGas !== null && row.nativeGas > 0 && row.gas > 0 ? quote * row.gas / row.nativeGas : null;
 }
+function movementFee(row: Row, trade?: KolTokenTrade) {
+  if (row.kind === 'buy' || row.kind === 'sell') {
+    const cash = trade ? indexedCash(trade, row) : null;
+    if (cash === null || !Number.isFinite(cash) || cash <= 0) throw Error('quote_or_fee_unavailable');
+    const inferred = (row.kind === 'buy' ? cash - row.amount : row.amount - cash) + row.gas;
+    if (inferred < row.gas + row.dex - Math.max(1e-8, row.amount * 1e-10)) throw Error('quote_or_fee_unavailable');
+    return Math.max(0, inferred);
+  }
+  if (row.dex !== 0 || row.kind === 'transfer_in' && (row.gas !== 0 || row.amount <= 0)) throw Error('transfer_fee_schema_unavailable');
+  return row.gas;
+}
 function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalanceProof, historyCheckedAt: number, now: number) {
   const value = base(activity, now), wallet = value.walletAddress, token = value.tokenAddress;
   const proofTime = Date.parse(proof.checkedAt), blockTime = Date.parse(proof.blockTimestamp), balance = numeric(proof.balance);
@@ -96,10 +107,22 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
     used.add(key);
   }
   if (!rows.length || !trades.size || used.size !== trades.size) throw Error('gmgn_history_indexed_mismatch');
-  // Provider timestamps lack canonical log ordering. Same-second movements are
-  // usable only when every movement has an independently indexed swap ordinal.
+  const feesByMovement = new Map(rows.map(row => [keyOf(row), movementFee(row, trades.get(keyOf(row)))]));
+  const groups = new Map<number, Row[]>();
+  for (const row of rows) { const group = groups.get(row.timestamp) ?? []; group.push(row); groups.set(row.timestamp, group); }
+  // Incoming lots at the same fee-inclusive unit cost are interchangeable:
+  // their order cannot change any subsequent FIFO cost or ending cash flow.
+  // Check the entire second, so an intervening disposal is never reordered.
+  const interchangeable = new Set<number>();
+  for (const [timestamp, group] of groups) {
+    if (group.length < 2 || !group.every(row => row.kind === 'buy' || row.kind === 'transfer_in')) continue;
+    const costs = group.map(row => (row.amount + feesByMovement.get(keyOf(row))!) / row.quantity);
+    if (costs.every(cost => Number.isFinite(cost) && cost > 0 && same(cost, costs[0]))) interchangeable.add(timestamp);
+  }
+  // Other same-second movements still require independently indexed ordinals.
   const ordered = [...rows].sort((a, b) => {
     if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    if (interchangeable.has(a.timestamp)) return keyOf(a).localeCompare(keyOf(b));
     const left = trades.get(keyOf(a)), right = trades.get(keyOf(b));
     if (!left || !right || left.transactionIndex === null || right.transactionIndex === null) throw Error('gmgn_history_order_unavailable');
     const block = BigInt(left.blockNumber!) - BigInt(right.blockNumber!);
@@ -120,17 +143,7 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
     return cost;
   };
   for (const row of ordered) {
-    let fee: number;
-    if (row.kind === 'buy' || row.kind === 'sell') {
-      const cash = indexedCash(trades.get(keyOf(row))!, row);
-      if (cash === null || !Number.isFinite(cash) || cash <= 0) throw Error('quote_or_fee_unavailable');
-      const inferred = (row.kind === 'buy' ? cash - row.amount : row.amount - cash) + row.gas;
-      if (inferred < row.gas + row.dex - Math.max(1e-8, row.amount * 1e-10)) throw Error('quote_or_fee_unavailable');
-      fee = Math.max(0, inferred);
-    } else {
-      if (row.dex !== 0 || row.kind === 'transfer_in' && (row.gas !== 0 || row.amount <= 0)) throw Error('transfer_fee_schema_unavailable');
-      fee = row.gas;
-    }
+    const fee = feesByMovement.get(keyOf(row))!;
     fees += fee;
     if (row.kind === 'buy' || row.kind === 'transfer_in') {
       const cost = row.amount + fee;
@@ -177,7 +190,7 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
   const jobs = new Map<string, { foreground: () => boolean; work: Promise<KolTokenRealizedAccounting> }>();
   return async (activity: KolTokenActivity, options: { foreground?: boolean | (() => boolean) } = {}): Promise<KolTokenRealizedAccounting> => {
     const empty = base(activity, now()), wallet = empty.walletAddress, token = empty.tokenAddress;
-    if (!address.test(wallet) || !address.test(token) || !activity.coverage.complete || activity.inventory?.coverage.reason !== 'inventory_history_unavailable') {
+    if (!address.test(wallet) || !address.test(token) || !activity.coverage.complete || !canUseGmgnHistoryFallback(activity.inventory?.coverage.reason)) {
       empty.coverage.reason = activity.inventory?.coverage.reason ?? 'canonical_inventory_unavailable'; return empty;
     }
     empty.coverage.verification = 'gmgn_history';

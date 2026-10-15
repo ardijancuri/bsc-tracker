@@ -217,7 +217,7 @@ try {
   assert.equal((await position()).status, 'Holding');
   const movement = async (id: number, number: number, from: string, to: string, value: bigint, initiator: string) => {
     const log = { address: token, topics: [transferTopic, `0x${from.slice(2).padStart(64, '0')}`, `0x${to.slice(2).padStart(64, '0')}`], data: `0x${value.toString(16).padStart(64, '0')}`, transactionHash: hash(1000 + id), logIndex: '0x0' };
-    await recordWalletTransfers({ hash: log.transactionHash, from: initiator }, { logs: [log] }, block(number), new Set(wallets));
+    await recordWalletTransfers({ hash: log.transactionHash, from: initiator }, { status: '0x1', logs: [log] }, block(number), new Set(wallets));
   };
   await insertTrade(20, wallets[0], 'buy', 110); await movement(20, 110, pair, wallets[0], 25n * unit + 1n, wallets[0]); await movement(20, 110, pair, wallets[0], 25n * unit + 1n, wallets[0]);
   assert.equal((await pool.query('SELECT * FROM wallet_transfers')).rowCount, 1);

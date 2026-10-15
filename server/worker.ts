@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { PoolClient } from 'pg';
 import { ensureSchema, notifyUpdate, pool, setState } from './db.js';
 import { flapLogoFromHtml, flapMetadataUri, geniusLogoFromHtml } from './tokenLogo.js';
 import { downloadTokenImage, downloadTokenMetadataImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
@@ -14,6 +15,9 @@ import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackInt
 import { reorgStart } from './chainReorg.js';
 import { selectTokenMarkets } from './tokenMarkets.js';
 import { geckoFetch } from './geckoApi.js';
+import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
+import { claimKolTokenTradeRepairs, finishKolTokenTradeRepair, type KolTokenTradeRepairJob } from './kolTokenTradeRepair.js';
+import { verifiedTradeRepair } from './verifiedTradeRepair.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -28,8 +32,8 @@ let rpcId = 0;
 let featuresLiveSince = Infinity;
 
 type RpcLog = { address: string; topics: string[]; data: string; transactionHash: string; blockNumber: string; removed?: boolean };
-type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string; transactionIndex: string | null };
-type RpcReceipt = { status: string; logs: RpcLog[]; blockHash: string };
+type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string; blockHash?: string; transactionIndex: string | null };
+type RpcReceipt = { status: string; logs: RpcLog[]; blockHash: string; transactionHash?: string; blockNumber?: string };
 type RpcBlock = { number: string; hash: string; parentHash: string; timestamp: string };
 
 async function rpc<T>(method: string, params: unknown[], endpoint = rpcUrl): Promise<T> {
@@ -145,39 +149,42 @@ async function tokenMeta(address: string): Promise<TokenMeta> {
 }
 
 type Flow = { address: string; raw: bigint; amount: string; symbol: string | null };
-async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string, live = false) {
-  if (receipt.status !== '0x1') return;
-  const net = walletSwapFlows(wallet, BigInt(tx.value || '0x0'), receipt.logs);
+async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string, live = false, onlyToken?: string, database: Pick<PoolClient, 'query'> = pool) {
+  const context = walletTransactionContext(tx, receipt, wallet);
+  if (!context) return;
+  const { logs, nativeValue, router } = context;
+  const net = walletSwapFlows(wallet, nativeValue, logs);
   const entries = [...net.entries()];
   if (!entries.length) return;
-  const nativeIn = BigInt(tx.value || '0x0') > 0n;
+  const nativeIn = nativeValue > 0n;
   const oracle = await bnbPrice(Number(BigInt(block.number)), Number(BigInt(block.timestamp)));
   const flows: Flow[] = await Promise.all(entries.map(async ([address, raw]) => {
     const meta = await tokenMeta(address);
     return { address, raw, amount: units(raw < 0n ? -raw : raw, meta.decimals), symbol: meta.symbol };
   }));
   const quote = (direction: bigint) => flows.find(flow => flow.raw * direction > 0n && (stableSymbols.has(flow.symbol?.toUpperCase() || '') || flow.symbol?.toUpperCase() === 'WBNB'));
-  const directional = hasRecognizedSwap(receipt.logs) || nativeIn;
+  const directional = hasRecognizedSwap(logs) || nativeIn;
   for (const flow of flows) {
+    if (onlyToken && flow.address !== onlyToken) continue;
     const opposing = quote(flow.raw > 0n ? -1n : 1n) || flows.find(other => other.address !== flow.address && other.raw * flow.raw < 0n);
     const isQuote = stableSymbols.has(flow.symbol?.toUpperCase() || '') || flow.symbol?.toUpperCase() === 'WBNB';
     if (isQuote && flows.some(other => other.address !== flow.address && other.raw * flow.raw < 0n)) continue;
-    const nativeSale = !opposing && flow.raw < 0n ? nativeSellProceeds(wallet, -flow.raw, receipt.logs,
-      flows.filter(other => other.raw < 0n).length === 1 ? tx.to : null, flow.address) : null;
+    const nativeSale = !opposing && flow.raw < 0n ? nativeSellProceeds(wallet, -flow.raw, logs,
+      flows.filter(other => other.raw < 0n).length === 1 ? router : null, flow.address) : null;
     const quoteSymbol = opposing?.symbol || (nativeIn && flow.raw > 0n ? 'BNB' : nativeSale ? 'BNB' : null);
-    const quoteAmount = opposing?.amount || (nativeIn && flow.raw > 0n ? units(BigInt(tx.value), 18) : nativeSale ? units(nativeSale, 18) : null);
+    const quoteAmount = opposing?.amount || (nativeIn && flow.raw > 0n ? units(nativeValue, 18) : nativeSale ? units(nativeSale, 18) : null);
     const amountUsd = quoteAmount && stableSymbols.has(quoteSymbol?.toUpperCase() || '') ? quoteAmount :
       quoteAmount && (quoteSymbol?.toUpperCase() === 'WBNB' || quoteSymbol?.toUpperCase() === 'BNB') && oracle ? String(Number(quoteAmount) * oracle.price) : null;
     const priceUsd = amountUsd && Number(flow.amount) > 0 ? String(Number(amountUsd) / Number(flow.amount)) : null;
     const side = directional ? (flow.raw > 0n ? 'buy' : 'sell') : 'unknown';
-    await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at,transaction_index)
+    await database.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at,transaction_index)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now(),$15)
       ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,transaction_index=EXCLUDED.transaction_index,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
       [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), tx.transactionIndex == null ? null : Number(BigInt(tx.transactionIndex))]);
-    if (live) await pool.query('UPDATE trades SET observed_live=true WHERE id=$1', [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`]);
-    if (priceUsd && Number.isFinite(Number(priceUsd))) await pool.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
+    if (live) await database.query('UPDATE trades SET observed_live=true WHERE id=$1', [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`]);
+    if (priceUsd && Number.isFinite(Number(priceUsd))) await database.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
   }
-  await pool.query('UPDATE kols SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
+  await database.query('UPDATE kols SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
 }
 
 async function rollbackIfReorg() {
@@ -240,9 +247,10 @@ async function scanRange(from: number, to: number, head: number) {
     const height = Number(BigInt(block.number));
     for (const entry of byBlock.get(height) || []) {
       if (entry.receipt.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`Receipt block hash mismatch at ${height}`);
-      const wallet = normalized(entry.tx.from)!;
       const timestamp = Number(BigInt(block.timestamp)) * 1000;
-      if (wallets.has(wallet)) await persistNodeTrade(entry.tx, entry.receipt, block, wallet, timestamp >= featuresLiveSince && Date.now() - timestamp <= 300_000);
+      for (const wallet of transactionWallets(entry.tx, entry.receipt)) {
+        if (wallets.has(wallet)) await persistNodeTrade(entry.tx, entry.receipt, block, wallet, timestamp >= featuresLiveSince && Date.now() - timestamp <= 300_000);
+      }
       await recordWalletTransfers(entry.tx, entry.receipt, block, wallets);
     }
   }
@@ -291,13 +299,14 @@ async function verifyImportedTrade(hash: string, expectedWallets: string[]): Pro
     rpc<RpcTx | null>('eth_getTransactionByHash', [hash], historicalRpcUrl),
     rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash], historicalRpcUrl),
   ]);
-  const wallet = tx && normalized(tx.from);
-  if (!tx || !receipt || !wallet || !expectedWallets.includes(wallet) || receipt.status !== '0x1') return 'unmatched';
+  if (!tx || !receipt || receipt.status !== '0x1') return 'unmatched';
+  const wallets = transactionWallets(tx, receipt).filter(wallet => expectedWallets.includes(wallet));
+  if (!wallets.length) return 'unmatched';
   const block = await rpc<RpcBlock | null>('eth_getBlockByNumber', [tx.blockNumber, false], historicalRpcUrl);
   if (!block || block.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) return 'unmatched';
-  await persistNodeTrade(tx, receipt, block, wallet);
+  for (const wallet of wallets) await persistNodeTrade(tx, receipt, block, wallet);
   const result = await pool.query(`SELECT COUNT(*)::int AS count FROM trades
-    WHERE tx_hash=$1 AND wallet_address=$2 AND source='node+gmgn' AND block_number IS NOT NULL`, [hash, wallet]);
+    WHERE tx_hash=$1 AND wallet_address=ANY($2::text[]) AND source='node+gmgn' AND block_number IS NOT NULL`, [hash, wallets]);
   return result.rows[0].count > 0 ? 'verified' : 'unmatched';
 }
 
@@ -340,6 +349,64 @@ async function historicalVerificationLoop() {
       console.error('Historical verification worker:', error);
       await sleep(10_000);
     }
+  }
+}
+
+async function repairQueuedTrade(job: KolTokenTradeRepairJob) {
+  const tracked = await pool.query('SELECT 1 FROM kols WHERE address=$1 AND is_tracked', [job.walletAddress]);
+  if (!tracked.rows.length) return false;
+  const [tx, receipt, block, head] = await Promise.all([
+    rpc<RpcTx | null>('eth_getTransactionByHash', [job.txHash]),
+    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [job.txHash]),
+    rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]),
+    rpc<string>('eth_blockNumber', []),
+  ]);
+  if (!verifiedTradeRepair(job, tx, receipt, block, Number(BigInt(head)))) return false;
+  // Resolve metadata and historical pricing before taking rollback's lock. This
+  // cache warming only writes ancillary token metadata, never repaired trades.
+  const context = walletTransactionContext(tx!, receipt!, job.walletAddress)!;
+  await Promise.all([
+    bnbPrice(Number(BigInt(block!.number)), Number(BigInt(block!.timestamp))),
+    ...[...walletSwapFlows(job.walletAddress, context.nativeValue, context.logs).keys()].map(tokenMeta),
+  ]);
+  const client = await pool.connect();
+  try {
+    // Share rollback's lock: a repair must not recreate an orphaned trade after
+    // the reorg worker already removed it. Re-read canonical proof after locking.
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(782319)');
+    const [canonical, confirmedHead] = await Promise.all([
+      rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]), rpc<string>('eth_blockNumber', []),
+    ]);
+    if (!verifiedTradeRepair(job, tx, receipt, canonical, Number(BigInt(confirmedHead)))) {
+      await client.query('ROLLBACK'); return false;
+    }
+    await persistNodeTrade(tx!, receipt!, canonical!, job.walletAddress, false, job.tokenAddress, client);
+    const stored = await client.query(`SELECT 1 FROM trades WHERE tx_hash=$1 AND wallet_address=$2 AND token_address=$3
+      AND block_number=$4 AND block_hash=$5 AND side IN ('buy','sell') AND source IN ('node','node+gmgn')`,
+    [job.txHash, job.walletAddress, job.tokenAddress, job.blockNumber, job.blockHash]);
+    const success = stored.rows.length > 0;
+    if (success) await recordWalletTransfers(tx!, receipt!, canonical!, new Set([job.walletAddress]), client);
+    await client.query('COMMIT');
+    return success;
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function tradeRepairLoop() {
+  for (;;) {
+    try {
+      const jobs = await claimKolTokenTradeRepairs(2);
+      const outcomes = await Promise.all(jobs.map(async job => {
+        let success = false;
+        try { success = await repairQueuedTrade(job); }
+        catch (error) { console.warn(`Trade repair ${job.txHash}:`, error); }
+        await finishKolTokenTradeRepair(job, success);
+        return success;
+      }));
+      if (outcomes.some(Boolean)) await notifyUpdate();
+    } catch (error) { console.error('Trade repair worker:', error); }
+    await sleep(5000);
   }
 }
 
@@ -738,16 +805,18 @@ async function verifyTransactionHash(hash: string) {
   if (!hashRe.test(hash)) throw new Error('BSC_VERIFY_TX_HASH must be a transaction hash');
   const [tx, receipt] = await Promise.all([rpc<RpcTx | null>('eth_getTransactionByHash', [hash]), rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash])]);
   if (!tx || !receipt) throw new Error(`Transaction not available from node: ${hash}`);
-  const wallet = normalized(tx.from);
-  if (!wallet) throw new Error(`Invalid transaction sender: ${tx.from}`);
-  const tracked = await pool.query('SELECT 1 FROM kols WHERE address=$1 AND is_tracked', [wallet]);
-  if (!tracked.rows.length) throw new Error(`Initiating wallet is not in the tracked roster: ${tx.from}`);
+  const candidates = transactionWallets(tx, receipt);
+  const tracked = await pool.query('SELECT address FROM kols WHERE address=ANY($1::text[]) AND is_tracked', [candidates]);
+  const wallets = tracked.rows.map(row => row.address as string);
+  if (!wallets.length) throw new Error('No authenticated initiating wallet is in the tracked roster');
   const block = await rpc<RpcBlock>('eth_getBlockByNumber', [tx.blockNumber, false]);
-  const before = await pool.query('SELECT source,token_amount FROM trades WHERE tx_hash=$1 AND wallet_address=$2', [hash.toLowerCase(), wallet]);
-  await persistNodeTrade(tx, receipt, block, wallet);
-  const after = await pool.query('SELECT source,token_amount,side FROM trades WHERE tx_hash=$1 AND wallet_address=$2', [hash.toLowerCase(), wallet]);
+  if (!block || receipt.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error('Receipt block hash mismatch');
+  const before = await pool.query('SELECT wallet_address,source,token_amount FROM trades WHERE tx_hash=$1 AND wallet_address=ANY($2::text[])', [hash.toLowerCase(), wallets]);
+  for (const wallet of wallets) await persistNodeTrade(tx, receipt, block, wallet);
+  await recordWalletTransfers(tx, receipt, block, new Set(wallets));
+  const after = await pool.query('SELECT wallet_address,source,token_amount,side FROM trades WHERE tx_hash=$1 AND wallet_address=ANY($2::text[])', [hash.toLowerCase(), wallets]);
   await notifyUpdate();
-  console.log(JSON.stringify({ hash, wallet, block: Number(BigInt(tx.blockNumber)), before: before.rows, after: after.rows }));
+  console.log(JSON.stringify({ hash, wallets, block: Number(BigInt(tx.blockNumber)), before: before.rows, after: after.rows }));
 }
 
 await ensureSchema();
@@ -765,5 +834,5 @@ if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), intelligenceLoop(), historicalVerificationLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), intelligenceLoop(), historicalVerificationLoop(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }

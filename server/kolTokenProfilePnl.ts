@@ -4,7 +4,7 @@ import { kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/
  * original proof and quote timestamps; this cache never refreshes evidence. */
 export function createKolTokenProfilePnl({ now = Date.now, waitMs = 75, maxJobs = 8 }:
   { now?: () => number; waitMs?: number; maxJobs?: number } = {}) {
-  type Entry = { revision: string; work: Promise<KolTokenActivity | null>; value?: KolTokenActivity;
+  type Entry = { revision: string; work: Promise<KolTokenActivity | null>; value?: KolTokenActivity; retained?: KolTokenActivity;
     completedAt?: number; deliveredAt?: number };
   const entries = new Map<string, Entry>();
   let active = 0;
@@ -13,29 +13,43 @@ export function createKolTokenProfilePnl({ now = Date.now, waitMs = 75, maxJobs 
     && !value.realizedAccounting.position?.retryAfterMs
     && (value.realizedAccounting.position?.status !== 'open' || value.realizedAccounting.position.estimatedProfitUsd !== null);
   const evidenceExpired = (value: KolTokenActivity) => {
-    // A ready snapshot can have less validity left than this cache's ten-second
-    // lifetime. Refresh it when its original evidence expires, while leaving
-    // pending responses on their existing delivery/cooldown schedule.
-    if (!ready(value)) return false;
+    // Even a usable estimate awaiting an optional refresh must stop being shown
+    // when its original proof or quote expires. A retry never renews evidence.
+    if (value.realizedAccounting?.status !== 'ready') return false;
     const expiredDate = (date: string | null | undefined, maxAge: number) => {
       const timestamp = typeof date === 'string' ? Date.parse(date) : NaN;
       return !Number.isFinite(timestamp) || timestamp > now() + 1000 || now() - timestamp > maxAge;
     };
-    const proof = value.inventory?.coverage, position = value.realizedAccounting?.position;
+    const proof = value.inventory?.coverage, accounting = value.realizedAccounting!, position = accounting.position;
     return proof?.complete === true && expiredDate(proof.checkedAt, 180_000)
+      || accounting.coverage?.verification === 'gmgn_history' && (expiredDate(accounting.coverage.historyCheckedAt, 30_000)
+        || expiredDate(accounting.coverage.balanceProof?.checkedAt, 180_000))
       || position?.status === 'open' && expiredDate(position.pricedAt, kolTokenPositionQuoteMaxAgeMs);
   };
+  const usable = (value: KolTokenActivity | undefined): value is KolTokenActivity => !!value
+    && value.realizedAccounting?.status === 'ready' && !evidenceExpired(value)
+    && (value.realizedAccounting.position?.status !== 'open' || value.realizedAccounting.position.estimatedProfitUsd !== null);
+  const refreshing = (value: KolTokenActivity | undefined) => usable(value)
+    ? { ...value, realizedAccounting: { ...value.realizedAccounting!, retryAfterMs: 1000 } } : null;
   const expired = (entry: Entry) => entry.value && entry.completedAt !== undefined
     && (now() - entry.completedAt >= 10_000 || now() < entry.completedAt || evidenceExpired(entry.value)
       || !ready(entry.value) && entry.deliveredAt !== undefined && now() - entry.deliveredAt >= 1000);
   return async (key: string, revision: string, prepare: () => Promise<KolTokenActivity>): Promise<KolTokenActivity | null> => {
-    for (const [name, item] of entries) if (expired(item)) entries.delete(name);
+    // Remove idle expired entries without throwing away this pair's still-valid
+    // result before its replacement is ready.
+    for (const [name, item] of entries) if (name !== key && expired(item) && !usable(item.value)) entries.delete(name);
     let entry = entries.get(key);
     if (entry?.revision !== revision) { entries.delete(key); entry = undefined; }
+    let retained: KolTokenActivity | undefined;
+    if (entry && expired(entry)) {
+      if (usable(entry.value)) retained = entry.value;
+      if (active >= maxJobs) return refreshing(retained);
+      entries.delete(key); entry = undefined;
+    }
     if (!entry) {
-      if (active >= maxJobs) return null;
+      if (active >= maxJobs) return refreshing(retained);
       active += 1;
-      const created: Entry = { revision, work: Promise.resolve(null) };
+      const created: Entry = { revision, work: Promise.resolve(null), retained };
       entries.set(key, created);
       created.work = Promise.resolve().then(prepare).then(value => {
         created.value = value; created.completedAt = now();
@@ -56,7 +70,7 @@ export function createKolTokenProfilePnl({ now = Date.now, waitMs = 75, maxJobs 
       try { await Promise.race([entry.work, new Promise(resolve => { timer = setTimeout(resolve, waitMs); })]); }
       finally { if (timer) clearTimeout(timer); }
     }
-    if (!entry.value) return null;
+    if (!entry.value) return refreshing(entry.retained);
     entry.deliveredAt ??= now();
     return entry.value;
   };

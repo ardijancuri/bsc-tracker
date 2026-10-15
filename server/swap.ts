@@ -19,6 +19,9 @@ const payoutFormats = [
   { routers: ['0x5994814f2c4040b863a0125a45de152a8c2a4dec'], topic: '0x1bb43f2da90e35f7b0cf38521ca95a49e68eb42fac49924930a5bd73cdf7576c', words: 5, kind: 'recipientWord' },
   { routers: ['0xa8db7e3141527589fbc68dca0b2d6378037d723f', '0x3746804e5a38b1df09e6975009525ea68f923401'], topic: '0x2ed5a8749a7e3a68a074750cc77850912a0708dc62ab7ea42b0c3e5beb36f017', words: 11, kind: 'indexedAssets' },
   { routers: ['0xd36b6d646ac6e23672e9eedec558164c7f2d6deb'], topic: '0x20efd6d5195b7b50273f01cd79a27989255356f9f13293edc53ee142accfdb75', words: 6, kind: 'senderAndRecipientWords' },
+  // Kyber's Swapped returnAmount is the recipient balance increase after fees.
+  // https://github.com/KyberNetwork/ks-dex-aggregation-router-v2-sc/blob/main/src/MetaAggregationRouterV2.sol
+  { routers: ['0x6131b5fae19ea4f9d964eac0408e4408b66337b5'], topic: '0xd6d4f5681c246c9f42c203e287975af1601f8df8035a9251f79aab5c8f09e2f8', words: 6, kind: 'senderAndRecipientWords' },
 ] as const;
 const binanceOutputRouter = '0x3d90f66b534dd8482b181e24655a9e8265316be9';
 const binanceOutputTopic = '0xe5b9f85c5caca875a8b78e5b2d88de86d7793cbff3d81ea4ecbec4c2b9ad7beb';

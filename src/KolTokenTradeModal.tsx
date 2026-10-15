@@ -13,7 +13,7 @@ import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
 import TradeReplayShare, { prepareTradeReplayData } from './TradeReplayShare';
 import type { TradeReplayData } from './tradeReplayData';
-import { displayedTokenPnl, kolTokenPnlKey, requestKolTokenPnl, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
+import { displayedTokenPnl, kolTokenPnlKey, requestKolTokenPnl, tokenPnlExpiresAt, tokenPnlNeedsRetry, tokenPnlRefreshDelay, tokenPositionPnlDelayedNotice, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
 import { tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
 import './tokenMarket.css';
 import './kolTokenTradeModal.css';
@@ -34,6 +34,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const [activity, setActivity] = useState<KolTokenActivity | null>(null);
   const [error, setError] = useState(false);
   const [activityBusy, setActivityBusy] = useState(true);
+  const [activityDelayed, setActivityDelayed] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [interval, setInterval] = useState<CandleInterval>(defaultCandleInterval);
   const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
@@ -67,30 +68,34 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     const controller = new AbortController();
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let delayed = false, consecutivePending = 0;
+    setActivityDelayed(false);
     const pair = kolTokenPnlKey({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null });
     setActivity(current => current?.kol.address.toLowerCase() === kol.address.toLowerCase()
       && current.token.address.toLowerCase() === token.address.toLowerCase() ? current : null);
     const load = async () => {
-      setActivityBusy(true);
+      setActivityBusy(!delayed);
       try {
         // Resumed modals can carry the token's global last trade from another
         // wallet. Only the exact-pair activity response dates this selection.
         const result = await requestKolTokenPnl({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null }, controller.signal,
           { priority: 'foreground', onActivity: value => { if (active) {
             const status = verifiedTokenPositionPnl(value) !== null ? 'ready'
-              : value.realizedAccounting?.status === 'pending' || value.inventory?.coverage?.status === 'pending'
-                || value.realizedAccounting?.position?.status === 'open' && value.realizedAccounting.status === 'ready' ? 'pending' : 'unavailable';
+              : tokenPnlNeedsRetry(value) ? 'pending' : 'unavailable';
             setActivity(current => tokenPnlStateAfterLoad({ pair, activity: current, busy: true }, pair, { activity: value, status }).activity);
             setError(false);
           } } });
         if (!active) return;
-        setActivityBusy(result.status === 'pending');
+        delayed = result.status === 'pending';
+        consecutivePending = delayed ? consecutivePending + 1 : 0;
+        setActivityBusy(false);
+        setActivityDelayed(delayed);
         if (result.activity) {
           setActivity(current => tokenPnlStateAfterLoad({ pair, activity: current, busy: true }, pair, result).activity);
           setError(false);
         }
         else if (result.status === 'unavailable') { setActivity(null); setError(true); }
-        timer = setTimeout(() => void load(), result.status === 'pending' ? Math.max(3000, result.retryAfterMs ?? 3000) : 60_000);
+        timer = setTimeout(() => void load(), tokenPnlRefreshDelay(result, consecutivePending));
       } catch { if (active) { setActivityBusy(false); setError(true); } }
     };
     void load();
@@ -105,6 +110,12 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const priceTime = tokenPositionPnlPriceTime(activity);
   const profitDescription = t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
   const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';
+  const profitExpiresAt = tokenPnlExpiresAt(activity);
+  useEffect(() => {
+    if (profitExpiresAt === null) return;
+    const timer = setTimeout(() => setActivity(value => value ? { ...value } : value), Math.max(0, profitExpiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [profitExpiresAt]);
 
   useEffect(() => {
     const element = transactionList.current;
@@ -138,15 +149,16 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
-        <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
+        <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityDelayed ? t('Pending') : profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
         <p className="kol-trade-coverage">{profitDescription}</p>
         <dl className="kol-trade-summary"><div title={t('Indexed buy amount. GMGN realized P&L also includes transfer gains and fees.')}><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div title={t('Indexed sell amount. Transfer-out values are included in GMGN realized P&L.')}><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
         {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
-        {activity && activityBusy && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlLoadingNotice(activity))}</p>}
-        {activity && !activityBusy && profit === null && <p className="kol-trade-coverage">{t(tokenPositionPnlUnavailableNotice(activity))}</p>}
+        {activityDelayed && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlDelayedNotice)}</p>}
+        {activity && activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlLoadingNotice(activity))}</p>}
+        {activity && !activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage">{t(tokenPositionPnlUnavailableNotice(activity))}</p>}
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
-        {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
+        {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{activityDelayed ? <button type="button" onClick={retry}>{t('Try again')}</button> : t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
           <div ref={transactionList} className="kol-trade-transactions">{trades.slice(currentPage * pageSize, currentPage * pageSize + pageSize).map(trade => <TradeReceipt key={trade.id} trade={trade} />)}</div>
           <nav className="kol-trade-pagination" aria-label={t('Transaction pagination')}><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label={t('Previous trades')}><ChevronLeft size={15} /></button><span aria-live="polite">{t('{page} of {pages}', { page: currentPage + 1, pages: pageCount })}</span><button type="button" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label={t('Next trades')}><ChevronRight size={15} /></button></nav>
         </>}

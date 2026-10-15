@@ -6,6 +6,7 @@ import { blockHex, chainRpc } from './rpc.js';
 import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
 import { transferTopic } from './swap.js';
 import { nonStockTokenSql } from './stockToken.js';
+import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
 
 type ChainLog = { address: string; topics: string[]; data: string; transactionHash: string; logIndex?: string; blockNumber?: string; blockHash?: string; removed?: boolean };
 type Block = { number: string; hash: string; timestamp: string };
@@ -14,13 +15,15 @@ const normalized = (value: string) => value.toLowerCase();
 const evidence = (trade: ObservedTrade): SignalEvidence => ({ id: trade.id, txHash: trade.txHash, walletAddress: trade.walletAddress,
   kolName: trade.kolName, side: trade.side, timestamp: trade.timestamp, blockNumber: trade.blockNumber, blockHash: trade.blockHash });
 
-export async function recordWalletTransfers(tx: { hash: string; from: string }, receipt: { logs: ChainLog[] }, block: Block, wallets: Set<string>) {
+export async function recordWalletTransfers(tx: { hash: string; from: string; to?: string | null; value?: string }, receipt: { status: string; logs: ChainLog[] }, block: Block, wallets: Set<string>, database: Pick<PoolClient, 'query'> = pool) {
   const logs = receipt.logs.filter(log => log.topics[0]?.toLowerCase() === transferTopic && log.topics.length === 3 && /^0x[0-9a-f]{64}$/i.test(log.data));
   if (!logs.length) return;
-  const known = await pool.query(`SELECT address FROM tokens v WHERE address=ANY($1::text[]) AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND block_number IS NOT NULL)`, [[...new Set(logs.map(log => normalized(log.address)))]]);
+  const known = await database.query(`SELECT address FROM tokens v WHERE address=ANY($1::text[]) AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND block_number IS NOT NULL)`, [[...new Set(logs.map(log => normalized(log.address)))]]);
   const tokens = new Set<string>(known.rows.map(row => row.address));
-  const trades = await pool.query('SELECT wallet_address,token_address,side FROM trades WHERE tx_hash=$1 AND block_number IS NOT NULL', [normalized(tx.hash)]);
+  const trades = await database.query('SELECT wallet_address,token_address,side FROM trades WHERE tx_hash=$1 AND block_number IS NOT NULL', [normalized(tx.hash)]);
   const sides = new Map(trades.rows.map(row => [`${row.wallet_address}:${row.token_address}`, row.side]));
+  const initiated = new Map(transactionWallets(tx, receipt).filter(wallet => wallets.has(wallet))
+    .map(wallet => [wallet, new Set(walletTransactionContext(tx, receipt, wallet)!.logs)]));
   for (let index = 0; index < receipt.logs.length; index++) {
     const log = receipt.logs[index];
     if (!logs.includes(log) || !tokens.has(normalized(log.address))) continue;
@@ -31,10 +34,11 @@ export async function recordWalletTransfers(tx: { hash: string; from: string }, 
       if (!wallets.has(wallet)) continue;
       const token = normalized(log.address);
       const side = sides.get(`${wallet}:${token}`);
-      const kind = normalized(tx.from) === wallet && ['buy', 'sell'].includes(side) ? side : 'transfer';
+      const kind = initiated.get(wallet)?.has(log) && ['buy', 'sell'].includes(side) ? side : 'transfer';
       const logIndex = log.logIndex ? Number(BigInt(log.logIndex)) : index;
-      await pool.query(`INSERT INTO wallet_transfers(id,tx_hash,log_index,wallet_address,token_address,delta_raw,kind,block_number,block_hash,timestamp)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,to_timestamp($10)) ON CONFLICT(id) DO NOTHING`,
+      await database.query(`INSERT INTO wallet_transfers(id,tx_hash,log_index,wallet_address,token_address,delta_raw,kind,block_number,block_hash,timestamp)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,to_timestamp($10)) ON CONFLICT(id) DO UPDATE SET kind=EXCLUDED.kind
+          WHERE wallet_transfers.block_hash=EXCLUDED.block_hash AND wallet_transfers.delta_raw=EXCLUDED.delta_raw`,
       [`${normalized(tx.hash)}:${logIndex}:${wallet}`, normalized(tx.hash), logIndex, wallet, token, (BigInt(log.data) * sign).toString(), kind, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp))]);
     }
   }

@@ -416,10 +416,17 @@ describe('existing-key GMGN replay provider', () => {
   });
   it('caps distinct jobs at2 and bounds stalled requests even when an injected requester ignores abort', async () => {
     vi.useFakeTimers(); let clock = time;
-    const { load, request } = setup(async () => new Promise(() => {}), { now: () => clock, budgetMs: 100 });
+    let started = 0, bothStarted!: () => void;
+    const requestsStarted = new Promise<void>(resolve => { bothStarted = resolve; });
+    const { load, request } = setup(async () => {
+      if (++started === 2) bothStarted();
+      return new Promise(() => {});
+    }, { now: () => clock, budgetMs: 100 });
     const a = load(activity()), b = load(activity(other));
     const third = activity('0x' + '6'.repeat(40)); expect(await load(third)).toMatchObject({ status: 'pending', coverage: { reason: 'provider_busy' } });
-    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2)); clock += 100; await vi.advanceTimersByTimeAsync(100);
+    // Wait for actual dispatch without advancing the fake deadline while the
+    // optional disk-cache reads are still pending on a busy test worker.
+    await requestsStarted; expect(request).toHaveBeenCalledTimes(2); clock += 100; await vi.advanceTimersByTimeAsync(100);
     expect(await a).toMatchObject({ status: 'pending', retryAfterMs: 1000, coverage: { reason: 'provider_timeout' } });
     expect((await b).status).toBe('pending');
   });

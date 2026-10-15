@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createKolTokenInventory as createInventoryLoader, persistCanonicalInventoryTransfers, type KolTokenInventoryRequest } from './kolTokenInventory.js';
 import { transferTopic } from './swap.js';
+import { beforeExecutionTopic, userOperationTopic } from './smartAccountTrades.js';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,7 +18,8 @@ const event = (tx: number, height: number, delta: number, index = 0) => ({ addre
 const logs = [event(1, 100, 10), event(2, 102, -3), event(3, 105, -7)];
 const request = (): KolTokenInventoryRequest => ({ wallet, token, firstBlock: '100', decimals: 0, tradesComplete: true,
   trades: [{ txHash: h(1), side: 'buy', tokenAmount: '10', blockNumber: '100' }, { txHash: h(2), side: 'sell', tokenAmount: '3', blockNumber: '102' }] });
-const createKolTokenInventory = (options: Parameters<typeof createInventoryLoader>[0] = {}) => createInventoryLoader({ now: () => (1_790_000_000 + 114) * 1000, ...options });
+const createKolTokenInventory = (options: Parameters<typeof createInventoryLoader>[0] = {}) => createInventoryLoader({
+  now: () => (1_790_000_000 + 114) * 1000, requestTradeRepair: async () => {}, ...options });
 function chain(options: { opening?: number; ending?: number; pruned?: boolean; entries?: typeof logs; timestampOffset?: number; swapTx?: string } = {}) {
   const opening = options.opening ?? 0, ending = options.ending ?? opening, pruned = options.pruned ?? false, entries = options.entries ?? logs;
   let fork = false, head = 114;
@@ -389,6 +391,39 @@ describe('canonical KOL token inventory', () => {
     const result = await createKolTokenInventory({ rpc: provider.rpc, query, persist, directory: null })(selected);
     expect(result.coverage).toMatchObject({ complete: false, reconciled: false, status: 'pending', reason: 'unindexed_swap_pending' });
     expect(result.transfers.some(event => event.txHash === h(2))).toBe(false); expect(persist).not.toHaveBeenCalled();
+  });
+  it('requests a bounded repair for a confirmed missing sale and waits for the refreshed indexed history', async () => {
+    const provider = chain({ entries: logs.slice(0, 2), swapTx: h(2) }), selected = request(); selected.trades = selected.trades.slice(0, 1);
+    const requestTradeRepair = vi.fn(async () => {});
+    const inventory = createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null, requestTradeRepair });
+    expect((await inventory(selected)).coverage.reason).toBe('unindexed_swap_pending');
+    expect(requestTradeRepair).toHaveBeenCalledWith({ txHash: h(2), walletAddress: wallet, tokenAddress: token, blockNumber: '102', blockHash: h(102) });
+    expect((await inventory(request())).coverage).toMatchObject({ complete: true, reconciled: true, balance: '7' });
+  });
+  it.each([true, false])('queues only an authenticated successful account-abstraction sale, authentic=%s', async authentic => {
+    const provider = chain({ entries: logs.slice(0, 2), swapTx: h(2) }), selected = request(); selected.trades = selected.trades.slice(0, 1);
+    const entryPoint = '0x0000000071727de22e5e9d8baf0edac6f37da032';
+    const requestTradeRepair = vi.fn(async () => {});
+    const rpc = async (method: string, params: any[], signal: AbortSignal) => {
+      const result: any = await provider.rpc(method, params, signal);
+      if (params[0] !== h(2)) return result;
+      if (method === 'eth_getTransactionByHash') return { ...result, from: other, to: entryPoint };
+      if (method === 'eth_getTransactionReceipt') return { ...result, logs: [
+        { address: entryPoint, topics: [beforeExecutionTopic], data: '0x' }, ...result.logs,
+        { address: authentic ? entryPoint : other, topics: [userOperationTopic, h(9), addressTopic(wallet), addressTopic('0x' + '0'.repeat(40))],
+          data: '0x' + [0, 1, 1, 1].map(value => value.toString(16).padStart(64, '0')).join('') },
+      ] };
+      return result;
+    };
+    const result = await createKolTokenInventory({ rpc, query, persist: async () => {}, directory: null, requestTradeRepair })(selected);
+    expect(result.coverage.reason).toBe('unindexed_swap_pending');
+    expect(requestTradeRepair).toHaveBeenCalledTimes(authentic ? 1 : 0);
+  });
+  it('does not publish partial profit if the missing-trade repair queue is unavailable', async () => {
+    const provider = chain({ entries: logs.slice(0, 2), swapTx: h(2) }), selected = request(); selected.trades = selected.trades.slice(0, 1);
+    const result = await createKolTokenInventory({ rpc: provider.rpc, query, persist: async () => {}, directory: null,
+      requestTradeRepair: async () => { throw Error('queue unavailable'); } })(selected);
+    expect(result.coverage).toMatchObject({ complete: false, reconciled: false, reason: 'unindexed_swap_pending' });
   });
   it('keeps recognized unindexed swaps pending even when discovered through an indexed-ledger hint', async () => {
     const provider = chain({ entries: logs.slice(0, 2), swapTx: h(2) }), selected = request(); selected.trades = selected.trades.slice(0, 1);

@@ -103,7 +103,69 @@ describe('GMGN history PNL on pruned nodes', () => {
     expect(result.realizedProfitUsd).toBe('-58'); expect(result.position).toMatchObject({ status: 'closed', estimatedProfitUsd: '-58', unrealizedProfitUsd: '0' });
   });
 
-  it.each(['canonical_receipt_mismatch', 'inventory_rpc_unavailable', 'scan_pending'])('does not override %s with provider history', async reason => {
+  it('accepts same-second incoming lots with identical unit costs independent of provider order', async () => {
+    const incoming1 = row(1, 'transferIn', '10', '100', { gas_usd: '0' });
+    const incoming2 = row(2, 'transferIn', '20', '200', { gas_usd: '0', timestamp: incoming1.timestamp });
+    const sell = row(3, 'sell', '15', '300', { gas_usd: '0', buy_cost_usd: '150' });
+    const activity = selected([trade(sell, '300')]);
+    const first = await loader([sell, incoming1, incoming2], '15').load(activity);
+    const reordered = await loader([incoming2, sell, incoming1], '15').load(activity);
+    expect(first).toEqual(reordered);
+    expect(first).toMatchObject({ status: 'ready', realizedProfitUsd: '150',
+      position: { status: 'open', remainingTokenAmount: '15', remainingCostBasisUsd: '150', feeInclusiveCostUsd: '300' } });
+  });
+
+  it('keeps an open total calculable when equivalent incoming lots have a different GMGN sell-cost allocation', async () => {
+    const incoming1 = row(1, 'transferIn', '10', '100', { gas_usd: '0' });
+    const incoming2 = row(2, 'transferIn', '20', '200', { gas_usd: '0', timestamp: incoming1.timestamp });
+    const sell = row(3, 'sell', '15', '300', { gas_usd: '0', buy_cost_usd: '175' });
+    const result = await loader([sell, incoming2, incoming1], '15').load(selected([trade(sell, '300')]));
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: null,
+      position: { status: 'open', remainingTokenAmount: '15', remainingCostBasisUsd: null,
+        feeInclusiveCostUsd: '300', cashFlow: { soldUsd: '300', transferOutIncomeUsd: '0', feesUsd: '0' } } });
+  });
+
+  it.each(['differentCost', 'differentFee', 'interveningSale'] as const)('rejects ambiguous %s ordering rather than guessing FIFO', async variant => {
+    const incoming1 = row(1, 'transferIn', '10', '100', { gas_usd: '0' });
+    const incoming2 = row(2, variant === 'differentFee' ? 'buy' : 'transferIn', '20', variant === 'differentCost' ? '240' : '200',
+      { gas_usd: variant === 'differentFee' ? '1' : '0', timestamp: incoming1.timestamp });
+    const sell = row(3, 'sell', '15', '300', { gas_usd: '0',
+      ...(variant === 'interveningSale' ? { timestamp: incoming1.timestamp } : {}) });
+    const activity = selected([trade(sell, '300'), ...(variant === 'differentFee' ? [trade(incoming2, '200')] : [])]);
+    const result = await loader([sell, incoming2, incoming1], '15').load(activity);
+    expect(result.status).toBe('unavailable'); expect(result.coverage.reason).toBe('gmgn_history_order_unavailable');
+    expect(result.realizedProfitUsd).toBeNull(); expect(result.position).toBeUndefined();
+  });
+
+  it('calculates a buy-only open position without requiring a sale', async () => {
+    const buy = row(1, 'buy', '10', '100');
+    const activity = selected([trade(buy, '105')]); activity.summary.sellCount = 0;
+    const result = await loader([buy], '10').load(activity);
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: '0',
+      position: { status: 'open', remainingTokenAmount: '10', remainingCostBasisUsd: '106', feeInclusiveCostUsd: '106',
+        cashFlow: { investedUsd: '100', soldUsd: '0', transferOutIncomeUsd: '0', feesUsd: '6' } } });
+  });
+
+  it.each(['inventory_history_unavailable', 'inventory_rpc_unavailable'])('independently verifies provider history when %s prevents historical RPC reads', async reason => {
+    const { rows, activity } = scenario(); activity.inventory!.coverage.reason = reason;
+    const original = structuredClone(activity), { load } = loader(rows);
+    expect(await load(activity)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4',
+      coverage: { verification: 'gmgn_history', transactionsComplete: true, balanceMatched: true } });
+    expect(activity).toEqual(original); expect(activity.inventory!.coverage.reconciled).toBe(false);
+  });
+
+  it.each(['balance-unavailable', 'balance-mismatch', 'missing-indexed-swap'] as const)('does not bypass %s when historical RPC reads fail', async variant => {
+    const { rows, activity } = scenario(); activity.inventory!.coverage.reason = 'inventory_rpc_unavailable';
+    if (variant === 'missing-indexed-swap') rows.pop();
+    const { load } = loader(rows, variant === 'balance-mismatch' ? '5' : '4', variant === 'balance-unavailable'
+      ? { rpc: async () => { throw Error('balance_rpc_unavailable'); } } : {});
+    const result = await load(activity);
+    expect(result.status).toBe(variant === 'balance-unavailable' ? 'pending' : 'unavailable');
+    expect(result.realizedProfitUsd).toBeNull(); expect(result.position).toBeUndefined();
+  });
+
+  it.each(['canonical_receipt_mismatch', 'movement_balance_unreconciled', 'unindexed_swap_pending', 'indexed_snapshot_changed',
+    'canonical_block_unavailable', 'movement_scan_unavailable', 'scan_pending', 'scan_queued'])('does not override %s with provider history', async reason => {
     const { rows, activity } = scenario(); activity.inventory!.coverage.reason = reason;
     const { load, request, rpc } = loader(rows);
     expect((await load(activity)).status).toBe('unavailable'); expect(request).not.toHaveBeenCalled(); expect(rpc).not.toHaveBeenCalled();

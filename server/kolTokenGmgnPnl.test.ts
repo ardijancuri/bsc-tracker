@@ -49,7 +49,10 @@ function accounting(selected = activity(), exact = false): TradeReplayAccounting
 }
 
 describe('GMGN history fallback integration', () => {
-  it.each([false, true])('marks provider history with no canonical events and unknown realized split=%s', async unknownSplit => {
+  it.each([
+    ['inventory_history_unavailable', false], ['inventory_history_unavailable', true],
+    ['inventory_rpc_unavailable', false], ['inventory_rpc_unavailable', true],
+  ] as const)('marks provider history after %s with no canonical events and unknown realized split=%s', async (inventoryReason, unknownSplit) => {
     const selected = activity();
     const fallback = realizedAccountingFromReplay(selected, accounting(selected, true), time);
     Object.assign(fallback.position!, { priceUsd: null, pricedAt: null, valuationSource: null,
@@ -60,7 +63,7 @@ describe('GMGN history fallback integration', () => {
         blockTimestamp: at, balance: '4', checkedAt: at } };
     if (unknownSplit) { fallback.realizedProfitUsd = null; fallback.position!.remainingCostBasisUsd = null; }
     Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable',
-      reason: 'inventory_history_unavailable', checkedAt: null, balance: null });
+      reason: inventoryReason, checkedAt: null, balance: null });
     selected.inventory!.events = [];
     const original = structuredClone(selected), load = vi.fn(), loadHistoryFallback = vi.fn(async () => fallback);
     // A legitimate cached quote can predate the current balance block while
@@ -98,7 +101,8 @@ describe('GMGN history fallback integration', () => {
       position: { estimatedProfitUsd: null, priceUsd: null, pricedAt: null, reason: 'current_quote_unavailable' } });
   });
 
-  it.each(['inventory_balance_mismatch', 'canonical_receipt_mismatch', 'scan_pending', 'indexed_snapshot_changed'])(
+  it.each(['inventory_balance_mismatch', 'canonical_receipt_mismatch', 'scan_pending', 'scan_queued', 'indexed_snapshot_changed',
+    'unindexed_swap_pending', 'canonical_block_unavailable', 'movement_scan_unavailable'])(
     'does not bypass %s with provider history', async reason => {
       const selected = activity(), loadHistoryFallback = vi.fn();
       Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable', reason });
@@ -344,6 +348,52 @@ describe('bounded durable historical realized cache', () => {
     expect(await run(current)).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { status: 'open', estimatedProfitUsd: null,
       priceUsd: null, pricedAt: null, reason: 'quote_rate_limited', retryAfterMs: 60_000 } });
     expect(load).toHaveBeenCalledOnce(); expect(loadQuote).toHaveBeenCalledOnce();
+  });
+  it('retains a successful spot mark through later quote failures without extending its observation time', async () => {
+    let clock = time;
+    const load = vi.fn(async (selected: KolTokenActivity) => {
+      const value = accounting(selected, true); value.final!.priceUsd = null; return value;
+    });
+    const loadQuote = vi.fn().mockResolvedValueOnce({ quote: { priceUsd: '20', timestamp: at } })
+      .mockResolvedValue({ reason: 'quote_rate_limited', retryAfterMs: 45_000 });
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => clock });
+    expect(await run(activity())).toMatchObject({ position: { estimatedProfitUsd: '111', priceUsd: '20', pricedAt: at } });
+    expect(await run(activity())).toMatchObject({ position: { estimatedProfitUsd: '111', pricedAt: at } });
+    expect(loadQuote).toHaveBeenCalledOnce();
+    clock += 60_000; const current = activity(); current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect(await run(current)).toMatchObject({ position: { estimatedProfitUsd: '111', priceUsd: '20', pricedAt: at,
+      reason: 'quote_rate_limited', retryAfterMs: 45_000 } });
+    clock += 120_001; current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect(await run(current)).toMatchObject({ position: { estimatedProfitUsd: null, priceUsd: null, pricedAt: null, reason: 'quote_rate_limited' } });
+  });
+  it('shares a recent spot quote between wallets, but never across tokens or after a newer movement', async () => {
+    let clock = time;
+    const loadQuote = vi.fn().mockResolvedValueOnce({ quote: { priceUsd: '20', timestamp: at } }).mockResolvedValue({ reason: 'quote_rate_limited' });
+    const load = vi.fn(async (selected: KolTokenActivity) => {
+      const value = accounting(); value.walletAddress = selected.kol.address; value.tokenAddress = selected.token.address;
+      value.events = value.events.map((event, index) => ({ ...event, timestamp: selected.inventory!.events[index].timestamp }));
+      value.checkedAt = new Date(clock).toISOString(); return value;
+    });
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => clock });
+    await run(activity());
+    const otherWallet = activity(); otherWallet.kol.address = '0x' + '3'.repeat(40);
+    expect((await run(otherWallet)).position?.estimatedProfitUsd).toBe('111'); expect(loadQuote).toHaveBeenCalledOnce();
+    const otherToken = activity(); otherToken.token.address = '0x' + '4'.repeat(40);
+    expect((await run(otherToken)).position?.estimatedProfitUsd).toBeNull(); expect(loadQuote).toHaveBeenCalledTimes(2);
+    clock += 1000; const later = activity(); later.inventory!.events.at(-1)!.timestamp = new Date(clock).toISOString();
+    later.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect((await run(later)).position?.estimatedProfitUsd).toBeNull(); expect(loadQuote).toHaveBeenCalledTimes(3);
+  });
+  it('never replaces a retained newer mark with an older quote returned by a provider', async () => {
+    let clock = time;
+    const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
+    const loadQuote = vi.fn().mockResolvedValueOnce({ quote: { priceUsd: '20', timestamp: new Date(time + 60_000).toISOString() } })
+      .mockResolvedValue({ quote: { priceUsd: '15', timestamp: new Date(time + 30_000).toISOString() } });
+    const run = createKolTokenGmgnPnl({ load, loadQuote, directory: null, now: () => clock });
+    await run(activity()); clock += 60_000;
+    const current = activity(); current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    await run(current); clock += 60_000; current.inventory!.coverage.checkedAt = new Date(clock).toISOString();
+    expect(await run(current)).toMatchObject({ position: { estimatedProfitUsd: '111', priceUsd: '20', pricedAt: new Date(time + 60_000).toISOString() } });
   });
   it('refreshes an aggregate mark after thirty seconds and only retains a dated recent mark during quote cooldown', async () => {
     let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
