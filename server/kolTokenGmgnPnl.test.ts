@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promi
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
+import type { KolTokenActivity, KolTokenRealizedAccounting } from '../shared/kolTokenTrades.js';
 import type { TokenChart } from '../shared/intelligence.js';
 import type { TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { createKolTokenGmgnPnl, loadCurrentPositionQuote, realizedAccountingFromReplay } from './kolTokenGmgnPnl.js';
@@ -47,6 +47,114 @@ function accounting(selected = activity(), exact = false): TradeReplayAccounting
     realized_profit: 73.4, unrealized_profit: -2.4 };
   return buildTradeReplayGmgnAccounting(selected, rows, { activitiesComplete: true, aggregateRow: exact ? aggregate : undefined, checkedAt: at, now: time });
 }
+
+describe('verified lifetime aggregate recovery integration', () => {
+  function mismatch(selected: KolTokenActivity) {
+    const result = accounting(selected);
+    result.coverage.transactionsComplete = false; result.coverage.reason = 'provider_transaction_mismatch';
+    return result;
+  }
+  // The earlier completed cycle lost $150. Its lifetime total must replace,
+  // rather than be added to or discarded from, the current-cycle estimate.
+  function recovered(selected: KolTokenActivity): KolTokenRealizedAccounting {
+    return { version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', walletAddress: wallet, tokenAddress: token,
+      status: 'ready', checkedAt: at, realizedProfitUsd: '-76.6',
+      coverage: { transactionsComplete: true, balanceMatched: true, verification: 'gmgn_history', reason: 'gmgn_aggregate_verified',
+        historyFingerprint: 'b'.repeat(64), historyCheckedAt: at, lastMovementAt: selected.inventory!.events.at(-1)!.timestamp,
+        balanceProof: { chain: 'bsc', walletAddress: wallet, tokenAddress: token, blockNumber: '110', blockHash: hash(110),
+          checkedAt: at, blockTimestamp: at, balance: selected.inventory!.coverage.balance! } },
+      position: { status: 'open', remainingTokenAmount: '4', remainingCostBasisUsd: '42.4', feeInclusiveCostUsd: '309',
+        cashFlow: { investedUsd: '300', soldUsd: '110', transferOutIncomeUsd: '80', feesUsd: '9' },
+        estimatedProfitUsd: '-79', estimatedRoi: String(-79 / 309), unrealizedProfitUsd: '-2.4', priceUsd: '10', pricedAt: at, valuationSource: 'gmgn' } };
+  }
+
+  it('recovers a history mismatch with lifetime losses, fees and transfer gains intact', async () => {
+    const selected = activity(), aggregate = recovered(selected), loadAggregate = vi.fn(async () => aggregate), loadQuote = vi.fn();
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => mismatch(selected), loadAggregate, loadQuote });
+    const result = await run(selected, undefined, { foreground: true });
+    expect(loadAggregate).toHaveBeenCalledExactlyOnceWith(selected, { foreground: true });
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: '-76.6', coverage: { verification: 'gmgn_history', reason: 'gmgn_aggregate_verified' },
+      position: { estimatedProfitUsd: '-79', feeInclusiveCostUsd: '309', cashFlow: { investedUsd: '300', soldUsd: '110', transferOutIncomeUsd: '80', feesUsd: '9' } } });
+    expect(loadQuote).not.toHaveBeenCalled(); expect(aggregate.position!.estimatedProfitUsd).toBe('-79');
+  });
+
+  it('marks a recovered open position using its full lifetime cash flow when a current quote is needed', async () => {
+    const selected = activity(), aggregate = recovered(selected);
+    Object.assign(aggregate.position!, { estimatedProfitUsd: null, estimatedRoi: null, unrealizedProfitUsd: null,
+      priceUsd: null, pricedAt: null, valuationSource: null });
+    const loadQuote = vi.fn(async () => ({ quote: { priceUsd: '30', timestamp: at } }));
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => mismatch(selected),
+      loadAggregate: async () => aggregate, loadQuote });
+    expect(await run(selected)).toMatchObject({ realizedProfitUsd: '-76.6', position: { estimatedProfitUsd: '1', priceUsd: '30',
+      unrealizedProfitUsd: '77.6', feeInclusiveCostUsd: '309', valuationSource: 'market' } });
+    expect(loadQuote).toHaveBeenCalledExactlyOnceWith(token);
+    expect(aggregate.position!.estimatedProfitUsd).toBeNull();
+  });
+
+  it('returns recovered closed profit without fetching a current quote', async () => {
+    const selected = activity(); selected.inventory!.coverage.balance = '0'; selected.inventory!.events.at(-1)!.remainingTokenAmount = '0';
+    selected.inventory!.events.at(-1)!.tokenAmount = '6'; selected.trades.at(-1)!.tokenAmount = '6';
+    const aggregate = recovered(selected); aggregate.realizedProfitUsd = '-79';
+    Object.assign(aggregate.position!, { status: 'closed', remainingTokenAmount: '0', remainingCostBasisUsd: '0', unrealizedProfitUsd: '0',
+      priceUsd: null, pricedAt: null, valuationSource: null, cashFlow: { investedUsd: '300', soldUsd: '150', transferOutIncomeUsd: '80', feesUsd: '9' } });
+    const loadQuote = vi.fn(), run = createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => mismatch(selected),
+      loadAggregate: async () => aggregate, loadQuote });
+    expect(await run(selected)).toEqual(aggregate); expect(loadQuote).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unresolved mismatch unavailable when no validated aggregate can be recovered', async () => {
+    const selected = activity(), loadAggregate = vi.fn(async () => null);
+    const result = await createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => mismatch(selected), loadAggregate })(selected);
+    expect(loadAggregate).toHaveBeenCalledOnce(); expect(result).toMatchObject({ status: 'unavailable', realizedProfitUsd: null,
+      coverage: { reason: 'provider_transaction_mismatch' } });
+  });
+
+  it.each(['ready', 'pending', 'contradictory', 'stale-canonical'] as const)('does not request aggregate recovery for %s evidence', async variant => {
+    const selected = activity(), result = accounting(selected, true), loadAggregate = vi.fn(async () => recovered(selected));
+    if (variant === 'pending') { result.status = 'pending'; result.coverage.reason = 'provider_busy'; result.retryAfterMs = 10_000; }
+    if (variant === 'contradictory') Object.assign(selected.inventory!.coverage, { complete: false, reconciled: false, status: 'unavailable', reason: 'movement_balance_unreconciled' });
+    if (variant === 'stale-canonical') selected.inventory!.coverage.checkedAt = new Date(time - 180_001).toISOString();
+    const value = await createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => result, loadAggregate })(selected);
+    expect(loadAggregate).not.toHaveBeenCalled(); expect(value.status).toBe(variant === 'ready' ? 'ready' : variant === 'pending' ? 'pending' : 'unavailable');
+  });
+
+  it('returns the aggregate provider cooldown without starting an extra quote request', async () => {
+    const selected = activity(), pending: KolTokenRealizedAccounting = { ...recovered(selected), status: 'pending', realizedProfitUsd: null,
+      position: undefined, retryAfterMs: 12_000, coverage: { transactionsComplete: false, balanceMatched: false,
+        verification: 'gmgn_history', reason: 'provider_rate_limited' } };
+    const loadQuote = vi.fn(), result = await createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => mismatch(selected),
+      loadAggregate: async () => pending, loadQuote })(selected);
+    expect(result).toEqual(pending); expect(loadQuote).not.toHaveBeenCalled();
+  });
+});
+
+describe('explicit tracked profile fallback', () => {
+  function canonical() {
+    const value = activity();
+    value.inventory!.events.splice(1, 1);
+    value.inventory!.events[1].remainingTokenAmount = '8';
+    value.inventory!.coverage.balance = '8';
+    return value;
+  }
+  it('marks known open holdings and preserves the provider cooldown for an upgrade', async () => {
+    const selected = canonical(), pending = accounting();
+    pending.status = 'pending'; pending.retryAfterMs = 45000; pending.coverage.reason = 'provider_rate_limited';
+    const run = createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => pending, allowTrackedEstimate: true,
+      loadQuote: async () => ({ quote: { priceUsd: '20', timestamp: at } }) });
+    expect(await run(selected)).toMatchObject({ status: 'ready', source: 'onchain', policy: 'onchain_net_trade_profit_v1',
+      retryAfterMs: 45000, realizedProfitUsd: '38', position: { status: 'open', remainingTokenAmount: '8', estimatedProfitUsd: '114' } });
+  });
+  it('never replaces a verified GMGN result with the tracked estimate', async () => {
+    const selected = activity(), run = createKolTokenGmgnPnl({ directory: null, now: () => time, allowTrackedEstimate: true });
+    expect(await run(selected, accounting(selected, true))).toMatchObject({ status: 'ready', source: 'gmgn', realizedProfitUsd: '73.4' });
+  });
+  it('skips lifetime aggregate requests when only warming replay accounting', async () => {
+    const selected = canonical(), bad = accounting(), loadAggregate = vi.fn();
+    bad.status = 'unavailable'; bad.coverage.reason = 'provider_transaction_mismatch';
+    await createKolTokenGmgnPnl({ directory: null, now: () => time, load: async () => bad, loadAggregate })(selected, undefined, { markPosition: false });
+    expect(loadAggregate).not.toHaveBeenCalled();
+  });
+});
 
 describe('GMGN history fallback integration', () => {
   it.each([

@@ -4,6 +4,8 @@ import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.j
 import { MarketProviderDeferred } from './geckoApi.js';
 import { currentKolTokenBalance } from './kolTokenBalance.js';
 import type { GmgnReplayHistory, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
+import { currentRecentTradeRepair } from './recentTradeRepair.js';
+import { trackedHistoryTokenPnl } from './kolTokenTrackedHistoryPnl.js';
 
 interface HistoryResult extends KolTokenRealizedAccounting { replayHistory?: GmgnReplayHistory }
 
@@ -63,7 +65,9 @@ function base(activity: KolTokenActivity, now: number): HistoryResult {
     coverage: { transactionsComplete: false, balanceMatched: false } };
 }
 function indexedCash(trade: KolTokenTrade, row: Row): number | null {
-  if (trade.valuationStatus !== 'valued' || !['node', 'node+gmgn'].includes(trade.source)) return null;
+  // An absent indexed USD mark does not invalidate the receipt's quote-token
+  // quantity: the matched provider transaction supplies its historical FX.
+  if (!['valued', 'unpriced'].includes(trade.valuationStatus) || !['node', 'node+gmgn'].includes(trade.source)) return null;
   const quote = numeric(trade.quoteAmount);
   if (quote === null || quote <= 0) return null;
   const indexed = trade.quoteTokenAddress?.toLowerCase();
@@ -199,8 +203,10 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
 /** Provider history is explicitly distinct from canonical historical inventory.
  * It can recover profile P&L on pruned nodes without asserting archived proof. */
 export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTokenBalance, now = Date.now, budgetMs = 8000,
+  repairRecent, allowTrackedEstimate = false,
   apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
-}: { request?: Requester; rpc?: BalanceReader; now?: () => number; budgetMs?: number; apiKey?: () => string } = {}) {
+}: { request?: Requester; rpc?: BalanceReader; now?: () => number; budgetMs?: number; apiKey?: () => string;
+  repairRecent?: typeof currentRecentTradeRepair; allowTrackedEstimate?: boolean } = {}) {
   const cache = new Map<string, { until: number; value: HistoryResult }>(), histories = new Map<string, History>();
   const pauses = new Map<string, { until: number; reason: string }>();
   const jobs = new Map<string, { foreground: () => boolean; work: Promise<HistoryResult> }>();
@@ -273,13 +279,30 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
           history = { ...history, checkedAt: now(), headVerified: true }; histories.set(signature, history);
         }
         const proof = await bounded(rpc({ wallet, token }, signal), signal);
-        const value = build(activity, history.rows, proof, history.checkedAt, now());
+        let value: HistoryResult;
+        try { value = build(activity, history.rows, proof, history.checkedAt, now()); }
+        catch (error) {
+          const reason = error instanceof Error ? error.message : '';
+          const tracked = allowTrackedEstimate && /^(gmgn_history_indexed_mismatch|quote_or_fee_unavailable)$/.test(reason)
+            ? trackedHistoryTokenPnl(activity, { rows: history.rows, complete: history.complete, checkedAt: history.checkedAt }, proof, now()) : null;
+          if (!tracked) throw error;
+          value = tracked;
+        }
         cache.delete(signature); cache.set(signature, { until: Math.min(now() + 30_000, history.checkedAt + 30_000), value });
         while (cache.size > 64) cache.delete(cache.keys().next().value!);
         return value;
       } catch (error) {
         const value = base(activity, now()); value.coverage.verification = 'gmgn_history';
         const reason = error instanceof Error ? error.message : 'provider_unavailable';
+        if (reason === 'gmgn_history_balance_mismatch' && repairRecent) {
+          // Search recent receipts even when the older canonical scan is pruned.
+          // Discovery only queues independently authenticated swaps for the worker.
+          try {
+            if (await bounded(repairRecent(activity, signal), signal) === 'pending') {
+              value.status = 'pending'; value.retryAfterMs = 3000; value.coverage.reason = 'unindexed_swap_pending'; return value;
+            }
+          } catch { /* Preserve the original mismatch until evidence is repaired. */ }
+        }
         if (error instanceof MarketProviderDeferred || error instanceof GmgnHttpError && (error.status === 429 || error.status >= 500)
           || signal.aborted || reason === 'gmgn_history_snapshot_changed' || /^balance_(rpc_unavailable|timeout|aborted|block_stale|block_future|reorg)$/.test(reason)
           || !(error instanceof GmgnHttpError) && !/^gmgn_history_|^quote_or_fee_unavailable$|^transfer_fee_schema_unavailable$|^balance_/.test(reason)) {
@@ -311,4 +334,4 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
         verification: 'gmgn_history', reason: value.coverage.reason }, ...(value.retryAfterMs ? { retryAfterMs: value.retryAfterMs } : {}) };
   } });
 }
-export const currentGmgnHistoryPnl = createGmgnHistoryPnl();
+export const currentGmgnHistoryPnl = createGmgnHistoryPnl({ repairRecent: currentRecentTradeRepair, allowTrackedEstimate: true });

@@ -24,8 +24,8 @@ export interface KolTokenActivity {
 
 export interface KolTokenRealizedAccounting {
   version: 1;
-  source: 'gmgn';
-  policy: 'gmgn_realized_profit_v1';
+  source: 'gmgn' | 'onchain';
+  policy: 'gmgn_realized_profit_v1' | 'onchain_net_trade_profit_v1';
   walletAddress: string;
   tokenAddress: string;
   status: 'ready' | 'pending' | 'unavailable';
@@ -38,7 +38,7 @@ export interface KolTokenRealizedAccounting {
     /** Completeness of the history source identified by verification. */
     transactionsComplete: boolean; balanceMatched: boolean; reason?: string;
     /** Omitted for the original canonical receipt-backed accounting. */
-    verification?: 'gmgn_history';
+    verification?: 'gmgn_history' | 'tracked_history';
     historyFingerprint?: string;
     historyCheckedAt?: string;
     /** Latest movement in the complete provider history, independent of its read time. */

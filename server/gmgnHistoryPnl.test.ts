@@ -46,6 +46,51 @@ function loader(rows: any[], balance = '4', overrides: Partial<Parameters<typeof
 afterEach(() => vi.useRealTimers());
 
 describe('GMGN history PNL on pruned nodes', () => {
+  it('recovers an independently indexed closing sale omitted by GMGN as tracked PNL, without forging a replay ledger', async () => {
+    const buy = row(1, 'buy', '10', '100'), partial = row(2, 'sell', '4', '60'), closing = row(3, 'sell', '6', '70');
+    const activity = selected([trade(buy, '105'), trade(partial, '59'), trade(closing, '69')]);
+    Object.assign(activity.token, { decimals: 18 });
+    activity.trades.forEach(item => Object.assign(item, { blockHash: hash(100) }));
+    const { load } = loader([partial, buy], '0', { allowTrackedEstimate: true });
+    const result = await load(activity);
+    expect(result).toMatchObject({ status: 'ready', source: 'onchain', policy: 'onchain_net_trade_profit_v1', realizedProfitUsd: '23',
+      coverage: { verification: 'tracked_history', reason: 'onchain_estimate_gas_excluded' },
+      position: { status: 'closed', estimatedProfitUsd: '23', cashFlow: { investedUsd: '105', soldUsd: '128', feesUsd: '0' } } });
+    expect(activity.inventory!.coverage.complete).toBe(false);
+    expect(await load.replay(activity)).toMatchObject({ status: 'unavailable', final: null, events: [] });
+    expect((await load.replay(activity)).history).toBeUndefined();
+  });
+
+  it('queues bounded recent swap recovery when provider movements do not match the wallet balance', async () => {
+    const { rows, activity } = scenario(), repairRecent = vi.fn(async () => 'pending' as const);
+    const { load } = loader(rows, '0', { repairRecent });
+    expect(await load(activity)).toMatchObject({ status: 'pending', realizedProfitUsd: null, retryAfterMs: 3000,
+      coverage: { reason: 'unindexed_swap_pending', transactionsComplete: false, balanceMatched: false } });
+    expect(repairRecent).toHaveBeenCalledExactlyOnceWith(activity, expect.any(AbortSignal));
+  });
+
+  it('preserves a balance mismatch if recent receipts contain no authenticated missing swap', async () => {
+    const { rows, activity } = scenario(), repairRecent = vi.fn(async () => 'none' as const);
+    expect(await loader(rows, '0', { repairRecent }).load(activity)).toMatchObject({ status: 'unavailable', realizedProfitUsd: null,
+      coverage: { reason: 'gmgn_history_balance_mismatch' } });
+  });
+
+  it('keeps recent repair discovery inside the history request deadline', async () => {
+    const { rows, activity } = scenario(), repairRecent = vi.fn(() => new Promise<'none'>(() => {}));
+    const { load } = loader(rows, '0', { repairRecent, budgetMs: 15 });
+    const result = await load(activity);
+    expect(result).toMatchObject({ status: 'pending', coverage: { reason: 'provider_timeout' } });
+    expect(repairRecent.mock.calls.length).toBe(1);
+  });
+
+  it('does not scan recent receipts for a verified result or contradictory provider transaction', async () => {
+    const { rows, activity } = scenario(), repairRecent = vi.fn(async () => 'pending' as const);
+    await loader(rows, '4', { repairRecent }).load(activity);
+    rows[0].token_amount = '9';
+    await loader(rows, '4', { repairRecent }).load(activity);
+    expect(repairRecent).not.toHaveBeenCalled();
+  });
+
   it('includes transfer-out gains and complete inferred fees without manufacturing canonical inventory', async () => {
     const { rows, activity } = scenario(), before = structuredClone(activity), { load, request, rpc } = loader(rows);
     const result = await load(activity);
@@ -67,6 +112,30 @@ describe('GMGN history PNL on pruned nodes', () => {
     expect(result.status).toBe('ready');
     expect(result.coverage.lastMovementAt).toBe(at(4));
     expect(result.coverage.lastMovementAt).not.toBe(result.coverage.balanceProof!.blockTimestamp);
+  });
+
+  it.each(['native-quote', 'erc20-quote', 'native-gas-fx'] as const)('recovers unpriced indexed USD amounts from verified %s quantities', async variant => {
+    const { rows, activity } = scenario(), intermediate = '0x' + 'a'.repeat(40);
+    if (variant !== 'native-quote') for (const provider of rows.filter(value => ['buy', 'sell'].includes(value.event_type))) {
+      provider.quote_address = intermediate;
+      if (variant === 'native-gas-fx') provider.gas_native = provider.gas_usd;
+    }
+    if (variant === 'erc20-quote') for (const indexed of activity.trades) {
+      indexed.quoteTokenAddress = intermediate; indexed.quoteSymbol = 'QUOTE';
+    }
+    const expected = await loader(rows).load(activity);
+    for (const indexed of activity.trades) { indexed.valuationStatus = 'unpriced'; indexed.amountUsd = null; }
+    const result = await loader(rows).load(activity);
+    expect(result).toEqual(expected);
+    expect(result).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { feeInclusiveCostUsd: '109' } });
+  });
+
+  it('still requires independent historical FX for an unpriced indexed native quote', async () => {
+    const { rows, activity } = scenario();
+    activity.trades[0].valuationStatus = 'unpriced'; activity.trades[0].amountUsd = null;
+    rows.find(value => value.event_type === 'buy')!.quote_address = '0x' + 'a'.repeat(40);
+    expect(await loader(rows).load(activity)).toMatchObject({ status: 'unavailable', realizedProfitUsd: null,
+      coverage: { reason: 'quote_or_fee_unavailable' } });
   });
 
   it('recovers Ping Ping’s closed September cycle and separate October purchase using native gas FX', async () => {
@@ -101,6 +170,23 @@ describe('GMGN history PNL on pruned nodes', () => {
     const buy = row(1, 'buy', '10', '100'), sell = row(2, 'sell', '10', '50');
     const result = await loader([buy, sell], '0').load(selected([trade(buy, '105'), trade(sell, '49')]));
     expect(result.realizedProfitUsd).toBe('-58'); expect(result.position).toMatchObject({ status: 'closed', estimatedProfitUsd: '-58', unrealizedProfitUsd: '0' });
+  });
+
+  it.each([
+    { name: 'MIZZLE', buys: ['8954888.739209652', '7554729.426981546'], sells: ['1650961.8166191198', '1485865.6349572078'] },
+    { name: 'SI', buys: ['3925154.6212154147'], sells: ['785030.924243083'] },
+    { name: 'three-buy position', buys: ['6585336.2639626935', '4933407.001801065', '5268282.58223748'], sells: ['4196756.4620003095'] },
+  ])('does not treat $name missing movements as a fully closed position merely because the RPC balance is zero', async ({ buys, sells }) => {
+    // These production quantities leave millions of tokens unaccounted for.
+    // A terminal provider cursor proves pagination ended, not that transfers
+    // are complete; neither zero-balance rounding nor forced closure is valid.
+    const rows = [...buys.map((quantity, index) => row(index + 1, 'buy', quantity, '100')),
+      ...sells.map((quantity, index) => row(buys.length + index + 1, 'sell', quantity, '50'))];
+    const activity = selected(rows.map(value => trade(value, value.cost_usd)));
+    const result = await loader(rows, '0').load(activity);
+    expect(result).toMatchObject({ status: 'unavailable', realizedProfitUsd: null,
+      coverage: { balanceMatched: false, reason: 'gmgn_history_balance_mismatch' } });
+    expect(result.position).toBeUndefined();
   });
 
   it('accepts same-second incoming lots with identical unit costs independent of provider order', async () => {

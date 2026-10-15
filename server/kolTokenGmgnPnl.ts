@@ -8,12 +8,14 @@ import { currentMarketChart } from './tokenChart.js';
 import { currentTokenPositionQuote } from './tokenPositionQuote.js';
 import { currentTokenGmgnPositionQuote } from './tokenGmgnPositionQuote.js';
 import { currentGmgnHistoryPnl } from './gmgnHistoryPnl.js';
+import { trackedTokenPnl } from './kolTokenTrackedPnl.js';
 
 type Loader = (activity: KolTokenActivity, options?: { foreground?: () => boolean }) => Promise<TradeReplayAccounting>;
 interface PositionQuote { priceUsd: string; timestamp: string }
 interface PositionQuoteResult { quote?: PositionQuote; reason?: string; retryAfterMs?: number }
 type QuoteLoader = (token: string) => Promise<PositionQuoteResult>;
 type HistoryFallbackLoader = (activity: KolTokenActivity, options?: { foreground?: boolean }) => Promise<KolTokenRealizedAccounting>;
+type AggregateLoader = (activity: KolTokenActivity, options?: { foreground?: boolean }) => Promise<KolTokenRealizedAccounting | null>;
 type Entry = { version: 1; fingerprint: string; observedAt: number; expiresAt: number; refreshAfter?: number; value: KolTokenRealizedAccounting };
 const historicalRetentionMs = 7 * 24 * 60 * 60 * 1000;
 const address = /^0x[0-9a-f]{40}$/;
@@ -153,9 +155,9 @@ export function realizedAccountingFromReplay(activity: KolTokenActivity, account
 export function createKolTokenGmgnPnl({ load = (activity, options) => currentTradeReplayGmgnAccounting(activity, { historicalRealized: true, foreground: options?.foreground }), now = Date.now,
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'realized-gmgn'),
   ttlMs = 600_000, maxEntries = 128, budgetMs = 8500,
-  readCacheFile = (file: string) => readFile(file, 'utf8'), publishCacheFile = rename, loadQuote, loadHistoryFallback = currentGmgnHistoryPnl,
+  readCacheFile = (file: string) => readFile(file, 'utf8'), publishCacheFile = rename, loadQuote, loadHistoryFallback = currentGmgnHistoryPnl, loadAggregate, allowTrackedEstimate = false,
 }: { load?: Loader; now?: () => number; directory?: string | null; ttlMs?: number; maxEntries?: number; budgetMs?: number;
-  readCacheFile?: (file: string) => Promise<string>; publishCacheFile?: (from: string, to: string) => Promise<void>; loadQuote?: QuoteLoader; loadHistoryFallback?: HistoryFallbackLoader } = {}) {
+  readCacheFile?: (file: string) => Promise<string>; publishCacheFile?: (from: string, to: string) => Promise<void>; loadQuote?: QuoteLoader; loadHistoryFallback?: HistoryFallbackLoader; loadAggregate?: AggregateLoader; allowTrackedEstimate?: boolean } = {}) {
   const cache = new Map<string, Entry>(), jobs = new Map<string, { foreground: boolean; work: Promise<KolTokenRealizedAccounting> }>();
   const publications = new Map<string, Promise<void>>();
   const quality = (value: KolTokenRealizedAccounting) => value.status !== 'ready' ? 0 : value.coverage.reason === 'gmgn_activity_estimate' ? 1 : 2;
@@ -301,12 +303,28 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
   // recent price, or force every wallet holding the same token to fetch it again.
   const quotes = new Map<string, PositionQuote>();
   return async (activity: KolTokenActivity, supplied?: TradeReplayAccounting | Promise<TradeReplayAccounting>, options: { markPosition?: boolean; foreground?: boolean } = {}): Promise<KolTokenRealizedAccounting> => {
-    const historicalValue = await historical(activity, supplied, options.foreground), position = historicalValue.position;
+    let historicalValue = await historical(activity, supplied, options.foreground);
+    // A lifetime position can contain older, provider-known cycles before the
+    // indexed scan. Verify its reported totals independently instead of dropping
+    // those losses or pretending their absent per-event fees are known.
+    if (options.markPosition !== false && historicalValue.status === 'unavailable' && loadAggregate
+      && /^(provider_transaction_mismatch|gmgn_history_(indexed_mismatch|order_unavailable|opening_cost_unknown|balance_mismatch)|quote_or_fee_unavailable|gmgn_realized_cost_unavailable|provider_basis_unreconciled)$/.test(historicalValue.coverage.reason ?? '')) {
+      const recovered = await loadAggregate(activity, { foreground: options.foreground });
+      if (recovered) historicalValue = recovered;
+    }
+    if (historicalValue.status !== 'ready' && allowTrackedEstimate) {
+      const tracked = trackedTokenPnl(activity, now());
+      if (tracked) {
+        if (historicalValue.status === 'pending' && historicalValue.retryAfterMs) tracked.retryAfterMs = historicalValue.retryAfterMs;
+        historicalValue = tracked;
+      }
+    }
+    const position = historicalValue.position;
     if (options.markPosition === false || historicalValue.status !== 'ready' || !position || position.status === 'closed') return historicalValue;
     const value = { ...historicalValue, position: { ...position } };
     // Provider history does not populate canonical inventory events. Its latest
     // movement supplies the quote boundary, never the current balance-read time.
-    const lastMovementAt = historicalValue.coverage.verification === 'gmgn_history'
+    const lastMovementAt = historicalValue.coverage.verification === 'gmgn_history' || historicalValue.coverage.verification === 'tracked_history'
       ? historicalValue.coverage.lastMovementAt ?? null : undefined;
     const token = activity.token.address.toLowerCase();
     let retained: KolTokenProfitPosition | null = null;
@@ -399,4 +417,4 @@ export async function loadCurrentPositionQuote(token: string, { loadChart = curr
   if (now - observed > kolTokenPositionQuoteMaxAgeMs) return unavailable;
   return { quote: { priceUsd: String(bar.close), timestamp: new Date(observed).toISOString() } };
 }
-export const currentKolTokenGmgnPnl = createKolTokenGmgnPnl({ loadQuote: loadCurrentPositionQuote });
+export const currentKolTokenGmgnPnl = createKolTokenGmgnPnl({ loadQuote: loadCurrentPositionQuote, loadAggregate: currentTradeReplayGmgnAccounting.profile, allowTrackedEstimate: true });

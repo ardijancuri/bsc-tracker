@@ -44,6 +44,33 @@ function gmgnHistory(body = activity()) {
       blockHash: '0x' + 'c'.repeat(64), blockTimestamp: date, balance, checkedAt: date } };
   return body;
 }
+function gmgnAggregate(body = activity()) {
+  const inventory = structuredClone(body.inventory!);
+  gmgnHistory(body); body.inventory = inventory;
+  body.realizedAccounting!.coverage.reason = 'gmgn_aggregate_verified';
+  Object.assign(body.realizedAccounting!.coverage.balanceProof!, {
+    blockNumber: inventory.coverage.toBlock, blockHash: inventory.coverage.blockHash,
+  });
+  return body;
+}
+function trackedAccounting(body = activity()) {
+  Object.assign(body.realizedAccounting!, { source: 'onchain', policy: 'onchain_net_trade_profit_v1' });
+  body.realizedAccounting!.coverage.reason = 'onchain_estimate_gas_excluded';
+  body.realizedAccounting!.position ??= { status: 'closed', estimatedProfitUsd: body.realizedAccounting!.realizedProfitUsd,
+    estimatedRoi: '1.5', unrealizedProfitUsd: '0', remainingTokenAmount: '0', remainingCostBasisUsd: '0', feeInclusiveCostUsd: '20',
+    priceUsd: null, pricedAt: null, valuationSource: null };
+  const position = body.realizedAccounting!.position;
+  position.cashFlow = { investedUsd: position.feeInclusiveCostUsd,
+    soldUsd: String(Number(body.realizedAccounting!.realizedProfitUsd) + Number(position.feeInclusiveCostUsd) - Number(position.remainingCostBasisUsd)),
+    transferOutIncomeUsd: '0', feesUsd: '0' };
+  return body;
+}
+function trackedHistory(body = openPosition()) {
+  trackedAccounting(body); gmgnHistory(body);
+  body.realizedAccounting!.coverage.reason = 'onchain_estimate_gas_excluded';
+  Object.assign(body.realizedAccounting!.coverage, { verification: 'tracked_history' });
+  return body;
+}
 function fallbackCooldown(body: KolTokenActivity, reason = 'provider_rate_limited') {
   const waiting = structuredClone(body);
   waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
@@ -60,13 +87,13 @@ describe('explicit GMGN history fallback for unavailable historical RPC reads', 
       for (const inventoryReason of ['inventory_history_unavailable', 'inventory_rpc_unavailable']) {
         const before = gmgnHistory(openPosition()); before.inventory!.coverage.reason = inventoryReason;
         const waiting = fallbackCooldown(before, reason);
-        vi.setSystemTime(Date.parse(date) + 40_000);
+        vi.setSystemTime(Date.parse(date) + 20_000);
         expect(tokenPnlMovementsMatch(before, waiting)).toBe(false);
         expect(tokenPnlMayRetainDuringProviderRetry(before, waiting)).toBe(true);
         expect(displayedTokenPnl(waiting)).toBeNull(); // No proof is merged into the pending response.
         expect(tokenPositionPnlPriceTime(before)).toBe('12:00:00');
-        expect(tokenPnlExpiresAt(before)).toBe(Date.parse(date) + 180_001);
-        vi.setSystemTime(Date.parse(date) + 180_001);
+        expect(tokenPnlExpiresAt(before)).toBe(Date.parse(date) + 30_001);
+        vi.setSystemTime(Date.parse(date) + 30_001);
         expect(tokenPnlMayRetainDuringProviderRetry(before, waiting)).toBe(false);
         expect(tokenPnlExpiresAt(before)).toBeNull();
       }
@@ -106,7 +133,7 @@ describe('explicit GMGN history fallback for unavailable historical RPC reads', 
     const waiting = fallbackCooldown(before);
     waiting.inventory!.coverage.toBlock = '3'; waiting.inventory!.coverage.blockHash = '0x' + 'd'.repeat(64);
     expect(tokenPnlMayRetainDuringProviderRetry(before, waiting)).toBe(true);
-    expect(tokenPnlExpiresAt(before)).toBe(Date.parse(date) + 180_001);
+    expect(tokenPnlExpiresAt(before)).toBe(Date.parse(date) + 30_001);
     expect(before.inventory!.coverage.toBlock).toBe('2');
     expect(before.realizedAccounting!.coverage.balanceProof!.blockNumber).toBe('1000');
     expect(displayedTokenPnl(waiting)).toBeNull();
@@ -260,7 +287,7 @@ describe('explicit GMGN history fallback for unavailable historical RPC reads', 
 
   it('expires recent-result cache when fallback history or current balance proof becomes stale', async () => {
     const old = gmgnHistory(), fresh = gmgnHistory();
-    old.realizedAccounting!.coverage.historyCheckedAt = new Date(Date.now() - 179_000).toISOString();
+    old.realizedAccounting!.coverage.historyCheckedAt = new Date(Date.now() - 29_000).toISOString();
     const fetcher = vi.fn().mockResolvedValueOnce(response(old)).mockResolvedValue(response(fresh));
     const loader = createKolTokenPnlLoader({ fetcher });
     expect((await loader(selection(), signal())).status).toBe('ready');
@@ -292,7 +319,348 @@ describe('explicit GMGN history fallback for unavailable historical RPC reads', 
   });
 });
 
+describe('GMGN reported lifetime totals with separately verified history', () => {
+  it.each(['sameHead', 'laterHead'] as const)('shows reported open and closed totals with a compatible %s current balance proof', async variant => {
+    for (const body of [gmgnAggregate(openPosition()), gmgnAggregate()]) {
+      if (variant === 'laterHead') {
+        body.realizedAccounting!.coverage.balanceProof!.blockNumber = '3';
+        body.realizedAccounting!.coverage.balanceProof!.blockHash = '0x' + 'd'.repeat(64);
+      }
+      expect(verifiedTokenRealizedPnl(body)).toBe(30);
+      expect(verifiedTokenPositionPnl(body)).toBe(body.summary.status === 'open' ? 70 : 30);
+      expect(tokenPositionPnlLabel(body)).toBe(body.summary.status === 'open' ? 'Est. profit' : 'Realized P&L');
+      expect(tokenPositionPnlDescription(body)).toBe('GMGN reported profit; current wallet balance checked.');
+      expect(body.inventory!.coverage.complete).toBe(true);
+      expect(terminalTokenInventoryFailure(body)).toBe(false);
+      expect((await createKolTokenPnlLoader({ fetcher: vi.fn().mockResolvedValue(response(body)) })(selection(), signal())).status).toBe('ready');
+    }
+  });
+
+  it.each(['inventory_history_unavailable', 'inventory_rpc_unavailable'])(
+    'also permits reported totals with independent history after %s', reason => {
+      const body = gmgnHistory(openPosition()); body.inventory!.coverage.reason = reason;
+      body.realizedAccounting!.coverage.reason = 'gmgn_aggregate_verified';
+      expect(verifiedTokenRealizedPnl(body)).toBe(30); expect(verifiedTokenPositionPnl(body)).toBe(70);
+      expect(tokenPositionPnlDescription(body)).toBe('GMGN reported profit; current wallet balance checked.');
+      expect(body.inventory!.coverage.complete).toBe(false);
+    });
+
+  it.each(['missingMarker', 'estimateMarker', 'pendingScan', 'unreconciled', 'canonicalMismatch', 'missingStatus', 'backwardsHead',
+    'sameHeadConflict', 'invalidCanonicalHead', 'invalidProviderHead', 'invalidCanonicalHash', 'balanceMismatch', 'zeroVersusDust',
+    'invalidCanonicalBalance', 'staleCanonical', 'staleHistory', 'staleAccounting', 'staleBalance', 'staleBlock', 'futureBlock',
+    'missingProof', 'wrongWallet', 'wrongToken', 'incompleteIndex', 'incompleteHistory'] as const)(
+    'rejects reported totals with %s evidence instead of bypassing canonical checks', variant => {
+      const body = gmgnAggregate(openPosition()), inventory = body.inventory!.coverage, accounting = body.realizedAccounting!;
+      const coverage = accounting.coverage, proof = coverage.balanceProof!;
+      if (variant === 'missingMarker') delete coverage.reason;
+      if (variant === 'estimateMarker') coverage.reason = 'gmgn_history_estimate';
+      if (variant === 'pendingScan') inventory.status = 'pending';
+      if (variant === 'unreconciled') inventory.reconciled = false;
+      if (variant === 'canonicalMismatch') inventory.reason = 'inventory_balance_mismatch';
+      if (variant === 'missingStatus') delete inventory.status;
+      if (variant === 'backwardsHead') proof.blockNumber = '1';
+      if (variant === 'sameHeadConflict') proof.blockHash = '0x' + 'd'.repeat(64);
+      if (variant === 'invalidCanonicalHead') inventory.toBlock = '2.5';
+      if (variant === 'invalidProviderHead') proof.blockNumber = '0x2';
+      if (variant === 'invalidCanonicalHash') inventory.blockHash = 'bad';
+      if (variant === 'balanceMismatch') inventory.balance = '11';
+      if (variant === 'zeroVersusDust') { inventory.balance = '0'; proof.balance = '0.00000000000001'; }
+      if (variant === 'invalidCanonicalBalance') inventory.balance = '0xa';
+      if (variant === 'staleCanonical') inventory.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'staleHistory') coverage.historyCheckedAt = new Date(Date.now() - 30_001).toISOString();
+      if (variant === 'staleAccounting') accounting.checkedAt = new Date(Date.now() - 30_001).toISOString();
+      if (variant === 'staleBalance') proof.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'staleBlock') proof.blockTimestamp = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'futureBlock') proof.blockTimestamp = new Date(Date.now() + 1).toISOString();
+      if (variant === 'missingProof') delete coverage.balanceProof;
+      if (variant === 'wrongWallet') proof.walletAddress = selection(3).tokenAddress;
+      if (variant === 'wrongToken') proof.tokenAddress = selection(3).tokenAddress;
+      if (variant === 'incompleteIndex') body.coverage.complete = false;
+      if (variant === 'incompleteHistory') coverage.transactionsComplete = false;
+      expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBeNull();
+      expect(displayedTokenPnl(body)).toBeNull();
+    });
+
+  it.each(['aggregate', 'history'] as const)('refreshes and expires %s evidence on its original thirty-second lifetime', async source => {
+    const body = source === 'aggregate' ? gmgnAggregate(openPosition()) : gmgnHistory(openPosition());
+    body.realizedAccounting!.coverage.historyCheckedAt = new Date(Date.now() - 10_000).toISOString();
+    expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(15_001);
+    expect(tokenPnlExpiresAt(body)).toBe(Date.parse(date) + 20_001);
+    vi.advanceTimersByTime(20_001);
+    expect(displayedTokenPnl(body)).toBeNull(); expect(tokenPnlExpiresAt(body)).toBeNull();
+  });
+
+  it('rejects a recently cached reported total when its history expires', async () => {
+    const old = gmgnAggregate(), fresh = gmgnAggregate();
+    old.realizedAccounting!.coverage.historyCheckedAt = new Date(Date.now() - 29_000).toISOString();
+    const fetcher = vi.fn().mockResolvedValueOnce(response(old)).mockResolvedValue(response(fresh));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect((await loader(selection(), signal())).status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(1001);
+    expect((await loader(selection(), signal())).status).toBe('ready'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('explicit verified tracked-trade estimates', () => {
+  it.each([[1, 1000], [3000, 3000], [75_000, 75_000], [900_000, 300_000]])(
+    'schedules a ready tracked estimate after a bounded GMGN retry of %d ms', (retryAfterMs, expected) => {
+      const body = trackedAccounting(); body.realizedAccounting!.retryAfterMs = retryAfterMs;
+      expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(expected);
+    });
+
+  it('honors the longer quote cooldown while upgrading tracked accounting', () => {
+    const body = trackedAccounting(openPosition());
+    body.realizedAccounting!.retryAfterMs = 3000; body.realizedAccounting!.position!.retryAfterMs = 75_000;
+    expect(tokenPnlRefreshDelay({ activity: body, status: 'ready', retryAfterMs: 5000 }, 0)).toBe(75_000);
+    delete body.realizedAccounting!.retryAfterMs; delete body.realizedAccounting!.position!.retryAfterMs;
+    expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(60_000);
+    body.realizedAccounting!.retryAfterMs = NaN;
+    expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(60_000);
+  });
+
+  it('returns verified tracked totals immediately and leaves the GMGN upgrade to the scheduled retry', async () => {
+    const body = trackedAccounting(openPosition()); body.realizedAccounting!.retryAfterMs = 3000;
+    const fetcher = vi.fn().mockResolvedValue(response(body));
+    const result = await createKolTokenPnlLoader({ fetcher })(selection(), signal());
+    expect(result).toEqual({ activity: body, status: 'ready', retryAfterMs: 3000 });
+    expect(tokenPnlRefreshDelay(result, 0)).toBe(3000); expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps a missing tracked market mark pending and respects its longer quote retry', async () => {
+    const body = trackedAccounting(openPosition()); body.realizedAccounting!.retryAfterMs = 3000;
+    body.realizedAccounting!.position!.estimatedProfitUsd = null;
+    body.realizedAccounting!.position!.reason = 'quote_rate_limited'; body.realizedAccounting!.position!.retryAfterMs = 75_000;
+    const fetcher = vi.fn().mockResolvedValue(response(body));
+    const result = await createKolTokenPnlLoader({ fetcher })(selection(), signal());
+    expect(result).toEqual({ activity: body, status: 'pending', retryAfterMs: 75_000 });
+    expect(displayedTokenPnl(result.activity)).toBe(30);
+    expect(tokenPnlRefreshDelay(result, 0)).toBe(75_000); expect(fetcher).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['missingPosition', 'missingFlow', 'unknownFees', 'nonzeroFees', 'unknownOutgoing', 'nonzeroOutgoing',
+    'negativeInvested', 'zeroInvested', 'unknownSold', 'infiniteCost', 'costMismatch', 'unknownBasis', 'excessBasis',
+    'balanceMismatch', 'zeroVersusDust', 'wrongPositionStatus', 'unknownRealized', 'realizedMismatch', 'closedBasis'] as const)(
+    'rejects inconsistent tracked cash flows: %s', variant => {
+      const body = trackedAccounting(variant === 'closedBasis' ? activity() : openPosition()), accounting = body.realizedAccounting!;
+      const position = accounting.position!, flow = position.cashFlow!;
+      if (variant === 'missingPosition') delete accounting.position;
+      if (variant === 'missingFlow') delete position.cashFlow;
+      if (variant === 'unknownFees') flow.feesUsd = '';
+      if (variant === 'nonzeroFees') flow.feesUsd = '1';
+      if (variant === 'unknownOutgoing') flow.transferOutIncomeUsd = 'unknown';
+      if (variant === 'nonzeroOutgoing') flow.transferOutIncomeUsd = '2';
+      if (variant === 'negativeInvested') flow.investedUsd = '-20';
+      if (variant === 'zeroInvested') flow.investedUsd = '0';
+      if (variant === 'unknownSold') flow.soldUsd = '0x28';
+      if (variant === 'infiniteCost') position.feeInclusiveCostUsd = '1e999';
+      if (variant === 'costMismatch') position.feeInclusiveCostUsd = '21';
+      if (variant === 'unknownBasis') position.remainingCostBasisUsd = null;
+      if (variant === 'excessBasis') position.remainingCostBasisUsd = '21';
+      if (variant === 'balanceMismatch') position.remainingTokenAmount = '11';
+      if (variant === 'zeroVersusDust') { body.inventory!.coverage.balance = '0'; position.remainingTokenAmount = '0.00000000000001'; }
+      if (variant === 'wrongPositionStatus') position.status = 'closed';
+      if (variant === 'unknownRealized') accounting.realizedProfitUsd = null;
+      if (variant === 'realizedMismatch') accounting.realizedProfitUsd = '31';
+      if (variant === 'closedBasis') position.remainingCostBasisUsd = '1';
+      expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBeNull();
+    });
+
+  it.each(['-10', '0', '30'])('accepts consistent signed tracked realized gains of %s', realized => {
+    const body = trackedAccounting(), accounting = body.realizedAccounting!, position = accounting.position!;
+    accounting.realizedProfitUsd = realized; position.cashFlow!.soldUsd = String(20 + Number(realized));
+    position.estimatedProfitUsd = realized;
+    expect(verifiedTokenRealizedPnl(body)).toBe(Number(realized)); expect(verifiedTokenPositionPnl(body)).toBe(Number(realized));
+  });
+
+  it('shows the separate tracked labels and gas exclusion without presenting a GMGN total', async () => {
+    for (const body of [trackedAccounting(openPosition()), trackedAccounting()]) {
+      const open = body.summary.status === 'open';
+      expect(verifiedTokenRealizedPnl(body)).toBe(30); expect(verifiedTokenPositionPnl(body)).toBe(open ? 70 : 30);
+      expect(tokenPositionPnlLabel(body)).toBe(open ? 'Tracked est. profit' : 'Tracked realized P&L');
+      expect(tokenPositionPnlDescription(body)).toBe('Estimate from verified tracked trades; gas fees and earlier untracked trades are excluded.');
+      expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(60_000);
+      expect(tokenPnlExpiresAt(body)).toBe(Date.parse(date) + 180_001);
+      expect((await createKolTokenPnlLoader({ fetcher: vi.fn().mockResolvedValue(response(body)) })(selection(), signal())).status).toBe('ready');
+    }
+  });
+
+  it.each(['gmgnPolicy', 'gmgnSource', 'gmgnMarker', 'missingReason', 'unknownReason', 'pendingCanonical', 'canonicalMismatch',
+    'incompleteCanonical', 'unreconciledCanonical', 'staleCanonical', 'staleAccounting', 'historyVerification', 'historyProof',
+    'historyFingerprint', 'providerHistoryUnavailable', 'invalidHead', 'reversedWindow', 'missingBlockHash'] as const)(
+    'rejects tracked estimates with %s instead of borrowing another accounting policy', variant => {
+      const body = trackedAccounting(openPosition()), accounting = body.realizedAccounting!, proof = body.inventory!.coverage;
+      if (variant === 'gmgnPolicy') accounting.policy = 'gmgn_realized_profit_v1';
+      if (variant === 'gmgnSource') accounting.source = 'gmgn';
+      if (variant === 'gmgnMarker') { accounting.source = 'gmgn'; accounting.policy = 'gmgn_realized_profit_v1'; }
+      if (variant === 'missingReason') delete accounting.coverage.reason;
+      if (variant === 'unknownReason') accounting.coverage.reason = 'gmgn_activity_estimate';
+      if (variant === 'pendingCanonical') proof.status = 'pending';
+      if (variant === 'canonicalMismatch') proof.reason = 'inventory_balance_mismatch';
+      if (variant === 'incompleteCanonical') proof.complete = false;
+      if (variant === 'unreconciledCanonical') proof.reconciled = false;
+      if (variant === 'staleCanonical') proof.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'staleAccounting') accounting.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'invalidHead') proof.toBlock = '2.5';
+      if (variant === 'reversedWindow') proof.fromBlock = '3';
+      if (variant === 'missingBlockHash') proof.blockHash = null;
+      if (variant === 'historyVerification') accounting.coverage.verification = 'gmgn_history';
+      if (variant === 'historyProof') accounting.coverage.balanceProof = gmgnHistory().realizedAccounting!.coverage.balanceProof;
+      if (variant === 'historyFingerprint') accounting.coverage.historyFingerprint = 'b'.repeat(64);
+      if (variant === 'providerHistoryUnavailable') Object.assign(proof, { complete: false, reconciled: false, status: 'unavailable', reason: 'inventory_history_unavailable' });
+      expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBeNull();
+    });
+
+  it('keeps known tracked realized gains under their own label during a quote outage', () => {
+    const body = trackedAccounting(openPosition());
+    body.realizedAccounting!.position!.estimatedProfitUsd = null;
+    body.realizedAccounting!.position!.reason = 'current_quote_unavailable';
+    expect(displayedTokenPnl(body)).toBe(30); expect(tokenPositionPnlLabel(body)).toBe('Tracked realized P&L');
+  });
+
+  it('expires an older tracked accounting snapshot even when its canonical proof is newer', () => {
+    const body = trackedAccounting();
+    body.realizedAccounting!.checkedAt = new Date(Date.now() - 120_000).toISOString();
+    expect(tokenPnlExpiresAt(body)).toBe(Date.parse(date) + 60_001);
+    vi.advanceTimersByTime(60_001);
+    expect(displayedTokenPnl(body)).toBeNull();
+  });
+
+  it('does not carry a retained amount across a switch between tracked and GMGN policies', () => {
+    const tracked = trackedAccounting(), gmgn = activity();
+    expect(tokenPnlMovementsMatch(tracked, gmgn)).toBe(false); expect(tokenPnlMovementsMatch(gmgn, tracked)).toBe(false);
+    const waiting = trackedAccounting(); waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
+    expect(tokenPnlMovementsMatch(tracked, waiting)).toBe(true);
+  });
+
+  it('upgrades a tracked result to newly verified GMGN accounting after the short recent-result cache', async () => {
+    const tracked = trackedAccounting(), gmgn = activity();
+    const fetcher = vi.fn().mockResolvedValueOnce(response(tracked)).mockResolvedValue(response(gmgn));
+    const loader = createKolTokenPnlLoader({ fetcher });
+    expect(tokenPositionPnlLabel((await loader(selection(), signal())).activity)).toBe('Tracked realized P&L');
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(tokenPositionPnlLabel((await loader(selection(), signal())).activity)).toBe('Realized P&L');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('tracked estimates with independent provider history and a current-chain balance', () => {
+  it('honors a GMGN cooldown beyond history expiry without extending the displayed evidence', async () => {
+    const body = trackedHistory(); body.realizedAccounting!.retryAfterMs = 75_000;
+    const fetcher = vi.fn().mockResolvedValue(response(body));
+    const result = await createKolTokenPnlLoader({ fetcher })(selection(), signal());
+    expect(result.status).toBe('ready'); expect(tokenPnlRefreshDelay(result, 0)).toBe(75_000);
+    expect(tokenPnlExpiresAt(body)).toBe(Date.parse(date) + 30_001);
+    vi.advanceTimersByTime(30_001);
+    expect(displayedTokenPnl(body)).toBeNull(); expect(fetcher).toHaveBeenCalledOnce();
+    expect(body.realizedAccounting!.coverage.historyCheckedAt).toBe(date);
+  });
+
+  it.each(['inventory_history_unavailable', 'inventory_rpc_unavailable'])(
+    'shows separately labelled open and closed tracked totals after %s', reason => {
+      for (const body of [trackedHistory(openPosition()), trackedHistory(activity())]) {
+        body.inventory!.coverage.reason = reason;
+        const open = body.summary.status === 'open';
+        expect(verifiedTokenRealizedPnl(body)).toBe(30); expect(verifiedTokenPositionPnl(body)).toBe(open ? 70 : 30);
+        expect(tokenPositionPnlLabel(body)).toBe(open ? 'Tracked est. profit' : 'Tracked realized P&L');
+        expect(tokenPositionPnlDescription(body)).toContain('gas fees and earlier untracked trades are excluded');
+        expect(terminalTokenInventoryFailure(body)).toBe(false);
+        expect(tokenPnlRefreshDelay({ activity: body, status: 'ready' }, 0)).toBe(20_000);
+        expect(tokenPnlExpiresAt(body)).toBe(Date.parse(date) + 30_001);
+        expect(body.inventory!.coverage.complete).toBe(false);
+      }
+    });
+
+  it.each(['canonicalComplete', 'canonicalMismatch', 'canonicalPending', 'gmgnVerification', 'gmgnSource', 'missingMarker',
+    'incompleteIndex', 'incompleteHistory', 'unmatchedBalance', 'staleHistory', 'staleAccounting', 'staleBalance', 'staleBlock',
+    'futureBlock', 'movementAfterBlock', 'missingMovement', 'badFingerprint', 'missingProof', 'wrongWallet', 'wrongToken',
+    'wrongChain', 'invalidBlock', 'invalidHash', 'balanceDisagreement', 'unknownFees', 'falseRealized'] as const)(
+    'rejects tracked-history accounting with %s evidence', variant => {
+      const body = trackedHistory(), accounting = body.realizedAccounting!, coverage = accounting.coverage;
+      const inventory = body.inventory!.coverage, proof = coverage.balanceProof!;
+      if (variant === 'canonicalComplete') Object.assign(inventory, { complete: true, reconciled: true, status: 'verified', reason: undefined, checkedAt: date, balance: '10' });
+      if (variant === 'canonicalMismatch') inventory.reason = 'inventory_balance_mismatch';
+      if (variant === 'canonicalPending') inventory.status = 'pending';
+      if (variant === 'gmgnVerification') coverage.verification = 'gmgn_history';
+      if (variant === 'gmgnSource') { accounting.source = 'gmgn'; accounting.policy = 'gmgn_realized_profit_v1'; coverage.reason = 'gmgn_aggregate_verified'; }
+      if (variant === 'missingMarker') delete coverage.reason;
+      if (variant === 'incompleteIndex') body.coverage.complete = false;
+      if (variant === 'incompleteHistory') coverage.transactionsComplete = false;
+      if (variant === 'unmatchedBalance') coverage.balanceMatched = false;
+      if (variant === 'staleHistory') coverage.historyCheckedAt = new Date(Date.now() - 30_001).toISOString();
+      if (variant === 'staleAccounting') accounting.checkedAt = new Date(Date.now() - 30_001).toISOString();
+      if (variant === 'staleBalance') proof.checkedAt = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'staleBlock') proof.blockTimestamp = new Date(Date.now() - 180_001).toISOString();
+      if (variant === 'futureBlock') proof.blockTimestamp = new Date(Date.now() + 1).toISOString();
+      if (variant === 'movementAfterBlock') coverage.lastMovementAt = new Date(Date.now() + 1).toISOString();
+      if (variant === 'missingMovement') delete coverage.lastMovementAt;
+      if (variant === 'badFingerprint') coverage.historyFingerprint = 'bad';
+      if (variant === 'missingProof') delete coverage.balanceProof;
+      if (variant === 'wrongWallet') proof.walletAddress = selection(3).tokenAddress;
+      if (variant === 'wrongToken') proof.tokenAddress = selection(3).tokenAddress;
+      if (variant === 'wrongChain') Object.assign(proof, { chain: 'eth' });
+      if (variant === 'invalidBlock') proof.blockNumber = '1.5';
+      if (variant === 'invalidHash') proof.blockHash = 'bad';
+      if (variant === 'balanceDisagreement') proof.balance = '11';
+      if (variant === 'unknownFees') accounting.position!.cashFlow!.feesUsd = 'unknown';
+      if (variant === 'falseRealized') accounting.realizedProfitUsd = '31';
+      expect(verifiedTokenRealizedPnl(body)).toBeNull(); expect(verifiedTokenPositionPnl(body)).toBeNull();
+      expect(displayedTokenPnl(body)).toBeNull();
+    });
+
+  it('expires tracked history at thirty seconds without renewing any evidence date', () => {
+    const body = trackedHistory();
+    expect(displayedTokenPnl(body)).toBe(70);
+    vi.advanceTimersByTime(30_001);
+    expect(displayedTokenPnl(body)).toBeNull(); expect(tokenPnlExpiresAt(body)).toBeNull();
+    expect(body.realizedAccounting!.coverage.historyCheckedAt).toBe(date);
+  });
+});
+
 describe('fair token-card realized profit loading', () => {
+  it.each(['provider_transaction_mismatch', 'gmgn_history_indexed_mismatch', 'provider_activity_conflict', 'gmgn_history_conflict'])(
+    'explains a provider history mismatch for both open and closed positions: %s', reason => {
+      for (const status of ['open', 'closed'] as const) {
+        const body = activity(selection(), null); body.summary.status = status;
+        body.realizedAccounting!.coverage.reason = reason;
+        // CATTO has a verified current-cycle ledger; the provider history can
+        // still describe a different scope. Do not blame its verified balance.
+        expect(body.inventory!.coverage.complete).toBe(true);
+        expect(tokenPositionPnlUnavailableNotice(body)).toBe('Profit is unavailable because GMGN and the verified trade history do not match.');
+        expect(displayedTokenPnl(body)).toBeNull();
+      }
+    });
+  it.each(['inventory_balance_mismatch', 'balance_mismatch', 'gmgn_history_balance_mismatch'])(
+    'explains balance reconciliation failure from either coverage source: %s', reason => {
+      for (const status of ['open', 'closed'] as const) {
+        for (const source of ['accounting', 'inventory'] as const) {
+          const body = activity(selection(), null); body.summary.status = status;
+          delete body.realizedAccounting!.coverage.reason;
+          if (source === 'accounting') body.realizedAccounting!.coverage.reason = reason;
+          else body.inventory!.coverage.reason = reason;
+          expect(tokenPositionPnlUnavailableNotice(body)).toBe('Profit is unavailable because transaction amounts do not match the wallet balance.');
+          expect(displayedTokenPnl(body)).toBeNull();
+        }
+      }
+    });
+  it.each(['gmgn_realized_cost_unavailable', 'quote_or_fee_unavailable', 'transfer_fee_schema_unavailable',
+    'gmgn_history_opening_cost_unknown', 'gmgn_history_cost_invalid', 'purchase_cost_unavailable', 'provider_basis_unreconciled'])(
+    'explains unverifiable purchase costs or fees for both position states: %s', reason => {
+      for (const status of ['open', 'closed'] as const) {
+        const body = activity(selection(), null); body.summary.status = status;
+        body.realizedAccounting!.coverage.reason = reason;
+        expect(tokenPositionPnlUnavailableNotice(body)).toBe('Profit is unavailable because purchase costs or fees could not be verified.');
+        expect(displayedTokenPnl(body)).toBeNull();
+      }
+    });
+  it('does not describe a position cost failure as a missing quote', () => {
+    const body = openPosition();
+    body.realizedAccounting!.position!.estimatedProfitUsd = null;
+    body.realizedAccounting!.position!.reason = 'purchase_cost_unavailable';
+    expect(tokenPositionPnlUnavailableNotice(body)).toBe('Profit is unavailable because purchase costs or fees could not be verified.');
+    delete body.realizedAccounting!.position!.reason;
+    expect(tokenPositionPnlUnavailableNotice(body)).toBe('Estimated profit is unavailable until a current token price is verified.');
+  });
+
   it('uses an estimated-profit label for buy-only activity while waiting for verified accounting, without inventing a total', () => {
     const body = activity(selection(), null);
     body.summary.status = 'open'; body.summary.sellCount = 0; body.summary.remainingTokenAmount = '10';

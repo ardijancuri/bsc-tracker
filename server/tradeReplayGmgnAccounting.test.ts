@@ -67,6 +67,35 @@ const yukazAggregate: Record<string, unknown> = { address: wallet, balance: 2572
   profit_change: 5.684526437412225, realized_profit: 586.4671337325424, unrealized_profit: 2540.2959049751003 };
 
 describe('GMGN replay fee and marked-transfer accounting', () => {
+  it.each(['native-quote', 'erc20-quote', 'native-gas-fx'] as const)('recovers unpriced indexed USD marks using matched %s evidence', variant => {
+    const intermediate = '0x' + 'a'.repeat(40);
+    const rows = [provider(1, 'buy', '10', '100', { gas_usd: '1' }),
+      provider(2, 'sell', '4', '80', { gas_usd: '1' })];
+    const activity = canonical(rows, ['105', '78']);
+    if (variant !== 'native-quote') for (const row of rows) {
+      row.quote_address = intermediate;
+      if (variant === 'native-gas-fx') row.gas_native = row.gas_usd;
+    }
+    if (variant === 'erc20-quote') for (const trade of activity.trades) {
+      trade.quoteTokenAddress = intermediate; trade.quoteSymbol = 'QUOTE';
+    }
+    const expected = build(activity, rows);
+    for (const trade of activity.trades) { trade.valuationStatus = 'unpriced'; trade.amountUsd = null; }
+    const result = build(activity, rows);
+    expect(result).toEqual(expected);
+    expect(result.coverage).toMatchObject({ transactionsComplete: true, balanceMatched: true });
+    expect(result.events.at(-1)).toMatchObject({ feeInclusiveCostUsd: '109', cumulativeRealizedProfitUsd: '34.6' });
+  });
+
+  it('does not recover an unpriced native quote without independent historical FX', () => {
+    const rows = [provider(1, 'buy', '10', '95', { quote_address: '0x' + 'a'.repeat(40), gas_usd: '0.5' })];
+    const activity = canonical(rows, ['0.2']);
+    activity.trades[0].valuationStatus = 'unpriced'; activity.trades[0].amountUsd = null;
+    const result = build(activity, rows);
+    expect(result.events[0].feeInclusiveCostUsd).toBeNull();
+    expect(result.coverage.reason).toBe('quote_or_fee_unavailable');
+  });
+
   it('values native wallet cash using same-transaction gas FX when the pool quote is an intermediate token', () => {
     const intermediate = '0x' + 'a'.repeat(40);
     const rows = [

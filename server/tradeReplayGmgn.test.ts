@@ -60,6 +60,130 @@ const routes = (request: ReturnType<typeof setup>['request']) => request.mock.ca
 const priorityOf = (options: GmgnRequestOptions) => typeof options.priority === 'function' ? options.priority() : options.priority;
 
 describe('existing-key GMGN replay provider', () => {
+  it('recovers lifetime profile totals across an older closed cycle without manufacturing replay prefixes', async () => {
+    const selected = activity(), oldBuy = { ...providerRow(), tx_hash: '0x' + 'a'.repeat(64), timestamp: timestamp - 200 };
+    const oldSell = { ...providerRow(), tx_hash: '0x' + 'b'.repeat(64), event_type: 'sell', timestamp: timestamp - 100, cost_usd: '50' };
+    const total = { ...aggregate(), buy_amount_cur: 20, sell_amount_cur: 10, history_bought_cost: 200, history_sold_income: 50,
+      history_bought_fee: 2, buy_tx_count_cur: 2, sell_tx_count_cur: 1, total_cost: 202, profit: 48, profit_change: 48 / 202, realized_profit: -51 };
+    const request = vi.fn(async (url: URL) => ({ data: url.pathname.endsWith('wallet_activity')
+      ? { activities: [providerRow(), oldSell, oldBuy], next: null } : { list: [total] } }));
+    const loadBalance = vi.fn(async () => ({ chain: 'bsc' as const, walletAddress: wallet, tokenAddress: token,
+      blockNumber: '110', blockHash, blockTimestamp: new Date(time).toISOString(), checkedAt: new Date(time).toISOString(), balance: '10' }));
+    const load = createTradeReplayGmgnLoader({ request, loadBalance, now: () => time, directory, apiKey: () => 'test-key' });
+    const canonical = await load(selected, { historicalRealized: true });
+    expect(canonical.coverage.transactionsComplete).toBe(false);
+    const value = await load.profile(selected, { foreground: true });
+    expect(value).toMatchObject({ status: 'ready', realizedProfitUsd: '-51', coverage: { reason: 'gmgn_aggregate_verified' },
+      position: { estimatedProfitUsd: '48', feeInclusiveCostUsd: '202' } });
+    expect(value).not.toHaveProperty('replayHistory');
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('wallet_activity'))).toHaveLength(1);
+    expect(await load.profile(selected)).toEqual(value);
+    expect(loadBalance).toHaveBeenCalledOnce();
+  });
+
+  it('isolates profile jobs and cached values for different wallets with identical ledger fingerprints', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const { load, request } = setup(async url => {
+      if (url.pathname.endsWith('wallet_activity')) {
+        const address = url.searchParams.get('wallet_address')!;
+        if (address === wallet) await gate;
+        return { data: { activities: [providerRow(address)], next: null } };
+      }
+      return { data: { list: [aggregate(wallet), aggregate(other)] } };
+    }, { loadBalance: async ({ wallet: address }) => ({ chain: 'bsc', walletAddress: address, tokenAddress: token, blockNumber: '110',
+      blockHash, blockTimestamp: new Date(time).toISOString(), checkedAt: new Date(time).toISOString(), balance: '10' }) });
+    const first = load.profile(activity(wallet), { foreground: true });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    const second = await load.profile(activity(other), { foreground: true });
+    expect(second?.walletAddress).toBe(other); release();
+    expect((await first)?.walletAddress).toBe(wallet);
+    const calls = request.mock.calls.length;
+    expect((await load.profile(activity(wallet)))?.walletAddress).toBe(wallet);
+    expect((await load.profile(activity(other)))?.walletAddress).toBe(other);
+    expect(request).toHaveBeenCalledTimes(calls);
+  });
+
+  it.each([false, true])('rechecks a resumed lifetime history head and rejects a changed head=%s', async changed => {
+    let clock = time, deferred = false, heads = 0;
+    const loadBalance = vi.fn(async () => ({ chain: 'bsc' as const, walletAddress: wallet, tokenAddress: token, blockNumber: '110', blockHash,
+      blockTimestamp: new Date(clock).toISOString(), checkedAt: new Date(clock).toISOString(), balance: '10' }));
+    const { load, request } = setup(async url => {
+      if (url.pathname.endsWith('token_top_traders')) return { data: { list: [aggregate()] } };
+      if (!url.searchParams.has('cursor')) {
+        heads++;
+        return { data: { activities: [{ ...providerRow(), ...(changed && heads > 1 ? { cost_usd: '101' } : {}) }], next: 'page-2' } };
+      }
+      if (!deferred) { deferred = true; throw new MarketProviderDeferred('rate_limited', 20_000); }
+      return { data: { activities: [], next: null } };
+    }, { loadBalance, now: () => clock });
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending', retryAfterMs: 20_000 });
+    expect(loadBalance).not.toHaveBeenCalled(); clock += 20_000;
+    const value = await load.profile(activity());
+    expect(value?.status).toBe(changed ? 'pending' : 'ready');
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('wallet_activity')).map(([url]) => url.searchParams.get('cursor')))
+      .toEqual([null, 'page-2', 'page-2', null]);
+    if (changed) {
+      expect(value?.coverage.reason).toBe('provider_snapshot_changed'); expect(loadBalance).not.toHaveBeenCalled();
+      expect(routes(request).some(route => route.endsWith('token_top_traders'))).toBe(false);
+    } else {
+      expect(value?.coverage.historyCheckedAt).toBe(new Date(clock).toISOString()); expect(loadBalance).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('resumes head validation after a cooldown following the final history page', async () => {
+    let clock = time, heads = 0;
+    const { load, request } = setup(async url => {
+      if (url.pathname.endsWith('token_top_traders')) return { data: { list: [aggregate()] } };
+      if (url.searchParams.has('cursor')) return { data: { activities: [], next: null } };
+      if (++heads === 2) throw new MarketProviderDeferred('busy', 1000);
+      return { data: { activities: [providerRow()], next: 'page-2' } };
+    }, { now: () => clock, loadBalance: async () => ({ chain: 'bsc', walletAddress: wallet, tokenAddress: token, blockNumber: '110', blockHash,
+      blockTimestamp: new Date(clock).toISOString(), checkedAt: new Date(clock).toISOString(), balance: '10' }) });
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending', retryAfterMs: 1000 });
+    clock += 1000;
+    expect((await load.profile(activity()))?.status).toBe('ready');
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('wallet_activity')).map(([url]) => url.searchParams.get('cursor')))
+      .toEqual([null, 'page-2', null, null]);
+  });
+
+  it('continues to another ranking when the first wallet aggregate cannot be reconciled', async () => {
+    const loadBalance = vi.fn(async () => ({ chain: 'bsc' as const, walletAddress: wallet, tokenAddress: token, blockNumber: '110', blockHash,
+      blockTimestamp: new Date(time).toISOString(), checkedAt: new Date(time).toISOString(), balance: '10' }));
+    const { load, request } = setup(async url => ({ data: url.pathname.endsWith('wallet_activity') ? { activities: [providerRow()], next: null }
+      : { list: [{ ...aggregate(), ...(url.searchParams.get('order_by') === 'amount_percentage' ? { buy_tx_count_cur: 2 } : {}) }] } }), { loadBalance });
+    expect(await load.profile(activity())).toMatchObject({ status: 'ready', position: { estimatedProfitUsd: '99' } });
+    expect(request.mock.calls.filter(([url]) => url.pathname.endsWith('token_top_traders')).map(([url]) => url.searchParams.get('order_by')))
+      .toEqual(['amount_percentage', 'profit']);
+    expect(loadBalance).toHaveBeenCalledOnce();
+    expect(request.mock.calls.map(([, options]) => options.weight)).toEqual([3, 5, 5]);
+  });
+
+  it('honors a cooldown while trying a second ranking after a rejected aggregate', async () => {
+    const { load, request } = setup(async url => {
+      if (url.pathname.endsWith('wallet_activity')) return { data: { activities: [providerRow()], next: null } };
+      if (url.searchParams.get('order_by') === 'profit') throw new MarketProviderDeferred('rate_limited', 20_000);
+      return { data: { list: [{ ...aggregate(), profit: 'invalid' }] } };
+    }, { loadBalance: async () => ({ chain: 'bsc', walletAddress: wallet, tokenAddress: token, blockNumber: '110', blockHash,
+      blockTimestamp: new Date(time).toISOString(), checkedAt: new Date(time).toISOString(), balance: '10' }) });
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending', retryAfterMs: 20_000, coverage: { reason: 'provider_rate_limited' } });
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending', retryAfterMs: 20_000 });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('respects provider cooldowns in lifetime recovery and never attempts contradictory canonical inventory', async () => {
+    let clock = time;
+    const request = vi.fn(async () => { throw new MarketProviderDeferred('rate_limited', 20_000); });
+    const loadBalance = vi.fn();
+    const load = createTradeReplayGmgnLoader({ request, loadBalance, now: () => clock, directory, apiKey: () => 'test-key' });
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending', retryAfterMs: 20_000 });
+    clock += 1000;
+    expect(await load.profile(activity())).toMatchObject({ status: 'pending' });
+    expect(request).toHaveBeenCalledOnce();
+    const broken = activity(); broken.inventory!.coverage.complete = false; broken.inventory!.coverage.reason = 'inventory_balance_mismatch';
+    expect(await load.profile(broken)).toBeNull();
+    expect(loadBalance).not.toHaveBeenCalled();
+  });
   it('continues ranking search through misses after long cooldowns and refreshes the last successful ranking first after restart', async () => {
     let clock = time, stage = 0;
     const handler = async (url: URL) => {

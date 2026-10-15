@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2 fixes — 2026-10-16
+
+- Recover verified lifetime GMGN totals for positions whose older cycles predate indexed trades, retaining earlier losses, transfer values and fees.
+- Recover missing recent account-abstraction sales without an archive node; label independently reconciled tracked profit separately when GMGN omits those sales.
+- Reuse matched transaction FX when indexed USD marks are missing, improve accounting failure messages, and refresh provider-history results before their proof expires.
+- Keep lifetime profile recovery separate from replay event accounting; validate paginated history and ranking candidates before displaying totals.
+
 ## v1.2.0 — 2026-10-15
 
 - Fixed trade replay generation when historical RPC data is unavailable by sharing verified GMGN movements and current balance checks with profile P&L; estimated profit now follows each movement, including transfers and fees.

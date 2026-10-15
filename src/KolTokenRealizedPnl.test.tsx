@@ -60,13 +60,13 @@ describe('KOL token realized profit display', () => {
     waiting.realizedAccounting!.status = 'pending'; waiting.realizedAccounting!.realizedProfitUsd = null;
     waiting.realizedAccounting!.coverage = { verification: 'gmgn_history', transactionsComplete: false, balanceMatched: false, reason: 'provider_rate_limited' };
     waiting.inventory!.coverage.toBlock = '3'; waiting.inventory!.coverage.blockHash = '0x' + 'f'.repeat(64);
-    vi.advanceTimersByTime(40_000); waiting.realizedAccounting!.checkedAt = new Date(Date.now()).toISOString();
+    vi.advanceTimersByTime(20_000); waiting.realizedAccounting!.checkedAt = new Date(Date.now()).toISOString();
     const retained = tokenPnlStateAfterLoad(before, 'pair', { activity: waiting, status: 'pending' }, true);
     expect(retained.activity).toBe(original); expect(retained.activity?.realizedAccounting?.checkedAt).toBe(date);
     expect(retained.busy).toBe(false); expect(retained.delayed).toBe(true);
     expect(renderToStaticMarkup(<KolTokenRealizedPnlValue activity={retained.activity} busy={retained.busy} delayed={retained.delayed} />)).toContain('+$30');
     expect(tokenPnlStateAfterLoad(before, 'different-pair', { activity: waiting, status: 'pending' }, true).activity).toBe(waiting);
-    vi.advanceTimersByTime(140_001);
+    vi.advanceTimersByTime(10_001);
     const expired = tokenPnlStateAfterLoad(retained, 'pair', { activity: waiting, status: 'pending' }, true);
     expect(expired.activity).toBe(waiting);
     expect(renderToStaticMarkup(<KolTokenRealizedPnlValue activity={expired.activity} busy={expired.busy} delayed={expired.delayed} />)).not.toContain('+$30');
@@ -178,7 +178,7 @@ describe('KOL token realized profit display', () => {
     expect(html).toContain('aria-busy="true"'); expect(html).toContain('Loading GMGN realized'); expect(html).toContain('…');
     expect(html).not.toContain('purchase costs are missing');
     const missing = renderToStaticMarkup(<KolTokenRealizedPnlValue activity={activity(null)} busy={false} />);
-    expect(missing).toContain('aria-busy="false"'); expect(missing).toContain('transfer costs or fee data are missing'); expect(missing).toContain('—');
+    expect(missing).toContain('aria-busy="false"'); expect(missing).toContain('purchase costs or fees could not be verified'); expect(missing).toContain('—');
     expect(missing).not.toContain('$999');
   });
   it('preserves a verified value only for the same selection through a transient refresh', () => {

@@ -31,7 +31,9 @@ const kindOf = (value: unknown): InventoryEvent['kind'] | null => {
 };
 const eventKey = (tx: string, kind: string) => `${tx.toLowerCase()}:${kind}`;
 function quoteMatched(trade: KolTokenTrade, provider: GmgnReplayActivity) {
-  if (trade.valuationStatus !== 'valued' || !['node', 'node+gmgn'].includes(trade.source)) return false;
+  // Missing indexed USD prices can be recovered from the matched transaction's
+  // provider FX; ambiguous or invalid receipt quantities remain excluded.
+  if (!['valued', 'unpriced'].includes(trade.valuationStatus) || !['node', 'node+gmgn'].includes(trade.source)) return false;
   const providerAddress = String(provider.quote_address ?? provider.quote_token?.token_address ?? '').toLowerCase();
   const indexedAddress = trade.quoteTokenAddress?.toLowerCase();
   if (nativeAddresses.has(providerAddress)) return trade.quoteTokenAddress === null
@@ -45,7 +47,7 @@ function quoteMatched(trade: KolTokenTrade, provider: GmgnReplayActivity) {
 function nativeQuoteCash(trade: KolTokenTrade, provider: GmgnReplayActivity): number | null {
   const nativeQuote = trade.quoteTokenAddress === null && trade.quoteSymbol?.toUpperCase() === 'BNB'
     || typeof trade.quoteTokenAddress === 'string' && nativeAddresses.has(trade.quoteTokenAddress.toLowerCase());
-  if (!nativeQuote || trade.valuationStatus !== 'valued' || !['node', 'node+gmgn'].includes(trade.source)) return null;
+  if (!nativeQuote || !['valued', 'unpriced'].includes(trade.valuationStatus) || !['node', 'node+gmgn'].includes(trade.source)) return null;
   const nativeGas = numeric(provider.gas_native), usdGas = numeric(provider.gas_usd), amount = numeric(trade.quoteAmount);
   if (nativeGas === null || nativeGas <= 0 || usdGas === null || usdGas <= 0 || amount === null || amount <= 0) return null;
   const cash = amount * usdGas / nativeGas;
