@@ -49,6 +49,34 @@ afterEach(async () => {
 });
 
 describe('replay historical market sampling', () => {
+  it('resumes completed GMGN pages after cooldown without reusing a forming quote', async () => {
+    let clock = (base + 280 * 3600 + 1800) * 1000, calls = 0;
+    const requested: number[] = [];
+    const gmgnRequest = vi.fn(async (url: URL) => {
+      calls++; const to = Number(url.searchParams.get('to')); requested.push(to);
+      if (calls === 2) throw new MarketProviderDeferred('rate_limited', 3000);
+      const latest = Math.floor(to / 3_600_000) * 3600;
+      return { code: 0, data: Array.from({ length: 100 }, (_, index) => ({ time: latest - (99 - index) * 3600,
+        open: 1, close: latest - (99 - index) * 3600 === base + 280 * 3600 ? 999 : 2 })) };
+    });
+    const currentChartRequest = vi.fn(async () => ({ ...liveMarket(), updatedAt: new Date(clock).toISOString(),
+      candles: [{ time: Math.floor(clock / 60_000) * 60, open: 7, high: 8, low: 7, close: 8, volume: 10 }] }));
+    const load = createReplayChartCache((address, first, last, options) => fetchTradeReplayChart(address, first, last,
+      { ...options, gmgnKey: 'test-key', gmgnRequest, currentChartRequest, geckoRequest: vi.fn(), now: clock }), () => clock);
+    const first = (base + 15) * 1000, last = (base + 260 * 3600) * 1000;
+    const pending = await load(token, first, last, true);
+    expect(pending.loadStatus).toBe('rate_limited'); expect(pending.points).toHaveLength(0);
+    clock += 15_001;
+    const ready = await load(token, first, last, true);
+    expect(ready.source).toBe('gmgn'); expect(ready.resolution).toBe('1h');
+    expect(ready.points.length).toBeGreaterThan(250); expect(ready.currentQuote?.priceUsd).toBe('8');
+    expect(ready.points.some(point => point.priceUsd === '999')).toBe(false);
+    expect(requested.filter(to => Math.floor(to / 3_600_000) === Math.floor((clock - 15_001) / 3_600_000))).toHaveLength(1);
+    expect(requested[1]).toBe(requested[2]);
+    clock += 180_001;
+    await load(token, first, last, true);
+    expect(gmgnRequest.mock.calls.slice(4).some(([url]) => Number(url.searchParams.get('to')) === clock)).toBe(true);
+  });
   it('places only the opening boundary and actual completed closes on their correct times', () => {
     const points = replayPointsFromBars([bar(60, 3, 4), bar(0, 1, 2), bar(30, 2, 3)], 30,
       (base + 15) * 1000, (base + 75) * 1000, (base + 300) * 1000);

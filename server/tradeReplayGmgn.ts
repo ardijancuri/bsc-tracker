@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
+import { canUseGmgnHistoryFallback, type KolTokenActivity } from '../shared/kolTokenTrades.js';
+import { currentGmgnHistoryPnl } from './gmgnHistoryPnl.js';
 import type { TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
@@ -104,9 +105,11 @@ function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** Share/export and profile realized P&L opt into these calls. Work shares the chart account's
  * DB rate budget; public cache payloads contain neither credentials nor errors. */
 export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = buildTradeReplayGmgnAccounting,
+  loadHistoryReplay = currentGmgnHistoryPnl.replay,
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'replay-gmgn'),
   now = Date.now, budgetMs = 8000, apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
-}: { request?: Requester; builder?: Builder; directory?: string; now?: () => number; budgetMs?: number; apiKey?: () => string } = {}) {
+}: { request?: Requester; builder?: Builder; directory?: string; now?: () => number; budgetMs?: number; apiKey?: () => string;
+  loadHistoryReplay?: typeof currentGmgnHistoryPnl.replay } = {}) {
   const histories = new Map<string, History>(), completedHistories = new Map<string, History>(), traders = new Map<string, Traders>();
   const hints = new Map<string, RankingHints>();
   const jobs = new Map<string, Job>(), traderJobs = new Map<string, { work: Promise<Traders>; priority: () => 'chart' | 'prefetch' }>();
@@ -283,6 +286,9 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     if (!addressRe.test(wallet) || !addressRe.test(token)) return result(activity, undefined, 'invalid_pair');
     if (!key) return result(activity, undefined, 'provider_key_unavailable');
     const proof = activity.inventory?.coverage;
+    if (activity.coverage.complete && canUseGmgnHistoryFallback(proof?.reason)) {
+      return loadHistoryReplay(activity, { foreground: options.historicalRealized !== true ? true : options.foreground });
+    }
     if (!activity.coverage.complete || !proof?.complete || !proof.reconciled || !validTime(Date.parse(proof.checkedAt ?? ''), historyTtlMs)) {
       const value = result(activity);
       if (activity.coverage.complete && (proof?.status === 'pending' || transientInventory.has(proof?.reason ?? ''))) {

@@ -133,7 +133,7 @@ describe('existing-key GMGN replay provider', () => {
     const { load, request } = setup(), body = activity(); body.inventory!.coverage.checkedAt = new Date(time + skew).toISOString();
     const result = await load(body); expect(result.final).toBeNull(); expect(request).not.toHaveBeenCalled();
   });
-  it.each(['inventory_rpc_unavailable', 'canonical_block_unavailable', 'canonical_receipt_unavailable', 'canonical_transaction_unavailable',
+  it.each(['canonical_block_unavailable', 'canonical_receipt_unavailable', 'canonical_transaction_unavailable',
     'movement_scan_unavailable', 'confirmed_endpoint_stale', 'indexed_snapshot_changed', 'unindexed_swap_pending'])
     ('keeps a temporary %s inventory failure retryable and recovers automatically once proof returns', async reason => {
       const { load, request } = setup(), body = activity();
@@ -143,6 +143,16 @@ describe('existing-key GMGN replay provider', () => {
       expect((await load(activity())).status).toBe('ready'); expect(request).toHaveBeenCalledTimes(2);
       body.coverage.complete = false; expect((await load(body)).status).toBe('unavailable');
     });
+  it.each(['inventory_history_unavailable', 'inventory_rpc_unavailable'])('uses the shared history recovery for %s and promotes replay priority', async reason => {
+    const loadHistoryReplay = vi.fn(async (body: KolTokenActivity) => ({ ...buildTradeReplayGmgnAccounting(body, [], { activitiesComplete: false,
+      checkedAt: new Date(time).toISOString(), now: time }), status: 'pending' as const, retryAfterMs: 1000 }));
+    const { load, request } = setup(undefined, { loadHistoryReplay }), body = activity();
+    body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason };
+    expect((await load(body)).status).toBe('pending'); expect(loadHistoryReplay).toHaveBeenCalledWith(body, { foreground: true });
+    expect(request).not.toHaveBeenCalled();
+    expect((await load(activity())).status).toBe('ready');
+    body.coverage.complete = false; expect((await load(body)).status).toBe('unavailable'); expect(loadHistoryReplay).toHaveBeenCalledOnce();
+  });
   it('does not retry a permanent incomplete inventory diagnosis as though it were a temporary provider failure', async () => {
     const { load, request } = setup(), body = activity();
     body.inventory!.coverage = { ...body.inventory!.coverage, complete: false, reconciled: false, status: 'unavailable', reason: 'unknown_transfer_cost' };

@@ -1,3 +1,5 @@
+import type { KolTokenBalanceProof } from './kolTokenTrades.js';
+
 /** GMGN replay accounting is separate from the app's indexed swap-only ledger. */
 export interface ReplayAccountingSnapshot {
   remainingTokenAmount: string | null;
@@ -34,6 +36,15 @@ export interface ReplayAccountingFinal extends ReplayAccountingSnapshot {
   timestamp: string;
 }
 
+/** Complete provider movements reconciled to current chain state, not an
+ * archived RPC scan. Provider-only transfers have no asserted block/ordinal. */
+export interface GmgnReplayHistory {
+  fingerprint: string;
+  checkedAt: string;
+  balanceProof: KolTokenBalanceProof;
+  events: (Omit<ReplayAccountingEvent, 'blockNumber'> & { blockNumber: string | null; tokenAmount: string })[];
+}
+
 export interface TradeReplayAccounting {
   version: 1;
   source: 'gmgn';
@@ -46,10 +57,12 @@ export interface TradeReplayAccounting {
   inventoryBlockHash: string | null;
   events: ReplayAccountingEvent[];
   final: ReplayAccountingFinal | null;
+  history?: GmgnReplayHistory;
   coverage: {
     transactionsComplete: boolean;
     balanceMatched: boolean;
     exactFinal: boolean;
+    verification?: 'gmgn_history';
     reason?: string;
   };
   retryAfterMs?: number;

@@ -3,6 +3,9 @@ import { canUseGmgnHistoryFallback, type KolTokenActivity, type KolTokenBalanceP
 import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 import { currentKolTokenBalance } from './kolTokenBalance.js';
+import type { GmgnReplayHistory, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
+
+interface HistoryResult extends KolTokenRealizedAccounting { replayHistory?: GmgnReplayHistory }
 
 type Kind = 'buy' | 'sell' | 'transfer_in' | 'transfer_out';
 type Requester = (url: URL, options: GmgnRequestOptions) => Promise<any>;
@@ -54,7 +57,7 @@ function parseRows(input: unknown, wallet: string, token: string, now: number): 
       nativeGas: numeric(raw.gas_native), quoteAmount: numeric(raw.quote_amount) };
   });
 }
-function base(activity: KolTokenActivity, now: number): KolTokenRealizedAccounting {
+function base(activity: KolTokenActivity, now: number): HistoryResult {
   return { version: 1, source: 'gmgn', policy: 'gmgn_realized_profit_v1', walletAddress: activity.kol.address.toLowerCase(),
     tokenAddress: activity.token.address.toLowerCase(), status: 'unavailable', checkedAt: new Date(now).toISOString(), realizedProfitUsd: null,
     coverage: { transactionsComplete: false, balanceMatched: false } };
@@ -98,9 +101,13 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
     trades.set(key, trade);
   }
   const used = new Set<string>();
+  const swapTransactions = new Set(activity.trades.map(trade => trade.txHash.toLowerCase()));
   for (const row of rows) {
     if (row.timestamp * 1000 > blockTime) throw Error('gmgn_history_balance_unavailable');
-    if (row.kind !== 'buy' && row.kind !== 'sell') continue;
+    if (row.kind !== 'buy' && row.kind !== 'sell') {
+      if (swapTransactions.has(row.tx)) throw Error('gmgn_history_indexed_mismatch');
+      continue;
+    }
     const key = keyOf(row), trade = trades.get(key), quantity = numeric(trade?.tokenAmount);
     if (!trade || quantity === null || !same(row.quantity, quantity) || Math.abs(Date.parse(trade.timestamp) - row.timestamp * 1000) > 1000)
       throw Error('gmgn_history_indexed_mismatch');
@@ -131,6 +138,7 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
     return order;
   });
   let held = 0, basis = 0, basisKnown = true, invested = 0, sold = 0, outgoing = 0, incoming = 0, fees = 0;
+  const events: GmgnReplayHistory['events'] = [];
   const lots: { quantity: number; cost: number }[] = [];
   const take = (quantity: number) => {
     let remaining = quantity, cost = 0;
@@ -162,6 +170,13 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
       if (Math.abs(held) <= row.quantity * 1e-12) { held = 0; basis = 0; basisKnown = true; lots.length = 0; }
       else if (basis < -Math.max(1e-8, (invested + incoming) * 1e-10)) basisKnown = false;
     }
+    const trade = trades.get(keyOf(row)), cost = invested + incoming + fees;
+    events.push({ id: `gmgn:${keyOf(row)}`, kind: row.kind, ...(trade ? { tradeId: trade.id } : {}), txHash: row.tx,
+      timestamp: new Date(row.timestamp * 1000).toISOString(), blockNumber: trade?.blockNumber ?? null,
+      transactionIndex: trade?.transactionIndex ?? null, logIndex: null, tokenAmount: money(row.quantity),
+      remainingTokenAmount: money(held), remainingCostBasisUsd: basisKnown ? money(basis) : null,
+      cumulativeRealizedProfitUsd: basisKnown ? money(sold + outgoing - cost + basis) : null,
+      investedUsd: money(invested), soldUsd: money(sold), transferOutIncomeUsd: money(outgoing), feesUsd: money(fees), feeInclusiveCostUsd: money(cost) });
   }
   if (!same(held, balance)) throw Error('gmgn_history_balance_mismatch');
   const cost = invested + incoming + fees, realized = sold + outgoing - cost + basis;
@@ -173,6 +188,7 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
       trade.quoteTokenAddress, trade.quoteSymbol, trade.quoteAmount, trade.timestamp, trade.blockNumber, trade.transactionIndex]) }),
     historyCheckedAt: new Date(historyCheckedAt).toISOString(),
     lastMovementAt: new Date(ordered.at(-1)!.timestamp * 1000).toISOString(), balanceProof: proof };
+  value.replayHistory = { fingerprint: value.coverage.historyFingerprint!, checkedAt: value.coverage.historyCheckedAt!, balanceProof: proof, events };
   value.position = { status: closed ? 'closed' : 'open', remainingTokenAmount: proof.balance, remainingCostBasisUsd: basisKnown ? money(basis) : null,
     feeInclusiveCostUsd: money(cost), cashFlow: { investedUsd: money(invested), soldUsd: money(sold), transferOutIncomeUsd: money(outgoing), feesUsd: money(fees) },
     estimatedProfitUsd: closed ? money(realized) : null, estimatedRoi: closed ? money(realized / cost) : null, unrealizedProfitUsd: closed ? '0' : null,
@@ -185,10 +201,10 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
 export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTokenBalance, now = Date.now, budgetMs = 8000,
   apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
 }: { request?: Requester; rpc?: BalanceReader; now?: () => number; budgetMs?: number; apiKey?: () => string } = {}) {
-  const cache = new Map<string, { until: number; value: KolTokenRealizedAccounting }>(), histories = new Map<string, History>();
+  const cache = new Map<string, { until: number; value: HistoryResult }>(), histories = new Map<string, History>();
   const pauses = new Map<string, { until: number; reason: string }>();
-  const jobs = new Map<string, { foreground: () => boolean; work: Promise<KolTokenRealizedAccounting> }>();
-  return async (activity: KolTokenActivity, options: { foreground?: boolean | (() => boolean) } = {}): Promise<KolTokenRealizedAccounting> => {
+  const jobs = new Map<string, { foreground: () => boolean; work: Promise<HistoryResult> }>();
+  const load = async (activity: KolTokenActivity, options: { foreground?: boolean | (() => boolean) } = {}): Promise<HistoryResult> => {
     const empty = base(activity, now()), wallet = empty.walletAddress, token = empty.tokenAddress;
     if (!address.test(wallet) || !address.test(token) || !activity.coverage.complete || !canUseGmgnHistoryFallback(activity.inventory?.coverage.reason)) {
       empty.coverage.reason = activity.inventory?.coverage.reason ?? 'canonical_inventory_unavailable'; return empty;
@@ -206,7 +222,7 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
     const existing = jobs.get(signature);
     if (existing) { const previous = existing.foreground; existing.foreground = () => previous() || foreground(); return structuredClone(await existing.work); }
     if (jobs.size >= (foreground() ? 2 : 1)) { empty.status = 'pending'; empty.retryAfterMs = 1000; empty.coverage.reason = 'provider_busy'; return empty; }
-    const job = { foreground, work: null as unknown as Promise<KolTokenRealizedAccounting> };
+    const job = { foreground, work: null as unknown as Promise<HistoryResult> };
     const work = (async () => {
       const signal = AbortSignal.timeout(budgetMs);
       try {
@@ -281,5 +297,18 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
     job.work = work; jobs.set(signature, job);
     try { return structuredClone(await work); } finally { if (jobs.get(signature) === job) jobs.delete(signature); }
   };
+  // Profile cards keep their compact response; replay requests share the same
+  // validation, provider budget and cache while receiving every prefix ledger.
+  return Object.assign(async (...args: Parameters<typeof load>): Promise<KolTokenRealizedAccounting> => {
+    const { replayHistory: _history, ...value } = await load(...args); return value;
+  }, { replay: async (...args: Parameters<typeof load>): Promise<TradeReplayAccounting> => {
+    const value = await load(...args), history = value.replayHistory;
+    return { version: 1, source: 'gmgn', policy: 'gmgn_total_profit_v1', walletAddress: value.walletAddress, tokenAddress: value.tokenAddress,
+      status: value.status === 'ready' && history ? 'estimated' : value.status === 'pending' ? 'pending' : 'unavailable', checkedAt: value.checkedAt,
+      inventoryBlockNumber: history?.balanceProof.blockNumber ?? null, inventoryBlockHash: history?.balanceProof.blockHash ?? null,
+      events: [], final: null, ...(history ? { history } : {}),
+      coverage: { transactionsComplete: Boolean(history), balanceMatched: Boolean(history), exactFinal: false,
+        verification: 'gmgn_history', reason: value.coverage.reason }, ...(value.retryAfterMs ? { retryAfterMs: value.retryAfterMs } : {}) };
+  } });
 }
 export const currentGmgnHistoryPnl = createGmgnHistoryPnl();

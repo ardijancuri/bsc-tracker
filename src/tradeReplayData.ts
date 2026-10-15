@@ -3,6 +3,7 @@ import type { InventoryCoverage, InventoryEvent, KolTokenActivity } from '../sha
 import type { Kol, Token } from './types';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { ReplayAccountingEvent, ReplayAccountingFinal, ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting';
+import { prepareGmgnReplayHistory } from './tradeReplayHistory';
 
 export interface ReplayTrade {
   id: string;
@@ -17,15 +18,15 @@ export interface ReplayTrade {
 }
 
 type InventoryNumberField = 'tokenAmount' | 'remainingTokenAmount' | 'remainingCostBasisUsd' | 'cumulativeRealizedProfitUsd' | 'investedUsd' | 'soldUsd';
-export type ReplayInventoryEvent = Omit<InventoryEvent, InventoryNumberField> & Record<InventoryNumberField, number | null>;
+export type ReplayInventoryEvent = Omit<InventoryEvent, InventoryNumberField | 'blockNumber'> & Record<InventoryNumberField, number | null> & { blockNumber: string | null };
 export interface ReplayInventory {
   version: 1;
   events: ReplayInventoryEvent[];
-  coverage: InventoryCoverage;
+  coverage: InventoryCoverage & { verification?: 'gmgn_history' };
 }
 type AccountingNumbers = { [Key in keyof ReplayAccountingSnapshot]: number | null };
 export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final'> & {
-  events: (Omit<ReplayAccountingEvent, keyof ReplayAccountingSnapshot> & AccountingNumbers)[];
+  events: (Omit<ReplayAccountingEvent, keyof ReplayAccountingSnapshot | 'blockNumber'> & AccountingNumbers & { blockNumber: string | null })[];
   final: (Omit<ReplayAccountingFinal, keyof ReplayAccountingSnapshot | 'reportedProfitUsd' | 'reportedRoi' | 'priceUsd'> & AccountingNumbers
     & { reportedProfitUsd: number | null; reportedRoi: number | null; priceUsd: number | null }) | null;
 };
@@ -132,6 +133,7 @@ function prepareReplayAccounting(activity: ReplayActivity, trades: ReplayTrade[]
     || !Number.isFinite(checkedAt) || checkedAt > now + serverClockSkewMs || now - checkedAt > 180_000 || !raw.coverage || !Array.isArray(raw.events)) return unavailable('invalid_gmgn_accounting');
   if (raw.status === 'pending' || raw.status === 'unavailable') return { ...raw, events: [], final: null,
     coverage: { ...raw.coverage, transactionsComplete: false, balanceMatched: false, exactFinal: false } };
+  if (raw.history || raw.coverage.verification === 'gmgn_history') return unavailable('invalid_gmgn_history');
   if (!replayInventoryIsFresh({ inventory }, now) || raw.inventoryBlockNumber !== inventory!.coverage.toBlock
     || raw.inventoryBlockHash?.toLowerCase() !== inventory!.coverage.blockHash?.toLowerCase()
     || raw.coverage.transactionsComplete !== true || raw.coverage.balanceMatched !== true) return unavailable('unverified_gmgn_accounting');
@@ -265,7 +267,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
     events.push({ ...event, ...numbers });
   }
   events.sort((a, b) => {
-    const block = BigInt(a.blockNumber) - BigInt(b.blockNumber);
+    const block = BigInt(a.blockNumber!) - BigInt(b.blockNumber!);
     return (block < 0n ? -1 : block > 0n ? 1 : 0) || (a.transactionIndex ?? 0) - (b.transactionIndex ?? 0)
       || (a.logIndex ?? -1) - (b.logIndex ?? -1) || a.id.localeCompare(b.id);
   });
@@ -273,7 +275,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
   for (let index = 1; index < events.length; index += 1) {
     const previous = events[index - 1], current = events[index];
     if (Date.parse(current.timestamp) < Date.parse(previous.timestamp)) valid = false;
-    if (BigInt(current.blockNumber) === BigInt(previous.blockNumber) && current.txHash.toLowerCase() !== previous.txHash.toLowerCase()
+    if (BigInt(current.blockNumber!) === BigInt(previous.blockNumber!) && current.txHash.toLowerCase() !== previous.txHash.toLowerCase()
       && (current.transactionIndex === null || previous.transactionIndex === null || current.transactionIndex === previous.transactionIndex)) valid = false;
   }
   const balance = replayNumber(coverage.balance, true), remaining = events.at(-1)?.remainingTokenAmount;
@@ -433,8 +435,9 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   });
 
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
-  const inventory = prepareReplayInventory(activity, trades, complete, now);
-  const replayAccounting = prepareReplayAccounting(activity, trades, inventory, now);
+  const history = prepareGmgnReplayHistory(activity, complete, now);
+  const inventory = history?.inventory ?? prepareReplayInventory(activity, trades, complete, now);
+  const replayAccounting = history?.accounting ?? prepareReplayAccounting(activity, trades, inventory, now);
   const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
   const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
     && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';

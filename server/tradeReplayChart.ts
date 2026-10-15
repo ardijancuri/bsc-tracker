@@ -20,6 +20,7 @@ const gmgnPageBars = 100;
 const gmgnResolutions = [['30s', 30], ['1m', 60], ['5m', 300], ['15m', 900], ['1h', 3600]] as const;
 type JsonRequest = (url: URL, signal: AbortSignal, headers?: Record<string, string>) => Promise<any>;
 interface SampleBar { time: number; open: number; close: number }
+type ReplayPageCache = Map<string, { checkedAt: number; bars: SampleBar[] }>;
 class ReplayMarketHttpError extends Error {
   constructor(readonly status: number) { super(`Replay market request failed: ${status}`); }
 }
@@ -141,6 +142,8 @@ export interface ReplayChartProviderOptions {
   now?: number;
   current?: boolean;
   currentChartRequest?: (address: string, signal: AbortSignal) => Promise<TokenChart | null>;
+  /** Short-lived completed pages only; forming quotes are always refreshed. */
+  pageCache?: ReplayPageCache;
 }
 
 /** Prefer the finest genuine history that fits bounded work. Never split coarse bars. */
@@ -207,9 +210,20 @@ export async function fetchTradeReplayChart(address: string, first: number, last
           const url = new URL('https://openapi.gmgn.ai/v1/market/token_kline');
           for (const [key, value] of Object.entries({ chain: 'bsc', address, resolution, from: pageFrom, to,
             timestamp: Math.floor(now / 1000), client_id: randomUUID() })) url.searchParams.set(key, String(value));
-          const body = await withinBudget((options.gmgnRequest ?? requestGmgn)(url, resolutionSignal, { 'X-APIKEY': options.gmgnKey }), resolutionSignal);
-          if (body?.code !== 0) throw new Error('Replay market provider rejected history');
-          const rows = gmgnBars(Array.isArray(body?.data) ? body.data : body?.data?.list, pageFrom, to);
+          const pageKey = `${address}:${resolution}:${pageFrom}:${latestBar}`;
+          const savedPage = options.pageCache?.get(pageKey);
+          let rows: SampleBar[];
+          if (savedPage && savedPage.checkedAt <= now && now - savedPage.checkedAt <= 180_000) rows = savedPage.bars;
+          else {
+            const body = await withinBudget((options.gmgnRequest ?? requestGmgn)(url, resolutionSignal, { 'X-APIKEY': options.gmgnKey }), resolutionSignal);
+            if (body?.code !== 0) throw new Error('Replay market provider rejected history');
+            rows = gmgnBars(Array.isArray(body?.data) ? body.data : body?.data?.list, pageFrom, to);
+            const completed = rows.filter(bar => (bar.time + seconds) * 1000 <= now);
+            if (completed.length && options.pageCache) {
+              options.pageCache.delete(pageKey); options.pageCache.set(pageKey, { checkedAt: now, bars: completed });
+              while (options.pageCache.size > 20) options.pageCache.delete(options.pageCache.keys().next().value!);
+            }
+          }
           if (options.current && page === 0) currentQuote ??= formingQuote(rows, seconds, readNow());
           if (!rows.length) break;
           for (const bar of rows) bars.set(bar.time, bar);
@@ -326,6 +340,7 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
   const saved = new Map<string, { chart: ReplayMarketChart; until: number; retryAt?: number }>();
   const histories = new Map<string, RetainedHistory>();
   const jobs = new Map<string, Promise<ReplayMarketChart>>();
+  const pages = new Map<string, ReplayPageCache>();
   const fileFor = (key: string) => path.join(directory!, historyDigest(key) + '.json');
   async function loadHistory(key: string, address: string, first: number, last: number): Promise<RetainedHistory | null> {
     if (!directory) return null;
@@ -381,7 +396,13 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
       }
       else histories.delete(key);
       let chart: ReplayMarketChart;
-      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(), signal: AbortSignal.timeout(requestBudgetMs), current }) ?? unavailable(address); }
+      let pageCache = pages.get(key);
+      if (!pageCache) {
+        pageCache = new Map(); pages.set(key, pageCache);
+        while (pages.size > 32) pages.delete(pages.keys().next().value!);
+      }
+      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(),
+        signal: AbortSignal.timeout(requestBudgetMs), current, pageCache }) ?? unavailable(address); }
       catch (problem) { chart = unavailable(address, problem instanceof MarketProviderDeferred ? problem : undefined); }
       const observed = retainedHistory(chart, address, first, last, now());
       if (observed) {
