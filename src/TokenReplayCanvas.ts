@@ -139,6 +139,5 @@ export default class TokenReplayCanvas implements ReplayRecordingCanvas {
       ctx.save(); ctx.filter = 'brightness(0)'; ctx.drawImage(this.wordmark, 49, 1220, width, height); ctx.restore();
     } else this.text('Kollens', 49, 1255, 75, '#0c0e11', 800);
     this.text('kollens.com', 1031, 1254, 30, '#0c0e11', 650, 'right');
-    this.text(`Observed MCAP · ${data.source === 'coinmarketcap' ? 'CoinMarketCap' : data.source === 'gmgn' ? 'GMGN' : 'GeckoTerminal'} · current supply`, 540, 1312, 18, '#46380b', 500, 'center');
   }
 }
