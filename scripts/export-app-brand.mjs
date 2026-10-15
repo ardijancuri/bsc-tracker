@@ -52,9 +52,14 @@ for(let i=0;i<icoSizes.length;i++) {
 }
 await writeFile(file('public/favicon.ico'),Buffer.concat([icoDirectory,...icoImages]));
 
-const socialScale = 3.5;
-const socialSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500"><rect width="1500" height="500" fill="#0b0e11"/><g transform="translate(${(1500-logoSize.width*socialScale)/2} ${(500-logoSize.height*socialScale)/2}) scale(${socialScale})">${logo.trim()}</g></svg>\n`;
+const socialWidth = 1200, socialHeight = 630, socialScale = 3.5;
+const socialSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${socialWidth}" height="${socialHeight}" viewBox="0 0 ${socialWidth} ${socialHeight}"><rect width="${socialWidth}" height="${socialHeight}" fill="#0b0e11"/><g transform="translate(${(socialWidth-logoSize.width*socialScale)/2} ${(socialHeight-logoSize.height*socialScale)/2}) scale(${socialScale})">${logo.trim()}</g></svg>\n`;
 const socialPng = await sharp(Buffer.from(socialSvg)).png().toBuffer();
+const socialVersion = createHash('sha256').update(socialPng).digest('hex').slice(0,12);
+const socialPath = `/social/kollens-preview-${socialVersion}.png`;
+const socialUrl = `https://kollens.com${socialPath}`;
+await writeFile(file(`public${socialPath}`),socialPng);
+// Keep existing image URLs serving the current mark for older card metadata.
 await writeFile(file('public/social/kollens-header.png'),socialPng);
 
 // A new URL forces browsers and social previews to request changed artwork.
@@ -64,10 +69,37 @@ let html = await readFile(file('index.html'),'utf8');
 if(!html.includes('href="/favicon.ico')) html = html.replace('    <link rel="icon"', '    <link rel="shortcut icon" href="/favicon.ico" />\n    <link rel="icon"');
 if(!html.includes('href="/favicon-32x32.png')) html = html.replace('    <link rel="icon"', '    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />\n    <link rel="icon"');
 html = html.replaceAll('/kollens-icon.svg', '/favicon.svg');
-for(const url of ['/favicon.ico','/favicon-32x32.png','/kollens-icon.png','/favicon.svg','/kollens-touch-icon.png','/social/kollens-header.png']) {
+for(const url of ['/favicon.ico','/favicon-32x32.png','/kollens-icon.png','/favicon.svg','/kollens-touch-icon.png']) {
   const escaped = url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   html = html.replace(new RegExp(`${escaped}(?:\\?v=[^"\\s]*)?`,'g'),`${url}?v=${version}`);
 }
+// Social crawlers may cache an image URL beyond our HTTP cache lifetime.
+// Fingerprint the pathname from the actual PNG, independently of app icons.
+const title = 'Kollens — KOL tracking on BNB Chain';
+const description = 'Track KOL trades, tokens and wallet activity on BNB Chain.';
+function setMeta(attribute,key,value) {
+  const tag = `    <meta ${attribute}="${key}" content="${value}" />`;
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const pattern = new RegExp(`^[ \\t]*<meta ${attribute}="${escaped}"[^>]*\\/>`, 'm');
+  html = pattern.test(html) ? html.replace(pattern,tag) : html.replace('  </head>',tag+'\n  </head>');
+}
+setMeta('name','description',description);
+setMeta('property','og:type','website');
+setMeta('property','og:site_name','Kollens');
+setMeta('property','og:title',title);
+setMeta('property','og:description',description);
+setMeta('property','og:image',socialUrl);
+setMeta('property','og:image:secure_url',socialUrl);
+setMeta('property','og:image:type','image/png');
+setMeta('property','og:image:width',String(socialWidth));
+setMeta('property','og:image:height',String(socialHeight));
+setMeta('property','og:image:alt','Kollens — current gold K icon and white wordmark on a dark background');
+setMeta('name','twitter:card','summary_large_image');
+setMeta('name','twitter:title',title);
+setMeta('name','twitter:description',description);
+setMeta('name','twitter:image',socialUrl);
+setMeta('name','twitter:image:alt','Kollens — current gold K icon and white wordmark on a dark background');
+html = html.replace(/<title>[^<]*<\/title>/,`<title>${title}</title>`);
 await writeFile(file('index.html'),html);
 // Canvas fallbacks use the same native paths when an image has not loaded.
 const transforms = value => {
