@@ -6,7 +6,7 @@ import type { ReplayMarketChart } from '../shared/replayChart.js';
 import type { TokenChart } from '../shared/intelligence.js';
 import { pool } from './db.js';
 import { geckoFetch, MarketProviderDeferred } from './geckoApi.js';
-import { gmgnRequest } from './gmgnApi.js';
+import { gmgnApiKey, gmgnRequest, recordGmgnCacheHit } from './gmgnApi.js';
 import { currentMarketChart, parseCandles, selectChartPools } from './tokenChart.js';
 import { isExcludedKolProfileTokenAddress, kolProfileTokenSql } from './kolProfileToken.js';
 
@@ -44,7 +44,7 @@ function withinBudget<T>(operation: Promise<T>, signal: AbortSignal): Promise<T>
 }
 
 async function requestGmgn(url: URL, signal: AbortSignal, headers?: Record<string, string>) {
-  return gmgnRequest(url, { apiKey: headers?.['X-APIKEY'] ?? '', signal, priority: 'chart', weight: 2 });
+  return gmgnRequest(url, { apiKey: headers?.['X-APIKEY'] ?? '', workload: 'market', foreground: true, signal, priority: 'chart', weight: 2 });
 }
 
 const requestGecko: JsonRequest = async (url, signal) => {
@@ -161,7 +161,7 @@ export async function fetchTradeReplayChart(address: string, first: number, last
   const quoteJob = options.current ? (async () => {
     try {
       const current = await withinBudget((options.currentChartRequest ?? (async (token, requestSignal) =>
-        (await withinBudget(currentMarketChart(token, '1m', 'chart'), requestSignal)).chart))(address, signal), signal);
+        (await withinBudget(currentMarketChart(token, '1m', 'chart', { foreground: true }), requestSignal)).chart))(address, signal), signal);
       return recentChartQuote(current, address, readNow());
     } catch { return undefined; }
   })() : null;
@@ -213,7 +213,9 @@ export async function fetchTradeReplayChart(address: string, first: number, last
           const pageKey = `${address}:${resolution}:${pageFrom}:${latestBar}`;
           const savedPage = options.pageCache?.get(pageKey);
           let rows: SampleBar[];
-          if (savedPage && savedPage.checkedAt <= now && now - savedPage.checkedAt <= 180_000) rows = savedPage.bars;
+          if (savedPage && savedPage.checkedAt <= now && now - savedPage.checkedAt <= 180_000) {
+            rows = savedPage.bars; recordGmgnCacheHit('market');
+          }
           else {
             const body = await withinBudget((options.gmgnRequest ?? requestGmgn)(url, resolutionSignal, { 'X-APIKEY': options.gmgnKey }), resolutionSignal);
             if (body?.code !== 0) throw new Error('Replay market provider rejected history');
@@ -378,8 +380,11 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
   return async (address: string, first: number, last: number, current = false): Promise<ReplayMarketChart> => {
     const key = `${address}:${first}:${last}:${current ? 'current' : 'closed'}`;
     const cached = saved.get(key);
-    if (cached && cached.until > now()) return cached.chart.loadStatus === 'queued' || cached.chart.loadStatus === 'rate_limited'
-      ? { ...cached.chart, retryAfterMs: Math.max(1000, (cached.retryAt ?? cached.until) - now()) } : cached.chart;
+    if (cached && cached.until > now()) {
+      if (cached.chart.source === 'gmgn' && cached.chart.points.length) recordGmgnCacheHit('market');
+      return cached.chart.loadStatus === 'queued' || cached.chart.loadStatus === 'rate_limited'
+        ? { ...cached.chart, retryAfterMs: Math.max(1000, (cached.retryAt ?? cached.until) - now()) } : cached.chart;
+    }
     const pending = jobs.get(key);
     if (pending) return pending;
     if (jobs.size >= 2) {
@@ -401,7 +406,7 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
         pageCache = new Map(); pages.set(key, pageCache);
         while (pages.size > 32) pages.delete(pages.keys().next().value!);
       }
-      try { chart = await loader(address, first, last, { gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim(),
+      try { chart = await loader(address, first, last, { gmgnKey: gmgnApiKey('market'),
         signal: AbortSignal.timeout(requestBudgetMs), current, pageCache }) ?? unavailable(address); }
       catch (problem) { chart = unavailable(address, problem instanceof MarketProviderDeferred ? problem : undefined); }
       const observed = retainedHistory(chart, address, first, last, now());

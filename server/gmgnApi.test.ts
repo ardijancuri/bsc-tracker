@@ -113,7 +113,8 @@ describe('GMGN HTTP adapter', () => {
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }))
       .mockResolvedValue(Response.json({ code: 0, data: { recovered: true } }));
     const request = createGmgnRequester({ query, fetcher });
-    const first = request(url, { apiKey: 'key' });
+    const firstUrl = new URL(url.href); firstUrl.searchParams.set('from', '1');
+    const first = request(firstUrl, { apiKey: 'key' });
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
     const queuedUrl = new URL(url.href);
     queuedUrl.searchParams.set('timestamp', String(now / 1000));

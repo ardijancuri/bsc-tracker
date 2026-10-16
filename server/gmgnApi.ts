@@ -3,6 +3,13 @@ import { pool } from './db.js';
 import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 
 type Priority = GeckoPriority | (() => GeckoPriority);
+type Foreground = boolean | (() => boolean);
+export type GmgnWorkload = 'accounting' | 'market';
+export function gmgnApiKey(workload: GmgnWorkload, env: NodeJS.ProcessEnv = process.env) {
+  return (workload === 'accounting' ? env.GMGN_ACCOUNTING_API_KEY?.trim() : '')
+    || env.GMGN_CHART_API_KEY?.trim() || env.GMGN_API_KEY?.trim() || '';
+}
+const foregroundOf = (foreground: Foreground = false) => typeof foreground === 'function' ? foreground() : foreground;
 type Pause = { delay: number; pauseStatus?: number | string | null };
 type Query = (sql: string, values: unknown[]) => Promise<{ rows: Pause[] }>;
 const priorityOf = (priority: Priority) => typeof priority === 'function' ? priority() : priority;
@@ -23,28 +30,32 @@ function pauseError(pause: Pause) {
 
 /** Bound both queue residence and network work; cancelled queued jobs never dispatch. */
 export function createGmgnQueue<T>() {
-  type Entry = { priority: Priority; run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void; signal: AbortSignal; abort: () => void };
+  type Entry = { priority: Priority; foreground: Foreground; run: () => Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void; signal: AbortSignal; abort: () => void };
   const waiting: Entry[] = [];
   let active = false;
   const dispatch = async () => {
     if (active || !waiting.length) return;
     active = true;
-    waiting.sort((a, b) => marketPriorityRank[priorityOf(a.priority)] - marketPriorityRank[priorityOf(b.priority)]);
+    waiting.sort((a, b) => Number(foregroundOf(b.foreground)) - Number(foregroundOf(a.foreground))
+      || marketPriorityRank[priorityOf(a.priority)] - marketPriorityRank[priorityOf(b.priority)]);
     const next = waiting.shift()!;
     try { if (next.signal.aborted) throw next.signal.reason; next.resolve(await next.run()); }
     catch (error) { next.reject(error); }
     finally { next.signal.removeEventListener('abort', next.abort); active = false; void dispatch(); }
   };
-  return (priority: Priority, signal: AbortSignal, run: () => Promise<T>): Promise<T> => {
+  return (priority: Priority, signal: AbortSignal, run: () => Promise<T>, foreground: Foreground = false): Promise<T> => {
     if (signal.aborted) return Promise.reject(signal.reason);
     const requestedPriority = priorityOf(priority);
     // Keep eight entries available for charts opened during a prefetch burst.
-    if (waiting.length >= (requestedPriority === 'chart' ? 32 : 24) || requestedPriority === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', 1500));
+    if (waiting.length >= (foregroundOf(foreground) || requestedPriority === 'chart' ? 32 : 24)
+      || !foregroundOf(foreground) && requestedPriority === 'metadata' && (active || waiting.length)) return Promise.reject(new MarketProviderDeferred('busy', 1500));
     return new Promise((resolve, reject) => {
-      const entry: Entry = { priority, signal, run, resolve, reject, abort: () => {
+      const entry: Entry = { priority, foreground, signal, run, resolve, reject, abort: () => {
         const index = waiting.indexOf(entry);
-        if (index >= 0) waiting.splice(index, 1);
-        reject(signal.reason);
+        if (index >= 0) { waiting.splice(index, 1); reject(signal.reason); }
+        // Active work owns the lane until its transport actually settles. The
+        // subscriber is already cancelled; releasing early could create a new
+        // same-key lane while the old HTTP connection is still terminating.
       } };
       signal.addEventListener('abort', entry.abort, { once: true });
       waiting.push(entry); void dispatch();
@@ -91,8 +102,33 @@ export function gmgnRetryMs(headers: Headers, body: any, now = Date.now()) {
 }
 
 export interface GmgnRequestOptions {
-  apiKey: string; weight?: 1 | 2 | 3 | 5; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
+  apiKey?: string; workload?: GmgnWorkload; foreground?: Foreground;
+  weight?: 1 | 2 | 3 | 5; priority?: Priority; signal?: AbortSignal; timeoutMs?: number;
   method?: 'GET' | 'POST'; body?: unknown;
+}
+
+export interface GmgnDiagnostic {
+  event: 'request' | 'coalesced' | 'cache_hit' | 'complete'; workload: GmgnWorkload;
+  priority?: GeckoPriority; foreground?: boolean; queueWaitMs?: number; upstreamMs?: number;
+  outcome?: 'ok' | 'cancelled' | 'busy' | 'rate_limited' | 'auth' | 'unavailable'; retryAfterMs?: number;
+}
+const diagnosticTotals = { requests: 0, coalesced: 0, cacheHits: 0, completed: 0 };
+export function gmgnDiagnostics() { return { ...diagnosticTotals }; }
+function observeGmgn(event: GmgnDiagnostic) {
+  if (event.event === 'request') diagnosticTotals.requests++;
+  if (event.event === 'coalesced') diagnosticTotals.coalesced++;
+  if (event.event === 'cache_hit') diagnosticTotals.cacheHits++;
+  if (event.event === 'complete') diagnosticTotals.completed++;
+  if (process.env.GMGN_REQUEST_DIAGNOSTICS === 'true') console.info(JSON.stringify({ gmgn: event }));
+}
+export function recordGmgnCacheHit(workload: GmgnWorkload) { observeGmgn({ event: 'cache_hit', workload }); }
+
+const publicRoutes = new Set(['/v1/user/wallet_activity', '/v1/market/token_top_traders', '/v1/market/token_kline', '/v1/token/info']);
+function publicRequestKey(url: URL, options: GmgnRequestOptions) {
+  if ((options.method ?? 'GET') !== 'GET' || options.body !== undefined || !publicRoutes.has(url.pathname)) return null;
+  const params = [...url.searchParams].filter(([key]) => key !== 'timestamp' && key !== 'client_id')
+    .sort(([a, av], [b, bv]) => a.localeCompare(b) || av.localeCompare(bv));
+  return createHash('sha256').update(JSON.stringify([url.pathname, params])).digest('hex');
 }
 
 function cancellable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -107,16 +143,50 @@ function cancellable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /** All callers use the same hashed-key DB row, including separate app/worker processes. */
-export function createGmgnRequester({ query = (sql, values) => pool.query(sql, values), fetcher = fetch, now = Date.now }:
-  { query?: Query; fetcher?: typeof fetch; now?: () => number } = {}) {
-  const enqueue = createGmgnQueue<any>();
+export function createGmgnRequester({ query = (sql, values) => pool.query(sql, values), fetcher = fetch, now = Date.now, observe = observeGmgn }:
+  { query?: Query; fetcher?: typeof fetch; now?: () => number; observe?: (event: GmgnDiagnostic) => void } = {}) {
+  type Client = { priority: Priority; foreground: Foreground; signal: AbortSignal; abort: () => void;
+    resolve: (value: any) => void; reject: (error: unknown) => void };
+  type Job = { controller: AbortController; clients: Set<Client> };
+  const jobs = new Map<string, Job>();
+  const queues = new Map<string, { enqueue: ReturnType<typeof createGmgnQueue<any>>; users: number }>();
   return async (url: URL, options: GmgnRequestOptions): Promise<any> => {
     if (url.origin !== 'https://openapi.gmgn.ai' || url.username || url.password || !url.pathname.startsWith('/v1/')) throw new Error('Invalid GMGN API URL');
-    const apiKey = options.apiKey.trim();
+    const workload = options.workload ?? (['/v1/user/wallet_activity', '/v1/market/token_top_traders', '/v1/user/wallet_profits'].includes(url.pathname) ? 'accounting' : 'market');
+    const apiKey = (options.apiKey ?? gmgnApiKey(workload)).trim();
     if (!apiKey) throw new Error('GMGN API key is not configured');
-    const priority = options.priority ?? 'chart';
-    const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 20_000)]) : AbortSignal.timeout(options.timeoutMs ?? 20_000);
-    return enqueue(priority, signal, async () => {
+    const clientSignal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 20_000)]) : AbortSignal.timeout(options.timeoutMs ?? 20_000);
+    clientSignal.throwIfAborted();
+    const requestKey = publicRequestKey(url, options);
+    let job = requestKey ? jobs.get(requestKey) : undefined;
+    const existing = !!job;
+    if (!job) {
+      job = { controller: new AbortController(), clients: new Set() };
+      if (requestKey) jobs.set(requestKey, job);
+    }
+    const shared = job;
+    const priority = () => [...shared.clients].map(client => priorityOf(client.priority))
+      .sort((a, b) => marketPriorityRank[a] - marketPriorityRank[b])[0] ?? 'chart';
+    const foreground = () => [...shared.clients].some(client => foregroundOf(client.foreground));
+    const subscribed = new Promise<any>((resolve, reject) => {
+      const client: Client = { priority: options.priority ?? 'chart', foreground: options.foreground ?? false, signal: clientSignal, resolve, reject,
+        abort: () => {
+          shared.clients.delete(client); clientSignal.removeEventListener('abort', client.abort); reject(clientSignal.reason);
+          if (!shared.clients.size) {
+            if (requestKey && jobs.get(requestKey) === shared) jobs.delete(requestKey);
+            shared.controller.abort(clientSignal.reason);
+          }
+        } };
+      shared.clients.add(client); clientSignal.addEventListener('abort', client.abort, { once: true });
+    });
+    if (existing) { observe({ event: 'coalesced', workload, priority: priority(), foreground: foreground() }); return subscribed; }
+    const key = budgetKey(apiKey);
+    let lane = queues.get(key);
+    if (!lane) { lane = { enqueue: createGmgnQueue<any>(), users: 0 }; queues.set(key, lane); }
+    const activeLane = lane; activeLane.users++;
+    const signal = AbortSignal.any([shared.controller.signal, AbortSignal.timeout(20_000)]);
+    const startedAt = now(); let networkAt: number | undefined;
+    const run = activeLane.enqueue(priority, signal, async () => {
       const delay = await cancellable(reserveGmgnSlot(apiKey, options.weight ?? 2, priorityOf(priority), query), signal);
       if (delay) await cancellable(new Promise(resolve => setTimeout(resolve, delay)), signal);
       signal.throwIfAborted();
@@ -130,6 +200,7 @@ export function createGmgnRequester({ query = (sql, values) => pool.query(sql, v
       const authenticatedUrl = new URL(url.href);
       authenticatedUrl.searchParams.set('timestamp', String(Math.floor(now() / 1000)));
       authenticatedUrl.searchParams.set('client_id', randomUUID());
+      networkAt = now(); observe({ event: 'request', workload, priority: priority(), foreground: foreground(), queueWaitMs: Math.max(0, networkAt - startedAt) });
       const response = await fetcher(authenticatedUrl, { method: options.method ?? 'GET', headers: {
         Accept: 'application/json', 'X-APIKEY': apiKey, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       }, ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]) });
@@ -151,7 +222,29 @@ export function createGmgnRequester({ query = (sql, values) => pool.query(sql, v
       if (!response.ok) throw new GmgnHttpError(response.status);
       if (body?.code !== 0) throw new Error('GMGN returned an invalid API response');
       return body;
+    }, foreground);
+    const settle = (error: unknown, value?: unknown) => {
+      if (requestKey && jobs.get(requestKey) === shared) jobs.delete(requestKey);
+      for (const client of shared.clients) {
+        client.signal.removeEventListener('abort', client.abort);
+        if (error !== undefined) client.reject(error); else client.resolve(structuredClone(value));
+      }
+      shared.clients.clear();
+      activeLane.users--; if (!activeLane.users && queues.get(key) === activeLane) queues.delete(key);
+    };
+    void run.then(value => {
+      observe({ event: 'complete', workload, priority: priority(), foreground: foreground(), outcome: 'ok',
+        queueWaitMs: Math.max(0, (networkAt ?? now()) - startedAt), upstreamMs: networkAt === undefined ? 0 : Math.max(0, now() - networkAt) });
+      settle(undefined, value);
+    }, error => {
+      observe({ event: 'complete', workload, priority: priority(), foreground: foreground(),
+        outcome: signal.aborted ? 'cancelled' : error instanceof MarketProviderDeferred ? error.reason
+          : error instanceof GmgnHttpError && [401, 403].includes(error.status) ? 'auth' : 'unavailable',
+        queueWaitMs: Math.max(0, (networkAt ?? now()) - startedAt), upstreamMs: networkAt === undefined ? 0 : Math.max(0, now() - networkAt),
+        ...(error instanceof MarketProviderDeferred || error instanceof GmgnHttpError ? { retryAfterMs: error.retryAfterMs } : {}) });
+      settle(error);
     });
+    return subscribed;
   };
 }
 export const gmgnRequest = createGmgnRequester();

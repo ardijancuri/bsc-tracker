@@ -7,7 +7,7 @@ import { buildGmgnAggregatePnl } from './gmgnAggregatePnl.js';
 import { currentGmgnHistoryPnl } from './gmgnHistoryPnl.js';
 import type { TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { MarketProviderDeferred } from './geckoApi.js';
-import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
+import { gmgnApiKey, gmgnRequest, recordGmgnCacheHit, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { buildTradeReplayGmgnAccounting, type GmgnReplayActivity } from './tradeReplayGmgnAccounting.js';
 
 type Requester = (url: URL, options: GmgnRequestOptions) => Promise<any>;
@@ -105,13 +105,13 @@ function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** Share/export and profile realized P&L opt into these calls. Work shares the chart account's
+/** Share/export and profile realized P&L opt into these calls. Work shares the accounting account's
  * DB rate budget; public cache payloads contain neither credentials nor errors. */
 export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = buildTradeReplayGmgnAccounting,
   loadHistoryReplay = currentGmgnHistoryPnl.replay,
   loadBalance = currentKolTokenBalance,
   directory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'replay-gmgn'),
-  now = Date.now, budgetMs = 8000, apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
+  now = Date.now, budgetMs = 8000, apiKey = () => gmgnApiKey('accounting'),
 }: { request?: Requester; builder?: Builder; directory?: string; now?: () => number; budgetMs?: number; apiKey?: () => string;
   loadHistoryReplay?: typeof currentGmgnHistoryPnl.replay; loadBalance?: typeof currentKolTokenBalance } = {}) {
   const histories = new Map<string, History>(), completedHistories = new Map<string, History>(), traders = new Map<string, Traders>();
@@ -153,6 +153,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     if (fallback) remember(completedHistories, key, fallback, 24); else completedHistories.delete(key);
     const history = validHistory(stored, wallet, token, signature, stored?.complete ? historyTtlMs : resumeTtlMs)
       ?? freshHistory(wallet, token, signature);
+    if (history.pages > 0 || fallback) recordGmgnCacheHit('accounting');
     remember(histories, key, history, 24); return { history, fallback };
   }
   async function rankingHints(wallet: string, token: string, signature: string) {
@@ -170,7 +171,7 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
     const name = `${token}-${sort}`;
     const stored = traders.get(name) ?? await read<Traders>('traders-' + name);
     if (stored?.version === 1 && stored.token === token && stored.sort === sort && validTime(stored.checkedAt, ttlMs)) {
-      try { stored.rows = traderRows(stored.rows); remember(traders, name, stored, 100); return stored; } catch { /* Discard malformed cache. */ }
+      try { stored.rows = traderRows(stored.rows); remember(traders, name, stored, 100); recordGmgnCacheHit('accounting'); return stored; } catch { /* Discard malformed cache. */ }
     }
     const running = traderJobs.get(name);
     if (running) {
@@ -185,7 +186,8 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
       url.searchParams.set('chain', 'bsc'); url.searchParams.set('address', token); url.searchParams.set('limit', '100');
       url.searchParams.set('order_by', sort); url.searchParams.set('direction', 'desc');
       if (sort !== 'amount_percentage') url.searchParams.set('tag', 'renowned');
-      const response = await bounded(request(url, { apiKey: key, weight: 5, priority: () => job.priority(), signal, timeoutMs: budgetMs }), signal);
+      const response = await bounded(request(url, { apiKey: key, workload: 'accounting', weight: 5,
+        priority: () => job.priority(), foreground: () => job.priority() === 'chart', signal, timeoutMs: budgetMs }), signal);
       const entry: Traders = { version: 1, token, sort, checkedAt: now(), rows: traderRows((response.data ?? response)?.list) };
       remember(traders, name, entry, 100); await save('traders-' + name, entry); return entry;
     })();
@@ -222,7 +224,8 @@ export function createTradeReplayGmgnLoader({ request = gmgnRequest, builder = b
         url.searchParams.set('chain', 'bsc'); url.searchParams.set('wallet_address', wallet); url.searchParams.set('token_address', token);
         url.searchParams.set('limit', '50'); for (const type of ['buy', 'sell', 'transferIn', 'transferOut']) url.searchParams.append('type', type);
         if (cursor) url.searchParams.set('cursor', cursor);
-        const response = await bounded(request(url, { apiKey: key, weight: 3, priority, signal, timeoutMs: budgetMs }), signal);
+        const response = await bounded(request(url, { apiKey: key, workload: 'accounting', weight: 3,
+          priority, foreground: () => priority() === 'chart', signal, timeoutMs: budgetMs }), signal);
         const body = response.data ?? response, page = activityRows(body?.activities, wallet, token, now());
         const next = body.next == null || body.next === '' ? null : body.next;
         if (next !== null && (typeof next !== 'string' || !next || next.length > 4096)) throw Error('provider_cursor_invalid');

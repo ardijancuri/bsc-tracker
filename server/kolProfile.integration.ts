@@ -41,7 +41,7 @@ const bootstrap = `
 `;
 const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', bootstrap], {
   cwd: fileURLToPath(new URL('..', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-  env: { ...process.env, PORT: '0', NODE_ENV: 'test', GMGN_API_KEY: '', GMGN_CHART_API_KEY: '',
+  env: { ...process.env, PORT: '0', NODE_ENV: 'test', GMGN_API_KEY: '', GMGN_CHART_API_KEY: '', GMGN_ACCOUNTING_API_KEY: '',
     BSC_RPC_HTTP: 'http://127.0.0.1:1', BSC_HISTORICAL_RPC_HTTP: 'http://127.0.0.1:1', BSC_INVENTORY_ARCHIVE_RPC_HTTP: '' },
 });
 let log = '', providerFetches = 0;

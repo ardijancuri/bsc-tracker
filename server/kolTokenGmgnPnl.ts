@@ -6,14 +6,14 @@ import type { ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/
 import { currentTradeReplayGmgnAccounting } from './tradeReplayGmgn.js';
 import { currentMarketChart } from './tokenChart.js';
 import { currentTokenPositionQuote } from './tokenPositionQuote.js';
-import { currentTokenGmgnPositionQuote } from './tokenGmgnPositionQuote.js';
+import { currentTokenGmgnPositionQuote, type PositionQuoteLoadOptions } from './tokenGmgnPositionQuote.js';
 import { currentGmgnHistoryPnl } from './gmgnHistoryPnl.js';
 import { trackedTokenPnl } from './kolTokenTrackedPnl.js';
 
 type Loader = (activity: KolTokenActivity, options?: { foreground?: () => boolean }) => Promise<TradeReplayAccounting>;
 interface PositionQuote { priceUsd: string; timestamp: string }
 interface PositionQuoteResult { quote?: PositionQuote; reason?: string; retryAfterMs?: number }
-type QuoteLoader = (token: string) => Promise<PositionQuoteResult>;
+type QuoteLoader = (token: string, options?: PositionQuoteLoadOptions) => Promise<PositionQuoteResult>;
 type HistoryFallbackLoader = (activity: KolTokenActivity, options?: { foreground?: boolean }) => Promise<KolTokenRealizedAccounting>;
 type AggregateLoader = (activity: KolTokenActivity, options?: { foreground?: boolean }) => Promise<KolTokenRealizedAccounting | null>;
 type Entry = { version: 1; fingerprint: string; observedAt: number; expiresAt: number; refreshAfter?: number; value: KolTokenRealizedAccounting };
@@ -297,7 +297,7 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     // display retained historical cash flows while the provider refresh runs.
     return retained ? datedValue(retained) : work;
   };
-  const quoteJobs = new Map<string, Promise<PositionQuoteResult>>();
+  const quoteJobs = new Map<string, { foreground: boolean; work: Promise<PositionQuoteResult> }>();
   // Market marks are independent of the historical ledger. Remember their
   // original timestamps so a later provider cooldown does not erase a still
   // recent price, or force every wallet holding the same token to fetch it again.
@@ -347,16 +347,24 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
     if (!loadQuote) return value;
     let job = quoteJobs.get(token);
     if (!job) {
-      job = (async () => {
+      const quoteJob = { foreground: options.foreground === true, work: null as unknown as Promise<PositionQuoteResult> };
+      quoteJobs.set(token, quoteJob);
+      quoteJob.work = (async () => {
+        const startedAt = Date.now();
         let timer: ReturnType<typeof setTimeout> | undefined;
-        try { return await Promise.race([loadQuote(token), new Promise<PositionQuoteResult>(resolve => {
-          timer = setTimeout(() => resolve({ reason: 'current_quote_unavailable', retryAfterMs: 3000 }), 2500);
+        try { return await Promise.race([loadQuote(token, { foreground: () => quoteJob.foreground }), new Promise<PositionQuoteResult>(resolve => {
+          const expire = () => {
+            const remaining = (quoteJob.foreground ? 8500 : 2500) - (Date.now() - startedAt);
+            if (remaining > 0) timer = setTimeout(expire, remaining);
+            else resolve({ reason: 'current_quote_unavailable', retryAfterMs: 3000 });
+          };
+          timer = setTimeout(expire, quoteJob.foreground ? 8500 : 2500);
         })]); } finally { if (timer) clearTimeout(timer); }
       })();
-      quoteJobs.set(token, job);
-    }
+      job = quoteJob;
+    } else if (options.foreground) job.foreground = true;
     try {
-      const result = await job;
+      const result = await job.work;
       const marked = result.quote ? markedPosition(value.position, value.realizedProfitUsd!, result.quote, 'market', activity, now(), lastMovementAt) : null;
       if (marked) {
         value.position = retained && Date.parse(retained.pricedAt!) > Date.parse(marked.pricedAt!) ? retained : marked;
@@ -381,40 +389,61 @@ export function createKolTokenGmgnPnl({ load = (activity, options) => currentTra
 
 /** Reuse chart jobs/cache while keeping card valuation below foreground charts. */
 export async function loadCurrentPositionQuote(token: string, { loadChart = currentMarketChart, loadSpotQuote = currentTokenPositionQuote,
-  loadGmgnSpotQuote = currentTokenGmgnPositionQuote, now: clock = Date.now }: {
+  loadGmgnSpotQuote = currentTokenGmgnPositionQuote, now: clock = Date.now, foreground: requestedForeground }: {
   loadChart?: typeof currentMarketChart; loadSpotQuote?: QuoteLoader; loadGmgnSpotQuote?: QuoteLoader; now?: () => number;
+  foreground?: PositionQuoteLoadOptions['foreground'];
 } = {}): Promise<PositionQuoteResult> {
   // Position valuation only needs a current price. A batched spot request does
   // not compete with the main chart's expensive OHLC history preparation.
-  const startedAt = clock();
+  const startedAt = clock(), deadlineStartedAt = Date.now();
+  let promoted = false;
+  const foreground = () => promoted ||= typeof requestedForeground === 'function' ? requestedForeground() : requestedForeground === true;
+  const deadlineAt = () => deadlineStartedAt + (foreground() ? 8000 : 2500);
+  let expired = false, timer: ReturnType<typeof setTimeout> | undefined;
   let unavailableSpot: PositionQuoteResult = { reason: 'current_quote_unavailable', retryAfterMs: 3000 };
-  for (const load of [loadSpotQuote, loadGmgnSpotQuote]) {
-    try {
-      const spot = await load(token), at = Date.parse(spot.quote?.timestamp ?? '');
-      if (spot.quote && numeric(spot.quote.priceUsd) !== null && Number(spot.quote.priceUsd) > 0
-        && Number.isFinite(at) && at <= clock() && clock() - at <= kolTokenPositionQuoteMaxAgeMs) return spot;
-      if (spot.reason) unavailableSpot = { reason: spot.reason, retryAfterMs: spot.retryAfterMs ?? 3000 };
-    } catch { /* Continue to independent price evidence. */ }
-  }
-  // The adapter has a 2.5s mark budget. Avoid launching full-history work after
-  // lightweight lookups already used it; their own caches can warm for retry.
-  if (clock() - startedAt >= 2200) return unavailableSpot;
-  const result = await loadChart(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
-  const chart = result.chart, now = clock(), updated = Date.parse(chart?.updatedAt ?? '');
-  const unavailable = { reason: result.loadStatus === 'rate_limited' ? 'quote_rate_limited' : 'current_quote_unavailable', retryAfterMs: result.retryAfterMs ?? 3000 };
-  // The chart refresh target is shorter than the position quote's validity.
-  // Keep a genuinely observed recent price usable while its refresh is queued;
-  // otherwise a busy profile can revisit only after every fresh chart expires.
-  if (!chart || chart.address !== token || chart.resolution !== '1m'
-    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source) || !Number.isFinite(updated) || updated > now
-    || now - updated > kolTokenPositionQuoteMaxAgeMs) return unavailable;
-  const bar = chart.candles.filter(candle => Number.isInteger(candle.time) && candle.time >= 0 && candle.time * 1000 <= updated
-    && Number.isFinite(candle.close) && candle.close > 0).sort((a, b) => b.time - a.time)[0];
-  if (!bar) return unavailable;
-  // A cached partial candle must retain its original observation time after
-  // that minute closes, rather than acquire the later minute boundary.
-  const observed = Math.min(updated, (bar.time + 60) * 1000);
-  if (now - observed > kolTokenPositionQuoteMaxAgeMs) return unavailable;
-  return { quote: { priceUsd: String(bar.close), timestamp: new Date(observed).toISOString() } };
+  const outOfTime = () => expired || Date.now() >= deadlineAt() || clock() - startedAt >= (foreground() ? 8000 : 2500);
+  const prepare = async (): Promise<PositionQuoteResult> => {
+    for (const load of [loadSpotQuote, loadGmgnSpotQuote]) {
+      if (outOfTime()) return unavailableSpot;
+      try {
+        const spot = await load(token, { foreground, deadlineAt }), at = Date.parse(spot.quote?.timestamp ?? '');
+        if (outOfTime()) return unavailableSpot;
+        if (spot.quote && numeric(spot.quote.priceUsd) !== null && Number(spot.quote.priceUsd) > 0
+          && Number.isFinite(at) && at <= clock() && clock() - at <= kolTokenPositionQuoteMaxAgeMs) return spot;
+        if (spot.reason) unavailableSpot = { reason: spot.reason, retryAfterMs: spot.retryAfterMs ?? 3000 };
+      } catch { /* Continue to independent price evidence. */ }
+    }
+    // Foreground marks may wait for the provider slot, while card refreshes keep
+    // their shorter deadline. Neither path extends cached observation timestamps.
+    if (outOfTime() || !foreground() && clock() - startedAt >= 2200) return unavailableSpot;
+    const result = await loadChart(token, '1m', foreground() ? 'chart' : 'prefetch', { maxAgeMs: 30_000, foreground });
+    if (outOfTime()) return unavailableSpot;
+    const chart = result.chart, now = clock(), updated = Date.parse(chart?.updatedAt ?? '');
+    const unavailable = { reason: result.loadStatus === 'rate_limited' ? 'quote_rate_limited' : 'current_quote_unavailable', retryAfterMs: result.retryAfterMs ?? 3000 };
+    // The chart refresh target is shorter than the position quote's validity.
+    // Keep a genuinely observed recent price usable while its refresh is queued;
+    // otherwise a busy profile can revisit only after every fresh chart expires.
+    if (!chart || chart.address !== token || chart.resolution !== '1m'
+      || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source) || !Number.isFinite(updated) || updated > now
+      || now - updated > kolTokenPositionQuoteMaxAgeMs) return unavailable;
+    const bar = chart.candles.filter(candle => Number.isInteger(candle.time) && candle.time >= 0 && candle.time * 1000 <= updated
+      && Number.isFinite(candle.close) && candle.close > 0).sort((a, b) => b.time - a.time)[0];
+    if (!bar) return unavailable;
+    // A cached partial candle must retain its original observation time after
+    // that minute closes, rather than acquire the later minute boundary.
+    const observed = Math.min(updated, (bar.time + 60) * 1000);
+    if (now - observed > kolTokenPositionQuoteMaxAgeMs) return unavailable;
+    return { quote: { priceUsd: String(bar.close), timestamp: new Date(observed).toISOString() } };
+  };
+  try {
+    return await Promise.race([prepare(), new Promise<PositionQuoteResult>(resolve => {
+      const expire = () => {
+        const remaining = deadlineAt() - Date.now();
+        if (remaining > 0) timer = setTimeout(expire, remaining);
+        else { expired = true; resolve(unavailableSpot); }
+      };
+      timer = setTimeout(expire, Math.max(0, deadlineAt() - Date.now()));
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 export const currentKolTokenGmgnPnl = createKolTokenGmgnPnl({ loadQuote: loadCurrentPositionQuote, loadAggregate: currentTradeReplayGmgnAccounting.profile, allowTrackedEstimate: true });

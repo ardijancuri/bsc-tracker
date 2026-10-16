@@ -46,6 +46,7 @@ let directory: string;
 beforeEach(async () => { directory = await mkdtemp(path.join(os.tmpdir(), 'kollens-replay-gmgn-')); });
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   const target = path.resolve(directory), root = path.resolve(os.tmpdir());
   if (path.dirname(target) !== root || !path.basename(target).startsWith('kollens-replay-gmgn-')) throw Error('Unexpected test cache location');
   await rm(target, { recursive: true, force: true });
@@ -60,6 +61,20 @@ const routes = (request: ReturnType<typeof setup>['request']) => request.mock.ca
 const priorityOf = (options: GmgnRequestOptions) => typeof options.priority === 'function' ? options.priority() : options.priority;
 
 describe('existing-key GMGN replay provider', () => {
+  it('uses the accounting credential for both wallet activity and market-path trader aggregates', async () => {
+    vi.stubEnv('GMGN_ACCOUNTING_API_KEY', 'accounting-test-key');
+    vi.stubEnv('GMGN_CHART_API_KEY', 'market-test-key');
+    const request = vi.fn(async (url: URL, _options: GmgnRequestOptions) => ({ data: url.pathname.endsWith('wallet_activity')
+      ? { activities: [providerRow()], next: null } : { list: [aggregate()] } }));
+    const load = createTradeReplayGmgnLoader({ request, directory, now: () => time });
+    expect((await load(activity())).status).toBe('ready');
+    expect(routes(request)).toEqual(['/v1/user/wallet_activity', '/v1/market/token_top_traders']);
+    for (const [, options] of request.mock.calls) {
+      expect(options.apiKey).toBe('accounting-test-key');
+      expect(options.workload).toBe('accounting');
+      expect(typeof options.foreground === 'function' ? options.foreground() : options.foreground).toBe(true);
+    }
+  });
   it('recovers lifetime profile totals across an older closed cycle without manufacturing replay prefixes', async () => {
     const selected = activity(), oldBuy = { ...providerRow(), tx_hash: '0x' + 'a'.repeat(64), timestamp: timestamp - 200 };
     const oldSell = { ...providerRow(), tx_hash: '0x' + 'b'.repeat(64), event_type: 'sell', timestamp: timestamp - 100, cost_usd: '50' };
@@ -221,7 +236,9 @@ describe('existing-key GMGN replay provider', () => {
     const { load, request } = setup(async url => url.pathname.endsWith('wallet_activity') ? new Promise(resolve => { finish = resolve; }) : { data: { list: [aggregate()] } });
     const profile = load(activity(), { historicalRealized: true }); await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     expect(priorityOf(request.mock.calls[0][1])).toBe('prefetch');
+    expect((request.mock.calls[0][1].foreground as () => boolean)()).toBe(false);
     const replay = load(activity()); expect(priorityOf(request.mock.calls[0][1])).toBe('chart');
+    expect((request.mock.calls[0][1].foreground as () => boolean)()).toBe(true);
     finish({ data: { activities: [providerRow()], next: null } });
     expect((await profile).status).toBe('ready'); expect((await replay).status).toBe('ready');
     expect(request).toHaveBeenCalledTimes(2); expect(priorityOf(request.mock.calls[1][1])).toBe('chart');

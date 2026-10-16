@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CandleInterval, MarketCandle, TokenChart } from '../shared/intelligence.js';
-import { gmgnRequest, type GmgnRequestOptions } from './gmgnApi.js';
+import { gmgnApiKey, gmgnRequest, type GmgnRequestOptions } from './gmgnApi.js';
 import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
 import { chartSettings, fetchPreferredMarketCandles, parseGmgnCandles } from './tokenChart.js';
 import { createTokenHistoryArchive, historyArchiveCursor, mergeHistoryCandles, mergeHistoryCoverage, type HistoryManifest } from './tokenChartHistoryArchive.js';
@@ -15,7 +15,7 @@ const defaultDirectory = path.join(process.env.TOKEN_CHART_CACHE_DIR || path.joi
 
 /** Latest candles and backward pages have separate lifetimes and in-flight jobs. */
 export function createFullMarketCharts({ request = gmgnRequest, archive = createTokenHistoryArchive(defaultDirectory), now = Date.now,
-  apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '', snapshotLimit = 20_000,
+  apiKey = () => gmgnApiKey('market'), snapshotLimit = 20_000,
   fallback = (address: string, interval: CandleInterval, signal: AbortSignal) => fetchPreferredMarketCandles(address, interval, undefined, { signal }),
 }: { request?: (url: URL, options: GmgnRequestOptions) => Promise<any>; archive?: Archive; now?: () => number; apiKey?: () => string;
   snapshotLimit?: number; fallback?: (address: string, interval: CandleInterval, signal: AbortSignal) => Promise<TokenChart | null> } = {}) {
@@ -60,7 +60,7 @@ export function createFullMarketCharts({ request = gmgnRequest, archive = create
     const url = new URL('https://openapi.gmgn.ai/v1/market/token_kline');
     for (const [name, value] of Object.entries({ chain: 'bsc', address, resolution: interval, from: 1000, to: end,
       timestamp: Math.floor(now() / 1000), client_id: randomUUID() })) url.searchParams.set(name, String(value));
-    const body = await request(url, { apiKey: secret, signal: AbortSignal.timeout(20_000),
+    const body = await request(url, { apiKey: secret, workload: 'market', signal: AbortSignal.timeout(20_000),
       priority: before === undefined ? () => priorities.get(key) ?? 'chart' : 'prefetch' });
     const rows = Array.isArray(body?.data) ? body.data : body?.data?.list;
     if (body?.code !== 0 || !Array.isArray(rows)) throw new Error('GMGN returned an invalid history page');

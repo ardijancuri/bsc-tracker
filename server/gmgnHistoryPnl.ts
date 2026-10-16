@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { canUseGmgnHistoryFallback, type KolTokenActivity, type KolTokenBalanceProof, type KolTokenRealizedAccounting, type KolTokenTrade } from '../shared/kolTokenTrades.js';
-import { gmgnRequest, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
+import { gmgnApiKey, gmgnRequest, recordGmgnCacheHit, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { MarketProviderDeferred } from './geckoApi.js';
 import { currentKolTokenBalance } from './kolTokenBalance.js';
 import type { GmgnReplayHistory, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
@@ -204,7 +204,7 @@ function build(activity: KolTokenActivity, rows: Row[], proof: KolTokenBalancePr
  * It can recover profile P&L on pruned nodes without asserting archived proof. */
 export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTokenBalance, now = Date.now, budgetMs = 8000,
   repairRecent, allowTrackedEstimate = false,
-  apiKey = () => process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY?.trim() || '',
+  apiKey = () => gmgnApiKey('accounting'),
 }: { request?: Requester; rpc?: BalanceReader; now?: () => number; budgetMs?: number; apiKey?: () => string;
   repairRecent?: typeof currentRecentTradeRepair; allowTrackedEstimate?: boolean } = {}) {
   const cache = new Map<string, { until: number; value: HistoryResult }>(), histories = new Map<string, History>();
@@ -224,7 +224,7 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
     if (pause && pause.until > now()) { empty.status = 'pending'; empty.retryAfterMs = Math.max(1000, pause.until - now()); empty.coverage.reason = pause.reason; return empty; }
     pauses.delete(signature);
     const stored = cache.get(signature);
-    if (stored && stored.until > now()) return structuredClone(stored.value);
+    if (stored && stored.until > now()) { recordGmgnCacheHit('accounting'); return structuredClone(stored.value); }
     const existing = jobs.get(signature);
     if (existing) { const previous = existing.foreground; existing.foreground = () => previous() || foreground(); return structuredClone(await existing.work); }
     if (jobs.size >= (foreground() ? 2 : 1)) { empty.status = 'pending'; empty.retryAfterMs = 1000; empty.coverage.reason = 'provider_busy'; return empty; }
@@ -245,7 +245,8 @@ export function createGmgnHistoryPnl({ request = gmgnRequest, rpc = currentKolTo
           url.searchParams.set('chain', 'bsc'); url.searchParams.set('wallet_address', wallet); url.searchParams.set('token_address', token); url.searchParams.set('limit', '50');
           for (const type of ['buy', 'sell', 'transferIn', 'transferOut']) url.searchParams.append('type', type);
           if (cursor) url.searchParams.set('cursor', cursor);
-          const response = await bounded(request(url, { apiKey: key, weight: 3, priority: () => job.foreground() ? 'chart' : 'prefetch', signal, timeoutMs: budgetMs }), signal);
+          const response = await bounded(request(url, { apiKey: key, workload: 'accounting', weight: 3,
+            priority: () => job.foreground() ? 'chart' : 'prefetch', foreground: () => job.foreground(), signal, timeoutMs: budgetMs }), signal);
           const body = response.data ?? response, page = parseRows(body.activities, wallet, token, now());
           const next = body.next === '' || body.next === null ? null : body.next;
           if (next !== null && (typeof next !== 'string' || !next || next.length > 4096)) throw Error('gmgn_history_cursor_invalid');

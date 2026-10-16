@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarketProviderDeferred } from './geckoApi.js';
-import { createGmgnRequester, GmgnHttpError } from './gmgnApi.js';
+import { createGmgnRequester, GmgnHttpError, type GmgnRequestOptions } from './gmgnApi.js';
 import { createTokenGmgnPositionQuote } from './tokenGmgnPositionQuote.js';
 
 const token = '0x' + '1'.repeat(40), other = '0x' + '2'.repeat(40), date = '2026-10-15T00:00:00.000Z';
@@ -29,9 +29,42 @@ describe('lightweight GMGN position spot quote', () => {
     expect(request).toHaveBeenCalledOnce();
     const [url, options] = request.mock.calls[0];
     expect(url.href).toBe(`https://openapi.gmgn.ai/v1/token/info?chain=bsc&address=${token}`);
-    expect(options).toMatchObject({ apiKey: 'test-key', weight: 1, priority: 'prefetch', timeoutMs: 1500 });
+    expect(options).toMatchObject({ apiKey: 'test-key', workload: 'market', weight: 1, priority: 'prefetch', timeoutMs: 8000 });
+    expect(options.foreground()).toBe(false);
     await vi.advanceTimersByTimeAsync(29_000);
     expect(await load(token)).toEqual(first); expect(request).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('promotes a same-token background job without another request and extends its total deadline', async () => {
+    let finish!: (value: unknown) => void;
+    const request = vi.fn<(url: URL, options: GmgnRequestOptions) => Promise<unknown>>(() => new Promise(resolve => { finish = resolve; }));
+    const load = createTokenGmgnPositionQuote({ request, apiKey: () => 'test-key' });
+    const background = load(token);
+    await vi.advanceTimersByTimeAsync(1000);
+    const selected = load(token, { foreground: true });
+    const options = request.mock.calls[0][1];
+    expect(request).toHaveBeenCalledOnce(); expect(typeof options.foreground === 'function' && options.foreground()).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(options.signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(6499);
+    expect(options.signal!.aborted).toBe(false);
+    finish(body());
+    expect(await selected).toEqual(await background);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('observes callback promotion and still bounds foreground work to eight seconds from its original start', async () => {
+    let selected = false;
+    const request = vi.fn<(url: URL, options: GmgnRequestOptions) => Promise<unknown>>(() => new Promise(() => {}));
+    const load = createTokenGmgnPositionQuote({ request, apiKey: () => 'test-key' });
+    const pending = load(token, { foreground: () => selected });
+    await vi.advanceTimersByTimeAsync(1000); selected = true;
+    await vi.advanceTimersByTimeAsync(6999);
+    expect(request.mock.calls[0][1].signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({ reason: 'current_quote_unavailable', retryAfterMs: 3000 });
+    expect(request.mock.calls[0][1].signal!.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each(['0', '-1', 'NaN', 'Infinity', '0x10', '1_000', '', ' 1'])('rejects malformed or nonpositive USD price %s', async price => {

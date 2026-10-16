@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { MarketCandle, TokenChart, ChartRange } from '../shared/intelligence.js';
 import { geckoFetch, MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './geckoApi.js';
-import { gmgnRequest } from './gmgnApi.js';
+import { gmgnApiKey, gmgnRequest, recordGmgnCacheHit } from './gmgnApi.js';
 import { cmcRequest, fetchCmcMarketCandles, type CmcJsonRequest } from './cmcChart.js';
 
 export const chartWindows = {
@@ -136,7 +136,7 @@ export function parseGmgnCandles(rows: unknown, since: number, until: number): M
 
 type GmgnJsonRequest = (url: URL, signal: AbortSignal, headers: Record<string, string>) => Promise<any>;
 export async function fetchGmgnMarketCandles(address: string, period: ChartRange, apiKey: string,
-  request: GmgnJsonRequest = (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal }), now = Date.now(), signal = AbortSignal.timeout(20_000)): Promise<TokenChart | null> {
+  request: GmgnJsonRequest = (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], workload: 'market', signal }), now = Date.now(), signal = AbortSignal.timeout(20_000)): Promise<TokenChart | null> {
   if (!addressRe.test(address)) throw new Error('Invalid chart address');
   if (!apiKey.trim()) throw new Error('GMGN API key is not configured');
   const settings = chartSettings(period), until = Math.floor(now / 1000);
@@ -202,6 +202,7 @@ export async function fetchPreferredMarketCandles(address: string, period: Chart
 const cache = new Map<string, TokenChart>();
 const jobs = new Map<string, Promise<TokenChart | null>>();
 const priorities = new Map<string, GeckoPriority>();
+const foregrounds = new Map<string, () => boolean>();
 const retryAt = new Map<string, { at: number; status: NonNullable<TokenChart['loadStatus']> }>();
 const cacheDirectory = process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts');
 function finerCachedChart(address: string, range: ChartRange): TokenChart | null {
@@ -249,16 +250,22 @@ async function persistChart(key: string, chart: TokenChart) {
   } catch { /* In-memory cache still serves refresh failures on read-only hosts. */ }
 }
 
-export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority, options: { maxAgeMs?: number } = {}): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
+export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority,
+  options: { maxAgeMs?: number; foreground?: boolean | (() => boolean) } = {}): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
   const period = range === '5m' ? '24h' : range === '1h' || range === '7d' ? '30d' : range;
   const key = `${address}-${period}`;
   const requestedPriority = priority ?? (range in candleWindows ? 'chart' : 'sparkline');
   const interactive = requestedPriority === 'chart';
+  const foreground = () => typeof options.foreground === 'function' ? options.foreground() : options.foreground === true;
   const promote = () => {
     const existing = priorities.get(key);
     if (jobs.has(key) && existing && marketPriorityRank[requestedPriority] < marketPriorityRank[existing]) priorities.set(key, requestedPriority);
+    if (jobs.has(key)) {
+      const previous = foregrounds.get(key);
+      foregrounds.set(key, () => previous?.() === true || foreground());
+    }
   };
   // Promote the same provider work when the main chart joins a background job.
   promote();
@@ -270,20 +277,21 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
   // priority. Do not promote every profile card ahead of the selected chart.
   const lifetime = Number.isFinite(options.maxAgeMs) && options.maxAgeMs! > 0 ? Math.min(defaultLifetime, options.maxAgeMs!) : defaultLifetime;
   const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
-  if (fresh) return { chart: chartForRange(saved, range), pending: false };
+  if (fresh) { if (saved.source === 'gmgn') recordGmgnCacheHit('market'); return { chart: chartForRange(saved, range), pending: false }; }
   let job = jobs.get(key);
   const interactiveJobs = [...priorities.values()].filter(priority => priority === 'chart').length;
   if (!job && Date.now() >= (retryAt.get(key)?.at || 0) && (jobs.size < 32 || interactive && interactiveJobs < 8)) {
     priorities.set(key, requestedPriority);
+    foregrounds.set(key, foreground);
     const request = (url: URL) => providerRequest(url, () => priorities.get(key) ?? 'sparkline');
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
         const result = await fetchPreferredMarketCandles(address, period, poolAddress, {
-          gmgnKey: process.env.GMGN_CHART_API_KEY?.trim() || process.env.GMGN_API_KEY, saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
+          gmgnKey: gmgnApiKey('market'), saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
           cmcRequest: (url, signal) => cmcRequest(url, { signal, priority: () => priorities.get(key) ?? 'sparkline' }),
-          gmgnRequest: (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], signal,
-            priority: () => priorities.get(key) ?? 'sparkline' }),
+          gmgnRequest: (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], workload: 'market', signal,
+            priority: () => priorities.get(key) ?? 'sparkline', foreground: () => foregrounds.get(key)?.() === true }),
         });
         if (!result) { retryAt.set(key, { at: Date.now() + 300_000, status: 'no_history' }); return null; }
         retryAt.delete(key);
@@ -300,7 +308,7 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
           status: deferred ? error.reason === 'rate_limited' ? 'rate_limited' : 'queued' : 'provider_error' });
         return null;
       }
-      finally { jobs.delete(key); priorities.delete(key); }
+      finally { jobs.delete(key); priorities.delete(key); foregrounds.delete(key); }
     })();
     jobs.set(key, job);
   }

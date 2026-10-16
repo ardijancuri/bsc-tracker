@@ -49,7 +49,7 @@ export async function fetchGmgnProfits(wallets: string[], period: GmgnProfit['pe
   url.searchParams.set('timestamp', String(Math.floor(Date.now() / 1000)));
   url.searchParams.set('client_id', randomUUID());
   const envelope = await gmgnRequest(url, {
-    apiKey, weight: 3, priority: 'metadata',
+    apiKey, workload: 'accounting', weight: 3, priority: 'metadata',
     method: 'POST',
     body: { chain: 'bsc', period, wallet_addresses: wallets },
   });

@@ -43,9 +43,32 @@ function loader(rows: any[], balance = '4', overrides: Partial<Parameters<typeof
   const request = vi.fn(async (_url: URL) => ({ data: { activities: rows, next: '' } })), rpc = vi.fn(async () => proof(balance));
   return { request, rpc, load: createGmgnHistoryPnl({ request, rpc, now: () => time, apiKey: () => 'test-key', ...overrides }) };
 }
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('GMGN history PNL on pruned nodes', () => {
+  it('uses the accounting credential and preserves dynamic selected-trade promotion', async () => {
+    vi.stubEnv('GMGN_ACCOUNTING_API_KEY', 'accounting-test-key');
+    vi.stubEnv('GMGN_CHART_API_KEY', 'market-test-key');
+    const { rows, activity } = scenario();
+    const calls: import('./gmgnApi.js').GmgnRequestOptions[] = [];
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const request = vi.fn(async (_url: URL, options: import('./gmgnApi.js').GmgnRequestOptions) => {
+      calls.push(options); await gate; return { data: { activities: rows, next: '' } };
+    });
+    const load = createGmgnHistoryPnl({ request, rpc: async () => proof(), now: () => time });
+    const background = load(activity);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(calls[0].apiKey).toBe('accounting-test-key');
+    expect(calls[0].workload).toBe('accounting');
+    expect((calls[0].foreground as () => boolean)()).toBe(false);
+    const selectedTrade = load(activity, { foreground: true });
+    expect((calls[0].foreground as () => boolean)()).toBe(true);
+    finish();
+    expect((await selectedTrade).status).toBe('ready');
+    expect((await background).status).toBe('ready');
+    expect(request).toHaveBeenCalledOnce();
+  });
   it('recovers an independently indexed closing sale omitted by GMGN as tracked PNL, without forging a replay ledger', async () => {
     const buy = row(1, 'buy', '10', '100'), partial = row(2, 'sell', '4', '60'), closing = row(3, 'sell', '6', '70');
     const activity = selected([trade(buy, '105'), trade(partial, '59'), trade(closing, '69')]);

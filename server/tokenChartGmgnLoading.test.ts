@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ gmgn: vi.fn(), cmc: vi.fn(), cmcRequest: vi.fn(), gecko: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), mkdir: vi.fn(), rename: vi.fn() }));
 vi.mock('node:fs/promises', () => ({ readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir, rename: mocks.rename }));
-vi.mock('./gmgnApi.js', () => ({ gmgnRequest: mocks.gmgn }));
+vi.mock('./gmgnApi.js', async importOriginal => ({ ...await importOriginal<typeof import('./gmgnApi.js')>(), gmgnRequest: mocks.gmgn }));
 vi.mock('./cmcChart.js', () => ({ fetchCmcMarketCandles: mocks.cmc, cmcRequest: mocks.cmcRequest }));
 vi.mock('./geckoApi.js', async importOriginal => ({ ...await importOriginal<typeof import('./geckoApi.js')>(), geckoFetch: mocks.gecko }));
 const address = '0x' + '1'.repeat(40), now = 2_000_000_000_000;
@@ -35,11 +35,31 @@ describe('GMGN chart caching and request coalescing', () => {
   });
   it('prefers the dedicated chart key while retaining the legacy key as a fallback', async () => {
     vi.stubEnv('GMGN_CHART_API_KEY', ' chart-only-test-key ');
+    vi.stubEnv('GMGN_ACCOUNTING_API_KEY', 'accounting-only-test-key');
     const { currentMarketChart } = await import('./tokenChart.js');
     expect((await currentMarketChart(address, '1m')).chart?.source).toBe('gmgn');
     expect(mocks.gmgn.mock.calls[0][1].apiKey).toBe('chart-only-test-key');
+    expect(mocks.gmgn.mock.calls[0][1].workload).toBe('market');
     expect(JSON.stringify(mocks.writeFile.mock.calls)).not.toContain('chart-only-test-key');
     expect(JSON.stringify(mocks.writeFile.mock.calls)).not.toContain('private-test-key');
+  });
+  it('promotes an existing background candle request when selected valuation joins without restarting it', async () => {
+    const { currentMarketChart } = await import('./tokenChart.js');
+    let finish!: (value: unknown) => void;
+    mocks.gmgn.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const background = currentMarketChart(address, '1m', 'prefetch');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.gmgn.mock.calls[0][1].foreground()).toBe(false);
+    let selected = false;
+    const joined = currentMarketChart(address, '1m', 'chart', { foreground: () => selected });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.gmgn.mock.calls[0][1].foreground()).toBe(false);
+    selected = true;
+    expect(mocks.gmgn.mock.calls[0][1].foreground()).toBe(true);
+    expect(mocks.gmgn).toHaveBeenCalledOnce();
+    finish({ code: 0, data: { list: [row] } });
+    expect((await joined).chart?.source).toBe('gmgn');
+    expect((await background).chart?.source).toBe('gmgn');
   });
   it('coalesces watchlist/page jobs, persists normalized genuine history, and reuses cache without another account request', async () => {
     const { currentMarketChart } = await import('./tokenChart.js');

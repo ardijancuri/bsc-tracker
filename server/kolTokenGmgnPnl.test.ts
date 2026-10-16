@@ -8,6 +8,9 @@ import type { TokenChart } from '../shared/intelligence.js';
 import type { TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
 import { createKolTokenGmgnPnl, loadCurrentPositionQuote, realizedAccountingFromReplay } from './kolTokenGmgnPnl.js';
 import { buildTradeReplayGmgnAccounting } from './tradeReplayGmgnAccounting.js';
+import { createTokenGmgnPositionQuote, type PositionQuoteLoadOptions } from './tokenGmgnPositionQuote.js';
+import type { GmgnRequestOptions } from './gmgnApi.js';
+import type { currentMarketChart } from './tokenChart.js';
 
 const time = Date.parse('2026-10-14T06:00:00Z'), wallet = '0x' + '1'.repeat(40), token = '0x' + '2'.repeat(40), native = '0x' + '0'.repeat(40);
 const hash = (id: number) => '0x' + id.toString(16).padStart(64, '0');
@@ -87,7 +90,7 @@ describe('verified lifetime aggregate recovery integration', () => {
       loadAggregate: async () => aggregate, loadQuote });
     expect(await run(selected)).toMatchObject({ realizedProfitUsd: '-76.6', position: { estimatedProfitUsd: '1', priceUsd: '30',
       unrealizedProfitUsd: '77.6', feeInclusiveCostUsd: '309', valuationSource: 'market' } });
-    expect(loadQuote).toHaveBeenCalledExactlyOnceWith(token);
+    expect(loadQuote).toHaveBeenCalledExactlyOnceWith(token, { foreground: expect.any(Function) });
     expect(aggregate.position!.estimatedProfitUsd).toBeNull();
   });
 
@@ -261,7 +264,7 @@ describe('profile position quotes during chart refresh', () => {
   it('uses a recently observed genuine price while the chart refresh is queued', async () => {
     const selected = chart(), loadChart = vi.fn(async () => ({ chart: selected, pending: true, loadStatus: 'queued' as const, retryAfterMs: 3000 }));
     expect(await loadCurrentPositionQuote(token, { loadChart, loadSpotQuote: noSpotQuote, loadGmgnSpotQuote: noSpotQuote, now: () => time })).toEqual({ quote: { priceUsd: '20', timestamp: selected.updatedAt } });
-    expect(loadChart).toHaveBeenCalledExactlyOnceWith(token, '1m', 'prefetch', { maxAgeMs: 30_000 });
+    expect(loadChart).toHaveBeenCalledExactlyOnceWith(token, '1m', 'prefetch', { maxAgeMs: 30_000, foreground: expect.any(Function) });
   });
   it('does not advance the observation date when a cached partial candle closes', async () => {
     const selected = chart(), loadChart = async () => ({ chart: selected, pending: true });
@@ -377,7 +380,7 @@ describe('GMGN historical realized P&L adapter', () => {
     const quote = { priceUsd: '12', timestamp: at }, loadChart = vi.fn();
     const gmgnSpot = vi.fn(async () => ({ quote }));
     expect(await loadCurrentPositionQuote(token, { loadSpotQuote: async () => ({}), loadGmgnSpotQuote: gmgnSpot, loadChart, now: () => time })).toEqual({ quote });
-    expect(gmgnSpot).toHaveBeenCalledExactlyOnceWith(token); expect(loadChart).not.toHaveBeenCalled();
+    expect(gmgnSpot).toHaveBeenCalledExactlyOnceWith(token, { foreground: expect.any(Function), deadlineAt: expect.any(Function) }); expect(loadChart).not.toHaveBeenCalled();
   });
   it('does not launch full chart work when lightweight quotes exhausted the mark budget', async () => {
     let clock = time;
@@ -385,6 +388,60 @@ describe('GMGN historical realized P&L adapter', () => {
     expect(await loadCurrentPositionQuote(token, { loadSpotQuote: slow, loadGmgnSpotQuote: slow, loadChart, now: () => clock }))
       .toEqual({ reason: 'current_quote_unavailable', retryAfterMs: 3000 });
     expect(loadChart).not.toHaveBeenCalled();
+  });
+  it('carries selected-trade priority through lightweight quote loading and chart fallback', async () => {
+    let clock = time, selected = false;
+    const loadSpotQuote = vi.fn<(token: string, options?: PositionQuoteLoadOptions) => Promise<{}>>(async () => { clock += 1500; selected = true; return {}; });
+    const loadGmgnSpotQuote = vi.fn<(token: string, options?: PositionQuoteLoadOptions) => Promise<{}>>(async () => { clock += 1500; return {}; });
+    const loadChart = vi.fn<typeof currentMarketChart>(async () => ({ chart: null, pending: true }));
+    await loadCurrentPositionQuote(token, { loadSpotQuote, loadGmgnSpotQuote, loadChart, now: () => clock, foreground: () => selected });
+    expect((loadSpotQuote.mock.calls[0][1]!.foreground as () => boolean)()).toBe(true);
+    expect((loadGmgnSpotQuote.mock.calls[0][1]!.foreground as () => boolean)()).toBe(true);
+    expect(loadChart).toHaveBeenCalledExactlyOnceWith(token, '1m', 'chart', { maxAgeMs: 30_000, foreground: expect.any(Function) });
+    selected = false;
+    expect((loadChart.mock.calls[0][3]!.foreground as () => boolean)()).toBe(true);
+  });
+  it('bounds sequential spot lookups to one eight-second foreground budget and skips later chart work', async () => {
+    vi.useFakeTimers();
+    try {
+      const request = vi.fn<(url: URL, options: GmgnRequestOptions) => Promise<unknown>>(() => new Promise(() => {}));
+      const loadGmgnSpotQuote = createTokenGmgnPositionQuote({ request, apiKey: () => 'test-key' });
+      const loadChart = vi.fn();
+      const loadSpotQuote = async () => { await new Promise(resolve => setTimeout(resolve, 2400)); return {}; };
+      let settled = false;
+      const pending = loadCurrentPositionQuote(token, { loadSpotQuote, loadGmgnSpotQuote, loadChart, foreground: true })
+        .then(value => { settled = true; return value; });
+      await vi.advanceTimersByTimeAsync(2400);
+      expect(request).toHaveBeenCalledOnce(); expect(request.mock.calls[0][1].signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(5599); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({ reason: 'current_quote_unavailable' });
+      expect(request.mock.calls[0][1].signal!.aborted).toBe(true);
+      expect(loadChart).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it('extends the original pipeline deadline on promotion while preserving another token-quote subscriber', async () => {
+    vi.useFakeTimers();
+    try {
+      let selected = false, finish!: (value: unknown) => void;
+      const request = vi.fn<(url: URL, options: GmgnRequestOptions) => Promise<unknown>>(() => new Promise(resolve => { finish = resolve; }));
+      const loadGmgnSpotQuote = createTokenGmgnPositionQuote({ request, apiKey: () => 'test-key' });
+      const loadSpotQuote = async () => { await new Promise(resolve => setTimeout(resolve, 1000)); return {}; };
+      const loadChart = vi.fn();
+      let settled = false;
+      const pending = loadCurrentPositionQuote(token, { loadSpotQuote, loadGmgnSpotQuote, loadChart, foreground: () => selected })
+        .then(value => { settled = true; return value; });
+      await vi.advanceTimersByTimeAsync(1000);
+      const peer = loadGmgnSpotQuote(token, { foreground: true });
+      await vi.advanceTimersByTimeAsync(1000); selected = true;
+      await vi.advanceTimersByTimeAsync(500); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5500);
+      expect(await pending).toMatchObject({ reason: 'current_quote_unavailable' });
+      expect(request).toHaveBeenCalledOnce(); expect(request.mock.calls[0][1].signal!.aborted).toBe(false);
+      expect(loadChart).not.toHaveBeenCalled();
+      finish({ code: 0, data: { address: token, price: { price: '12' } } });
+      expect((await peer).quote?.priceUsd).toBe('12'); expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 });
 
@@ -552,6 +609,28 @@ describe('bounded durable historical realized cache', () => {
     vi.useFakeTimers(); const stalled = createKolTokenGmgnPnl({ load, loadQuote: async () => new Promise(() => {}), directory: null, now: () => time });
     const pending = stalled(activity()); await vi.advanceTimersByTimeAsync(2500);
     expect(await pending).toMatchObject({ status: 'ready', realizedProfitUsd: '73.4', position: { estimatedProfitUsd: null, retryAfterMs: 3000 } });
+  });
+  it('promotes an existing token valuation and extends its enclosing deadline without loading another quote', async () => {
+    vi.useFakeTimers();
+    try {
+      const loadQuote = vi.fn<(token: string, options?: PositionQuoteLoadOptions) => Promise<{}>>(() => new Promise(() => {}));
+      const run = createKolTokenGmgnPnl({ load: async selected => accounting(selected), loadQuote, directory: null, now: () => time });
+      let backgroundSettled = false;
+      const background = run(activity()).then(value => { backgroundSettled = true; return value; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loadQuote).toHaveBeenCalledOnce();
+      const foreground = loadQuote.mock.calls[0][1]!.foreground as () => boolean;
+      expect(foreground()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      const selected = run(activity(), undefined, { foreground: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(foreground()).toBe(true); expect(loadQuote).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(7499);
+      expect(backgroundSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await selected).toEqual(await background);
+      expect(backgroundSettled).toBe(true); expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
   it('reuses unchanged verified historical profit across process restart and endpoint/quote refresh', async () => {
     let clock = time; const load = vi.fn(async (selected: KolTokenActivity) => accounting(selected, true));
