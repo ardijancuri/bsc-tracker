@@ -28,6 +28,7 @@ const excluded: Asset[] = [
   { address: '0x24b518b332543a4e1c3649d063dab199d103760a', symbol: null },
   { address: '0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3', symbol: 'RENAMED' },
   { address: '0x1ba42e5193dfa8b03d15dd1b86a3113bbbef8eeb', symbol: 'ZEC' },
+  { address: '0xce24439f2d9c6a2289f741120fe202248b666666', symbol: null },
   { address: '0x85eac5ac2f758618dfa09bdbe0cf174e7d574d5b', symbol: 'TRX' },
   { address: '0x4b0f1812e5df2a09796481ff14017e6005508003', symbol: null },
   { address: '0x570a5d26f7765ecb712c0924e4de545b89fd43df', symbol: 'SOL' },

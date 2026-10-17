@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.0 — 2026-10-17
+
+The v1.3 release series begins with the Telegram alerts update (commit `f6a395b`), originally committed with a v1.2 label.
+
+- Added separately opted-in Telegram alerts for favorite KOLs, with buys/sells filters, pause/resume, individual muting, and English/Chinese messages.
+- Deliver confirmed live trades independently of GMGN and P&L loading, with durable delivery, ten-second follow-up summaries, freshness limits, and reorg corrections.
+- Added separate messaging consent and authenticated Telegram webhook handling while preserving ordinary login and synced favorites.
+- Expanded reward/pair-asset exclusions from KOL token cards, trade lists, per-token P&L, replays and alerts, including `0xce24439f2d9c6a2289f741120fe202248b666666`. Indexed evidence remains stored.
+- Moved the token favorite control before the replay button and renamed the button to “Share replay”.
+
 ## v1.2 fixes — 2026-10-16
 
 - Recover verified lifetime GMGN totals for positions whose older cycles predate indexed trades, retaining earlier losses, transfer values and fees.

@@ -11,6 +11,7 @@ describe('KOL profile token eligibility', () => {
     ['oANTHROPIC', '0x24b518b332543a4e1c3649d063dab199d103760a'],
     ['TRX', '0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3'],
     ['ZEC', '0x1ba42e5193dfa8b03d15dd1b86a3113bbbef8eeb'],
+    ['user-excluded reward/pair asset', '0xce24439f2d9c6a2289f741120fe202248b666666'],
     ['TRX (second contract)', '0x85eac5ac2f758618dfa09bdbe0cf174e7d574d5b'],
     ['TWT', '0x4b0f1812e5df2a09796481ff14017e6005508003'],
     ['SOL', '0x570a5d26f7765ecb712c0924e4de545b89fd43df'],
@@ -78,6 +79,7 @@ describe('KOL profile token eligibility', () => {
     expect(sql).toContain('0x24b518b332543a4e1c3649d063dab199d103760a');
     expect(sql).toContain('0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3');
     expect(sql).toContain('0x1ba42e5193dfa8b03d15dd1b86a3113bbbef8eeb');
+    expect(sql).toContain('0xce24439f2d9c6a2289f741120fe202248b666666');
     expect(sql).toContain('0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1');
     expect(sql).toContain('\\mLP\\M');
     expect(sql).not.toContain('is_meme');

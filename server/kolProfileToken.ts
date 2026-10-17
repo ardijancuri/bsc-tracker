@@ -9,6 +9,7 @@ const excludedProfileAssets = [
   '0x24b518b332543a4e1c3649d063dab199d103760a', // oANTHROPIC (user-excluded reward/pair asset)
   '0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3', // TRX
   '0x1ba42e5193dfa8b03d15dd1b86a3113bbbef8eeb', // ZEC
+  '0xce24439f2d9c6a2289f741120fe202248b666666', // User-excluded reward/pair asset
   // Other established payout/pair assets present in indexed KOL activity.
   // Contract identities: https://github.com/pancakeswap/token-list/blob/main/lists/pancakeswap-extended.json
   '0x85eac5ac2f758618dfa09bdbe0cf174e7d574d5b', // TRX (second contract)
