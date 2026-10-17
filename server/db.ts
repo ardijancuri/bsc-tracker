@@ -2,6 +2,7 @@ import pg from 'pg';
 import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 import { ensureAuthSchema } from './telegramAuth.js';
 import { ensureAccountWatchlistSchema } from './accountWatchlist.js';
+import { ensureTelegramNotificationsSchema } from './telegramNotificationsSchema.js';
 
 const { Pool } = pg;
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12 });
@@ -115,6 +116,7 @@ export async function ensureSchema() {
   await ensureIntelligenceSchema(pool);
   await ensureAuthSchema(pool);
   await ensureAccountWatchlistSchema(pool);
+  await ensureTelegramNotificationsSchema(pool);
 }
 
 export async function setState(key: string, value: unknown) {

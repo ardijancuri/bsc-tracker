@@ -49,7 +49,7 @@ export function TokenReplayTrigger({ token, onOpenChange }: { token: Token | nul
   const [snapshot, setSnapshot] = useState<Token | null>(null);
   return <><button type="button" className="token-replay-trigger" disabled={!token} onClick={() => {
     if (token) { setSnapshot({ ...token }); onOpenChange?.(true); }
-  }}><Share2 size={15} /> {t('Share token replay')}</button>
+  }}><Share2 size={15} /> {t('Share replay')}</button>
     {snapshot && <TokenReplayDialog token={snapshot} onClose={() => { setSnapshot(null); onOpenChange?.(false); }} />}
   </>;
 }

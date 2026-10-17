@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Check, Copy, Search } from 'lucide-react';
-import { AlertSettings, FeatureIdentity, FollowButton, useWatchlist } from './Intelligence';
+import { AlertSettings, FeatureIdentity, FollowButton, KolAlertButton, useWatchlist } from './Intelligence';
 import { loadWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import { AccountWatchlistNotice, useAccount } from './Account';
 import { useTokenTranslation } from './TokenName';
@@ -13,6 +13,7 @@ import { compareWatchTokens, type WatchSortKey } from './watchlistSort';
 import { marketChartChanges } from './tokenChartData';
 import { tokenChartIntent } from './tokenChartIntent';
 import './tokenWatchlist.css';
+import { TelegramAlertsSettings } from './TelegramNotifications';
 
 const periodLabels: Record<WatchPeriod, string> = { '24h': '24h', '7d': '1 week', '30d': '1 month' };
 const chartLabels: Record<WatchPeriod, string> = { '24h': 'Token price chart · 24h', '7d': 'Token price chart · 1 week', '30d': 'Token price chart · 1 month' };
@@ -67,7 +68,13 @@ function WatchTokenRow({ token, period, onChart }: { token: WatchEntry; period: 
 export function TokenWatchlistPage() {
   const watch = useWatchlist();
   const account = useAccount();
-  const [kind, setKind] = useState<'token' | 'kol'>('token');
+  const [params, setParams] = useSearchParams();
+  const kind = params.get('tab') === 'kols' ? 'kol' : 'token';
+  const setKind = (value: 'token' | 'kol') => setParams(current => {
+    const next = new URLSearchParams(current);
+    if (value === 'kol') next.set('tab', 'kols'); else next.delete('tab');
+    return next;
+  }, { replace: true });
   const [query, setQuery] = useState('');
   const [period, setPeriod] = useState<WatchPeriod>('24h');
   const [history, setHistory] = useState<Watchlist | null>(null);
@@ -115,8 +122,9 @@ export function TokenWatchlistPage() {
     </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
     {!visible.length && <div className="watch-token-empty"><strong>{!watch.loaded ? t('Loading…') : query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
     </section> : <section id="watchlist-kol-panel" role="tabpanel" aria-labelledby="watchlist-kol-tab">
+      <TelegramAlertsSettings />
       <div className="token-watchlist-toolbar"><Link className="feature-button" to="/leaderboard">{t('Add KOLs')}</Link></div>
-      <div className="data-table feature-table watch-kol-list">{watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><FollowButton kind="kol" address={item.address} label={item.name} /></div>)}</div>
+      <div className="data-table feature-table watch-kol-list">{watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><div className="telegram-kol-controls"><KolAlertButton address={item.address} label={item.name} /><FollowButton kind="kol" address={item.address} label={item.name} /></div></div>)}</div>
       {!watch.data.items.some(item => item.kind === 'kol') && <div className="watch-token-empty"><strong>{t(watch.loaded ? 'No followed KOLs' : 'Loading…')}</strong>{watch.loaded && <Link to="/leaderboard">{t('Star KOLs to add them here')}</Link>}</div>}
     </section>}
     <AlertSettings />

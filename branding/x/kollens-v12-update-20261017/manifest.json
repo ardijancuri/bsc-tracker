@@ -1,0 +1,25 @@
+{
+  "width": 1600,
+  "height": 900,
+  "versionLabel": "V1.2",
+  "title": "V1.2 Update",
+  "features": [
+    "Telegram login",
+    "Favorites synced across devices",
+    "Token replay videos",
+    "More reliable KOL P&L",
+    "Faster chart & replay loading"
+  ],
+  "featureListOnImage": true,
+  "font": "Exact app Manrope glyphs",
+  "brandGold": "#F9C932",
+  "logoSha256": "e8c72c3e9c2ae4285e8650a526ae9fe33c05ecca931e4b0d93fb400ec0fd2d4c",
+  "imageSha256": "2fa1c60024be45020203153ad6d669d909ba0ca8d19fc6b19e989d15b836b644",
+  "generationRoute": "Built-in ImageGen background; exact SVG and Sharp foreground",
+  "nativeBackground": "C:/Users/PC/.codex/generated_images/01a0deed-e93b-7573-9540-7d96188a7440/exec-ba810d63-9038-46e9-9352-376c2bee956a.png",
+  "visuals": "Illustrative synced desktop/mobile watchlists. GM historical closing observations from retained campaign snapshot illustrate token replay controls; no prices or performance claims. Not a screenshot of a logged-in user.",
+  "chartPoints": 168,
+  "chartToken": "GM",
+  "noDatesOnImage": true,
+  "noBuySellPositions": true
+}

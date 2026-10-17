@@ -21,7 +21,7 @@ The public leaderboard uses a continuously moving 24-hour window and FIFO cost b
 
 The token tracker includes recognized meme launchpad contracts and known meme coins, excluding quote assets, LP tokens and dividend trackers. Its initial one-hour window uses on-chain trade timestamps. Logos are validated by decoding their image bytes, cached locally and served through `/api/token-image/:address` with a content version. IPFS images retry independent gateways; oversized animation uses a compact still frame. Coins with unavailable artwork keep a readable initial while background retries continue.
 
-KOL profiles exclude quote assets, LPs, dividend trackers, registered stock tokens and the reward-asset contracts listed in `server/kolProfileToken.ts` from token cards, trade lists, activity counts and last-trade timestamps. The same filter prevents their per-token P&L and replay preparation. It runs before pagination; raw indexed trades and transfer evidence remain available for accounting of other tokens. Unknown contracts and dividend-paying meme tokens remain eligible.
+KOL profiles exclude quote assets, LPs, dividend trackers, registered stock tokens and the reward/pair-asset contracts listed in `server/kolProfileToken.ts` from token cards, trade lists, activity counts and last-trade timestamps. The contract list includes the requested oANTHROPIC, TRX and ZEC assets, other verified established payout/pair assets, Paimon market assets, the CMC20 index and verified wrapped xStocks observed in KOL activity. The same filter prevents their per-token P&L, replay preparation and Telegram trade alerts. It runs before pagination; raw indexed trades and transfer evidence remain available for accounting of other tokens. Unknown contracts, unrelated tokens with matching names and dividend-paying meme tokens remain eligible.
 
 ## Run
 
@@ -29,7 +29,9 @@ Use Node.js 22+, PostgreSQL 17, and a BSC node with HTTP and WebSocket RPC. Copy
 
 For local development, configure a private `.env` with `DATABASE_URL` and optional `GMGN_CHART_API_KEY`, run `npm install`, then `npm run dev` and `npm run dev:api`. The API reads the local `.env` automatically. The worker runs with `npm run dev:worker`. Use `npm run check` and `npm test` to verify the code.
 
-Telegram login is optional. Configure the dedicated login bot's server-only OIDC credentials and registered callback using [Telegram login setup](docs/telegram-login.md). Empty credentials keep guest watchlists working without sign-in. Login credentials belong only to the API container; the worker does not receive them.
+Telegram login is optional. Configure the dedicated login bot's server-only OIDC credentials and registered callback using [Telegram login setup](docs/telegram-login.md). Empty credentials keep guest watchlists working without sign-in. The OIDC client secret belongs only to the API container.
+
+The Watchlist KOL tab offers separately opted-in Telegram live trade alerts. Once activated, all favorite KOLs send confirmed buys/sells unless individually muted; users can pause alerts and select sides. Delivery uses a durable worker outbox, groups rapid follow-up trades into ten-second summaries, and skips trades older than five minutes. It does not wait for GMGN, P&L or replay loading. The existing bot's separate Bot API token is required; production webhook registration is an explicit release operation, never automatic. See the setup guide for local testing, consent and `/stop`. Run `npm run test:integration:notifications` only with a disposable `bscan_notifications_test` database.
 
 ## KOL images
 

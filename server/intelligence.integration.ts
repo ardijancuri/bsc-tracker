@@ -80,23 +80,10 @@ try {
   await pool.query(`UPDATE worker_state SET value=jsonb_build_object('nextAt',0,'pausedUntil',floor(extract(epoch FROM now())*1000)::bigint+60000) WHERE key='gecko_api_budget'`);
   await assert.rejects(() => reserveGeckoSlot('chart'), /Market provider cooling down/, 'Provider pauses apply across processes');
   await pool.query(`DELETE FROM worker_state WHERE key='gecko_api_budget'`);
-  // Exercise retirement on an existing watchlist without losing its session or filters.
-  await pool.query(`ALTER TABLE watch_sessions ADD COLUMN telegram_chat_id text,
-    ADD COLUMN telegram_username text, ADD COLUMN telegram_connected_at timestamptz;
-    CREATE TABLE telegram_links (id text PRIMARY KEY);
-    CREATE TABLE telegram_updates (update_id bigint PRIMARY KEY);
-    CREATE TABLE notification_deliveries (id text PRIMARY KEY);`);
-  await pool.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at,telegram_chat_id)
-    VALUES('retirement-test',$1,now()+interval '1 year','12345')`, [hashSecret('retirement-test')]);
+  // Schema startup must preserve account-owned notification state.
   await Promise.all([ensureIntelligenceSchema(pool), ensureIntelligenceSchema(pool)]);
-  assert.equal((await pool.query(`SELECT id FROM watch_sessions WHERE id='retirement-test'`)).rowCount, 1);
-  assert.equal((await pool.query(`SELECT column_name FROM information_schema.columns
-    WHERE table_name='watch_sessions' AND column_name LIKE 'telegram_%'`)).rowCount, 0);
-  assert.equal((await pool.query(`SELECT tablename FROM pg_tables WHERE schemaname='public'
-    AND tablename IN ('telegram_links','telegram_updates','notification_deliveries')`)).rowCount, 0);
-  await pool.query(`DELETE FROM watch_sessions WHERE id='retirement-test'`);
   for (const [method, url] of [['GET', '/api/telegram/status'], ['POST', '/api/telegram/link'],
-    ['POST', '/api/telegram/confirm'], ['DELETE', '/api/telegram/link'], ['POST', '/api/telegram/webhook']] as const) {
+    ['POST', '/api/telegram/confirm'], ['DELETE', '/api/telegram/link']] as const) {
     assert.equal((await app.inject({ method, url })).statusCode, 404);
   }
   assert.equal('telegram' in (await app.inject('/api/watchlist')).json(), false);
@@ -276,5 +263,5 @@ try {
     for (const wallet of wallets) await pool.query(`INSERT INTO position_snapshots(wallet_address,token_address,block_number,block_hash,balance_raw,status,checked_at,block_timestamp) VALUES($1,$2,125,$3,$4,'Added',now(),now())`, [wallet, token, hash(125), (125n * unit + 1n).toString()]);
     console.log(`Preview fixtures: /token/${token}, /kol/${wallets[0]}`);
   }
-  console.log('Intelligence integration checks passed: migrations, Telegram retirement, signals, sessions, positions, launches and reorgs.');
+  console.log('Intelligence integration checks passed: migrations, legacy-route isolation, signals, sessions, positions, launches and reorgs.');
 } finally { globalThis.fetch = nativeFetch; await app.close(); await new Promise<void>(resolve => rpc.close(() => resolve())); await pool.end(); }

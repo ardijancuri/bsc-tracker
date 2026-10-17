@@ -14,13 +14,6 @@ export async function ensureIntelligenceSchema(pool: Pool) {
       preferences jsonb NOT NULL DEFAULT '{"windowMinutes":10,"minBuyers":3,"categories":["clustered_buys","repeat_buy","buyer_selling","near_graduation","graduated"],"muted":false}',
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
-    -- Retired Telegram integration: remove connection identifiers and bot delivery data.
-    DROP TABLE IF EXISTS notification_deliveries;
-    DROP TABLE IF EXISTS telegram_links;
-    DROP TABLE IF EXISTS telegram_updates;
-    ALTER TABLE watch_sessions DROP COLUMN IF EXISTS telegram_chat_id,
-      DROP COLUMN IF EXISTS telegram_username, DROP COLUMN IF EXISTS telegram_connected_at;
-    DELETE FROM worker_state WHERE key IN ('telegram','telegram_retry');
     CREATE TABLE IF NOT EXISTS watch_entries (
       session_id text NOT NULL REFERENCES watch_sessions(id) ON DELETE CASCADE,
       kind text NOT NULL CHECK(kind IN ('kol','token')), address text NOT NULL,

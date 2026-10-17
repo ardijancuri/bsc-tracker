@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import Fastify from 'fastify';
 import type { Pool } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AuthMergeLimitError, authFailureCategory, authSessionSecret, createTelegramOidc, registerTelegramAuthRoutes, resolveAuthUser, safeAuthReturnTo, telegramAuthConfig, telegramIssuer, type TelegramAuthConfig } from './telegramAuth.js';
+import { AuthMergeLimitError, authFailureCategory, authSessionSecret, createTelegramOidc, registerTelegramAuthRoutes, resolveAuthUser, safeAuthReturnTo, telegramAuthConfig, telegramIssuer, verifiedTelegramId, type TelegramAuthConfig } from './telegramAuth.js';
 
 const config: TelegramAuthConfig = { clientId: '12345', clientSecret: 'test-client_secret-with_both-characters', origin: 'https://kollens.com', secure: true };
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -22,14 +22,16 @@ function fakeDatabase() {
     queries.push({ sql, args });
     if (sql === 'BEGIN') backup = { sessions: new Map(sessions), users: new Map(users) };
     if (sql === 'ROLLBACK' && backup) { sessions.clear(); users.clear(); for (const [k, v] of backup.sessions) sessions.set(k, v); for (const [k, v] of backup.users) users.set(k, v); }
-    if (sql.startsWith('INSERT INTO auth_login_attempts')) loginAttempts.set(args[0] as string, { browser_hash: args[1], code_verifier: args[2], nonce: args[3], return_to: args[4], guest_snapshot: JSON.parse(args[5] as string) });
+    if (sql.startsWith('INSERT INTO auth_login_attempts')) loginAttempts.set(args[0] as string, { browser_hash: args[1], code_verifier: args[2], nonce: args[3], return_to: args[4], ...(sql.includes("'notifications'")
+      ? { guest_snapshot: null, purpose: 'notifications', expected_user_id: args[5], expected_issuer: args[6], expected_subject: args[7], expected_session_hash: args[8], notification_language: args[9] }
+      : { guest_snapshot: JSON.parse(args[5] as string), purpose: 'login' }) });
     if (sql.startsWith('DELETE FROM auth_login_attempts WHERE state_hash')) {
       const attempt = loginAttempts.get(args[0] as string);
       if (attempt?.browser_hash === args[1]) { loginAttempts.delete(args[0] as string); return { rows: [attempt] }; }
     }
     if (sql.startsWith('INSERT INTO auth_users')) {
       if (users.has(args[2] as string)) return { rows: [] };
-      const user = { id: args[0], name: args[3], username: args[4], avatarUrl: args[5] };
+      const user = { id: args[0], issuer: args[1], subject: args[2], name: args[3], username: args[4], avatarUrl: args[5] };
       users.set(args[2] as string, user);
       return { rows: [{ id: args[0] }] };
     }
@@ -47,7 +49,7 @@ function fakeDatabase() {
   return { db: { query, connect: vi.fn(async () => connection) } as unknown as Pool, queries, users, sessions, loginAttempts };
 }
 
-async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; tokenError?: { error: string; status: number } } = {}) {
+async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; notifications?: boolean; tokenError?: { error: string; status: number } } = {}) {
   const database = fakeDatabase();
   let nonce = '';
   const tokenRequests: RequestInit[] = [];
@@ -75,10 +77,12 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
   });
   const captureGuest = vi.fn(async () => ({ sessionId: 'guest-1', secretHash: 'guest-secret-hash' }));
   const mergeGuest = vi.fn(async () => { if (options.mergeLimit) throw new AuthMergeLimitError(); });
+  const authorized = vi.fn(async () => {}), consentFailed = vi.fn(async () => {});
   const failures: Record<string, unknown>[] = [];
   const app = Fastify({ logger: options.tokenError ? { level: 'warn', stream: { write: value => { failures.push(JSON.parse(value)); } } } : false });
   apps.push(app);
-  registerTelegramAuthRoutes(app, { pool: database.db, config: options.disabled ? null : config, oidcConfiguration: () => createTelegramOidc(config, fetcher as never), captureGuest, mergeGuest });
+  registerTelegramAuthRoutes(app, { pool: database.db, config: options.disabled ? null : config, oidcConfiguration: () => createTelegramOidc(config, fetcher as never), captureGuest, mergeGuest,
+    notificationConsent: { available: () => !!options.notifications, onAuthorized: authorized, onFailed: consentFailed } });
   async function start(returnTo: unknown = '/token/0xabc?period=7d#chart') {
     const response = await app.inject({ method: 'POST', url: '/api/auth/telegram/start', headers: { origin: config.origin }, payload: { returnTo } });
     if (response.statusCode !== 200) throw new Error(response.body);
@@ -87,10 +91,16 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
     const cookie = response.cookies.find(value => value.name === 'bscan_login')!.value;
     return { response, url, state: url.searchParams.get('state')!, cookie };
   }
-  async function callback(state: string, cookie: string, extra = '&code=one-time-code') {
-    return app.inject({ method: 'GET', url: `/api/auth/telegram/callback?state=${state}${extra}`, headers: { cookie: `bscan_login=${cookie}` } });
+  async function callback(state: string, cookie: string, extra = '&code=one-time-code', session = '') {
+    return app.inject({ method: 'GET', url: `/api/auth/telegram/callback?state=${state}${extra}`, headers: { cookie: `bscan_login=${cookie}${session ? `; bscan_auth=${session}` : ''}` } });
   }
-  return { ...database, app, start, callback, captureGuest, mergeGuest, tokenRequests, fetcher, failures };
+  async function consent(session: string, payload: unknown = { returnTo: '/watchlist?tab=kols', language: 'zh-CN' }) {
+    const response = await app.inject({ method: 'POST', url: '/api/notifications/telegram/enable', headers: { origin: config.origin, cookie: `bscan_auth=${session}` }, payload: payload as never });
+    const url = response.statusCode === 200 ? new URL(response.json().url) : null;
+    if (url) nonce = url.searchParams.get('nonce')!;
+    return { response, url, state: url?.searchParams.get('state')!, cookie: response.cookies.find(value => value.name === 'bscan_login')?.value! };
+  }
+  return { ...database, app, start, callback, consent, authorized, consentFailed, captureGuest, mergeGuest, tokenRequests, fetcher, failures };
 }
 
 describe('Telegram auth configuration and inputs', () => {
@@ -126,6 +136,91 @@ describe('Telegram auth configuration and inputs', () => {
     const { db } = fakeDatabase();
     expect(await resolveAuthUser({ headers: {} } as never, db)).toBeNull();
     expect(db.query).not.toHaveBeenCalled();
+  });
+  it('accepts only safe positive signed Telegram numeric IDs, never an opaque subject', () => {
+    expect(verifiedTelegramId(987654321)).toBe('987654321');
+    expect(verifiedTelegramId('987654321')).toBe('987654321');
+    for (const value of [null, undefined, 'opaque-sub', '001', 0, -1, 1.25, Number.MAX_SAFE_INTEGER + 1, '9007199254740992']) expect(verifiedTelegramId(value)).toBeNull();
+  });
+});
+
+describe('Telegram notification consent', () => {
+  async function signedIn(f: Awaited<ReturnType<typeof fixture>>) {
+    const { state, cookie } = await f.start('/watchlist');
+    const login = await f.callback(state, cookie);
+    const session = login.cookies.find(value => value.name === 'bscan_auth')!.value;
+    f.mergeGuest.mockClear(); f.captureGuest.mockClear();
+    return session;
+  }
+  it('uses separate messaging scope and activates only the bound current account without replacing its session', async () => {
+    const f = await fixture({ id: 123456789, sub: 'opaque-telegram-subject' }, { notifications: true });
+    const session = await signedIn(f);
+    const beforeSessions = new Map(f.sessions), beforeUsers = f.users.size;
+    const { response, url, state, cookie } = await f.consent(session);
+    expect(response.statusCode).toBe(200);
+    expect(url!.searchParams.get('scope')).toBe('openid profile telegram:bot_access');
+    const result = await f.callback(state, cookie, '&code=consent-code', session);
+    expect(result.headers.location).toBe('/watchlist?tab=kols&telegramAlerts=pending');
+    expect(f.authorized).toHaveBeenCalledWith({ userId: [...f.users.values()][0].id, telegramId: '123456789', language: 'zh-CN' });
+    expect(f.captureGuest).not.toHaveBeenCalled(); expect(f.mergeGuest).not.toHaveBeenCalled();
+    expect(f.sessions).toEqual(beforeSessions); expect(f.users.size).toBe(beforeUsers);
+    expect(result.cookies.map(value => value.name)).toEqual(['bscan_login']);
+  });
+  it('does not infer a chat ID from sub when the numeric profile id is missing', async () => {
+    const f = await fixture({}, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    expect((await f.callback(state, cookie, '&code=consent-code', session)).headers.location).toContain('telegramAlerts=failed');
+    expect(f.authorized).not.toHaveBeenCalled();
+    expect(f.consentFailed).toHaveBeenCalledWith([...f.users.values()][0].id, 'failed');
+  });
+  it('does not merge or log in a different identity during messaging consent', async () => {
+    const f = await fixture({ id: 1234 }, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    f.loginAttempts.get(digest(state))!.expected_subject = 'another-identity';
+    expect((await f.callback(state, cookie, '&code=consent-code', session)).headers.location).toContain('telegramAlerts=identity_mismatch');
+    expect(f.authorized).not.toHaveBeenCalled(); expect(f.mergeGuest).not.toHaveBeenCalled(); expect(f.users.size).toBe(1);
+  });
+  it('rejects a newly signed different Telegram identity after the token exchange', async () => {
+    const claims = { id: 1234, sub: 'original-subject' };
+    const f = await fixture(claims, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    claims.id = 6789; claims.sub = 'another-subject';
+    expect((await f.callback(state, cookie, '&code=consent-code', session)).headers.location).toContain('telegramAlerts=identity_mismatch');
+    expect(f.authorized).not.toHaveBeenCalled(); expect(f.mergeGuest).not.toHaveBeenCalled(); expect(f.users.size).toBe(1);
+    expect(f.consentFailed).toHaveBeenCalledWith([...f.users.values()][0].id, 'identity_mismatch');
+  });
+  it.each(['', 'b'.repeat(64)])('rejects a missing or changed current session before token exchange', async changed => {
+    const f = await fixture({ id: 1234 }, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    const count = f.tokenRequests.length;
+    expect((await f.callback(state, cookie, '&code=consent-code', changed)).headers.location).toContain('telegramAlerts=identity_mismatch');
+    expect(f.tokenRequests).toHaveLength(count); expect(f.authorized).not.toHaveBeenCalled();
+  });
+  it('records denied consent without changing session or requesting tokens', async () => {
+    const f = await fixture({ id: 1234 }, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    const count = f.tokenRequests.length;
+    expect((await f.callback(state, cookie, '&error=access_denied', session)).headers.location).toContain('telegramAlerts=denied');
+    expect(f.tokenRequests).toHaveLength(count); expect(f.authorized).not.toHaveBeenCalled();
+    expect(f.consentFailed).toHaveBeenCalledWith([...f.users.values()][0].id, 'denied');
+  });
+  it('keeps the account signed in when consent persistence or activation queue creation fails', async () => {
+    const f = await fixture({ id: 1234 }, { notifications: true });
+    const session = await signedIn(f), { state, cookie } = await f.consent(session);
+    f.authorized.mockRejectedValueOnce(new Error('private-storage-details'));
+    const result = await f.callback(state, cookie, '&code=consent-code', session);
+    expect(result.headers.location).toContain('telegramAlerts=failed');
+    expect(f.sessions.has(digest(session))).toBe(true); expect(f.mergeGuest).not.toHaveBeenCalled();
+    expect(result.cookies.map(value => value.name)).toEqual(['bscan_login']);
+    expect(f.consentFailed).toHaveBeenCalledWith([...f.users.values()][0].id, 'failed');
+  });
+  it('requires a signed-in user, configured transport and valid input', async () => {
+    const f = await fixture({}, { notifications: false });
+    expect((await f.consent('')).response.statusCode).toBe(401);
+    expect((await f.consent(await signedIn(f))).response.statusCode).toBe(503);
+    const ready = await fixture({}, { notifications: true }), session = await signedIn(ready);
+    expect((await ready.consent(session, { language: 'fr' })).response.statusCode).toBe(400);
+    expect((await ready.app.inject({ method: 'POST', url: '/api/notifications/telegram/enable', headers: { origin: config.origin, cookie: `bscan_auth=${session}`, 'x-watchlist-owner': 'another-user' }, payload: {} })).statusCode).toBe(409);
   });
 });
 

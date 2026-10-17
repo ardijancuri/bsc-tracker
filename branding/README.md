@@ -9,6 +9,8 @@
 
 ## Final X assets
 
+- V1.2 update: `x/kollens-v12-update-20261017/` — Telegram login, synced token/KOL favorites, token replay videos, P&L recovery and loading improvements. Includes caption, exact Manrope/brand artwork, release evidence, source chart observations and editable export.
+
 - Profile: `x/kollens-approved-profile-header/kollens-x-profile-400.png` (upload), plus the 1024px master and editable SVG.
 - Header: `x/kollens-market-header/kollens-x-header-centered-1500x500.png`, plus `kollens-x-header-centered.svg`; regenerate the PNG with that folder's `export.mjs`.
 - Launch post: `x/kollens-launch-approved-20261012-v5/kollens-launch-post.png`.

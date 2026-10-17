@@ -12,6 +12,7 @@ import { last24hStart } from './dayWindow.js';
 import { isMemeToken } from './memeToken.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
+import { telegramNotifications, rollbackTelegramNotifications } from './telegramNotifications.js';
 import { reorgStart } from './chainReorg.js';
 import { selectTokenMarkets } from './tokenMarkets.js';
 import { geckoFetch } from './geckoApi.js';
@@ -204,6 +205,7 @@ async function rollbackIfReorg() {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782319)');
+    await rollbackTelegramNotifications(client, rollbackFrom);
     await client.query('DELETE FROM trades WHERE block_number >= $1', [rollbackFrom]);
     await rollbackIntelligence(client, rollbackFrom);
     await client.query('DELETE FROM processed_blocks WHERE block_number >= $1', [rollbackFrom]);
@@ -834,5 +836,5 @@ if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), intelligenceLoop(), historicalVerificationLoop(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), intelligenceLoop(), telegramNotifications.run(), historicalVerificationLoop(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
 }

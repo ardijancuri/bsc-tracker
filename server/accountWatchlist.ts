@@ -16,6 +16,7 @@ export async function ensureAccountWatchlistSchema(database: Pool) {
       PRIMARY KEY(user_id,kind,address)
     );
     CREATE INDEX IF NOT EXISTS account_watch_entries_entity_idx ON account_watch_entries(kind,address);
+    ALTER TABLE account_watch_entries ADD COLUMN IF NOT EXISTS added_at timestamptz NOT NULL DEFAULT now();
     CREATE OR REPLACE VIEW active_watch_entries AS
       SELECT w.kind,w.address FROM watch_entries w JOIN watch_sessions s ON s.id=w.session_id WHERE s.expires_at>now()
       UNION SELECT kind,address FROM account_watch_entries;`);

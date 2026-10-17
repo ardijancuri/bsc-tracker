@@ -1,4 +1,5 @@
 import { t, localDate } from './i18n';
+import { TelegramKolBell } from './TelegramNotifications';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ExternalLink, Star, X } from 'lucide-react';
@@ -68,6 +69,11 @@ export function FollowButton({ kind, address, label }: { kind: 'kol' | 'token'; 
   const title = t('{action} {name}', { action: t(followed ? 'Unfollow' : 'Follow'), name: label || shortAddress(address) });
   return <button type="button" className={`follow-button${followed ? ' followed' : ''}`} aria-label={title} title={title} aria-pressed={followed}
     disabled={!watch.loaded || watch.busy} onClick={event => { event.preventDefault(); event.stopPropagation(); void watch.toggle(kind, address); }}><Star size={18} fill={followed ? 'currentColor' : 'none'} /></button>;
+}
+export function KolAlertButton({ address, label }: { address: string; label?: string | null }) {
+  const watch = useWatchlist();
+  const followed = watch.loaded && watch.data.items.some(item => item.kind === 'kol' && item.address === address.toLowerCase());
+  return followed ? <TelegramKolBell address={address} label={label || shortAddress(address)} /> : null;
 }
 export function FeatureTabs({ page }: { page: 'trades' | 'tokens' }) {
   const [params] = useSearchParams();
@@ -150,7 +156,7 @@ export function AlertSettings({ watchlist = true }: { watchlist?: boolean }) {
 }
 export function WatchlistView() {
   const watch = useWatchlist();
-  return <><div className="watchlist-grid">{(['kol', 'token'] as const).map(kind => <section key={kind}><div className="table-toolbar"><h2>{kind === 'kol' ? t("KOLs") : t("Tokens")}</h2><span>{watch.data.items.filter(item => item.kind === kind).length}</span>{kind === 'token' && <Link className="watch-token-more" to="/watchlist">{t('View token watchlist')}<ExternalLink size={12} /></Link>}</div><div className="data-table feature-table">{watch.data.items.filter(item => item.kind === kind).map(item => <div className={`watch-row${kind === 'token' ? ' watch-row-token' : ''}`} key={`${kind}:${item.address}`}><div><Link to={`/${kind}/${item.address}`}><FeatureIdentity token={kind === 'token'} address={item.address} name={item.name} symbol={kind === 'token' ? item.symbol : undefined} image={kind === 'token' ? item.logoUrl : item.avatarUrl} /></Link>{kind === 'token' && <WatchTokenDetails token={item} />}</div><FollowButton kind={kind} address={item.address} label={item.name} /></div>)}{!watch.data.items.some(item => item.kind === kind) && <FeatureEmpty>{watch.loaded ? t(kind === 'kol' ? 'No followed KOLs' : 'No followed tokens') : t("Loading…")}</FeatureEmpty>}</div></section>)}</div>
+  return <><div className="watchlist-grid">{(['kol', 'token'] as const).map(kind => <section key={kind}><div className="table-toolbar"><h2>{kind === 'kol' ? t("KOLs") : t("Tokens")}</h2><span>{watch.data.items.filter(item => item.kind === kind).length}</span>{kind === 'token' && <Link className="watch-token-more" to="/watchlist">{t('View token watchlist')}<ExternalLink size={12} /></Link>}</div><div className="data-table feature-table">{watch.data.items.filter(item => item.kind === kind).map(item => <div className={`watch-row${kind === 'token' ? ' watch-row-token' : ''}`} key={`${kind}:${item.address}`}><div><Link to={`/${kind}/${item.address}`}><FeatureIdentity token={kind === 'token'} address={item.address} name={item.name} symbol={kind === 'token' ? item.symbol : undefined} image={kind === 'token' ? item.logoUrl : item.avatarUrl} /></Link>{kind === 'token' && <WatchTokenDetails token={item} />}</div><div className="telegram-kol-controls">{kind === 'kol' && <KolAlertButton address={item.address} label={item.name} />}<FollowButton kind={kind} address={item.address} label={item.name} /></div></div>)}{!watch.data.items.some(item => item.kind === kind) && <FeatureEmpty>{watch.loaded ? t(kind === 'kol' ? 'No followed KOLs' : 'No followed tokens') : t("Loading…")}</FeatureEmpty>}</div></section>)}</div>
     <AlertSettings />
     {watch.error && <p className="profile-more-error" role="alert">{t(watch.error)}</p>}<div className="table-toolbar watch-signals-heading"><h2>{t("Watched signals")}</h2></div><RadarFeed watched />
   </>;

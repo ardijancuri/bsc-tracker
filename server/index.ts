@@ -15,17 +15,22 @@ import { registerTradeReplayChartRoutes } from './tradeReplayChart.js';
 import { registerFrontendRoutes } from './frontendRoutes.js';
 import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolProfile.js';
 import { registerTelegramAuthRoutes } from './telegramAuth.js';
+import { registerTelegramNotificationRoutes } from './telegramNotificationsApi.js';
+import { telegramNotifications } from './telegramNotifications.js';
 import { captureGuestWatchlist, mergeGuestWatchlist } from './accountWatchlist.js';
 
 const app = Fastify({ logger: {
-  redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'],
+  redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers.x-telegram-bot-api-secret-token', 'res.headers.set-cookie'],
   serializers: { req(request) { return { method: request.method, url: request.url?.startsWith('/api/auth/') ? request.url.split('?')[0] : request.url, hostname: request.hostname, remoteAddress: request.ip }; } },
 }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, '..', 'dist');
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
 const clients = new Set<import('node:http').ServerResponse>();
-registerTelegramAuthRoutes(app, { captureGuest: captureGuestWatchlist, mergeGuest: mergeGuestWatchlist });
+registerTelegramAuthRoutes(app, { captureGuest: captureGuestWatchlist, mergeGuest: mergeGuestWatchlist,
+  notificationConsent: { available: telegramNotifications.available, onAuthorized: telegramNotifications.authorize, onFailed: telegramNotifications.consentFailed } });
+registerTelegramNotificationRoutes(app, { available: telegramNotifications.available, state: telegramNotifications.state,
+  update: telegramNotifications.update, mute: telegramNotifications.mute, webhook: telegramNotifications.webhook });
 registerIntelligenceRoutes(app);
 registerTradeReplayChartRoutes(app);
 

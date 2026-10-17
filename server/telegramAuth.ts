@@ -17,6 +17,11 @@ const secret = () => randomBytes(32).toString('hex');
 export type TelegramAuthConfig = { clientId: string; clientSecret: string; origin: string; secure: boolean };
 export type ResolvedAuthUser = AuthUser & { preferences: AlertPreferences };
 export type GuestLoginSnapshot = { sessionId: string; secretHash: string } | null;
+export type TelegramNotificationConsent = {
+  available(): boolean;
+  onAuthorized(value: { userId: string; telegramId: string; language: 'en' | 'zh-CN' }): Promise<void>;
+  onFailed?(userId: string, reason: 'denied' | 'identity_mismatch' | 'failed'): Promise<void>;
+};
 export class AuthMergeLimitError extends Error {
   constructor() { super('Too many favorites to merge'); this.name = 'AuthMergeLimitError'; }
 }
@@ -56,6 +61,14 @@ export async function ensureAuthSchema(db: Pool) {
       return_to text NOT NULL, guest_snapshot jsonb, expires_at timestamptz NOT NULL
     );
     CREATE INDEX IF NOT EXISTS auth_login_expiry_idx ON auth_login_attempts(expires_at);
+    ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS telegram_id bigint;
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_users_telegram_id_idx ON auth_users(telegram_id) WHERE telegram_id IS NOT NULL;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'login';
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_user_id uuid;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_issuer text;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_subject text;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_session_hash text;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS notification_language text;
   `);
   await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -90,6 +103,17 @@ function returnWithError(returnTo: string, error: AuthError) {
   const url = new URL(returnTo, 'https://kollens.com');
   url.searchParams.set('authError', error);
   return `${url.pathname}${url.search}${url.hash}`;
+}
+function returnWithNotificationStatus(returnTo: string, status: string) {
+  const url = new URL(returnTo, 'https://kollens.com');
+  url.searchParams.set('telegramAlerts', status);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+/** Telegram's OIDC subject is opaque. Only its signed profile `id` is a Bot API chat ID. */
+export function verifiedTelegramId(value: unknown): string | null {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+  if (typeof value !== 'string' || !/^[1-9][0-9]{0,15}$/.test(value)) return null;
+  return BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER) ? value : null;
 }
 function privateResponse(reply: FastifyReply) { reply.header('Cache-Control', 'no-store').header('Vary', 'Cookie').header('Referrer-Policy', 'no-referrer'); }
 /** Report fixed failure categories without OAuth URLs, credentials or claim values. */
@@ -160,8 +184,13 @@ type AuthOptions = {
   oidcConfiguration?: () => Promise<oidc.Configuration>;
   captureGuest?: (request: FastifyRequest) => Promise<GuestLoginSnapshot>;
   mergeGuest?: (client: PoolClient, userId: string, snapshot: GuestLoginSnapshot, isNewUser: boolean) => Promise<void>;
+  notificationConsent?: TelegramNotificationConsent;
 };
-type LoginAttempt = { code_verifier: string; nonce: string; return_to: string; guest_snapshot: GuestLoginSnapshot };
+type LoginAttempt = {
+  code_verifier: string; nonce: string; return_to: string; guest_snapshot: GuestLoginSnapshot;
+  purpose?: 'login' | 'notifications'; expected_user_id?: string; expected_issuer?: string; expected_subject?: string;
+  expected_session_hash?: string; notification_language?: 'en' | 'zh-CN';
+};
 
 export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOptions = {}) {
   const db = options.pool ?? pool;
@@ -191,6 +220,18 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     if (origin !== expected && !development) { reply.code(403).send({ error: 'Request origin rejected' }); return false; }
     return limit(request, reply, 'mutation', 30);
   }
+  async function currentIdentity(request: FastifyRequest) {
+    const value = authSessionSecret(request.headers.cookie);
+    if (!value) return null;
+    const result = await db.query(`SELECT u.id,u.issuer,u.subject FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
+      WHERE s.secret_hash=$1 AND s.expires_at>now()`, [digest(value)]);
+    return result.rows[0] ? { ...result.rows[0], sessionHash: digest(value) } as { id: string; issuer: string; subject: string; sessionHash: string } : null;
+  }
+  async function consentIdentityMatches(request: FastifyRequest, attempt: LoginAttempt) {
+    const identity = await currentIdentity(request);
+    return !!identity && identity.id === attempt.expected_user_id && identity.issuer === attempt.expected_issuer
+      && identity.subject === attempt.expected_subject && identity.sessionHash === attempt.expected_session_hash;
+  }
   app.get('/api/auth/me', { logLevel: 'silent' }, async (request, reply): Promise<AuthState> => {
     privateResponse(reply);
     const user = await resolveAuthUser(request, db);
@@ -218,6 +259,29 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       return { url: url.href };
     } catch { return reply.code(503).send({ error: 'Telegram login is temporarily unavailable' }); }
   });
+  app.post('/api/notifications/telegram/enable', { logLevel: 'silent', bodyLimit: 4096 }, async (request, reply) => {
+    privateResponse(reply);
+    if (!mutationAllowed(request, reply)) return;
+    const identity = await currentIdentity(request);
+    if (!identity) return reply.code(401).send({ error: 'Sign in to enable Telegram alerts' });
+    if (request.headers['x-watchlist-owner'] !== undefined && request.headers['x-watchlist-owner'] !== identity.id) return reply.code(409).send({ error: 'Your account changed. Refresh and try again.' });
+    if (!config || !options.notificationConsent?.available()) return reply.code(503).send({ error: 'Telegram alerts are not configured' });
+    const body = request.body as { returnTo?: unknown; language?: unknown } | null;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['returnTo', 'language'].includes(key))
+      || (body.language !== undefined && body.language !== 'en' && body.language !== 'zh-CN')) return reply.code(400).send({ error: 'Invalid notification request' });
+    try {
+      const client = await getConfiguration();
+      const state = secret(), browser = secret(), nonce = oidc.randomNonce(), verifier = oidc.randomPKCECodeVerifier();
+      await db.query('DELETE FROM auth_login_attempts WHERE expires_at<=now()');
+      await db.query(`INSERT INTO auth_login_attempts (state_hash,browser_hash,code_verifier,nonce,return_to,guest_snapshot,expires_at,
+        purpose,expected_user_id,expected_issuer,expected_subject,expected_session_hash,notification_language)
+        VALUES ($1,$2,$3,$4,$5,NULL,now()+interval '10 minutes','notifications',$6,$7,$8,$9,$10)`,
+      [digest(state), digest(browser), verifier, nonce, safeAuthReturnTo(body.returnTo), identity.id, identity.issuer, identity.subject, identity.sessionHash, body.language ?? 'en']);
+      const url = oidc.buildAuthorizationUrl(client, { redirect_uri: `${config.origin}/api/auth/telegram/callback`, scope: 'openid profile telegram:bot_access', state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256' });
+      cookies(reply, [formatCookie(loginCookie, browser, loginSeconds, secure)]);
+      return { url: url.href };
+    } catch { return reply.code(503).send({ error: 'Telegram alerts are temporarily unavailable' }); }
+  });
   app.get('/api/auth/telegram/callback', { logLevel: 'silent' }, async (request, reply) => {
     privateResponse(reply);
     cookies(reply, [formatCookie(loginCookie, '', 0, secure)]);
@@ -236,13 +300,18 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     let stage = 'login_attempt';
     try {
       const consumed = await db.query(`DELETE FROM auth_login_attempts WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>now()
-        RETURNING code_verifier,nonce,return_to,guest_snapshot`, [digest(state), digest(browser)]);
+        RETURNING code_verifier,nonce,return_to,guest_snapshot,purpose,expected_user_id,expected_issuer,expected_subject,expected_session_hash,notification_language`, [digest(state), digest(browser)]);
       attempt = consumed.rows[0];
       if (!attempt) { reportFailure(stage); return reply.redirect('/watchlist?authError=failed'); }
       if (url.searchParams.has('error')) {
         reportFailure('provider_response');
+        if (attempt.purpose === 'notifications') {
+          if (await consentIdentityMatches(request, attempt)) await options.notificationConsent?.onFailed?.(attempt.expected_user_id!, url.searchParams.get('error') === 'access_denied' ? 'denied' : 'failed');
+          return reply.redirect(returnWithNotificationStatus(attempt.return_to, url.searchParams.get('error') === 'access_denied' ? 'denied' : 'failed'));
+        }
         return reply.redirect(returnWithError(attempt.return_to, url.searchParams.get('error') === 'access_denied' ? 'cancelled' : 'failed'));
       }
+      if (attempt.purpose === 'notifications' && !await consentIdentityMatches(request, attempt)) return reply.redirect(returnWithNotificationStatus(attempt.return_to, 'identity_mismatch'));
       stage = 'token_exchange';
       const client = await getConfiguration();
       const tokens = await oidc.authorizationCodeGrant(client, url, { pkceCodeVerifier: attempt.code_verifier, expectedState: state, expectedNonce: attempt.nonce, idTokenExpected: true }, { client_id: config.clientId });
@@ -250,6 +319,17 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       stage = 'identity_validation';
       // openid-client enforces issuer, audience, time, nonce and PKCE; non-repudiation additionally verifies the JWKS signature.
       if (!claims || claims.iss !== telegramIssuer || typeof claims.sub !== 'string' || !claims.sub || claims.sub.length > 255 || !claims.exp || claims.exp <= Date.now() / 1000 || !Number.isFinite(claims.iat) || claims.iat > Date.now() / 1000 + 60) throw new Error('Invalid Telegram identity');
+      const telegramId = verifiedTelegramId(claims.id);
+      if (attempt.purpose === 'notifications') {
+        stage = 'notification_identity';
+        if (!options.notificationConsent?.available() || !telegramId) throw new Error('Telegram notification identity unavailable');
+        if (claims.iss !== attempt.expected_issuer || claims.sub !== attempt.expected_subject || !await consentIdentityMatches(request, attempt)) {
+          if (await consentIdentityMatches(request, attempt)) await options.notificationConsent.onFailed?.(attempt.expected_user_id!, 'identity_mismatch');
+          return reply.redirect(returnWithNotificationStatus(attempt.return_to, 'identity_mismatch'));
+        }
+        await options.notificationConsent.onAuthorized({ userId: attempt.expected_user_id!, telegramId, language: attempt.notification_language ?? 'en' });
+        return reply.redirect(returnWithNotificationStatus(attempt.return_to, 'pending'));
+      }
       const identity = profile(claims);
       stage = 'save_session';
       const connection = await db.connect();
@@ -262,6 +342,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
         const existing = isNewUser ? inserted : await connection.query(`UPDATE auth_users SET name=$3,username=$4,avatar_url=$5,updated_at=now()
           WHERE issuer=$1 AND subject=$2 RETURNING id`, [telegramIssuer, claims.sub, identity.name, identity.username, identity.avatarUrl]);
         const userId = existing.rows[0].id as string;
+        if (telegramId) await connection.query('UPDATE auth_users SET telegram_id=$2 WHERE id=$1 AND (telegram_id IS NULL OR telegram_id=$2)', [userId, telegramId]);
         await options.mergeGuest?.(connection, userId, attempt.guest_snapshot, isNewUser);
         const oldSession = authSessionSecret(request.headers.cookie);
         if (oldSession) await connection.query('DELETE FROM auth_sessions WHERE secret_hash=$1', [digest(oldSession)]);
@@ -272,6 +353,10 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       return reply.redirect(attempt.return_to);
     } catch (error) {
       reportFailure(stage, error);
+      if (attempt?.purpose === 'notifications') {
+        try { if (await consentIdentityMatches(request, attempt)) await options.notificationConsent?.onFailed?.(attempt.expected_user_id!, 'failed'); } catch { /* Leave the connection inactive when its error state cannot be saved. */ }
+        return reply.redirect(returnWithNotificationStatus(attempt.return_to, 'failed'));
+      }
       return reply.redirect(returnWithError(attempt?.return_to ?? '/watchlist', error instanceof AuthMergeLimitError ? 'merge_limit' : 'failed'));
     }
   });

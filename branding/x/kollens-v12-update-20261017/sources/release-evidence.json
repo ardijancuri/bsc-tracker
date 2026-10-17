@@ -1,0 +1,18 @@
+{
+  "version": "1.2.0",
+  "head": "e57c940b241df27cf3b526c6663ef79e20d2901a",
+  "capturedAt": "2026-10-17T01:29:29.848Z",
+  "authPublicStatus": {
+    "enabled": true,
+    "user": null
+  },
+  "captionWeightedCharacters": 277,
+  "commits": {
+    "telegramAndSync": "68e240752023f8be183a111c1926dc6fe5f378e9",
+    "tokenReplays": "6bc8979cbaac9e4ca0ac519b9812598ba4c35b8d",
+    "replayRecovery": "17739c611f3cdc7ebc66adeb6820a4a1c819cd3e",
+    "profitRecovery": "b6be208588eda9bfd32270f4b3a11e13a0f6e2d3",
+    "loading": "e57c940b241df27cf3b526c6663ef79e20d2901a"
+  },
+  "note": "Public Telegram login enabled. Source supports feature descriptions; no claim that every missing P&L is recoverable. No Telegram authorization performed."
+}

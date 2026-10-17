@@ -382,7 +382,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     return { items, nextCursor: result.rows.length > count && last && date ? Buffer.from(JSON.stringify({ ts: new Date(date).toISOString(), id: last.tokenAddress })).toString('base64url') : null };
   });
   app.get('/api/intelligence/health', async () => {
-    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
+    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','telegram_notifications','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
     const metrics = await pool.query(`SELECT
       (SELECT COUNT(*)::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
       (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",

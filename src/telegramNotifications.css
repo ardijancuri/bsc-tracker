@@ -1,0 +1,19 @@
+.telegram-alert-settings{border:1px solid var(--line);border-radius:9px;padding:17px 19px;margin:0 0 20px;background:#111719}
+.telegram-alert-heading{display:flex;align-items:center;gap:8px;color:var(--yellow);margin-bottom:9px}
+.telegram-alert-heading h2{font-size:15px;margin:0;color:#f5f5f5}
+.telegram-alert-status{font-size:13px;color:var(--muted);margin-bottom:13px}
+.telegram-alert-status.active{color:var(--green,#25c798)}
+.telegram-alert-options{display:flex;align-items:center;flex-wrap:wrap;gap:13px 20px;font-size:13px;color:var(--muted)}
+.telegram-alert-options label{display:inline-flex;align-items:center;gap:7px;color:#eee;cursor:pointer}
+.telegram-alert-options input{accent-color:var(--yellow);width:15px;height:15px;margin:0}
+.telegram-alert-options>.feature-button{margin-left:auto;display:inline-flex;align-items:center;gap:7px}
+.telegram-kol-controls{display:flex;align-items:center;flex:none;gap:6px}
+.telegram-kol-bell{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--yellow);cursor:pointer;flex:none}
+.telegram-kol-bell.muted{color:var(--muted)}
+.telegram-kol-bell:hover{background:#242a2d}
+.telegram-kol-bell:focus-visible,.telegram-alert-settings button:focus-visible{outline:2px solid var(--yellow);outline-offset:3px}
+.telegram-kol-bell:disabled,.telegram-alert-settings button:disabled{opacity:.5;cursor:default}
+.watch-row>.telegram-kol-controls{flex:none}
+.telegram-alert-feedback{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);z-index:300;display:flex;align-items:center;gap:18px;max-width:calc(100% - 36px);padding:15px 18px;border:1px solid var(--line);border-radius:9px;background:#202629;color:#eee;font-size:13px;box-shadow:0 5px 30px #0005}
+.telegram-alert-feedback button{display:flex;border:0;background:transparent;color:inherit;padding:0;cursor:pointer;flex:none}
+@media(max-width:600px){.telegram-alert-settings{padding:14px;margin-bottom:16px}.telegram-alert-options{gap:12px 17px}.telegram-alert-options>.feature-button{margin-left:0}.telegram-alert-options>span{flex-basis:100%}.telegram-kol-controls{gap:3px}}
