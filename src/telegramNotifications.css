@@ -19,7 +19,7 @@
 .watchlist-kol-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"following settings";gap:28px;align-items:start}
 .watchlist-kol-following{grid-area:following;min-width:0}.watchlist-kol-settings{grid-area:settings;min-width:0}
 .watchlist-kol-following .token-watchlist-toolbar{min-height:35px;margin-bottom:14px}.watchlist-kol-following h2{font-size:16px;margin:0}
-.watchlist-kol-layout .watch-kol-list{max-width:none;border-top:0;border-top-left-radius:0;border-top-right-radius:0}.watchlist-kol-settings .telegram-alert-settings{margin-bottom:16px;padding:20px}
+.watchlist-kol-layout .watch-kol-list{max-width:none}.watchlist-kol-settings .telegram-alert-settings{margin-bottom:16px;padding:20px}
 .watchlist-kol-layout .watch-kol-list:empty{border:0}
 .watchlist-kol-settings .telegram-alert-options>.feature-button{width:100%;justify-content:center;margin:5px 0 0}
 .watchlist-kol-settings .watch-settings{margin-top:0}.watchlist-kol-settings .alert-controls{flex-wrap:wrap}

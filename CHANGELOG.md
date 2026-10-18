@@ -2,6 +2,8 @@
 
 ## v1.3 updates — 2026-10-18
 
+- Restore the KOL watchlist table's complete border and matching rounded top/bottom corners; keep the toolbar separate.
+- Remove BscScan buttons and linked timestamps from Telegram trade alerts, retaining plain trade times and Kollens links.
 - Offer an optional Telegram alert invitation after sign-in; active accounts skip it, and paused accounts can resume.
 - Keep the header Login button visually unchanged while opening Telegram.
 - Improve trade alert hierarchy with buy/sell emojis, bold names and values, linked token names and individual transaction times, and labelled links.

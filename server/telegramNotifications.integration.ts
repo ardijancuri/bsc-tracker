@@ -121,7 +121,8 @@ try {
     assert.match(f.tradeMessages()[1].text, /🟢 BUYS\nTEST/); assert.match(f.tradeMessages()[1].text, /🔴 SELLS\nTEST/);
     const message = f.tradeMessages()[1];
     assert.ok(message.entities?.some(entity => entity.type === 'bold' && message.text.slice(entity.offset, entity.offset + entity.length) === 'TEST'));
-    assert.ok(message.entities?.some(entity => entity.type === 'text_link' && entity.url?.startsWith('https://bscscan.com/tx/')));
+    assert.ok(message.entities?.some(entity => entity.type === 'text_link' && entity.url?.startsWith('https://kollens.com/token/')));
+    assert.doesNotMatch(JSON.stringify(message), /bscscan/i);
     assert.equal(await f.count('telegram_notification_items'), 4, 'Every grouped trade remains durable');
   });
 

@@ -8,7 +8,6 @@ export type TelegramFormattedMessage = { text: string; buttons: TelegramMessageB
 type Language = 'en' | 'zh-CN';
 const clean = (value: string | null | undefined, max = 60) => Array.from((value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('');
 const address = (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value) ? value.toLowerCase() : '';
-const transaction = (value: string) => /^0x[0-9a-fA-F]{64}$/.test(value) ? value.toLowerCase() : '';
 const shortAddress = (value: string) => address(value) ? `${value.slice(0, 8)}…${value.slice(-6)}` : '—';
 
 /** Formats provider decimal strings without floating-point overflow or changing the recorded quantity. */
@@ -43,7 +42,7 @@ export function formatTelegramTradeMessage(trades: TelegramMessageTrade[], langu
   const kol = clean(first.kolName) || shortAddress(first.walletAddress);
   const buys = trades.filter(trade => trade.side === 'buy').length;
   const sells = trades.length - buys;
-  const wallet = address(first.walletAddress), token = address(first.tokenAddress), tx = transaction(first.txHash);
+  const wallet = address(first.walletAddress), token = address(first.tokenAddress);
   let text = '';
   const entities: TelegramMessageEntity[] = [];
   // Telegram entity offsets use UTF-16 units, matching JavaScript string lengths.
@@ -66,7 +65,7 @@ export function formatTelegramTradeMessage(trades: TelegramMessageTrade[], langu
     const quote = decimal(trade.quoteAmount, 6);
     const quoteSymbol = clean(trade.quoteSymbol, 16);
     const tokenAmount = decimal(trade.tokenAmount, 6);
-    const tokenAddress = address(trade.tokenAddress), hash = transaction(trade.txHash);
+    const tokenAddress = address(trade.tokenAddress);
     // Append whole rows; keep every formatting entity inside the message bound.
     const estimatedLength = token.length * 2 + (usd?.length ?? 0) + (quote?.length ?? 0) + quoteSymbol.length + (tokenAmount?.length ?? 0) + 140;
     if (text.length + estimatedLength > 3200) break;
@@ -77,15 +76,13 @@ export function formatTelegramTradeMessage(trades: TelegramMessageTrade[], langu
     if (usd !== null) { add(`$${usd}`, true); if (quote !== null && quoteSymbol) add(` · ${quote} ${quoteSymbol}`); add('\n'); }
     else if (quote !== null && quoteSymbol) { add(`${quote} ${quoteSymbol}`, true); add('\n'); }
     if (tokenAmount !== null) { add(zh ? '代币数量：' : 'Tokens: '); add(`${tokenAmount} ${token}`); add('\n'); }
-    add(`🕒 ${sourceTime(trade.timestamp)}`, false, hash ? `https://bscscan.com/tx/${hash}` : undefined); add('\n');
+    add(`🕒 ${sourceTime(trade.timestamp)}\n`);
     previousSide = trade.side; visible++;
   }
   if (visible < trades.length) add(zh ? `\n另有 ${trades.length - visible} 笔交易；请在 Kollens 查看。` : `\n${trades.length - visible} more trades; view them on Kollens.`);
   const buttons: TelegramMessageButton[] = [{ text: zh ? '查看 KOL' : 'KOL profile', url: wallet ? `${base}/kol/${wallet}` : `${base}/watchlist?tab=kols` }];
   if (token && trades.every(trade => address(trade.tokenAddress) === token)) buttons.push({ text: zh ? '代币图表' : 'Token chart', url: `${base}/token/${token}` });
-  const rows = [buttons];
-  if (tx) rows.push([{ text: trades.length === 1 ? (zh ? '查看交易 ↗ BscScan' : 'View transaction ↗ BscScan') : (zh ? '首笔交易 ↗ BscScan' : 'First transaction ↗ BscScan'), url: `https://bscscan.com/tx/${tx}` }]);
-  return { text, buttons: rows, entities };
+  return { text, buttons: [buttons], entities };
 }
 
 export function formatActivationMessage(language: Language, origin: string): TelegramFormattedMessage {
