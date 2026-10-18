@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3 updates — 2026-10-18
+
+- Offer an optional Telegram alert invitation after sign-in; active accounts skip it, and paused accounts can resume.
+- Keep the header Login button visually unchanged while opening Telegram.
+- Improve trade alert hierarchy with buy/sell emojis, bold names and values, linked token names and individual transaction times, and labelled links.
+- Place followed KOLs and alert settings in two desktop columns, with settings first on mobile; separate Radar filters from Telegram preferences and remove the divider below the KOL toolbar.
+
 ## v1.3.0 — 2026-10-17
 
 The v1.3 release series begins with the Telegram alerts update (commit `f6a395b`), originally committed with a v1.2 label.

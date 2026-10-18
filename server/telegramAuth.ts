@@ -109,6 +109,11 @@ function returnWithNotificationStatus(returnTo: string, status: string) {
   url.searchParams.set('telegramAlerts', status);
   return `${url.pathname}${url.search}${url.hash}`;
 }
+function returnAfterTelegramLogin(returnTo: string) {
+  const url = new URL(returnTo, 'https://kollens.com');
+  url.searchParams.set('telegramLogin', 'success');
+  return `${url.pathname}${url.search}${url.hash}`;
+}
 /** Telegram's OIDC subject is opaque. Only its signed profile `id` is a Bot API chat ID. */
 export function verifiedTelegramId(value: unknown): string | null {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
@@ -350,7 +355,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
         await connection.query('COMMIT');
       } catch (error) { await connection.query('ROLLBACK'); throw error; } finally { connection.release(); }
       cookies(reply, [formatCookie(loginCookie, '', 0, secure), formatCookie(authCookie, session, sessionSeconds, secure), clearGuestCookie(secure)]);
-      return reply.redirect(attempt.return_to);
+      return reply.redirect(returnAfterTelegramLogin(attempt.return_to));
     } catch (error) {
       reportFailure(stage, error);
       if (attempt?.purpose === 'notifications') {

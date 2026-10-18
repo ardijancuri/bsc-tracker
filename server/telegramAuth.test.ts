@@ -264,7 +264,7 @@ describe('Telegram OIDC route flow', () => {
     const { state, cookie } = await f.start();
     const response = await f.callback(state, cookie);
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('/token/0xabc?period=7d#chart');
+    expect(response.headers.location).toBe('/token/0xabc?period=7d&telegramLogin=success#chart');
     expect(f.mergeGuest).toHaveBeenCalledWith(expect.anything(), expect.any(String), { sessionId: 'guest-1', secretHash: 'guest-secret-hash' }, true);
     const session = response.cookies.find(value => value.name === 'bscan_auth')!.value;
     expect(f.sessions.has(digest(session))).toBe(true);
@@ -292,7 +292,7 @@ describe('Telegram OIDC route flow', () => {
     const f = await fixture();
     const { state, cookie } = await f.start('/watchlist');
     const response = await f.callback(state, cookie, `&state=${state}&state=${state}&code=one-time-code`);
-    expect(response.headers.location).toBe('/watchlist');
+    expect(response.headers.location).toBe('/watchlist?telegramLogin=success');
     expect(response.cookies.some(value => value.name === 'bscan_auth')).toBe(true);
     expect(f.tokenRequests).toHaveLength(1);
     expect(f.users.size).toBe(1);

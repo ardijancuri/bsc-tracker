@@ -121,12 +121,13 @@ export function TokenWatchlistPage() {
       {column('periodKolCount', 'KOLs', 'watch-extra')}{column('lastTradeAt', 'Last trade', 'watch-last-trade')}{column('chart', 'Chart', 'watch-chart')}
     </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
     {!visible.length && <div className="watch-token-empty"><strong>{!watch.loaded ? t('Loading…') : query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
-    </section> : <section id="watchlist-kol-panel" role="tabpanel" aria-labelledby="watchlist-kol-tab">
-      <TelegramAlertsSettings />
-      <div className="token-watchlist-toolbar"><Link className="feature-button" to="/leaderboard">{t('Add KOLs')}</Link></div>
+    </section> : <section id="watchlist-kol-panel" className="watchlist-kol-layout" role="tabpanel" aria-labelledby="watchlist-kol-tab">
+      <aside className="watchlist-kol-settings" aria-label={t('Telegram alerts')}><TelegramAlertsSettings /><AlertSettings label="Radar filters" /></aside>
+      <div className="watchlist-kol-following"><div className="token-watchlist-toolbar"><h2>{t('KOLs')}</h2><Link className="feature-button" to="/leaderboard">{t('Add KOLs')}</Link></div>
       <div className="data-table feature-table watch-kol-list">{watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><div className="telegram-kol-controls"><KolAlertButton address={item.address} label={item.name} /><FollowButton kind="kol" address={item.address} label={item.name} /></div></div>)}</div>
       {!watch.data.items.some(item => item.kind === 'kol') && <div className="watch-token-empty"><strong>{t(watch.loaded ? 'No followed KOLs' : 'Loading…')}</strong>{watch.loaded && <Link to="/leaderboard">{t('Star KOLs to add them here')}</Link>}</div>}
+      </div>
     </section>}
-    <AlertSettings />
+    {kind === 'token' && <AlertSettings />}
   </div>;
 }

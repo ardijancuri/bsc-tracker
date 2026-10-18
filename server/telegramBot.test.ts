@@ -53,6 +53,19 @@ describe('Telegram Bot API transport', () => {
     expect(String(fetcher.mock.calls[1][0])).toContain('/editMessageText');
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).message_id).toBe(15);
   });
+  it('passes explicit bold and link entities without enabling metadata markup parsing', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(identity()).mockResolvedValueOnce(success(15)).mockResolvedValueOnce(success(15));
+    const bot = createTelegramBot(config, { fetch: fetcher });
+    const entities = [{ type: 'bold' as const, offset: 3, length: 4 }, { type: 'text_link' as const, offset: 3, length: 4, url: 'https://kollens.com/token/0x123' }];
+    await bot.send('44', '🟢 BIBI', undefined, entities);
+    await bot.edit('44', 15, '🟢 BIBI', undefined, entities);
+    for (const call of fetcher.mock.calls.slice(1)) {
+      const body = JSON.parse(String(call[1]?.body)); expect(body.entities).toEqual(entities); expect(body.parse_mode).toBeUndefined();
+    }
+    expect(await bot.send('44', 'Short', undefined, [{ type: 'bold', offset: 3, length: 9 }])).toEqual({ kind: 'failed', reason: 'invalid_message' });
+    expect(await bot.send('44', 'Short', undefined, [{ type: 'text_link', offset: 0, length: 5, url: 'javascript:evil' }])).toEqual({ kind: 'failed', reason: 'invalid_message' });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
   it.each([
     [429, { ok: false, parameters: { retry_after: 37 } }, { kind: 'retry', reason: 'rate_limited', retryAfterMs: 37_000 }],
     [429, { ok: false, parameters: { retry_after: -1 } }, { kind: 'retry', reason: 'rate_limited', retryAfterMs: 1000 }],

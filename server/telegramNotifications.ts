@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { pool } from './db.js';
 import { kolProfileTokenSql } from './kolProfileToken.js';
 import { createTelegramBot, telegramBotConfig, type TelegramBotConfig } from './telegramBot.js';
-import { formatTelegramTradeMessage, formatActivationMessage, formatCorrectionMessage, type TelegramMessageTrade } from './telegramNotificationMessage.js';
+import { formatTelegramTradeMessage, formatActivationMessage, formatCorrectionMessage, type TelegramFormattedMessage, type TelegramMessageTrade } from './telegramNotificationMessage.js';
 import type { TelegramNotificationState } from '../shared/telegramNotifications.js';
 
 export const telegramTradeMaxAgeMs = 300_000;
@@ -247,7 +247,7 @@ export function createTelegramNotifications(options: Options = {}) {
     const prepared = await transaction(async client => {
       const current = (await client.query<Outbox>('SELECT * FROM telegram_notification_outbox WHERE id=$1 AND lease_id=$2 AND status=\'leased\' FOR UPDATE', [job.id, job.lease_id])).rows[0];
       if (!current) return null;
-      let message;
+      let message: TelegramFormattedMessage;
       if (job.kind === 'trades') {
         const trades = await eligibleItems(client, job);
         if (!trades.length) { await client.query("UPDATE telegram_notification_outbox SET status='cancelled',lease_id=NULL,lease_until=NULL WHERE id=$1", [job.id]); return null; }
@@ -267,8 +267,8 @@ export function createTelegramNotifications(options: Options = {}) {
     // The network request must remain outside database/reorg locks.
     const original = job.correction_of ? (await db.query<Outbox>('SELECT * FROM telegram_notification_outbox WHERE id=$1', [job.correction_of])).rows[0] : null;
     const upstreamStartedAt = Date.now();
-    const result = original?.message_id ? await bot!.edit(job.chat_id, Number(original.message_id), prepared.text, prepared.buttons)
-      : await bot!.send(job.chat_id, prepared.text, prepared.buttons);
+    const result = original?.message_id ? await bot!.edit(job.chat_id, Number(original.message_id), prepared.text, prepared.buttons, prepared.entities)
+      : await bot!.send(job.chat_id, prepared.text, prepared.buttons, prepared.entities);
     await transaction(async client => {
       const owned = (await client.query<Outbox>('SELECT * FROM telegram_notification_outbox WHERE id=$1 AND lease_id=$2 FOR UPDATE', [job.id, job.lease_id])).rows[0];
       if (!owned) return;

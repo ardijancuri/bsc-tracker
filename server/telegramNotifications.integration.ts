@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { ensureSchema, pool } from './db.js';
 import { createTelegramNotifications, rollbackTelegramNotifications } from './telegramNotifications.js';
 import { ensureTelegramNotificationsSchema } from './telegramNotificationsSchema.js';
-import type { createTelegramBot, TelegramBotConfig, TelegramBotResult, TelegramMessageButton } from './telegramBot.js';
+import type { createTelegramBot, TelegramBotConfig, TelegramBotResult, TelegramMessageButton, TelegramMessageEntity } from './telegramBot.js';
 
 let databaseName = '';
 try { databaseName = new URL(process.env.DATABASE_URL || '').pathname; } catch { /* Fail closed before any SQL. */ }
@@ -14,7 +14,7 @@ const config: TelegramBotConfig = { botId: '12345', token: '12345:test-only-no-r
 const kol = `0x${'a'.repeat(40)}`, otherKol = `0x${'d'.repeat(40)}`, token = `0x${'b'.repeat(40)}`;
 const reward = '0x21caef8a43163eea865baee23b9c2e327696a3bf';
 const uuidA = '11111111-1111-4111-8111-111111111111', uuidB = '22222222-2222-4222-8222-222222222222';
-type Sent = { chatId: string; text: string; edit: boolean; messageId: number | null; buttons?: TelegramMessageButton[][] };
+type Sent = { chatId: string; text: string; edit: boolean; messageId: number | null; buttons?: TelegramMessageButton[][]; entities?: TelegramMessageEntity[] };
 let testCount = 0;
 
 async function fixture() {
@@ -26,13 +26,13 @@ async function fixture() {
   let onSend: (() => Promise<void>) | null = null;
   const fakeBot: ReturnType<typeof createTelegramBot> = {
     verifyIdentity: async () => identityValid,
-    send: async (chatId, text, buttons) => {
-      sent.push({ chatId, text, buttons, edit: false, messageId: null });
+    send: async (chatId, text, buttons, entities) => {
+      sent.push({ chatId, text, buttons, entities, edit: false, messageId: null });
       if (onSend) await onSend();
       return results.shift() ?? { kind: 'sent', messageId: ++messageId };
     },
-    edit: async (chatId, originalId, text, buttons) => {
-      sent.push({ chatId, text, buttons, edit: true, messageId: originalId });
+    edit: async (chatId, originalId, text, buttons, entities) => {
+      sent.push({ chatId, text, buttons, entities, edit: true, messageId: originalId });
       return results.shift() ?? { kind: 'sent', messageId: originalId };
     },
   };
@@ -69,7 +69,7 @@ async function fixture() {
     return { id, number, hash };
   }
   const count = async (table: string, condition = 'true', params: unknown[] = []) => Number((await pool.query(`SELECT COUNT(*)::int AS count FROM ${table} WHERE ${condition}`, params)).rows[0].count);
-  const tradeMessages = () => sent.filter(message => message.text.includes('New trade') || /\d+ buys · \d+ sells/.test(message.text));
+  const tradeMessages = () => sent.filter(message => !message.edit && message.entities?.some(entity => entity.type === 'text_link' && entity.url?.includes('/token/')));
   async function drain(limit = 30) { for (let i = 0; i < limit; i++) { advance(); if (!await service.deliverOne()) break; } }
   return { service, makeService, sent, results, advance, favorite, activate, trade, count, tradeMessages, drain, now: () => time,
     setIdentity: (value: boolean) => { identityValid = value; }, setOnSend: (callback: (() => Promise<void>) | null) => { onSend = callback; } };
@@ -117,8 +117,11 @@ try {
     assert.equal(f.tradeMessages().length, 1);
     f.advance(10_000); await f.service.deliverOne();
     assert.equal(f.tradeMessages().length, 2);
-    assert.match(f.tradeMessages()[1].text, /2 buys · 1 sells/);
-    assert.match(f.tradeMessages()[1].text, /BUY TEST/); assert.match(f.tradeMessages()[1].text, /SELL TEST/);
+    assert.match(f.tradeMessages()[1].text, /🟢 2 buys · 🔴 1 sells/);
+    assert.match(f.tradeMessages()[1].text, /🟢 BUYS\nTEST/); assert.match(f.tradeMessages()[1].text, /🔴 SELLS\nTEST/);
+    const message = f.tradeMessages()[1];
+    assert.ok(message.entities?.some(entity => entity.type === 'bold' && message.text.slice(entity.offset, entity.offset + entity.length) === 'TEST'));
+    assert.ok(message.entities?.some(entity => entity.type === 'text_link' && entity.url?.startsWith('https://bscscan.com/tx/')));
     assert.equal(await f.count('telegram_notification_items'), 4, 'Every grouped trade remains durable');
   });
 

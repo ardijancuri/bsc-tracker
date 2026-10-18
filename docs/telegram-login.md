@@ -38,6 +38,10 @@ Only confirmed, live-observed trades by tracked, favorited KOLs qualify. Histori
 
 ## Local testing and release
 
+After a successful ordinary login, accounts with inactive alerts see an optional invitation to enable or resume them. “Not now” dismisses it for that login; active accounts skip it. Messaging permission remains a separate explicit consent. The header Login button retains its appearance while sign-in starts.
+
+The Watchlist KOL tab places followed KOLs on the left and Telegram settings on the right; settings move above the list on mobile. Radar filters stay separate. Trade messages use buy/sell emojis, bold names and values, linked token names and individual transaction times, and labelled navigation buttons. Formatting uses explicit [Telegram message entities](https://core.telegram.org/bots/api#messageentity), so token metadata is never interpreted as HTML or Markdown.
+
 Use a separately registered HTTPS development origin, with its `/api/auth/telegram/callback` URL and matching `PUBLIC_APP_URL`. Use localhost only if BotFather explicitly accepts that callback. The development address must serve both the frontend and `/api` routes; do not point Telegram at the backend while browsing a different origin.
 
 For local development, save `TELEGRAM_CLIENT_ID` and `TELEGRAM_CLIENT_SECRET` in the ignored `.env.telegram.local` file. `npm run dev:api` reads `.env` first and then `.env.telegram.local`; keep the development `PUBLIC_APP_URL` matched to the frontend origin. For example, if BotFather accepts it, use `http://127.0.0.1:5173` and register `http://127.0.0.1:5173/api/auth/telegram/callback`.

@@ -10,7 +10,7 @@ describe('Telegram trade messages', () => {
   it('includes source amounts and UTC trade time without P&L or provider dependencies', () => {
     const result = formatTelegramTradeMessage([trade], 'en', 'https://kollens.com');
     expect(result.text).toContain('Afeng');
-    expect(result.text).toContain('BUY BIBI · $515.67 · 0.1234 BNB · 12,345.678901 BIBI');
+    expect(result.text).toContain('🟢 BUY BIBI\n$515.67 · 0.1234 BNB\nTokens: 12,345.678901 BIBI');
     expect(result.text).toContain('2026-10-17 12:34:56 UTC');
     expect(result.buttons.flat().map(button => button.url)).toEqual([
       `https://kollens.com/kol/${trade.walletAddress}`, `https://kollens.com/token/${trade.tokenAddress}`, `https://bscscan.com/tx/${trade.txHash}`,
@@ -24,16 +24,16 @@ describe('Telegram trade messages', () => {
   });
   it('retains mixed buys and sells separately instead of inventing a net trade', () => {
     const result = formatTelegramTradeMessage([trade, { ...trade, id: '2', side: 'sell' }], 'en', 'https://kollens.com');
-    expect(result.text).toContain('1 buys · 1 sells');
-    expect(result.text).toContain('BUY BIBI');
-    expect(result.text).toContain('SELL BIBI');
-    expect(result.buttons.flat().find(button => button.text === 'First trade · BscScan')?.url).toBe(`https://bscscan.com/tx/${trade.txHash}`);
+    expect(result.text).toContain('🟢 1 buys · 🔴 1 sells');
+    expect(result.text).toContain('🟢 BUYS\nBIBI');
+    expect(result.text).toContain('🔴 SELLS\nBIBI');
+    expect(result.buttons.flat().find(button => button.text === 'First transaction ↗ BscScan')?.url).toBe(`https://bscscan.com/tx/${trade.txHash}`);
   });
   it('localizes all user-facing fixed phrases for Chinese', () => {
     const result = formatTelegramTradeMessage([trade, { ...trade, side: 'sell' }], 'zh-CN', 'https://kollens.com');
-    expect(result.text).toContain('买入 1 · 卖出 1');
-    expect(result.text).toContain('买入 BIBI');
-    expect(result.text).toContain('卖出 BIBI');
+    expect(result.text).toContain('🟢 买入 1 · 🔴 卖出 1');
+    expect(result.text).toContain('🟢 买入\nBIBI');
+    expect(result.text).toContain('🔴 卖出\nBIBI');
     expect(result.buttons[0][0].text).toBe('查看 KOL');
     expect(formatActivationMessage('zh-CN', 'https://kollens.com').text).toContain('/stop');
     expect(formatCorrectionMessage('zh-CN', 'https://kollens.com').text).toContain('链重组');
@@ -53,7 +53,7 @@ describe('Telegram trade messages', () => {
   it('does not produce unsafe button URLs or nonfinite and scientific-notation quantities', () => {
     const result = formatTelegramTradeMessage([{ ...trade, tokenAddress: 'https://evil.example', walletAddress: 'javascript:alert(1)', txHash: '//evil.example', amountUsd: 'Infinity', tokenAmount: '1e300', quoteAmount: 'NaN' }], 'en', 'javascript:evil');
     expect(result.text).not.toMatch(/Infinity|NaN|1e300/);
-    expect(result.buttons).toEqual([[{ text: 'View KOL', url: 'https://kollens.com/watchlist' }]]);
+    expect(result.buttons).toEqual([[{ text: 'KOL profile', url: 'https://kollens.com/watchlist?tab=kols' }]]);
   });
   it('formats very small decimal quantities without silently changing them to zero', () => {
     const result = formatTelegramTradeMessage([{ ...trade, amountUsd: '0.0000009', tokenAmount: '0.000000001', quoteAmount: '0.0000000001' }], 'en', 'https://kollens.com');
@@ -64,5 +64,28 @@ describe('Telegram trade messages', () => {
     expect(formatActivationMessage('en', 'http://127.0.0.1:5173').buttons[0][0].url).toBe('http://127.0.0.1:5173/watchlist?tab=kols');
     expect(formatCorrectionMessage('en', 'https://kollens.com').text).toContain('no longer on the confirmed chain');
     expect(formatTelegramTradeMessage([], 'en', 'https://kollens.com').text).toContain('No new trades');
+  });
+  it('bolds important values and links names and each transaction using correct emoji offsets', () => {
+    const result = formatTelegramTradeMessage([{ ...trade, kolName: '🦊 阿峰', tokenSymbol: '🐸 BIBI' }], 'en', 'https://kollens.com');
+    const bold = result.entities!.filter(entity => entity.type === 'bold').map(entity => result.text.slice(entity.offset, entity.offset + entity.length));
+    expect(bold).toContain('🦊 阿峰'); expect(bold).toContain('🐸 BIBI'); expect(bold).toContain('$515.67');
+    const links = result.entities!.filter(entity => entity.type === 'text_link');
+    expect(links.map(entity => entity.url)).toEqual([`https://kollens.com/kol/${trade.walletAddress}`, `https://kollens.com/token/${trade.tokenAddress}`, `https://bscscan.com/tx/${trade.txHash}`]);
+    expect(result.text.slice(links[1].offset, links[1].offset + links[1].length)).toBe('🐸 BIBI');
+    expect(result.buttons.map(row => row.length)).toEqual([2, 1]);
+  });
+  it('groups mixed sides and preserves individual transaction links without markup injection', () => {
+    const secondHash = `0x${'ab'.repeat(32)}`;
+    const result = formatTelegramTradeMessage([{ ...trade, side: 'sell', txHash: secondHash }, { ...trade, kolName: '<b>Admin</b>', tokenSymbol: '<a href="bad">BIBI</a>' }], 'en', 'https://kollens.com');
+    expect(result.text.indexOf('🟢 BUYS')).toBeLessThan(result.text.indexOf('🔴 SELLS'));
+    expect(result.entities!.filter(entity => entity.type === 'text_link').map(entity => entity.url)).toContain(`https://bscscan.com/tx/${secondHash}`);
+    expect(result.entities!.every(entity => entity.offset >= 0 && entity.length > 0 && entity.offset + entity.length <= result.text.length)).toBe(true);
+    expect(result.entities!.every(entity => entity.type === 'bold' || entity.url?.startsWith('https://kollens.com/') || entity.url?.startsWith('https://bscscan.com/tx/'))).toBe(true);
+  });
+  it('never cuts a formatting entity off at the burst size limit', () => {
+    const result = formatTelegramTradeMessage(Array.from({ length: 1000 }, (_, i) => ({ ...trade, id: String(i), tokenSymbol: '🐸'.repeat(40) })), 'zh-CN', 'https://kollens.com');
+    expect(result.text.length).toBeLessThanOrEqual(3600);
+    expect(result.entities!.length).toBeLessThanOrEqual(100);
+    for (const entity of result.entities!) expect(entity.offset + entity.length).toBeLessThanOrEqual(result.text.length);
   });
 });

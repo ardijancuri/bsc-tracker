@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { TelegramNotificationState } from '../shared/telegramNotifications';
-import { notificationIdentityChanged, requestTelegramNotifications, telegramConsentUrl, telegramConnectionLabel, TelegramAlertsControls, TelegramNotificationsProvider } from './TelegramNotifications';
+import { notificationIdentityChanged, requestTelegramNotifications, shouldPromptTelegramAlerts, telegramConsentUrl, telegramConnectionLabel, TelegramAlertsControls, TelegramAlertsPrompt, TelegramNotificationsProvider } from './TelegramNotifications';
 import { WatchlistProvider } from './Intelligence';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { translate, setLanguage } from './i18n';
@@ -83,6 +83,23 @@ describe('Telegram settings controls', () => {
     expect(html).toContain('提醒已启用'); expect(html).toContain('暂停提醒'); expect(html).not.toContain('Pause alerts');
   });
 });
+
+describe('Telegram login alert invitation', () => {
+  it('offers consent only for available inactive alerts, including paused or disconnected accounts', () => {
+    expect(shouldPromptTelegramAlerts(state)).toBe(false);
+    expect(shouldPromptTelegramAlerts({ ...state, enabled: false })).toBe(true);
+    expect(shouldPromptTelegramAlerts({ ...state, enabled: false, connection: 'not_connected' })).toBe(true);
+    expect(shouldPromptTelegramAlerts({ ...state, enabled: false, connection: 'pending' })).toBe(false);
+    expect(shouldPromptTelegramAlerts({ ...state, enabled: false, available: false })).toBe(false);
+  });
+  it('provides explicit enable and dismiss actions and a labelled dialog', () => {
+    const html = renderToStaticMarkup(<TelegramAlertsPrompt state={{ ...state, enabled: false, connection: 'not_connected' }} busy={false} onEnable={() => {}} onDismiss={() => {}} />);
+    expect(html).toContain('aria-labelledby="telegram-alert-prompt-title"');
+    expect(html).toContain('Get your KOL trades in Telegram'); expect(html).toContain('Enable Telegram alerts'); expect(html).toContain('Not now');
+    const paused = renderToStaticMarkup(<TelegramAlertsPrompt state={{ ...state, enabled: false }} busy={false} onEnable={() => {}} onDismiss={() => {}} />);
+    expect(paused).toContain('Resume alerts');
+  });
+});
 describe('Watchlist Telegram entry point', () => {
   const render = (url: string) => renderToStaticMarkup(<MemoryRouter initialEntries={[url]}><WatchlistProvider><TelegramNotificationsProvider><TokenWatchlistPage /></TelegramNotificationsProvider></WatchlistProvider></MemoryRouter>);
   it('returns directly to KOL alert settings after consent and provides guests a login action', () => {
@@ -90,6 +107,7 @@ describe('Watchlist Telegram entry point', () => {
     expect(html).toContain('telegram-alert-heading'); expect(html).toContain('Log in to receive favorite KOL trades in Telegram.');
     expect(html).toMatch(/id="watchlist-kol-tab" aria-selected="true"/);
     expect(html).not.toContain('Enable Telegram alerts');
+    expect(html).toContain('watchlist-kol-layout'); expect(html).toContain('watchlist-kol-settings'); expect(html).toContain('watchlist-kol-following');
   });
   it('keeps the default token tab unchanged and omits Telegram controls there', () => {
     const html = render('/watchlist');

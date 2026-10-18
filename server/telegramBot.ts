@@ -1,5 +1,6 @@
 export type TelegramBotConfig = { token: string; botId: string; origin: string; webhookSecret: string | null };
 export type TelegramMessageButton = { text: string; url: string };
+export type TelegramMessageEntity = { type: 'bold' | 'text_link'; offset: number; length: number; url?: string };
 export type TelegramBotResult =
   | { kind: 'sent'; messageId: number }
   | { kind: 'retry'; retryAfterMs: number; reason: 'rate_limited' | 'unavailable' }
@@ -61,6 +62,15 @@ function validButtons(buttons?: TelegramMessageButton[][]) {
   })));
 }
 
+function validEntities(text: string, entities?: TelegramMessageEntity[]) {
+  return !entities || (entities.length <= 100 && entities.every(entity => {
+    if (!['bold', 'text_link'].includes(entity.type) || !Number.isSafeInteger(entity.offset) || !Number.isSafeInteger(entity.length)
+      || entity.offset < 0 || entity.length <= 0 || entity.offset + entity.length > text.length) return false;
+    if (entity.type === 'bold') return entity.url === undefined;
+    try { const url = new URL(entity.url ?? ''); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
+  }));
+}
+
 export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: typeof fetch; now?: () => number } = {}) {
   const fetcher = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
@@ -108,12 +118,13 @@ export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: 
     return identityRequest;
   }
 
-  async function deliver(method: 'sendMessage' | 'editMessageText', chatId: string, text: string, buttons?: TelegramMessageButton[][], messageId?: number): Promise<TelegramBotResult> {
-    if (!positiveId(chatId) || typeof text !== 'string' || !text.trim() || text.length > 4096 || !validButtons(buttons) || (method === 'editMessageText' && (!Number.isSafeInteger(messageId) || messageId! <= 0))) return { kind: 'failed', reason: 'invalid_message' };
+  async function deliver(method: 'sendMessage' | 'editMessageText', chatId: string, text: string, buttons?: TelegramMessageButton[][], messageId?: number, entities?: TelegramMessageEntity[]): Promise<TelegramBotResult> {
+    if (!positiveId(chatId) || typeof text !== 'string' || !text.trim() || text.length > 4096 || !validButtons(buttons) || !validEntities(text, entities) || (method === 'editMessageText' && (!Number.isSafeInteger(messageId) || messageId! <= 0))) return { kind: 'failed', reason: 'invalid_message' };
     if (!await verifyIdentity()) return { kind: 'failed', reason: 'bot_identity_unverified' };
     try {
       const response = await request(method, {
         chat_id: chatId, text, ...(messageId ? { message_id: messageId } : {}),
+        ...(entities?.length ? { entities } : {}),
         link_preview_options: { is_disabled: true },
         ...(buttons?.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
       });
@@ -136,7 +147,7 @@ export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: 
 
   return {
     verifyIdentity,
-    send: (chatId: string, text: string, buttons?: TelegramMessageButton[][]) => deliver('sendMessage', chatId, text, buttons),
-    edit: (chatId: string, messageId: number, text: string, buttons?: TelegramMessageButton[][]) => deliver('editMessageText', chatId, text, buttons, messageId),
+    send: (chatId: string, text: string, buttons?: TelegramMessageButton[][], entities?: TelegramMessageEntity[]) => deliver('sendMessage', chatId, text, buttons, undefined, entities),
+    edit: (chatId: string, messageId: number, text: string, buttons?: TelegramMessageButton[][], entities?: TelegramMessageEntity[]) => deliver('editMessageText', chatId, text, buttons, messageId, entities),
   };
 }

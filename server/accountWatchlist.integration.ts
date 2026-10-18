@@ -63,7 +63,7 @@ try {
   const preferences = { ...defaultPreferences, windowMinutes: 30, minBuyers: 4 };
   assert.equal((await request('PUT', '/api/watchlist', guestJar, { preferences }, 'guest')).statusCode, 200);
   const firstLogin = await login('telegram-user-one', guestJar);
-  assert.equal(firstLogin.callback.headers.location, '/watchlist?kind=kol', firstLogin.callback.body);
+  assert.equal(firstLogin.callback.headers.location, '/watchlist?kind=kol&telegramLogin=success', firstLogin.callback.body);
   assert.ok(firstLogin.jar);
   const identity = (await request('GET', '/api/auth/me', firstLogin.jar)).json().user;
   assert.ok(identity.id);

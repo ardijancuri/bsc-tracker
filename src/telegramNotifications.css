@@ -16,4 +16,19 @@
 .watch-row>.telegram-kol-controls{flex:none}
 .telegram-alert-feedback{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);z-index:300;display:flex;align-items:center;gap:18px;max-width:calc(100% - 36px);padding:15px 18px;border:1px solid var(--line);border-radius:9px;background:#202629;color:#eee;font-size:13px;box-shadow:0 5px 30px #0005}
 .telegram-alert-feedback button{display:flex;border:0;background:transparent;color:inherit;padding:0;cursor:pointer;flex:none}
+.watchlist-kol-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"following settings";gap:28px;align-items:start}
+.watchlist-kol-following{grid-area:following;min-width:0}.watchlist-kol-settings{grid-area:settings;min-width:0}
+.watchlist-kol-following .token-watchlist-toolbar{min-height:35px;margin-bottom:14px}.watchlist-kol-following h2{font-size:16px;margin:0}
+.watchlist-kol-layout .watch-kol-list{max-width:none;border-top:0;border-top-left-radius:0;border-top-right-radius:0}.watchlist-kol-settings .telegram-alert-settings{margin-bottom:16px;padding:20px}
+.watchlist-kol-layout .watch-kol-list:empty{border:0}
+.watchlist-kol-settings .telegram-alert-options>.feature-button{width:100%;justify-content:center;margin:5px 0 0}
+.watchlist-kol-settings .watch-settings{margin-top:0}.watchlist-kol-settings .alert-controls{flex-wrap:wrap}
+.telegram-alert-prompt{width:min(440px,calc(100vw - 32px));box-sizing:border-box;max-height:calc(100dvh - 40px);overflow:auto;padding:30px;border:1px solid var(--line);border-radius:14px;background:var(--bg,#0b0e11);color:var(--text,#f4f5f5);box-shadow:0 25px 90px #0008}
+.telegram-alert-prompt::backdrop{background:#0009;backdrop-filter:blur(8px)}
+.telegram-alert-prompt-close{position:absolute;top:14px;right:14px;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;border-radius:6px;background:#202629;color:#fff;cursor:pointer}
+.telegram-alert-prompt-icon{display:flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:12px;background:#f9c93218;color:var(--yellow);margin-bottom:19px}
+.telegram-alert-prompt h2{font-size:22px;line-height:1.3;margin:0 0 12px;max-width:310px}.telegram-alert-prompt p{font-size:14px;line-height:1.65;color:var(--muted);margin:0 0 25px}
+.telegram-alert-prompt-actions{display:flex;flex-direction:column;align-items:stretch;gap:10px}.telegram-alert-prompt-actions>.feature-button{justify-content:center;min-height:41px;background:var(--yellow);color:#111;border:0;font-weight:800}
+.telegram-alert-prompt-later{border:0;background:none;color:var(--muted);font:inherit;font-size:13px;padding:9px;cursor:pointer}.telegram-alert-prompt button:focus-visible{outline:2px solid var(--yellow);outline-offset:3px}
+@media(max-width:850px){.watchlist-kol-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"settings" "following";gap:22px}}
 @media(max-width:600px){.telegram-alert-settings{padding:14px;margin-bottom:16px}.telegram-alert-options{gap:12px 17px}.telegram-alert-options>.feature-button{margin-left:0}.telegram-alert-options>span{flex-basis:100%}.telegram-kol-controls{gap:3px}}
