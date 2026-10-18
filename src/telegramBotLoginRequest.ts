@@ -29,6 +29,18 @@ export function telegramOidcLoginUrl(value: string) {
   if (url.protocol !== 'https:' || url.hostname !== 'oauth.telegram.org' || url.port || url.username || url.password || url.hash || url.pathname !== '/auth') throw new Error('Invalid Telegram recovery link');
   return url.href;
 }
+/** Direct Telegram authorization is permitted from the configured local development flow only. */
+export function telegramLoginStartUrl(value: unknown, pageOrigin: string) {
+  if (!value || typeof value !== 'object' || !('url' in value) || typeof value.url !== 'string') throw new Error('Invalid Telegram login response');
+  const flow = 'flow' in value ? value.flow : undefined;
+  if (flow === 'oidc') {
+    const page = new URL(pageOrigin);
+    if (page.origin !== pageOrigin || !['http:', 'https:'].includes(page.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(page.hostname)) throw new Error('Direct Telegram login is only available locally');
+    return telegramOidcLoginUrl(value.url);
+  }
+  if (flow !== undefined && flow !== 'bot') throw new Error('Invalid Telegram login flow');
+  return telegramBotLoginUrl(value.url);
+}
 export class TelegramBotLoginRequestError extends Error {
   constructor(readonly status: number) { super('Telegram login could not complete'); }
 }

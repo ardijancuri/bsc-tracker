@@ -1,8 +1,8 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AuthMergeLimitError, authFailureCategory, authSessionSecret, createTelegramOidc, registerTelegramAuthRoutes, resolveAuthUser, safeAuthReturnTo, telegramAuthConfig, telegramIssuer, verifiedTelegramId, type TelegramAuthConfig } from './telegramAuth.js';
+import { AuthMergeLimitError, authFailureCategory, authSessionSecret, createTelegramOidc, registerTelegramAuthRoutes, resolveAuthUser, safeAuthReturnTo, telegramAuthConfig, telegramIssuer, usesLocalTelegramOidc, verifiedTelegramId, type TelegramAuthConfig } from './telegramAuth.js';
 
 const config: TelegramAuthConfig = { clientId: '12345', clientSecret: 'test-client_secret-with_both-characters', origin: 'https://kollens.com', secure: true };
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -10,7 +10,7 @@ const wrongKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test', use: 'sig', alg: 'RS256' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const apps: ReturnType<typeof Fastify>[] = [];
-afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
+afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); vi.unstubAllEnvs(); });
 
 function fakeDatabase() {
   const loginAttempts = new Map<string, Record<string, unknown>>();
@@ -57,7 +57,8 @@ function fakeDatabase() {
   return { db: { query, connect: vi.fn(async () => connection) } as unknown as Pool, queries, users, sessions, loginAttempts };
 }
 
-async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; notifications?: boolean; tokenError?: { error: string; status: number }; botRecovery?: {telegramId: string; returnTo: string} } = {}) {
+async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; notifications?: boolean; tokenError?: { error: string; status: number }; botRecovery?: {telegramId: string; returnTo: string}; authConfig?: TelegramAuthConfig; botAvailable?: boolean } = {}) {
+  const routeConfig = options.authConfig ?? config;
   const database = fakeDatabase();
   let nonce = '';
   const tokenRequests: RequestInit[] = [];
@@ -71,12 +72,12 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
       const basic = new Headers(init?.headers).get('authorization') ?? '';
       // Telegram expects raw Basic credentials, rather than percent-encoded OAuth credentials.
       const credentials = basic.startsWith('Basic ') ? Buffer.from(basic.slice(6), 'base64').toString().split(':') : [];
-      if (form.getAll('client_id').length !== 1 || form.get('client_id') !== config.clientId || credentials[0] !== config.clientId || credentials[1] !== config.clientSecret) {
+      if (form.getAll('client_id').length !== 1 || form.get('client_id') !== routeConfig.clientId || credentials[0] !== routeConfig.clientId || credentials[1] !== routeConfig.clientSecret) {
         return Response.json({ error: 'invalid_client' }, { status: 401 });
       }
       if (options.tokenError) return Response.json({ error: options.tokenError.error, error_description: 'private-provider-description' }, { status: options.tokenError.status });
       const now = Math.floor(Date.now() / 1000);
-      const claims = { iss: telegramIssuer, aud: config.clientId, sub: '987654321', iat: now, exp: now + 3600, nonce, name: 'Kollens Tester', preferred_username: 'tester', picture: 'https://cdn4.telesco.pe/file/avatar.jpg', ...overrides };
+      const claims = { iss: telegramIssuer, aud: routeConfig.clientId, sub: '987654321', iat: now, exp: now + 3600, nonce, name: 'Kollens Tester', preferred_username: 'tester', picture: 'https://cdn4.telesco.pe/file/avatar.jpg', ...overrides };
       const body = [Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test' })).toString('base64url'), Buffer.from(JSON.stringify(claims)).toString('base64url')].join('.');
       const signature = sign('RSA-SHA256', Buffer.from(body), options.badSignature ? wrongKey : privateKey).toString('base64url');
       return Response.json({ access_token: 'access-token-never-persisted', token_type: 'Bearer', expires_in: 3600, id_token: `${body}.${signature}` });
@@ -87,13 +88,14 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
   const mergeGuest = vi.fn(async () => { if (options.mergeLimit) throw new AuthMergeLimitError(); });
   const authorized = vi.fn(async () => {}), consentFailed = vi.fn(async () => {});
   const failures: Record<string, unknown>[] = [];
+  const botStart = vi.fn(async (_request: FastifyRequest, reply: FastifyReply) => reply.send({ url: 'https://t.me/kollens_login_bot?start=login_' + 'a'.repeat(43) }));
   const app = Fastify({ logger: options.tokenError ? { level: 'warn', stream: { write: value => { failures.push(JSON.parse(value)); } } } : false });
   apps.push(app);
-  registerTelegramAuthRoutes(app, { pool: database.db, config: options.disabled ? null : config, oidcConfiguration: () => createTelegramOidc(config, fetcher as never), captureGuest, mergeGuest,
-    botLogin: options.botRecovery ? { available: () => true, start: async (_request, reply) => reply.send({ url: 'https://t.me/kollens_login_bot?start=login_' + 'a'.repeat(43) }), recoveryIdentity: async () => options.botRecovery! } : undefined,
+  registerTelegramAuthRoutes(app, { pool: database.db, config: options.disabled ? null : routeConfig, oidcConfiguration: () => createTelegramOidc(routeConfig, fetcher as never), captureGuest, mergeGuest,
+    botLogin: options.botRecovery || options.botAvailable !== undefined ? { available: () => options.botAvailable ?? true, start: botStart, recoveryIdentity: async () => options.botRecovery ?? null } : undefined,
     notificationConsent: { available: () => !!options.notifications, onAuthorized: authorized, onFailed: consentFailed } });
   async function start(returnTo: unknown = '/token/0xabc?period=7d#chart', legacy = false, botToken?: string) {
-    const response = await app.inject({ method: 'POST', url: legacy ? '/api/auth/telegram/oidc/start' : '/api/auth/telegram/start', headers: { origin: config.origin }, payload: { returnTo, ...(botToken ? {botToken} : {}) } });
+    const response = await app.inject({ method: 'POST', url: legacy ? '/api/auth/telegram/oidc/start' : '/api/auth/telegram/start', headers: { origin: routeConfig.origin }, payload: { returnTo, ...(botToken ? {botToken} : {}) } });
     if (response.statusCode !== 200) throw new Error(response.body);
     const url = new URL(response.json().url);
     nonce = url.searchParams.get('nonce')!;
@@ -109,10 +111,20 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
     if (url) nonce = url.searchParams.get('nonce')!;
     return { response, url, state: url?.searchParams.get('state')!, cookie: response.cookies.find(value => value.name === 'bscan_login')?.value! };
   }
-  return { ...database, app, start, callback, consent, authorized, consentFailed, captureGuest, mergeGuest, tokenRequests, fetcher, failures };
+  return { ...database, app, start, callback, consent, authorized, consentFailed, captureGuest, mergeGuest, tokenRequests, fetcher, failures, botStart };
 }
 
 describe('Telegram auth configuration and inputs', () => {
+  it.each(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://[::1]:5173', 'https://localhost:5173'])('selects OIDC only for a configured development loopback origin: %s', origin => {
+    expect(usesLocalTelegramOidc({ ...config, origin }, 'development')).toBe(true);
+    expect(usesLocalTelegramOidc({ ...config, origin }, 'production')).toBe(false);
+  });
+  it.each(['https://kollens.com', 'https://localhost.attacker.example', 'http://127.0.0.1:5173/path', 'http://user@localhost:5173', 'file://localhost'])('does not select local OIDC from an invalid or remote origin: %s', origin => {
+    expect(usesLocalTelegramOidc({ ...config, origin }, 'development')).toBe(false);
+  });
+  it('does not enable local OIDC without complete validated credentials', () => {
+    expect(usesLocalTelegramOidc(telegramAuthConfig({ PUBLIC_APP_URL: 'http://127.0.0.1:5173', NODE_ENV: 'development' }), 'development')).toBe(false);
+  });
   it('classifies failures without returning provider credentials, URLs or claim values', () => {
     const details = authFailureCategory({ message: 'Provider rejected token containing a-private-token', cause: { claim: 'nonce', expected: 'private-nonce', actual: 'other-private-nonce' } });
     expect(details).toEqual({ reason: 'claim_validation', field: 'nonce' });
@@ -150,6 +162,57 @@ describe('Telegram auth configuration and inputs', () => {
     expect(verifiedTelegramId(987654321)).toBe('987654321');
     expect(verifiedTelegramId('987654321')).toBe('987654321');
     for (const value of [null, undefined, 'opaque-sub', '001', 0, -1, 1.25, Number.MAX_SAFE_INTEGER + 1, '9007199254740992']) expect(verifiedTelegramId(value)).toBeNull();
+  });
+});
+
+describe('Local Telegram sign-in routing', () => {
+  const localConfig = { ...config, origin: 'http://127.0.0.1:5173', secure: false };
+  it('uses signed OIDC locally despite an unavailable bot and returns to the original page', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const f = await fixture({ id: 123456789 }, { authConfig: localConfig, botAvailable: false });
+    expect((await f.app.inject('/api/auth/me')).json()).toEqual({ enabled: true, user: null });
+    const started = await f.start('/portfolio?wallet=all#positions');
+    expect(started.response.json().flow).toBe('oidc');
+    expect(started.url.origin).toBe(telegramIssuer);
+    expect(started.url.searchParams.get('redirect_uri')).toBe(`${localConfig.origin}/api/auth/telegram/callback`);
+    expect(started.url.searchParams.get('scope')).toBe('openid profile');
+    expect(started.url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(started.response.cookies.find(value => value.name === 'bscan_login')).toMatchObject({ httpOnly: true, sameSite: 'Lax' });
+    expect([started.response.headers['set-cookie']].flat().join('; ')).not.toContain('Secure');
+    expect(f.botStart).not.toHaveBeenCalled();
+    const rejected = await f.callback(started.state, 'b'.repeat(64));
+    expect(rejected.headers.location).toContain('authError=failed');
+    expect(f.tokenRequests).toHaveLength(0);
+    const completed = await f.callback(started.state, started.cookie);
+    expect(completed.headers.location).toBe('/portfolio?wallet=all&telegramLogin=success#positions');
+    const session = completed.cookies.find(value => value.name === 'bscan_auth')!.value;
+    expect((await f.app.inject({ url: '/api/auth/me', headers: { cookie: `bscan_auth=${session}` } })).json().user?.name).toBe('Kollens Tester');
+    expect(f.mergeGuest).toHaveBeenCalledTimes(1);
+    expect((await f.callback(started.state, started.cookie)).headers.location).toContain('authError=failed');
+    expect(f.tokenRequests).toHaveLength(1);
+    expect((await f.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { origin: localConfig.origin, cookie: `bscan_auth=${session}` }, payload: {} })).json()).toEqual({ enabled: true, user: null });
+  });
+  it('keeps production bot-first even when configured with an HTTPS loopback origin', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const productionLocal = { ...config, origin: 'https://localhost:5173' };
+    const f = await fixture({}, { authConfig: productionLocal, botAvailable: true });
+    const response = await f.app.inject({ method: 'POST', url: '/api/auth/telegram/start', headers: { origin: productionLocal.origin }, payload: { returnTo: '/portfolio' } });
+    expect(response.json().url).toMatch(/^https:\/\/t\.me\//);
+    expect(f.botStart).toHaveBeenCalledOnce();
+    expect(f.fetcher).not.toHaveBeenCalled();
+  });
+  it('does not select local OIDC from a spoofed request Host with a production app origin', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const f = await fixture({}, { botAvailable: true });
+    const response = await f.app.inject({ method: 'POST', url: '/api/auth/telegram/start', headers: { host: '127.0.0.1:5173', origin: 'http://127.0.0.1:5173' }, payload: { returnTo: '/portfolio' } });
+    expect(response.json().url).toMatch(/^https:\/\/t\.me\//);
+    expect(f.botStart).toHaveBeenCalledOnce();
+    expect(f.fetcher).not.toHaveBeenCalled();
+  });
+  it('does not enable a production login because a local-development fallback exists', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const f = await fixture({}, { botAvailable: false });
+    expect((await f.app.inject('/api/auth/me')).json()).toEqual({ enabled: false, user: null });
   });
 });
 

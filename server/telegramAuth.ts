@@ -36,6 +36,16 @@ export function telegramAuthConfig(env: NodeJS.ProcessEnv = process.env): Telegr
   } catch { return null; }
 }
 
+/** Local sign-in must not depend on, or redirect, the production bot's webhook. */
+export function usesLocalTelegramOidc(config: TelegramAuthConfig | null, nodeEnv = process.env.NODE_ENV) {
+  if (!config || nodeEnv === 'production') return false;
+  try {
+    const url = new URL(config.origin);
+    return url.origin === config.origin && ['http:', 'https:'].includes(url.protocol)
+      && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  } catch { return false; }
+}
+
 export async function ensureAuthSchema(db: Pool) {
   const client = await db.connect();
   try {
@@ -204,6 +214,8 @@ type LoginAttempt = {
 export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOptions = {}) {
   const db = options.pool ?? pool;
   const config = options.config === undefined ? telegramAuthConfig() : options.config;
+  const localOidc = usesLocalTelegramOidc(config);
+  const loginEnabled = () => localOidc || (options.botLogin ? options.botLogin.available() : !!config);
   let configuration: Promise<oidc.Configuration> | null = null;
   const getConfiguration = options.oidcConfiguration ?? (() => configuration ??= createTelegramOidc(config!).catch(error => { configuration = null; throw error; }));
   const secure = config?.secure ?? process.env.NODE_ENV === 'production';
@@ -245,7 +257,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     privateResponse(reply);
     const user = await resolveAuthUser(request, db);
     if (!user && (request.headers.cookie ?? '').split(';').some(value => value.trim().startsWith(`${authCookie}=`))) cookies(reply, [formatCookie(authCookie, '', 0, secure)]);
-    return { enabled: options.botLogin ? options.botLogin.available() : !!config, user: user ? { id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl } : null };
+    return { enabled: loginEnabled(), user: user ? { id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl } : null };
   });
   async function startLogin(request: FastifyRequest, reply: FastifyReply, previousLogin = false) {
     privateResponse(reply);
@@ -261,7 +273,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       if (!recovery) return reply.code(410).send({ error: 'This login link has expired or was already used.' });
     }
     const returnTo = safeAuthReturnTo(recovery?.returnTo ?? body.returnTo);
-    if (options.botLogin && !previousLogin) return options.botLogin.start(request, reply, returnTo);
+    if (options.botLogin && !previousLogin && !localOidc) return options.botLogin.start(request, reply, returnTo);
     try {
       const client = await getConfiguration();
       const state = secret(), browser = secret(), nonce = oidc.randomNonce(), verifier = oidc.randomPKCECodeVerifier();
@@ -273,7 +285,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
         VALUES ($1,$2,$3,$4,$5,$6::jsonb,now()+interval '10 minutes',$7,$8)`, [digest(state), digest(browser), verifier, nonce, returnTo, JSON.stringify(guest), recovery?.telegramId ?? null, recovery ? digest(body.botToken as string) : null]);
       const url = oidc.buildAuthorizationUrl(client, { redirect_uri: `${config.origin}/api/auth/telegram/callback`, scope: 'openid profile', state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256' });
       cookies(reply, [formatCookie(loginCookie, browser, loginSeconds, secure)]);
-      return { url: url.href };
+      return { url: url.href, flow: 'oidc' };
     } catch { return reply.code(503).send({ error: 'Telegram login is temporarily unavailable' }); }
   }
   app.post('/api/auth/telegram/start', { logLevel: 'silent', bodyLimit: 4096 }, (request, reply) => startLogin(request, reply));
@@ -400,6 +412,6 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     const value = authSessionSecret(request.headers.cookie);
     if (value) await db.query('DELETE FROM auth_sessions WHERE secret_hash=$1', [digest(value)]);
     cookies(reply, [formatCookie(authCookie, '', 0, secure), formatCookie(loginCookie, '', 0, secure), clearGuestCookie(secure)]);
-    return { enabled: options.botLogin ? options.botLogin.available() : !!config, user: null } satisfies AuthState;
+    return { enabled: loginEnabled(), user: null } satisfies AuthState;
   });
 }

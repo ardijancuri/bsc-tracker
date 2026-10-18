@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, Star, UserRound, UserRoundPen, Wallet, X } from 'lucide-react';
 import type { AuthState, AuthUser } from '../shared/auth';
-import { telegramBotLoginUrl } from './telegramBotLoginRequest';
+import { telegramLoginStartUrl } from './telegramBotLoginRequest';
 import { t } from './i18n';
 import './account.css';
 
@@ -78,8 +78,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         }
         throw new Error('Could not log in with Telegram. Try again.');
       }
-      const result = await response.json() as { url: string };
-      window.location.assign(telegramBotLoginUrl(result.url));
+      const result: unknown = await response.json();
+      window.location.assign(telegramLoginStartUrl(result, window.location.origin));
     } catch { if (mounted.current) setError('Could not log in with Telegram. Try again.'); }
     finally { window.clearTimeout(timeout); operation.current = false; if (mounted.current) setBusy(false); }
   };

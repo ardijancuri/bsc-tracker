@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requestTelegramBotLogin, requestTelegramLoginRecovery, resumeTelegramBotLogin, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, telegramBotLoginUrl, telegramOidcLoginUrl, TelegramBotLoginRequestError } from './telegramBotLoginRequest';
+import { requestTelegramBotLogin, requestTelegramLoginRecovery, resumeTelegramBotLogin, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, telegramBotLoginUrl, telegramLoginStartUrl, telegramOidcLoginUrl, TelegramBotLoginRequestError } from './telegramBotLoginRequest';
 
 const token = 'A'.repeat(43);
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -33,6 +33,28 @@ describe('Telegram bot login links', () => {
   it('accepts the legacy recovery URL only from the explicit Telegram HTTPS authorization endpoint', () => {
     expect(telegramOidcLoginUrl('https://oauth.telegram.org/auth?client_id=123')).toBe('https://oauth.telegram.org/auth?client_id=123');
     for (const url of ['https://evil.example/auth', 'http://oauth.telegram.org/auth', 'https://name@oauth.telegram.org/auth', 'https://oauth.telegram.org:444/auth', 'https://oauth.telegram.org/auth#token', 'https://oauth.telegram.org/token']) expect(() => telegramOidcLoginUrl(url)).toThrow();
+  });
+});
+
+describe('local and live login routing', () => {
+  const botUrl = `https://t.me/kollens_login_bot?start=login_${token}`;
+  const oidcUrl = 'https://oauth.telegram.org/auth?client_id=123&response_type=code';
+  it('keeps live bot links and existing responses valid', () => {
+    expect(telegramLoginStartUrl({ url: botUrl }, 'https://kollens.com')).toBe(botUrl);
+    expect(telegramLoginStartUrl({ url: botUrl, flow: 'bot' }, 'https://kollens.com')).toBe(botUrl);
+  });
+  it.each(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://[::1]:5173', 'https://localhost:5173'])('accepts direct Telegram login only for the local flow at %s', origin => {
+    expect(telegramLoginStartUrl({ url: oidcUrl, flow: 'oidc' }, origin)).toBe(oidcUrl);
+    expect(() => telegramLoginStartUrl({ url: oidcUrl }, origin)).toThrow();
+  });
+  it.each(['https://kollens.com', 'http://localhost.evil.example', 'http://127.0.0.1.evil.example', 'https://localhost@evil.example', 'http://127.0.0.1:5173/path', 'file:///tmp'])('rejects local-flow responses on an untrusted origin: %s', origin => {
+    expect(() => telegramLoginStartUrl({ url: oidcUrl, flow: 'oidc' }, origin)).toThrow();
+  });
+  it.each(['https://evil.example/auth', 'http://oauth.telegram.org/auth', 'https://oauth.telegram.org/auth#secret', 'https://oauth.telegram.org.evil.example/auth', botUrl])('does not loosen authorization URL checks locally: %s', url => {
+    expect(() => telegramLoginStartUrl({ url, flow: 'oidc' }, 'http://localhost:5173')).toThrow();
+  });
+  it.each([null, {}, {url: 123}, {url: oidcUrl, flow: 'other'}, {url: oidcUrl, flow: null}])('rejects malformed login responses: %j', value => {
+    expect(() => telegramLoginStartUrl(value, 'http://localhost:5173')).toThrow();
   });
 });
 
