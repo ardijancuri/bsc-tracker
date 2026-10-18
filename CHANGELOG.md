@@ -2,6 +2,9 @@
 
 ## v1.3 updates — 2026-10-18
 
+- Fix trade replay preparation during GMGN cooldowns: reuse reconciled accounting and the modal's validated current valuation without waiting for an optional aggregate refresh.
+- Join genuine recent one-minute observations to retained replay history, support independent market-history recovery, and keep provider retry delays separate.
+- Show accounting, chart coverage, quote and provider-specific preparation errors; preserve frozen modal/video profit and return consistency.
 - Add a blank line below the dollar/BNB amount in Telegram buy and sell alerts.
 - Restore the KOL watchlist table's complete border and matching rounded top/bottom corners; keep the toolbar separate.
 - Remove BscScan buttons and linked timestamps from Telegram trade alerts, retaining plain trade times and Kollens links.

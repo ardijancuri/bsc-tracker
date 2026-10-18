@@ -158,29 +158,35 @@ export async function fetchGmgnMarketCandles(address: string, period: ChartRange
 
 export async function fetchPreferredMarketCandles(address: string, period: ChartRange, poolAddress: string | undefined, options: {
   gmgnKey?: string; gmgnRequest?: GmgnJsonRequest; cmcRequest?: CmcJsonRequest; geckoRequest?: JsonRequest; saved?: TokenChart | null; now?: number; signal?: AbortSignal;
+  allowProviderFallback?: boolean | (() => boolean); skipGmgn?: boolean; gmgnDeferred?: MarketProviderDeferred;
+  onGmgnDeferred?: (problem: MarketProviderDeferred, fallbackAttempted: boolean) => void;
 } = {}): Promise<TokenChart | null> {
-  let primaryError: unknown;
-  if (options.gmgnKey?.trim()) {
+  const allowFallback = () => typeof options.allowProviderFallback === 'function' ? options.allowProviderFallback() : options.allowProviderFallback === true;
+  let primaryError: unknown = options.gmgnDeferred, gmgnError: unknown = options.gmgnDeferred, independentError: unknown;
+  if (options.gmgnKey?.trim() && !options.skipGmgn) {
     try {
       const chart = await fetchGmgnMarketCandles(address, period, options.gmgnKey, options.gmgnRequest, options.now, options.signal);
       if (chart) return chart;
       // A transient provider gap must not erase retained genuine history.
-      if (options.saved?.source === 'gmgn' && options.saved.candles.length) throw new Error('GMGN chart history temporarily unavailable');
+      if (options.saved?.source === 'gmgn' && options.saved.candles.length && !allowFallback()) throw new Error('GMGN chart history temporarily unavailable');
     } catch (error) {
       // Retain this provider's genuine history while it cools down. A cache from
       // a public fallback must still refresh there when GMGN is unavailable.
-      if ((options.saved?.source === 'gmgn' && options.saved.candles.length) || options.signal?.aborted) throw error;
-      primaryError = error;
+      const preserve = Boolean(options.saved?.source === 'gmgn' && options.saved.candles.length && !allowFallback()) || options.signal?.aborted;
+      if (error instanceof MarketProviderDeferred) options.onGmgnDeferred?.(error, !preserve);
+      if (preserve) throw error;
+      primaryError = error; gmgnError = error;
     }
   }
   try {
     const chart = await fetchCmcMarketCandles(address, period, options.cmcRequest, options.now, options.signal);
     if (chart) return chart;
-    if (options.saved?.source === 'coinmarketcap' && options.saved.candles.length) throw new Error('CoinMarketCap chart history temporarily unavailable');
+    if (options.saved?.source === 'coinmarketcap' && options.saved.candles.length && !allowFallback()) throw new Error('CoinMarketCap chart history temporarily unavailable');
   } catch (error) {
     // Keep this provider's cached history during its outage. A Gecko-backed
     // chart can continue to refresh from Gecko without losing its candles.
-    if ((options.saved?.source === 'coinmarketcap' && options.saved.candles.length) || options.signal?.aborted) throw error;
+    if ((options.saved?.source === 'coinmarketcap' && options.saved.candles.length && !allowFallback()) || options.signal?.aborted) throw error;
+    independentError = error;
     if (!primaryError || error instanceof MarketProviderDeferred && !(primaryError instanceof MarketProviderDeferred)) primaryError = error;
   }
   try {
@@ -195,6 +201,16 @@ export async function fetchPreferredMarketCandles(address: string, period: Chart
     if (!result && options.saved?.candles.length) throw new Error('Market chart history temporarily unavailable');
     return result;
   } catch (error) {
+    if (allowFallback() && !options.signal?.aborted) {
+      // A GMGN cooldown must not postpone an independent provider beyond that
+      // provider's own cooldown. Each requester still enforces its shared slot.
+      const available = [independentError, error].filter((problem): problem is MarketProviderDeferred => problem instanceof MarketProviderDeferred && problem !== gmgnError)
+        .sort((a, b) => a.retryAfterMs - b.retryAfterMs);
+      if (available.length) throw available[0];
+      // Generic outages and temporarily empty independent history use the
+      // normal refresh delay. The GMGN key still keeps its separate cooldown.
+      throw error !== gmgnError ? error : independentError ?? new Error('Independent market history temporarily unavailable');
+    }
     throw primaryError instanceof MarketProviderDeferred ? primaryError : error;
   }
 }
@@ -203,6 +219,8 @@ const cache = new Map<string, TokenChart>();
 const jobs = new Map<string, Promise<TokenChart | null>>();
 const priorities = new Map<string, GeckoPriority>();
 const foregrounds = new Map<string, () => boolean>();
+const providerFallbacks = new Map<string, boolean>();
+const gmgnCooldowns = new Map<string, { until: number; reason: 'busy' | 'rate_limited'; fallbackAttempted: boolean }>();
 const retryAt = new Map<string, { at: number; status: NonNullable<TokenChart['loadStatus']> }>();
 const cacheDirectory = process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts');
 function finerCachedChart(address: string, range: ChartRange): TokenChart | null {
@@ -251,7 +269,7 @@ async function persistChart(key: string, chart: TokenChart) {
 }
 
 export async function currentMarketChart(address: string, range: ChartRange, priority?: GeckoPriority,
-  options: { maxAgeMs?: number; foreground?: boolean | (() => boolean) } = {}): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
+  options: { maxAgeMs?: number; foreground?: boolean | (() => boolean); allowProviderFallback?: boolean; waitForRefresh?: boolean } = {}): Promise<{ chart: TokenChart | null; pending: boolean; loadStatus?: TokenChart['loadStatus']; retryAfterMs?: number }> {
   // These intervals are identical to existing watchlist requests. Reuse their
   // cache and in-flight jobs rather than spending another provider request.
   const period = range === '5m' ? '24h' : range === '1h' || range === '7d' ? '30d' : range;
@@ -263,6 +281,7 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
     const existing = priorities.get(key);
     if (jobs.has(key) && existing && marketPriorityRank[requestedPriority] < marketPriorityRank[existing]) priorities.set(key, requestedPriority);
     if (jobs.has(key)) {
+      if (options.allowProviderFallback) providerFallbacks.set(key, true);
       const previous = foregrounds.get(key);
       foregrounds.set(key, () => previous?.() === true || foreground());
     }
@@ -276,19 +295,35 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
   // Valuation needs a current quote even when its request keeps background
   // priority. Do not promote every profile card ahead of the selected chart.
   const lifetime = Number.isFinite(options.maxAgeMs) && options.maxAgeMs! > 0 ? Math.min(defaultLifetime, options.maxAgeMs!) : defaultLifetime;
-  const fresh = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
+  const withinLifetime = saved && Date.now() - Date.parse(saved.updatedAt!) < lifetime;
+  const latestCompleted = saved?.candles.filter(candle => (candle.time + resolutionSeconds[saved.resolution]) * 1000 <= Date.now())
+    .reduce((latest, candle) => Math.max(latest, (candle.time + resolutionSeconds[saved.resolution]) * 1000), 0) ?? 0;
+  const missingRecentTail = options.allowProviderFallback && range === '1m' && saved?.source === 'gmgn'
+    && withinLifetime && Date.now() - latestCompleted > 180_000;
+  const fresh = withinLifetime && !missingRecentTail;
   if (fresh) { if (saved.source === 'gmgn') recordGmgnCacheHit('market'); return { chart: chartForRange(saved, range), pending: false }; }
   let job = jobs.get(key);
   const interactiveJobs = [...priorities.values()].filter(priority => priority === 'chart').length;
-  if (!job && Date.now() >= (retryAt.get(key)?.at || 0) && (jobs.size < 32 || interactive && interactiveJobs < 8)) {
+  const cooldown = gmgnCooldowns.get(key), cooling = cooldown && cooldown.until > Date.now();
+  const independentRecovery = options.allowProviderFallback && cooling && !cooldown.fallbackAttempted;
+  if (!job && (Date.now() >= (retryAt.get(key)?.at || 0) || independentRecovery) && (jobs.size < 32 || interactive && interactiveJobs < 8)) {
     priorities.set(key, requestedPriority);
     foregrounds.set(key, foreground);
+    providerFallbacks.set(key, options.allowProviderFallback === true);
+    if (independentRecovery) cooldown.fallbackAttempted = true;
     const request = (url: URL) => providerRequest(url, () => priorities.get(key) ?? 'sparkline');
     const poolAddress = saved?.poolAddress ?? [...cache.values()].find(c => c.address === address)?.poolAddress;
     job = (async () => {
       try {
         const result = await fetchPreferredMarketCandles(address, period, poolAddress, {
           gmgnKey: gmgnApiKey('market'), saved, geckoRequest: request, signal: AbortSignal.timeout(20_000),
+          allowProviderFallback: () => providerFallbacks.get(key) === true,
+          skipGmgn: Boolean(cooling || missingRecentTail),
+          ...(cooling ? { gmgnDeferred: new MarketProviderDeferred(cooldown.reason, cooldown.until - Date.now()) } : {}),
+          onGmgnDeferred: (problem, fallbackAttempted) => {
+            if (gmgnCooldowns.size >= 500 && !gmgnCooldowns.has(key)) gmgnCooldowns.delete(gmgnCooldowns.keys().next().value!);
+            gmgnCooldowns.set(key, { until: Date.now() + problem.retryAfterMs, reason: problem.reason, fallbackAttempted });
+          },
           cmcRequest: (url, signal) => cmcRequest(url, { signal, priority: () => priorities.get(key) ?? 'sparkline' }),
           gmgnRequest: (url, signal, headers) => gmgnRequest(url, { apiKey: headers['X-APIKEY'], workload: 'market', signal,
             priority: () => priorities.get(key) ?? 'sparkline', foreground: () => foregrounds.get(key)?.() === true }),
@@ -308,7 +343,7 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
           status: deferred ? error.reason === 'rate_limited' ? 'rate_limited' : 'queued' : 'provider_error' });
         return null;
       }
-      finally { jobs.delete(key); priorities.delete(key); foregrounds.delete(key); }
+      finally { jobs.delete(key); priorities.delete(key); foregrounds.delete(key); providerFallbacks.delete(key); }
     })();
     jobs.set(key, job);
   }
@@ -318,7 +353,7 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
     return { loadStatus: jobs.has(key) || !retry || retry.at <= Date.now() ? 'queued' as const : retry.status,
       retryAfterMs: jobs.has(key) || !retry ? 3000 : Math.max(1000, retry.at - Date.now()) };
   };
-  if (available) return { chart: chartForRange({ ...available, stale: true }, range), pending: !!job, ...state() };
+  if (available && !options.waitForRefresh) return { chart: chartForRange({ ...available, stale: true }, range), pending: !!job, ...state() };
   if (job) {
     const result = await new Promise<TokenChart | null>(resolve => {
       // A full chart can finish in this response after its provider slot opens.
@@ -329,5 +364,6 @@ export async function currentMarketChart(address: string, range: ChartRange, pri
     });
     if (result) return { chart: chartForRange(result, range), pending: false };
   }
+  if (available) return { chart: chartForRange({ ...available, stale: true }, range), pending: jobs.has(key), ...state() };
   return { chart: null, pending: jobs.has(key), ...state() };
 }

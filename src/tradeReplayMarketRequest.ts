@@ -2,7 +2,7 @@ import { tradeActivityBase, tradeRequestHeaders } from './tradeRequestContext';
 import type { JournalTokenActivity } from '../shared/journal';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { TokenChart } from '../shared/intelligence';
-import { applyReplayMarketChart, prepareTradeReplayData, replayAccountingIsFresh, replayAccountingTotal, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, unavailableReplayAccounting, validReplayAccountingFinal, validReplayCurrentQuote, type ReplayActivity, type TradeReplayData } from './tradeReplayData';
+import { applyReplayMarketChart, prepareTradeReplayData, replayAccountingCashFlowKnown, replayAccountingIsFresh, replayAccountingTotal, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, unavailableReplayAccounting, validReplayAccountingFinal, validReplayCurrentQuote, type ReplayActivity, type TradeReplayData } from './tradeReplayData';
 export { replayIsOpen } from './tradeReplayData';
 
 const preparationBudgetMs = 22_000;
@@ -30,6 +30,7 @@ export interface ReplayMarketRequestResult {
   inventoryNotice?: string;
   accountingNotice?: string;
   preparationStatus: 'ready' | 'pending' | 'unavailable';
+  blockingReason?: 'accounting_pending' | 'accounting_mismatch' | 'unknown_costs' | 'chart_coverage' | 'stale_quote' | 'provider_cooldown';
   retryAfterMs?: number;
 }
 
@@ -74,6 +75,11 @@ function aggregateIsPending(data: TradeReplayData) {
   return Boolean(accounting?.status === 'estimated' && /^(?:aggregate|historical_cache)_provider_/.test(accounting.coverage.reason ?? '')
     && typeof accounting.retryAfterMs === 'number' && Number.isFinite(accounting.retryAfterMs) && accounting.retryAfterMs > 0);
 }
+function reconciledEndingCashFlow(data: TradeReplayData) {
+  if (!replayAccountingIsFresh(data) || !replayInventoryIsFresh(data)) return false;
+  const last = data.replayAccounting?.events.at(-1);
+  return replayAccountingCashFlowKnown(last) && (last?.feeInclusiveCostUsd ?? 0) > 0;
+}
 async function refreshedActivity(data: TradeReplayData, signal: AbortSignal, deadline: number): Promise<ActivityPreparation> {
   const refresh = new AbortController(), abort = () => refresh.abort();
   signal.addEventListener('abort', abort, { once: true });
@@ -88,7 +94,7 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal, dea
       const startedAt = Date.now();
       let response: Response, activity: ReplayActivity;
       try {
-        response = await withinRequest(fetch(`${tradeActivityBase(data.kol.address, data.token.address, data.requestContext)}/activity?replay=true${data.requestContext ? '&pnl=true' : ''}${data.requestContext?.snapshotId ? `&snapshot=${encodeURIComponent(data.requestContext.snapshotId)}` : ''}`,
+        response = await withinRequest(fetch(`${tradeActivityBase(data.kol.address, data.token.address, data.requestContext)}/activity?replay=true&pnl=true${data.requestContext?.snapshotId ? `&snapshot=${encodeURIComponent(data.requestContext.snapshotId)}` : ''}`,
           { signal: refresh.signal, cache: 'no-store', headers: tradeRequestHeaders(data.requestContext) }), refresh.signal);
         if (!response.ok) {
           pending = response.status === 429 || response.status >= 500;
@@ -123,9 +129,14 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal, dea
       if (!prepared?.trades.length) { pending = false; return result(); }
       selected = { ...prepared, requestContext, replayAccounting: prepared.replayAccounting ?? unavailableReplayAccounting(prepared, 'gmgn_accounting_missing') };
       if (prepared.chart.points.length) selected = { ...selected, chart: { ...prepared.chart,
-        source: data.chart.source, sparseHistory: data.chart.sparseHistory }, source: { ...prepared.source, chart: data.source.chart } };
+        source: data.chart.source, sparseHistory: data.chart.sparseHistory,
+        recentResolution: data.chart.recentResolution, recentSource: data.chart.recentSource }, source: { ...prepared.source, chart: data.source.chart } };
       const inventoryPending = activity.inventory?.coverage.status === 'pending';
-      const accountingPending = selected.replayAccounting.status === 'pending' || aggregateIsPending(selected);
+      // Short contention may still finish an exact aggregate. A long cooldown
+      // is optional work once complete cash flows and a current mark reconcile.
+      const aggregatePending = aggregateIsPending(selected) && (!reconciledEndingCashFlow(selected)
+        || attempt === 0 && (selected.replayAccounting.retryAfterMs ?? Infinity) <= 3000);
+      const accountingPending = selected.replayAccounting.status === 'pending' || aggregatePending;
       pending = inventoryPending || accountingPending;
       if (!pending) return result();
       // A cold scan uses its full server budget. Avoid starting a further scan
@@ -174,7 +185,7 @@ async function replayHistory(data: TradeReplayData, current: boolean, signal: Ab
       const chart: ReplayMarketChart = await withinRequest(response.json(), signal);
       if (typeof chart?.address !== 'string' || chart.address.toLowerCase() !== data.token.address.toLowerCase()
         || chart.period !== 'replay' || !Array.isArray(chart.points)
-        || !['gmgn', 'geckoterminal', 'unavailable'].includes(chart.source)) return { charts, notice: problem, pending: false };
+        || !['gmgn', 'geckoterminal', 'coinmarketcap', 'unavailable'].includes(chart.source)) return { charts, notice: problem, pending: false };
       charts.push(chart);
       const pending = chart.loadStatus === 'queued' || chart.loadStatus === 'rate_limited';
       const delay = typeof chart.retryAfterMs === 'number' && Number.isFinite(chart.retryAfterMs) && chart.retryAfterMs > 0
@@ -242,7 +253,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     const estimatedProfit = replayAccountingTotal(lastAccounting, markedPrice);
     const accountingKnown = Boolean(exactFinal || replayAccountingIsFresh(selected) && estimatedProfit !== null && lastAccounting!.feeInclusiveCostUsd! > 0);
     const points = selected.chart.points, first = Date.parse(selected.trades[0]?.timestamp ?? '');
-    const recognizedHistory = ['GMGN historical samples', 'GeckoTerminal historical samples', 'Historical market samples'].includes(selected.chart.source);
+    const recognizedHistory = ['GMGN historical samples', 'GeckoTerminal historical samples', 'CoinMarketCap historical samples', 'Historical market samples'].includes(selected.chart.source);
     const realHistory = recognizedHistory && points.length > 1
       && Date.parse(points[0].timestamp) <= first && Date.parse(points.at(-1)!.timestamp) >= replayEndTimestamp(selected);
     // A fresh quote cannot turn yesterday's completed trade curve into today's
@@ -250,12 +261,19 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     // near an open ending rather than interpolating an arbitrarily long tail.
     const intervalMs: Record<string, number> = { '30s': 30_000, '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000 };
     const historyTailPending = Boolean(open && currentQuote && realHistory
-      && Date.parse(currentQuote.timestamp) - Date.parse(points.at(-1)!.timestamp) > Math.max(180_000, (intervalMs[selected.chart.resolution] ?? 0) * 2));
-    const aggregatePending = aggregateIsPending(selected);
+      && Date.parse(currentQuote.timestamp) - Date.parse(points.at(-1)!.timestamp) > Math.max(180_000, (intervalMs[selected.chart.recentResolution ?? selected.chart.resolution] ?? 0) * 2));
+    const aggregatePending = aggregateIsPending(selected) && !reconciledEndingCashFlow(selected);
     const ready = replayInventoryIsFresh(selected) && accountingKnown && Boolean(exactFinal || estimatedProfit !== null) && realHistory
       && !historyTailPending && !aggregatePending && (selected.position.status === 'closed' || open && Boolean(currentQuote));
     const pending = activity.pending || history.pending || historyTailPending || aggregatePending || request.signal.aborted;
     const preparationStatus = ready ? 'ready' : pending ? 'pending' : 'unavailable';
+    const blockingReason: ReplayMarketRequestResult['blockingReason'] = ready ? undefined
+      : !replayInventoryIsFresh(selected) ? selected.inventory?.coverage.status === 'pending' ? 'accounting_pending' : 'accounting_mismatch'
+      : !accountingKnown ? selected.replayAccounting?.status === 'pending' ? 'accounting_pending'
+        : replayAccountingIsFresh(selected) && replayAccountingCashFlowKnown(lastAccounting) && open && !currentQuote ? 'stale_quote'
+        : selected.replayAccounting?.status === 'estimated' ? 'unknown_costs' : 'accounting_mismatch'
+      : open && !currentQuote ? 'stale_quote'
+      : history.notice === historyRateLimitedNotice ? 'provider_cooldown' : 'chart_coverage';
     let notice = history.notice;
     if (historyTailPending && !history.pending) notice = historyLoadingNotice;
     // A background refresh need not block a verified replay whose available
@@ -264,7 +282,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
       notice = selected.chart.sparseHistory ? sparseHistoryNotice : null;
     }
     if (notice === 'Historical market data is unavailable for this replay.' && replayUsesRecordedPrices(selected)) notice = currentQuote ? currentQuoteEstimateNotice : recordedPriceEstimateNotice;
-    return { data: selected, notice, preparationStatus,
+    return { data: selected, notice, preparationStatus, ...(blockingReason ? { blockingReason } : {}),
       ...(preparationStatus === 'pending' ? { retryAfterMs: Math.max(historyTailPending ? 3000 : 1000,
         (activity.retryAfterMs ?? 0) - (Date.now() - activity.settledAt),
         (history.retryAfterMs ?? 0) - (Date.now() - history.settledAt)) } : {}),

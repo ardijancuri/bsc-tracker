@@ -19,6 +19,99 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('GMGN chart caching and request coalescing', () => {
+  it('lets replay recovery join a stale background refresh and opt into an independent provider without another GMGN request', async () => {
+    const saved = { ...retained, period: '1m', resolution: '1m' };
+    mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+    const { currentMarketChart } = await import('./tokenChart.js');
+    const { MarketProviderDeferred } = await import('./geckoApi.js');
+    let reject!: (problem: unknown) => void;
+    mocks.gmgn.mockImplementation(() => new Promise((_, no) => { reject = no; }));
+    const recovered = { ...saved, source: 'coinmarketcap', updatedAt: new Date(now).toISOString(),
+      candles: [{ ...saved.candles[0], time: Math.floor(now / 60_000) * 60 - 60, close: 1.7 }] };
+    mocks.cmc.mockResolvedValue(recovered);
+    const background = await currentMarketChart(address, '1m', 'prefetch');
+    expect(background.chart?.stale).toBe(true);
+    const joined = currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true });
+    await vi.advanceTimersByTimeAsync(0);
+    reject(new MarketProviderDeferred('rate_limited', 120_000));
+    expect((await joined).chart).toMatchObject({ source: 'coinmarketcap', stale: false, candles: recovered.candles });
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledOnce(); expect(mocks.gecko).not.toHaveBeenCalled();
+  });
+  it('recovers independently after an ordinary cached GMGN refresh already entered cooldown without retrying that key', async () => {
+    const saved = { ...retained, period: '1m', resolution: '1m' };
+    mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+    const { currentMarketChart } = await import('./tokenChart.js');
+    const { MarketProviderDeferred } = await import('./geckoApi.js');
+    mocks.gmgn.mockRejectedValue(new MarketProviderDeferred('rate_limited', 120_000));
+    await currentMarketChart(address, '1m', 'prefetch'); await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).not.toHaveBeenCalled();
+    const recovered = { ...saved, source: 'coinmarketcap', updatedAt: new Date(now).toISOString() };
+    mocks.cmc.mockResolvedValue(recovered);
+    expect((await currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true })).chart?.source).toBe('coinmarketcap');
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledOnce();
+  });
+  it('honors independent cooldowns without retrying GMGN or losing retained bars', async () => {
+    const saved = { ...retained, period: '1m', resolution: '1m' };
+    mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+    const { currentMarketChart } = await import('./tokenChart.js');
+    const { MarketProviderDeferred } = await import('./geckoApi.js');
+    mocks.gmgn.mockRejectedValue(new MarketProviderDeferred('rate_limited', 120_000));
+    mocks.cmc.mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    mocks.gecko.mockRejectedValue(new MarketProviderDeferred('rate_limited', 30_000));
+    const first = await currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true });
+    expect(first).toMatchObject({ chart: { source: 'gmgn', stale: true }, loadStatus: 'rate_limited', retryAfterMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const next = await currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true });
+    expect(next).toMatchObject({ chart: { candles: saved.candles }, retryAfterMs: 20_000 });
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledOnce(); expect(mocks.gecko).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(20_001);
+    mocks.gecko.mockImplementation(async (url: URL) => ({ ok: true, json: async () => url.pathname.endsWith('/pools') ? {
+      data: [{ attributes: { address: '0x' + '2'.repeat(40) }, relationships: { base_token: { data: { id: `bsc_${address}` } } } }],
+    } : { data: { attributes: { ohlcv_list: [[Math.floor(Date.now() / 60_000) * 60 - 60, 1, 2, .5, 1.5, 10]] } } } }));
+    expect((await currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true })).chart?.source).toBe('geckoterminal');
+    expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledTimes(2);
+  });
+  it('recovers fresh-but-lagging GMGN observations independently instead of re-requesting the same stale head', async () => {
+    const saved = { ...retained, period: '1m', resolution: '1m', updatedAt: new Date(now - 1000).toISOString(),
+      candles: [{ ...retained.candles[0], time: Math.floor(now / 60_000) * 60 - 1200 }] };
+    mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+    const recovered = { ...saved, source: 'coinmarketcap', updatedAt: new Date(now).toISOString(),
+      candles: [{ ...saved.candles[0], time: Math.floor(now / 60_000) * 60 - 60 }] };
+    mocks.cmc.mockResolvedValue(recovered);
+    const { currentMarketChart } = await import('./tokenChart.js');
+    expect((await currentMarketChart(address, '1m', 'chart', { allowProviderFallback: true, waitForRefresh: true })).chart?.source).toBe('coinmarketcap');
+    expect(mocks.gmgn).not.toHaveBeenCalled(); expect(mocks.cmc).toHaveBeenCalledOnce();
+  });
+  it.each(['503', 'network', 'empty'] as const)('retries an independent %s failure after thirty seconds while GMGN stays in cooldown', async failure => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const saved = { ...retained, period: '1m', resolution: '1m' };
+      mocks.readFile.mockResolvedValue(JSON.stringify(saved));
+      const { currentMarketChart } = await import('./tokenChart.js');
+      const { MarketProviderDeferred } = await import('./geckoApi.js');
+      mocks.gmgn.mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+      if (failure === 'empty') {
+        mocks.cmc.mockResolvedValue(null);
+        mocks.gecko.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+      } else {
+        mocks.cmc.mockRejectedValue(new Error(failure === '503' ? 'CoinMarketCap chart request failed: HTTP 503' : 'Connection failed'));
+        if (failure === '503') mocks.gecko.mockResolvedValue({ ok: false, status: 503 });
+        else mocks.gecko.mockRejectedValue(new Error('Connection failed'));
+      }
+      const options = { allowProviderFallback: true, waitForRefresh: true };
+      expect(await currentMarketChart(address, '1m', 'chart', options)).toMatchObject({
+        chart: { source: 'gmgn', stale: true }, pending: false, loadStatus: 'provider_error', retryAfterMs: 30_000 });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect((await currentMarketChart(address, '1m', 'chart', options)).retryAfterMs).toBe(1000);
+      expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledOnce(); expect(mocks.gecko).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2);
+      const recovered = { ...saved, source: 'coinmarketcap', updatedAt: new Date(Date.now()).toISOString(),
+        candles: [{ ...saved.candles[0], time: Math.floor(Date.now() / 60_000) * 60 - 60 }] };
+      mocks.cmc.mockResolvedValue(recovered);
+      expect((await currentMarketChart(address, '1m', 'chart', options)).chart?.source).toBe('coinmarketcap');
+      expect(mocks.gmgn).toHaveBeenCalledOnce(); expect(mocks.cmc).toHaveBeenCalledTimes(2); expect(mocks.gecko).toHaveBeenCalledOnce();
+    } finally { warnings.mockRestore(); }
+  });
   it('refreshes an older background chart for current valuation without raising its provider priority', async () => {
     const saved = { ...retained, period: '1m', resolution: '1m', updatedAt: new Date(now - 120_000).toISOString() };
     mocks.readFile.mockResolvedValue(JSON.stringify(saved));

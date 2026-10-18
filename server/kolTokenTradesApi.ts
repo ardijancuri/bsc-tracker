@@ -74,7 +74,7 @@ export async function loadKolTokenActivity(options: { wallet: string; token: str
       };
       if (options.replay === true) {
         response.replayAccounting = await currentTradeReplayGmgnAccounting(response);
-        const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: options.pnl === true });
+        const realized = await currentKolTokenGmgnPnl(response, response.replayAccounting, { markPosition: options.pnl === true, foreground: true });
         if (options.pnl === true) response.realizedAccounting = realized;
       } else if (options.pnl === true) response.realizedAccounting = await currentKolTokenGmgnPnl(response, undefined, { foreground: !background });
       return response;

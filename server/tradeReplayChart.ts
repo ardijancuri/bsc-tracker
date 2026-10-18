@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ReplayMarketChart } from '../shared/replayChart.js';
-import type { TokenChart } from '../shared/intelligence.js';
+import type { ChartRange, TokenChart } from '../shared/intelligence.js';
 import { pool } from './db.js';
 import { geckoFetch, MarketProviderDeferred } from './geckoApi.js';
 import { gmgnApiKey, gmgnRequest, recordGmgnCacheHit } from './gmgnApi.js';
@@ -134,6 +134,48 @@ function recentChartQuote(chart: TokenChart | null, address: string, now: number
   return bar && now - boundary <= 180_000 ? { timestamp: new Date(boundary).toISOString(), priceUsd: String(bar.close) } : undefined;
 }
 
+/** Reuse the completed observations already loaded for the live quote. Their
+ * original observation time remains authoritative even while a refresh queues. */
+function recentChartHistory(current: TokenChart | null, address: string, now: number): ReplayMarketChart | null {
+  const updated = Date.parse(current?.updatedAt ?? '');
+  if (!current || current.address !== address || current.resolution !== '1m'
+    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(current.source)
+    || !Number.isFinite(updated) || updated > now || now - updated > 180_000) return null;
+  const bars = current.candles.filter(row => Number.isInteger(row.time) && row.time >= 0
+    && validNumber(row.open) && validNumber(row.close) && (row.time + 60) * 1000 <= updated);
+  if (!bars.length) return null;
+  const first = Math.min(...bars.map(row => row.time)) * 1000;
+  const last = Math.max(...bars.map(row => row.time + 60)) * 1000;
+  if (now - last > 180_000) return null;
+  const points = replaySparsePointsFromBars(bars, 60, first, last, updated);
+  if (!points) return null;
+  const contiguous = replayPointsFromBars(bars, 60, first, last, updated) !== null;
+  return { address, period: 'replay', candles: [], points,
+    source: current.source as ReplayMarketChart['source'],
+    resolution: '1m', recentResolution: '1m', recentSource: current.source as NonNullable<ReplayMarketChart['recentSource']>,
+    updatedAt: current.updatedAt, pending: false, stale: false, partialHistory: true,
+    ...(current.poolAddress ? { poolAddress: current.poolAddress } : {}), ...(contiguous ? {} : { sparseHistory: true }) };
+}
+
+/** Join only at an observed overlap. A new quote or a disjoint recent segment
+ * cannot conceal the unobserved interval after retained lifetime history. */
+function joinRecentHistory(history: ReplayMarketChart, recent: ReplayMarketChart | null, now: number): ReplayMarketChart {
+  if (!recent || recent.address !== history.address || recent.period !== 'replay' || recent.recentResolution !== '1m'
+    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(recent.recentSource ?? '') || !history.points.length) return history;
+  const updated = Date.parse(recent.updatedAt ?? '');
+  if (!Number.isFinite(updated) || updated > now || now - updated > 180_000) return history;
+  const end = Date.parse(history.points.at(-1)!.timestamp), times = recent.points.map(point => Date.parse(point.timestamp));
+  if (!Number.isFinite(end) || times.some((time, index) => !Number.isFinite(time) || time < 0 || index > 0 && time <= times[index - 1])
+    || recent.points.some(point => validNumber(point.priceUsd) === null) || times.at(-1)! > updated || times.at(-1)! <= end) return history;
+  const overlap = times.some((time, index) => time === end
+    || time < end && index < times.length - 1 && times[index + 1] > end && times[index + 1] - time <= 60_000);
+  if (!overlap) return history;
+  return { ...history, points: [...history.points, ...recent.points.filter((_, index) => times[index] > end)],
+    recentResolution: '1m', recentSource: recent.recentSource,
+    ...(Date.parse(recent.updatedAt ?? '') > Date.parse(history.updatedAt ?? '') ? { updatedAt: recent.updatedAt } : {}),
+    ...(recent.sparseHistory ? { sparseHistory: true } : {}) };
+}
+
 export interface ReplayChartProviderOptions {
   gmgnKey?: string;
   gmgnRequest?: JsonRequest;
@@ -142,8 +184,14 @@ export interface ReplayChartProviderOptions {
   now?: number;
   current?: boolean;
   currentChartRequest?: (address: string, signal: AbortSignal) => Promise<TokenChart | null>;
+  sharedChartRequest?: (address: string, range: ChartRange, signal: AbortSignal) => Promise<TokenChart | null>;
   /** Short-lived completed pages only; forming quotes are always refreshed. */
   pageCache?: ReplayPageCache;
+  /** Previously validated lifetime observations can join a fresh fine tail. */
+  retainedHistory?: ReplayMarketChart;
+  /** History and live observations refresh independently during a cooldown. */
+  historyRetryAt?: number;
+  historyLoadStatus?: 'queued' | 'rate_limited';
 }
 
 /** Prefer the finest genuine history that fits bounded work. Never split coarse bars. */
@@ -156,22 +204,33 @@ export async function fetchTradeReplayChart(address: string, first: number, last
   const from = Math.max(0, first - contextMs), targetTo = options.current ? now : Math.min(now, last + contextMs);
   let currentQuote: ReplayMarketChart['currentQuote'];
   const readNow = () => options.now ?? Date.now();
+  const sharedChartRequest = options.sharedChartRequest ?? (async (token: string, range: ChartRange, requestSignal: AbortSignal) =>
+    (await withinBudget(currentMarketChart(token, range, 'chart', {
+      foreground: true, allowProviderFallback: true, waitForRefresh: true }), requestSignal)).chart);
   // Independently coalesced live work starts alongside historical paging. A
   // timed-out history window must not discard a successfully obtained quote.
   const quoteJob = options.current ? (async () => {
     try {
-      const current = await withinBudget((options.currentChartRequest ?? (async (token, requestSignal) =>
-        (await withinBudget(currentMarketChart(token, '1m', 'chart', { foreground: true }), requestSignal)).chart))(address, signal), signal);
-      return recentChartQuote(current, address, readNow());
-    } catch { return undefined; }
+      const current = await withinBudget((options.currentChartRequest ?? ((token, requestSignal) => sharedChartRequest(token, '1m', requestSignal)))(address, signal), signal);
+      return { quote: recentChartQuote(current, address, readNow()), history: recentChartHistory(current, address, readNow()) };
+    } catch { return { quote: undefined, history: null }; }
   })() : null;
   const finish = async (history: ReplayMarketChart | null): Promise<ReplayMarketChart | null> => {
-    if (quoteJob && !currentQuote) currentQuote = await quoteJob;
+    const recent = quoteJob ? await quoteJob : null;
+    currentQuote ??= recent?.quote;
     if (currentQuote && Date.parse(currentQuote.timestamp) < last) currentQuote = undefined;
-    const result = history ?? (currentQuote ? unavailable(address) : null);
+    let result = history ?? (currentQuote || recent?.history ? unavailable(address) : null);
+    if (result && recent?.history) {
+      if (result.points.length) result = joinRecentHistory(result, recent.history, readNow());
+      else {
+        const complete = recent.history.source !== 'unavailable'
+          && Date.parse(recent.history.points[0].timestamp) <= first && Date.parse(recent.history.points.at(-1)!.timestamp) >= last;
+        result = { ...recent.history, partialHistory: !complete, loadStatus: result.loadStatus, retryAfterMs: result.retryAfterMs };
+      }
+    }
     if (!result || !currentQuote) return result;
     const finalObservation = Date.parse(result.points.at(-1)?.timestamp ?? '');
-    const interval = gmgnResolutions.find(([resolution]) => resolution === result.resolution)?.[1];
+    const interval = gmgnResolutions.find(([resolution]) => resolution === (result.recentResolution ?? result.resolution))?.[1];
     const uncoveredTail = Number.isFinite(finalObservation) && interval !== undefined
       && Date.parse(currentQuote.timestamp) - finalObservation > interval * 1000;
     return { ...result, currentQuote, ...(uncoveredTail ? { sparseHistory: true } : {}) };
@@ -183,6 +242,43 @@ export async function fetchTradeReplayChart(address: string, first: number, last
     updatedAt: new Date(now).toISOString(), pending: false, stale: false,
     ...(sparseHistory ? { sparseHistory: true } : {}),
   });
+  let sharedHistoryJob: Promise<ReplayMarketChart | null> | null = null;
+  const recoverSharedHistory = () => sharedHistoryJob ??= (async () => {
+    // The public fallback has latest windows rather than arbitrary from/to.
+    // Choose one bounded interval, then prove actual bars bracket this replay.
+    const age = now - first;
+    const range: ChartRange | null = age <= 999 * 60_000 ? '1m' : age <= 86_400_000 ? '5m' : age <= 30 * 86_400_000 ? '1h' : null;
+    if (!range || signal.aborted) return null;
+    try {
+      const observed = await withinBudget(sharedChartRequest(address, range, signal), signal);
+      const updated = Date.parse(observed?.updatedAt ?? ''), seconds = gmgnResolutions.find(([resolution]) => resolution === observed?.resolution)?.[1];
+      if (!observed || observed.address !== address || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(observed.source)
+        || !seconds || !Number.isFinite(updated) || updated > readNow()) return null;
+      const bars = observed.candles.filter(row => (row.time + seconds) * 1000 <= updated);
+      const end = historyEnd(bars, seconds), points = replayPointsFromBars(bars, seconds, first, end, updated)
+        ?? replaySparsePointsFromBars(bars, seconds, first, end, updated);
+      if (!points) return null;
+      if (options.current && readNow() - updated <= 30_000 && !observed.pending && !observed.stale) {
+        currentQuote ??= formingQuote(observed.candles, seconds, updated);
+      }
+      return { ...chart(points, observed.source as ReplayMarketChart['source'], observed.resolution, observed.poolAddress,
+        replayPointsFromBars(bars, seconds, first, end, updated) === null), updatedAt: observed.updatedAt };
+    } catch { return null; }
+  })();
+  const retained = options.retainedHistory && retainedHistory(options.retainedHistory, address, first, last, now);
+  if (options.current && retained) {
+    const refreshed = await finish(retained);
+    const observed = Date.parse(refreshed?.points.at(-1)?.timestamp ?? '');
+    const extended = observed > Date.parse(retained.points.at(-1)!.timestamp);
+    // The shared current-chart job can provide the whole missing tail without
+    // replaying pages that already have permanent completed observations.
+    if ((refreshed?.currentQuote || extended) && Number.isFinite(observed) && now - observed <= 180_000) return refreshed;
+  }
+  if (options.historyRetryAt && options.historyRetryAt > now) {
+    const deferred = new MarketProviderDeferred(options.historyLoadStatus === 'rate_limited' ? 'rate_limited' : 'busy', options.historyRetryAt - now);
+    const recovered = await recoverSharedHistory();
+    return finish({ ...(recovered ?? retained ?? unavailable(address, deferred)), loadStatus: options.historyLoadStatus ?? 'queued', retryAfterMs: options.historyRetryAt - now });
+  }
   if (options.gmgnKey) {
     const deadline = Date.now() + requestBudgetMs;
     // The free endpoint currently returns at most 100 rows, even when a larger
@@ -245,6 +341,8 @@ export async function fetchTradeReplayChart(address: string, first: number, last
         // Retrying another interval/provider during a cooldown adds work without
         // recovering history. Preserve the explicit retry contract for the UI.
         if (problem instanceof MarketProviderDeferred) {
+          const recovered = await recoverSharedHistory();
+          if (recovered) return finish({ ...recovered, loadStatus: problem.reason === 'rate_limited' ? 'rate_limited' : 'queued', retryAfterMs: problem.retryAfterMs });
           if (options.current) {
             const quoted = await finish(unavailable(address, problem));
             if (quoted?.currentQuote) return quoted;
@@ -314,11 +412,13 @@ function unavailable(address: string, deferred?: MarketProviderDeferred): Replay
 
 /** Retain only genuine completed observations, never a cached current quote or supply. */
 function retainedHistory(chart: ReplayMarketChart, address: string, first: number, last: number, now: number): ReplayMarketChart | null {
-  if (chart.address !== address || chart.period !== 'replay' || !['gmgn', 'geckoterminal'].includes(chart.source)
+  if (chart.address !== address || chart.period !== 'replay' || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source)
     || !gmgnResolutions.some(([resolution]) => resolution === chart.resolution) || chart.pending || chart.stale || chart.partialHistory
     || !Array.isArray(chart.points) || chart.points.length < 2 || chart.points.length > 4002) return null;
   const updated = Date.parse(chart.updatedAt ?? '');
   if (!Number.isFinite(updated) || updated > now) return null;
+  if (chart.recentResolution !== undefined && (chart.recentResolution !== '1m'
+    || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.recentSource ?? ''))) return null;
   const points: ReplayMarketChart['points'] = [];
   let previous = -1;
   for (const point of chart.points) {
@@ -329,6 +429,7 @@ function retainedHistory(chart: ReplayMarketChart, address: string, first: numbe
   if (Date.parse(points[0].timestamp) > first || previous < last) return null;
   return { address, period: 'replay', candles: [], points, source: chart.source, resolution: chart.resolution,
     updatedAt: chart.updatedAt, pending: false, stale: false,
+    ...(chart.recentResolution ? { recentResolution: chart.recentResolution, recentSource: chart.recentSource } : {}),
     ...(chart.poolAddress && addressPattern.test(chart.poolAddress) ? { poolAddress: chart.poolAddress } : {}),
     ...(chart.sparseHistory ? { sparseHistory: true } : {}) };
 }
@@ -343,6 +444,7 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
   const histories = new Map<string, RetainedHistory>();
   const jobs = new Map<string, Promise<ReplayMarketChart>>();
   const pages = new Map<string, ReplayPageCache>();
+  const historyCooldowns = new Map<string, { until: number; status: 'queued' | 'rate_limited' }>();
   const fileFor = (key: string) => path.join(directory!, historyDigest(key) + '.json');
   async function loadHistory(key: string, address: string, first: number, last: number): Promise<RetainedHistory | null> {
     if (!directory) return null;
@@ -368,14 +470,15 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
     catch { /* Public history still remains usable on a read-only host. */ }
   }
   function withHistory(chart: ReplayMarketChart, history: ReplayMarketChart, last: number, current: boolean): ReplayMarketChart {
+    const joined = current ? joinRecentHistory(history, chart, now()) : history;
     const candidate = chart.currentQuote, candidateTime = Date.parse(candidate?.timestamp ?? '');
     const quote = current && chart.address === history.address && chart.period === 'replay'
       && validNumber(candidate?.priceUsd) && Number.isFinite(candidateTime) && candidateTime >= last
       && candidateTime <= now() && now() - candidateTime <= 180_000 ? candidate : undefined;
-    const quoteTime = Date.parse(quote?.timestamp ?? ''), observed = Date.parse(history.points.at(-1)!.timestamp);
-    const interval = gmgnResolutions.find(([resolution]) => resolution === history.resolution)![1] * 1000;
-    return { ...history, ...(quote ? { currentQuote: quote } : {}), loadStatus: chart.loadStatus, retryAfterMs: chart.retryAfterMs,
-      ...(history.sparseHistory || Number.isFinite(quoteTime) && quoteTime - observed > interval ? { sparseHistory: true } : {}) };
+    const quoteTime = Date.parse(quote?.timestamp ?? ''), observed = Date.parse(joined.points.at(-1)!.timestamp);
+    const interval = gmgnResolutions.find(([resolution]) => resolution === (joined.recentResolution ?? joined.resolution))![1] * 1000;
+    return { ...joined, ...(quote ? { currentQuote: quote } : {}), loadStatus: chart.loadStatus, retryAfterMs: chart.retryAfterMs,
+      ...(joined.sparseHistory || Number.isFinite(quoteTime) && quoteTime - observed > interval ? { sparseHistory: true } : {}) };
   }
   return async (address: string, first: number, last: number, current = false): Promise<ReplayMarketChart> => {
     const key = `${address}:${first}:${last}:${current ? 'current' : 'closed'}`;
@@ -406,18 +509,31 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
         pageCache = new Map(); pages.set(key, pageCache);
         while (pages.size > 32) pages.delete(pages.keys().next().value!);
       }
+      const cooldown = historyCooldowns.get(key);
+      if (cooldown && cooldown.until <= now()) historyCooldowns.delete(key);
       try { chart = await loader(address, first, last, { gmgnKey: gmgnApiKey('market'),
-        signal: AbortSignal.timeout(requestBudgetMs), current, pageCache }) ?? unavailable(address); }
+        signal: AbortSignal.timeout(requestBudgetMs), current, pageCache,
+        ...(history ? { retainedHistory: history.chart } : {}),
+        ...(cooldown && cooldown.until > now() ? { historyRetryAt: cooldown.until, historyLoadStatus: cooldown.status } : {}) }) ?? unavailable(address); }
       catch (problem) { chart = unavailable(address, problem instanceof MarketProviderDeferred ? problem : undefined); }
-      const observed = retainedHistory(chart, address, first, last, now());
+      const deferred = chart.loadStatus === 'queued' || chart.loadStatus === 'rate_limited';
+      if (deferred) {
+        if (historyCooldowns.size >= 250 && !historyCooldowns.has(key)) historyCooldowns.delete(historyCooldowns.keys().next().value!);
+        historyCooldowns.set(key, { until: now() + (chart.retryAfterMs ?? 30_000), status: chart.loadStatus as 'queued' | 'rate_limited' });
+      }
+      let observed = retainedHistory(chart, address, first, last, now());
+      if (!observed && history) {
+        chart = withHistory(chart, history.chart, last, current);
+        observed = retainedHistory(chart, address, first, last, now());
+      }
       if (observed) {
-        history = { chart: observed, savedAt: now() };
+        const unchanged = history && JSON.stringify(observed) === JSON.stringify(history.chart);
+        history = { chart: observed, savedAt: unchanged ? history!.savedAt : now() };
         if (histories.size >= 250 && !histories.has(key)) histories.delete(histories.keys().next().value!);
         histories.set(key, history);
-        await persistHistory(key, history);
-      } else if (history) chart = withHistory(chart, history.chart, last, current);
+        if (!unchanged) await persistHistory(key, history);
+      }
       if (saved.size >= 250) saved.delete(saved.keys().next().value!);
-      const deferred = chart.loadStatus === 'queued' || chart.loadStatus === 'rate_limited';
       const lifetime = current ? chart.currentQuote ? currentCacheMs : deferred ? chart.retryAfterMs ?? 30_000 : 5000
         : chart.points.length ? 3_600_000 : chart.retryAfterMs ?? 30_000;
       saved.set(key, { chart, until: now() + lifetime, retryAt: deferred ? now() + (chart.retryAfterMs ?? 30_000) : undefined });

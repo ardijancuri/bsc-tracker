@@ -1,4 +1,5 @@
 import { prepareJournalReplay } from './journalReplay';
+import { verifiedTokenPositionPnl } from './kolTokenPnlRequest';
 import type { TradeRequestContext } from './tradeRequestContext';
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { InventoryCoverage, InventoryEvent, KolTokenActivity } from '../shared/kolTokenTrades';
@@ -52,11 +53,13 @@ export interface TradeReplayData {
     resolution: string;
     source: string;
     sparseHistory?: boolean;
+    recentResolution?: '1m';
+    recentSource?: 'gmgn' | 'geckoterminal' | 'coinmarketcap';
   };
   source: { chart: string; tradesComplete: boolean };
   realizedAccounting?: { available: boolean };
   generatedAt: string;
-  currentQuote?: { timestamp: string; priceUsd: number; marketCapUsd: number | null };
+  currentQuote?: { timestamp: string; priceUsd: number; marketCapUsd: number | null; source?: 'position' };
   inventory?: ReplayInventory;
   replayAccounting?: ReplayAccounting;
 }
@@ -83,14 +86,19 @@ export function replayAccountingIsFresh(data: Pick<TradeReplayData, 'replayAccou
 /** Total profit does not depend on how GMGN allocates cost between disposed
  * and held lots. Use the complete fee-inclusive cash flows when those are
  * known, even if its realized/unrealized split cannot be established. */
-export function replayAccountingTotal(snapshot: AccountingNumbers | null | undefined, priceUsd: number | null | undefined): number | null {
-  if (!snapshot) return null;
+export function replayAccountingCashFlowKnown(snapshot: AccountingNumbers | null | undefined) {
+  if (!snapshot) return false;
   const { remainingTokenAmount: quantity, investedUsd: invested, soldUsd: sold,
     transferOutIncomeUsd: transferred, feesUsd: fees, feeInclusiveCostUsd: cost } = snapshot;
-  if ([quantity, invested, sold, transferred, fees, cost].some(value => value === null || !Number.isFinite(value) || value < 0)
-    || quantity! > 0 && (priceUsd == null || !Number.isFinite(priceUsd) || priceUsd <= 0)) return null;
+  if ([quantity, invested, sold, transferred, fees, cost].some(value => value === null || !Number.isFinite(value) || value < 0)) return false;
   const tolerance = Math.max(1e-6, Math.max(cost!, invested! + fees!) * 1e-8);
-  if (cost! + tolerance < invested! + fees!) return null;
+  return cost! + tolerance >= invested! + fees!;
+}
+
+export function replayAccountingTotal(snapshot: AccountingNumbers | null | undefined, priceUsd: number | null | undefined): number | null {
+  if (!snapshot || !replayAccountingCashFlowKnown(snapshot)) return null;
+  const { remainingTokenAmount: quantity, soldUsd: sold, transferOutIncomeUsd: transferred, feeInclusiveCostUsd: cost } = snapshot;
+  if (quantity! > 0 && (priceUsd == null || !Number.isFinite(priceUsd) || priceUsd <= 0)) return null;
   const value = quantity === 0 ? 0 : quantity! * priceUsd!;
   const total = sold! + transferred! + value - cost!;
   return Number.isFinite(total) ? total : null;
@@ -306,15 +314,17 @@ function checkedCurrentQuote(data: TradeReplayData, quote: { timestamp: string; 
 
 export function validReplayCurrentQuote(data: TradeReplayData, now = Date.now()) {
   const final = validReplayAccountingFinal(data, now);
-  return checkedCurrentQuote(data, final?.priceUsd ? { timestamp: final.timestamp, priceUsd: final.priceUsd } : undefined, data.chart.marketCapSupply, now)
-    ?? checkedCurrentQuote(data, data.currentQuote, data.chart.marketCapSupply, now);
+  const exact = checkedCurrentQuote(data, final?.priceUsd ? { timestamp: final.timestamp, priceUsd: final.priceUsd } : undefined, data.chart.marketCapSupply, now);
+  if (exact) return exact;
+  const quote = checkedCurrentQuote(data, data.currentQuote, data.chart.marketCapSupply, now);
+  return quote && data.currentQuote?.source === 'position' ? { ...quote, source: 'position' as const } : quote;
 }
 
 function sparseQuoteTail(chart: TradeReplayData['chart'], currentQuote: TradeReplayData['currentQuote']) {
   if (chart.sparseHistory) return true;
   if (!currentQuote || !chart.points.length || chart.source.toLowerCase().includes('recorded fill')) return false;
   const intervalSeconds: Record<string, number> = { '30s': 30, '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
-  const seconds = intervalSeconds[chart.resolution];
+  const seconds = intervalSeconds[chart.recentResolution ?? chart.resolution];
   const lastObservation = Date.parse(chart.points.at(-1)!.timestamp), currentTime = Date.parse(currentQuote.timestamp);
   return Boolean(seconds && Number.isFinite(lastObservation) && currentTime - lastObservation > seconds * 1000);
 }
@@ -327,7 +337,9 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
   const accountingFinal = validReplayAccountingFinal(data, now);
   const providerQuote = accountingFinal?.priceUsd ? { timestamp: accountingFinal.timestamp, priceUsd: accountingFinal.priceUsd } : undefined;
+  const positionMark = data.currentQuote?.source === 'position' ? checkedCurrentQuote(data, data.currentQuote, supply, now) : undefined;
   const currentQuote = checkedCurrentQuote(data, providerQuote, supply, now)
+    ?? (positionMark ? { ...positionMark, source: 'position' as const } : undefined)
     ?? checkedCurrentQuote(data, chart.currentQuote, supply, now) ?? checkedCurrentQuote(data, data.currentQuote, supply, now);
   let selected = currentQuote ? { ...data, currentQuote, chart: { ...data.chart, marketCapSupply: supply,
     points: data.chart.points.filter(point => Date.parse(point.timestamp) <= Date.parse(currentQuote.timestamp))
@@ -356,9 +368,11 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
   const start = points.findIndex(point => Date.parse(point.timestamp) === first);
   const end = points.findIndex(point => Date.parse(point.timestamp) === last);
   if (start < 0 || end < start) return selected;
-  const source = chart.source === 'gmgn' ? 'GMGN historical samples' : 'GeckoTerminal historical samples';
+  const source = chart.source === 'gmgn' ? 'GMGN historical samples'
+    : chart.source === 'coinmarketcap' ? 'CoinMarketCap historical samples' : 'GeckoTerminal historical samples';
   const selectedChart = { points: points.slice(Math.max(0, start - 1), open ? undefined : end + 1), marketCapSupply: supply,
-    resolution: chart.resolution, source, sparseHistory: chart.sparseHistory || data.chart.sparseHistory };
+    resolution: chart.resolution, source, sparseHistory: chart.sparseHistory || data.chart.sparseHistory,
+    ...(chart.recentResolution === '1m' ? { recentResolution: chart.recentResolution, recentSource: chart.recentSource } : {}) };
   if (sparseQuoteTail(selectedChart, currentQuote)) selectedChart.sparseHistory = true;
   return { ...selected, chart: selectedChart, source: { ...data.source, chart: source } };
 }
@@ -511,7 +525,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     else points = [];
   }
   const chartSource = points.length ? (selectedChart?.source === 'recorded' ? 'Recorded observations' : 'Historical market samples') : 'Recorded fills';
-  return {
+  const prepared: TradeReplayData = {
     ...(context ? { requestContext: context } : {}),
     kol, token: { ...token, priceUsd: replayNumber(token.priceUsd), marketCapUsd: replayNumber(token.marketCapUsd) }, trades,
     position: replayPosition,
@@ -521,4 +535,21 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
     ...(inventory ? { inventory } : {}),
     ...(replayAccounting ? { replayAccounting } : {}),
   };
+  // Reuse the modal's dated mark only after its accounting and the selected
+  // replay cash flows agree. A later chart refresh cannot silently reprice it.
+  const marked = activity.realizedAccounting?.position;
+  const markCheckedAt = Date.parse(activity.realizedAccounting?.checkedAt ?? '');
+  const modalProfit = context ? null : verifiedTokenPositionPnl(activity, now);
+  if (inventoryTrusted && marked?.status === 'open' && modalProfit !== null && marked.priceUsd && marked.pricedAt
+    && Number.isFinite(markCheckedAt) && markCheckedAt <= now + serverClockSkewMs && now - markCheckedAt <= 180_000
+    && canonicalDecimal(marked.remainingTokenAmount) !== null
+    && canonicalDecimal(marked.remainingTokenAmount) === canonicalDecimal(inventory!.coverage.balance)) {
+    const quote = checkedCurrentQuote(prepared, { priceUsd: marked.priceUsd, timestamp: marked.pricedAt }, supply, now);
+    const last = replayAccounting?.events.at(-1), profit = replayAccountingTotal(last, quote?.priceUsd);
+    const cost = replayNumber(marked.feeInclusiveCostUsd), replayCost = last?.feeInclusiveCostUsd;
+    const matches = (left: number, right: number) => Math.abs(left - right) <= Math.max(1e-6, Math.max(Math.abs(left), Math.abs(right)) * 1e-8);
+    if (quote && profit !== null && matches(profit, modalProfit) && cost !== null && replayCost != null && matches(cost, replayCost))
+      prepared.currentQuote = { ...quote, source: 'position' };
+  }
+  return prepared;
 }

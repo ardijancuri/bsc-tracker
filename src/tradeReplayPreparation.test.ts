@@ -55,6 +55,14 @@ describe('automatic replay preparation continuation', () => {
 });
 
 describe('complete replay export gate', () => {
+  it.each([
+    ['accounting_pending','history is still being verified'],['accounting_mismatch','balance do not reconcile'],
+    ['unknown_costs','costs or transaction fees are missing'],['chart_coverage','full replay window'],
+    ['stale_quote','recent token price is unavailable'],['provider_cooldown','GMGN is rate limited'],
+  ] as const)('explains the %s preparation stage',(blockingReason,message)=>{
+    const error=new ReplayPreparationError({...result('pending',60_000),blockingReason});
+    expect(error.message).toContain(message);expect(error.retryAfterMs).toBe(60_000);
+  });
   it.each(['pending', 'unavailable'] as const)('never starts the encoder or enables saving for %s data', async status => {
     const record = vi.fn(), onReady = vi.fn(), onFile = vi.fn(), onError = vi.fn(), onFinish = vi.fn();
     const session = startReplaySession({ prepare: async () => requirePreparedReplay(result(status, 60_000)),

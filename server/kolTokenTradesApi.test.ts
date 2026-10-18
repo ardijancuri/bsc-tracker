@@ -107,7 +107,7 @@ describe('KOL token activity API', () => {
         expect(response.json().replayAccounting).toMatchObject({ status: 'pending', retryAfterMs: 1000 });
         expect(mocks.pnl).toHaveBeenCalledOnce();
         expect(mocks.pnl.mock.calls[0][1]).toEqual(response.json().replayAccounting);
-        expect(mocks.pnl.mock.calls[0][2]).toEqual({ markPosition: false });
+        expect(mocks.pnl.mock.calls[0][2]).toEqual({ markPosition: false, foreground: true });
         expect(response.json().realizedAccounting).toBeUndefined();
       } else { expect(mocks.replay).not.toHaveBeenCalled(); expect(response.json().replayAccounting).toBeUndefined(); }
     } finally { await app.close(); }

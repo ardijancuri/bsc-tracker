@@ -1,10 +1,19 @@
 import { replayMarketData, type ReplayMarketRequestResult } from './tradeReplayMarketRequest';
 import type { TradeReplayData } from './tradeReplayData';
 
+const preparationMessages = {
+  accounting_pending: 'Wallet transaction history is still being verified. Retry shortly.',
+  accounting_mismatch: 'Wallet movements and the token balance do not reconcile. This replay cannot be prepared yet.',
+  unknown_costs: 'Purchase costs or transaction fees are missing. Ending profit cannot be calculated yet.',
+  chart_coverage: 'Market chart history does not cover the full replay window yet.',
+  stale_quote: 'A recent token price is unavailable. Retry when the current price refreshes.',
+  provider_cooldown: 'GMGN is rate limited. Retry after the displayed countdown.',
+} as const;
+
 export class ReplayPreparationError extends Error {
   readonly retryAfterMs: number;
   constructor(result: ReplayMarketRequestResult) {
-    super(result.preparationStatus === 'pending'
+    super(result.blockingReason ? preparationMessages[result.blockingReason] : result.preparationStatus === 'pending'
       ? 'The chart and profit data are still loading. Retry to prepare a complete replay.'
       : 'The chart and profit data could not be verified. Retry to prepare this replay.');
     this.name = 'ReplayPreparationError';

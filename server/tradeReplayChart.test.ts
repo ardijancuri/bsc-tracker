@@ -49,6 +49,42 @@ afterEach(async () => {
 });
 
 describe('replay historical market sampling', () => {
+  it.each([
+    [600, '1m', 60], [20 * 3600, '5m', 300], [3 * 86400, '1h', 3600],
+  ] as const)('recovers closed history from one coalesced public %s-second window after GMGN defers', async (age, range, seconds) => {
+    const now = (base + age) * 1000, first = (base + 15) * 1000, last = (base + 135) * 1000;
+    const gmgnRequest = vi.fn().mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    const sharedChartRequest = vi.fn(async (_address: string, _range: string, _signal: AbortSignal) => ({ ...liveMarket(), source: 'coinmarketcap' as const, period: range,
+      resolution: range, updatedAt: new Date(now).toISOString(), candles: Array.from({ length: 4 }, (_, index) => ({
+        time: base + index * seconds, open: index + 1, high: index + 3, low: index + 1, close: index + 2, volume: 10 })) }));
+    const geckoRequest = vi.fn();
+    const result = await fetchTradeReplayChart(token, first, last, { gmgnKey: 'key', gmgnRequest, sharedChartRequest, geckoRequest, now });
+    expect(sharedChartRequest).toHaveBeenCalledOnce(); expect(sharedChartRequest.mock.calls[0][1]).toBe(range);
+    expect(result).toMatchObject({ source: 'coinmarketcap', resolution: range, loadStatus: 'rate_limited', retryAfterMs: 60_000 });
+    expect(Date.parse(result!.points[0].timestamp)).toBeLessThanOrEqual(first);
+    expect(Date.parse(result!.points.at(-1)!.timestamp)).toBeGreaterThanOrEqual(last);
+    expect(result!.points.every(point => Date.parse(point.timestamp) <= now)).toBe(true);
+    expect(gmgnRequest).toHaveBeenCalledOnce(); expect(geckoRequest).not.toHaveBeenCalled();
+  });
+  it('does not authorize a public fallback that lacks the earlier selected trade history', async () => {
+    const cooldown = new MarketProviderDeferred('rate_limited', 60_000);
+    const gmgnRequest = vi.fn().mockRejectedValue(cooldown);
+    const sharedChartRequest = vi.fn(async () => ({ ...liveMarket(), source: 'coinmarketcap' as const,
+      candles: [{ time: base + 540, open: 5, high: 7, low: 5, close: 7, volume: 10 }] }));
+    await expect(fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { gmgnKey: 'key', gmgnRequest, sharedChartRequest, geckoRequest: vi.fn(), now: (base + 615) * 1000 })).rejects.toBe(cooldown);
+    expect(sharedChartRequest).toHaveBeenCalledOnce(); expect(gmgnRequest).toHaveBeenCalledOnce();
+  });
+  it('retains genuine recovered CMC observations across restart without a second upstream history call', async () => {
+    const directory = await historyDirectory(), first = (base + 15) * 1000, last = (base + 135) * 1000;
+    const now = (base + 615) * 1000;
+    const recovered = { ...market(), source: 'coinmarketcap' as const };
+    const loader = vi.fn().mockResolvedValue(recovered);
+    await createReplayChartCache(loader, () => now, directory)(token, first, last, false);
+    const unavailableLoader = vi.fn().mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    const restored = await createReplayChartCache(unavailableLoader, () => now + 1000, directory)(token, first, last, false);
+    expect(restored).toMatchObject({ source: 'coinmarketcap', points: recovered.points, loadStatus: 'rate_limited' });
+  });
   it('resumes completed GMGN pages after cooldown without reusing a forming quote', async () => {
     let clock = (base + 280 * 3600 + 1800) * 1000, calls = 0;
     const requested: number[] = [];
@@ -551,6 +587,119 @@ describe('replay chart job cache', () => {
 });
 
 describe('current open-replay observations', () => {
+  it.each(['gmgn', 'geckoterminal', 'coinmarketcap'] as const)('joins genuine %s minute observations onto older coarse history without flattening the tail', async source => {
+    const recent: TokenChart = { ...liveMarket(), source, updatedAt: iso(base + 1815),
+      candles: Array.from({ length: 17 }, (_, index) => ({ time: base + 840 + index * 60,
+        open: 20 + index, high: 22 + index, low: 20 + index, close: 21 + index, volume: 10 })) };
+    const requests: string[] = [];
+    const gmgnRequest = vi.fn(async (url: URL) => {
+      const resolution = url.searchParams.get('resolution')!; requests.push(resolution);
+      return { code: 0, data: resolution === '5m' ? [bar(0), bar(300), bar(600)] : [] };
+    });
+    const chart = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, currentChartRequest: async () => recent,
+        geckoRequest: vi.fn(), now: (base + 1815) * 1000 });
+    expect(requests).toEqual(['30s', '1m', '5m']);
+    expect(chart).toMatchObject({ source: 'gmgn', resolution: '5m', recentResolution: '1m', recentSource: source,
+      currentQuote: { timestamp: iso(base + 1815), priceUsd: '37' } });
+    expect(chart?.points.slice(0, 4)).toEqual(replayPointsFromBars([bar(0), bar(300), bar(600)], 300,
+      (base + 15) * 1000, (base + 900) * 1000, (base + 1815) * 1000));
+    expect(chart?.points.at(-1)).toEqual({ timestamp: iso(base + 1800), priceUsd: '36' });
+    expect(chart?.points.some(point => point.priceUsd === '37')).toBe(false);
+    expect(chart?.sparseHistory).toBeUndefined();
+  });
+  it('refreshes retained lifetime history from the shared current chart without requesting the historical pages again', async () => {
+    let clock = (base + 1815) * 1000, recentAvailable = false;
+    const gmgnRequest = vi.fn(async (url: URL) => ({ code: 0,
+      data: url.searchParams.get('resolution') === '5m' ? [bar(0), bar(300), bar(600)] : [] }));
+    const currentChartRequest = vi.fn(async () => ({ ...liveMarket(), updatedAt: new Date(clock).toISOString(),
+      candles: recentAvailable ? Array.from({ length: 17 }, (_, index) => ({ time: base + 840 + index * 60,
+        open: 20 + index, high: 22 + index, low: 20 + index, close: 21 + index, volume: 10 }))
+        : [{ time: base + 1800, open: 5, high: 7, low: 5, close: 7, volume: 10 }] }));
+    const load = createReplayChartCache((address, first, last, options) => fetchTradeReplayChart(address, first, last,
+      { ...options, gmgnKey: 'key', gmgnRequest, currentChartRequest, geckoRequest: vi.fn(), now: clock }), () => clock);
+    const first = (base + 15) * 1000, last = (base + 135) * 1000;
+    const old = await load(token, first, last, true);
+    expect(old.points.at(-1)?.timestamp).toBe(iso(base + 900)); expect(old.sparseHistory).toBe(true);
+    expect(gmgnRequest).toHaveBeenCalledTimes(3);
+    clock += 16_000; recentAvailable = true;
+    const ready = await load(token, first, last, true);
+    expect(ready).toMatchObject({ resolution: '5m', recentResolution: '1m', recentSource: 'gmgn' });
+    expect(ready.points.at(-1)?.timestamp).toBe(iso(base + 1800));
+    expect(gmgnRequest).toHaveBeenCalledTimes(3); expect(currentChartRequest).toHaveBeenCalledTimes(2);
+  });
+  it('refreshes the independent live chart without retrying historical paging before its provider cooldown', async () => {
+    let clock = (base + 1815) * 1000;
+    const gmgnRequest = vi.fn().mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    const currentChartRequest = vi.fn(async () => ({ ...liveMarket(), updatedAt: new Date(clock).toISOString(),
+      candles: [{ time: Math.floor(clock / 60_000) * 60, open: 5, high: 7, low: 5, close: 7, volume: 10 }] }));
+    const geckoRequest = vi.fn();
+    const load = createReplayChartCache((address, first, last, options) => fetchTradeReplayChart(address, first, last,
+      { ...options, gmgnKey: 'key', gmgnRequest, currentChartRequest, geckoRequest, now: clock }), () => clock);
+    const first = (base + 15) * 1000, last = (base + 135) * 1000;
+    expect(await load(token, first, last, true)).toMatchObject({ loadStatus: 'rate_limited', retryAfterMs: 60_000 });
+    clock += 15_001;
+    expect(await load(token, first, last, true)).toMatchObject({ loadStatus: 'rate_limited', retryAfterMs: 44_999,
+      currentQuote: { timestamp: new Date(clock).toISOString(), priceUsd: '7' } });
+    expect(gmgnRequest).toHaveBeenCalledOnce(); expect(geckoRequest).not.toHaveBeenCalled();
+    expect(currentChartRequest).toHaveBeenCalledTimes(2);
+    clock += 45_000;
+    await load(token, first, last, true);
+    expect(gmgnRequest).toHaveBeenCalledTimes(2);
+  });
+  it('keeps a disjoint current segment separate instead of concealing a missing interval after old history', async () => {
+    const retained = { ...market(), source: 'gmgn' as const, resolution: '5m', points: [
+      { timestamp: iso(base), priceUsd: '1' }, { timestamp: iso(base + 300), priceUsd: '2' }], updatedAt: iso(base + 400) };
+    const recent = { ...liveMarket(), updatedAt: iso(base + 1815), candles: Array.from({ length: 3 }, (_, index) => ({
+      time: base + 1680 + index * 60, open: 7, high: 8, low: 7, close: 8, volume: 10 })) };
+    const gmgnRequest = vi.fn(), geckoRequest = vi.fn();
+    const result = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, geckoRequest, currentChartRequest: async () => recent,
+        retainedHistory: retained, historyRetryAt: (base + 1850) * 1000, historyLoadStatus: 'rate_limited', now: (base + 1815) * 1000 });
+    expect(result?.points).toEqual(retained.points);
+    expect(result).toMatchObject({ sparseHistory: true, loadStatus: 'rate_limited', retryAfterMs: 35_000 });
+    expect(result?.recentResolution).toBeUndefined(); expect(gmgnRequest).not.toHaveBeenCalled(); expect(geckoRequest).not.toHaveBeenCalled();
+  });
+  it('reuses completed observations during a queued refresh without reviving or retimestamping its old forming quote', async () => {
+    const retained = { ...market(), source: 'gmgn' as const, resolution: '5m', points: [
+      { timestamp: iso(base), priceUsd: '1' }, { timestamp: iso(base + 300), priceUsd: '2' }], updatedAt: iso(base + 400) };
+    const current = { ...liveMarket(), stale: true, pending: true, updatedAt: iso(base + 610), candles: Array.from({ length: 7 }, (_, index) => ({
+      time: base + 240 + index * 60, open: 7, high: 8, low: 7, close: 8, volume: 10 })) };
+    const gmgnRequest = vi.fn(), geckoRequest = vi.fn();
+    const result = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, geckoRequest, currentChartRequest: async () => current,
+        retainedHistory: retained, now: (base + 615) * 1000 });
+    expect(result).toMatchObject({ resolution: '5m', recentResolution: '1m', updatedAt: current.updatedAt });
+    expect(result?.points.at(-1)?.timestamp).toBe(iso(base + 600));
+    expect(result?.currentQuote).toBeUndefined(); expect(gmgnRequest).not.toHaveBeenCalled(); expect(geckoRequest).not.toHaveBeenCalled();
+  });
+  it('does not retain a recent-only segment as approved lifetime market coverage', async () => {
+    let clock = (base + 1815) * 1000, recentAvailable = true;
+    const gmgnRequest = vi.fn().mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    const currentChartRequest = vi.fn(async () => recentAvailable ? { ...liveMarket(), updatedAt: new Date(clock).toISOString(),
+      candles: Array.from({ length: 3 }, (_, index) => ({ time: base + 1680 + index * 60,
+        open: 7, high: 8, low: 7, close: 8, volume: 10 })) } : null);
+    const load = createReplayChartCache((address, first, last, options) => fetchTradeReplayChart(address, first, last,
+      { ...options, gmgnKey: 'key', gmgnRequest, currentChartRequest, geckoRequest: vi.fn(), now: clock }), () => clock);
+    const first = (base + 15) * 1000, last = (base + 135) * 1000;
+    const partial = await load(token, first, last, true);
+    expect(partial.partialHistory).toBe(true); expect(Date.parse(partial.points[0].timestamp)).toBeGreaterThan(first);
+    clock += 16_000; recentAvailable = false;
+    expect(await load(token, first, last, true)).toMatchObject({ source: 'unavailable', points: [], loadStatus: 'rate_limited' });
+    expect(gmgnRequest).toHaveBeenCalledOnce();
+  });
+  it('accepts shared completed minute observations when they already bracket the entire selected trade history', async () => {
+    const currentChartRequest = vi.fn(async () => ({ ...liveMarket(), candles: Array.from({ length: 11 }, (_, index) => ({
+      time: base + index * 60, open: index + 1, high: index + 3, low: index + 1, close: index + 2, volume: 10 })) }));
+    const gmgnRequest = vi.fn().mockRejectedValue(new MarketProviderDeferred('rate_limited', 60_000));
+    const geckoRequest = vi.fn();
+    const result = await fetchTradeReplayChart(token, (base + 15) * 1000, (base + 135) * 1000,
+      { current: true, gmgnKey: 'key', gmgnRequest, geckoRequest, currentChartRequest, now: (base + 615) * 1000 });
+    expect(result).toMatchObject({ source: 'gmgn', resolution: '1m', partialHistory: false, recentResolution: '1m',
+      currentQuote: { timestamp: iso(base + 615), priceUsd: '12' }, loadStatus: 'rate_limited' });
+    expect(result?.points.at(-1)).toEqual({ timestamp: iso(base + 600), priceUsd: '11' });
+    expect(gmgnRequest).toHaveBeenCalledOnce(); expect(geckoRequest).not.toHaveBeenCalled();
+  });
   it('continues completed history after the final fill and keeps a forming close as a separate current quote', async () => {
     const gmgnRequest = vi.fn(async (url: URL) => {
       expect(Number(url.searchParams.get('to'))).toBe((base + 615) * 1000);
