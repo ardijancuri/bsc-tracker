@@ -54,7 +54,7 @@ export async function registerFrontendRoutes(app: FastifyInstance, publicDir: st
       const relativePath = path.relative(publicDir, filename).split(path.sep).join('/');
       // Only Vite's fingerprinted build files can stay cached across releases.
       const fingerprinted = relativePath.startsWith('assets/') && fingerprintedAsset(filename);
-      reply.header('Cache-Control', fingerprinted ? immutable : revalidate);
+      if (reply.getHeader('Cache-Control') !== 'no-store') reply.header('Cache-Control', fingerprinted ? immutable : revalidate);
       reply.header('X-Content-Type-Options', 'nosniff');
     },
   });
@@ -80,6 +80,9 @@ export async function registerFrontendRoutes(app: FastifyInstance, publicDir: st
       return reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff')
         .code(404).send({ error: 'Not found' });
     }
+    if (pathname === '/auth/telegram/finish') return reply.header('Cache-Control', 'no-store')
+      .header('Referrer-Policy', 'no-referrer').header('X-Frame-Options', 'DENY')
+      .header('Content-Security-Policy', "frame-ancestors 'none'").type('text/html').sendFile('index.html');
     // Deep links need the SPA shell; missing lazy chunks must remain genuine 404s.
     return reply.header('Cache-Control', revalidate).type('text/html').sendFile('index.html');
   });

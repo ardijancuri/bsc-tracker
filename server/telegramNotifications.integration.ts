@@ -24,7 +24,7 @@ async function fixture() {
   const sent: Sent[] = [], results: TelegramBotResult[] = [];
   let messageId = 100, identityValid = true;
   let onSend: (() => Promise<void>) | null = null;
-  const fakeBot: ReturnType<typeof createTelegramBot> = {
+  const fakeBot: Pick<ReturnType<typeof createTelegramBot>, 'verifyIdentity' | 'send' | 'edit'> = {
     verifyIdentity: async () => identityValid,
     send: async (chatId, text, buttons, entities) => {
       sent.push({ chatId, text, buttons, entities, edit: false, messageId: null });

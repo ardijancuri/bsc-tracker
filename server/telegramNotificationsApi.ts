@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import { pool } from './db.js';
 import { resolveAuthUser, telegramAuthConfig, verifiedTelegramId, type ResolvedAuthUser, type TelegramAuthConfig } from './telegramAuth.js';
 import type { TelegramNotificationState } from '../shared/telegramNotifications.js';
+import type { TelegramBotLoginStart } from './telegramBotLogin.js';
 
 export type TelegramNotificationPatch = Partial<Pick<TelegramNotificationState, 'enabled' | 'buys' | 'sells' | 'language'>>;
 export type TelegramNotificationUpdate = { updateId: string; telegramId: string; command: 'stop' | 'start' | 'status' | null; blocked?: boolean };
@@ -16,11 +17,27 @@ export type TelegramNotificationApiOptions = {
   update(userId: string, patch: TelegramNotificationPatch): Promise<TelegramNotificationState>;
   mute(userId: string, wallet: string, muted: boolean): Promise<TelegramNotificationState>;
   webhook(update: TelegramNotificationUpdate): Promise<void>;
+  botLoginStart?: (update: TelegramBotLoginStart) => Promise<boolean>;
   resolveUser?: (request: FastifyRequest) => Promise<ResolvedAuthUser | null>;
 };
 
 function privateResponse(reply: FastifyReply) { reply.header('Cache-Control', 'no-store').header('Vary', 'Cookie').header('Referrer-Policy', 'no-referrer'); }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+/** Login payloads are handled before notification status commands, with separate durable deduplication. */
+export function parseTelegramBotLoginStart(body: unknown): TelegramBotLoginStart | null {
+  if (!object(body) || !Number.isSafeInteger(body.update_id) || Number(body.update_id) < 0 || !object(body.message)) return null;
+  const message = body.message;
+  if (!object(message.chat) || message.chat.type !== 'private' || !object(message.from) || message.from.is_bot === true || typeof message.text !== 'string') return null;
+  const telegramId = verifiedTelegramId(message.chat.id);
+  if (!telegramId || verifiedTelegramId(message.from.id) !== telegramId) return null;
+  const start = /^\/start(?:@[A-Za-z0-9_]{5,32})?(?:\s+([A-Za-z0-9_-]{1,64}))?\s*$/.exec(message.text);
+  if (!start) return null;
+  const startToken = /^login_[A-Za-z0-9_-]{43}$/.test(start[1] ?? '') ? start[1] : '';
+  const clean = (value: unknown, max: number) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : '';
+  return { updateId: String(body.update_id), telegramId, startToken,
+    name: [clean(message.from.first_name, 60), clean(message.from.last_name, 60)].filter(Boolean).join(' ') || 'Telegram user',
+    username: clean(message.from.username, 64) || null, language: clean(message.from.language_code, 16) || undefined };
+}
 export function telegramWebhookSecretMatches(expected: string | undefined, actual: unknown) {
   if (!expected || !/^[A-Za-z0-9_-]{1,256}$/.test(expected) || typeof actual !== 'string') return false;
   const left = Buffer.from(expected), right = Buffer.from(actual);
@@ -119,6 +136,11 @@ export function registerTelegramNotificationRoutes(app: FastifyInstance, options
     if (!telegramWebhookSecretMatches(options.webhookSecret ?? process.env.TELEGRAM_WEBHOOK_SECRET, request.headers['x-telegram-bot-api-secret-token'])) return reply.code(403).send({ error: 'Webhook authentication failed' });
   } }, async (request, reply) => {
     if (!object(request.body) || !Number.isSafeInteger(request.body.update_id) || Number(request.body.update_id) < 0) return reply.code(400).send({ error: 'Invalid Telegram update' });
+    const login = parseTelegramBotLoginStart(request.body);
+    if (login && options.botLoginStart) {
+      try { if (await options.botLoginStart(login)) return { ok: true }; }
+      catch { app.log.warn({ event: 'telegram_login_webhook_failed' }, 'Telegram login could not be prepared'); return reply.code(503).send({ error: 'Try again shortly' }); }
+    }
     const update = parseTelegramNotificationUpdate(request.body);
     if (update) {
       try { await options.webhook(update); }

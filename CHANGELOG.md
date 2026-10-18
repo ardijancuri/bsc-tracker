@@ -2,6 +2,7 @@
 
 ## v1.3 updates — 2026-10-18
 
+- Start Telegram login in the Kollens bot, with an expiring private return link, explicit account confirmation, source-browser favorite merging and legacy account recovery.
 - Fix trade replay preparation during GMGN cooldowns: reuse reconciled accounting and the modal's validated current valuation without waiting for an optional aggregate refresh.
 - Join genuine recent one-minute observations to retained replay history, support independent market-history recovery, and keep provider retry delays separate.
 - Show accounting, chart coverage, quote and provider-specific preparation errors; preserve frozen modal/video profit and return consistency.

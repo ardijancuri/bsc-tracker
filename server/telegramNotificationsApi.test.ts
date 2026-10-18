@@ -1,20 +1,20 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseTelegramNotificationUpdate, registerTelegramNotificationRoutes, telegramWebhookSecretMatches } from './telegramNotificationsApi.js';
+import { parseTelegramBotLoginStart, parseTelegramNotificationUpdate, registerTelegramNotificationRoutes, telegramWebhookSecretMatches } from './telegramNotificationsApi.js';
 import type { TelegramNotificationState } from '../shared/telegramNotifications.js';
 
 const origin = 'https://kollens.com', wallet = `0x${'ab'.repeat(20)}`;
 const initial: TelegramNotificationState = { available: true, connection: 'connected', enabled: true, buys: true, sells: true, language: 'en', mutedKols: [], lastError: null };
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); vi.unstubAllEnvs(); });
-function fixture(signedIn = true, available = true) {
+function fixture(signedIn = true, available = true, botLoginStart?: (input: NonNullable<ReturnType<typeof parseTelegramBotLoginStart>>) => Promise<boolean>) {
   const app = Fastify(); apps.push(app);
   const state = vi.fn(async () => ({ ...initial }));
   const update = vi.fn(async (_user: string, patch: unknown) => ({ ...initial, ...(patch as object) }));
   const mute = vi.fn(async () => ({ ...initial, mutedKols: [wallet] }));
   const webhook = vi.fn(async () => {});
   registerTelegramNotificationRoutes(app, { config: { clientId: '1234', clientSecret: 'private', origin, secure: true }, webhookSecret: 'private_secret',
-    available: () => available, state, update, mute, webhook,
+    available: () => available, state, update, mute, webhook, botLoginStart,
     resolveUser: async () => signedIn ? { id: 'user-a', name: 'Tester', username: null, avatarUrl: null, preferences: {} as never } : null });
   const request = (method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, payload?: unknown, headers: Record<string, string> = {}) => app.inject({ method, url, payload: payload as never, headers: { origin, ...headers } });
   return { app, state, update, mute, webhook, request };
@@ -86,6 +86,39 @@ describe('Telegram notification account APIs', () => {
 });
 
 describe('Telegram authenticated webhook', () => {
+  it.each(['/start', '/start@kollens_login_bot', '/start expired_old_parameter'])('prioritizes a login link for %s instead of Manage alerts', async command => {
+    const botLogin = vi.fn(async () => true), f = fixture(false, true, botLogin);
+    const response = await f.request('POST', '/api/telegram/webhook', privateMessage(command), { 'x-telegram-bot-api-secret-token': 'private_secret' });
+    expect(response.statusCode).toBe(200);
+    expect(botLogin).toHaveBeenCalledWith(expect.objectContaining({ startToken: '', telegramId: '987654321' }));
+    expect(f.webhook).not.toHaveBeenCalled();
+  });
+  it('keeps explicit /status routed to alert settings', async () => {
+    const botLogin = vi.fn(async () => true), f = fixture(false, true, botLogin);
+    await f.request('POST', '/api/telegram/webhook', privateMessage('/status'), { 'x-telegram-bot-api-secret-token': 'private_secret' });
+    expect(botLogin).not.toHaveBeenCalled();
+    expect(f.webhook).toHaveBeenCalledWith(expect.objectContaining({ command: 'status' }));
+  });
+  it('routes a validated private login command before alert status processing', async () => {
+    const botLogin = vi.fn(async () => true), f = fixture(false, true, botLogin);
+    const body = privateMessage('/start login_' + 'a'.repeat(43), { from: { id: 987654321, first_name: 'RD', last_name: 'Dev', username: 'dev_test', language_code: 'en' } });
+    expect((await f.request('POST', '/api/telegram/webhook', body, { 'x-telegram-bot-api-secret-token': 'private_secret' })).statusCode).toBe(200);
+    expect(botLogin).toHaveBeenCalledWith({ updateId: '7', telegramId: '987654321', startToken: 'login_' + 'a'.repeat(43), name: 'RD Dev', username: 'dev_test', language: 'en' });
+    expect(f.webhook).not.toHaveBeenCalled();
+  });
+  it('never exposes a login payload to handlers before webhook authentication', async () => {
+    const botLogin = vi.fn(async () => true), f = fixture(false, true, botLogin);
+    expect((await f.request('POST', '/api/telegram/webhook', privateMessage('/start login_' + 'a'.repeat(43)))).statusCode).toBe(403);
+    expect(botLogin).not.toHaveBeenCalled();
+    for (const extra of [{ chat: { type: 'group', id: 987654321 } }, { from: { id: 321 } }, { from: { id: 987654321, is_bot: true } }]) {
+      expect(parseTelegramBotLoginStart(privateMessage('/start login_' + 'a'.repeat(43), extra))).toBeNull();
+    }
+  });
+  it('does not let a failed login write consume an alert update or leak login secrets', async () => {
+    const botLogin = vi.fn(async () => { throw new Error('private-login-secret'); }), f = fixture(false, true, botLogin);
+    const response = await f.request('POST', '/api/telegram/webhook', privateMessage('/start login_' + 'a'.repeat(43)), { 'x-telegram-bot-api-secret-token': 'private_secret' });
+    expect(response.statusCode).toBe(503); expect(response.body).not.toContain('private-login-secret'); expect(f.webhook).not.toHaveBeenCalled();
+  });
   it('compares the configured webhook secret and rejects missing/invalid values', () => {
     expect(telegramWebhookSecretMatches('private_secret', 'private_secret')).toBe(true);
     for (const value of [undefined, ['private_secret'], 'different', 'private_secret_extra']) expect(telegramWebhookSecretMatches('private_secret', value)).toBe(false);

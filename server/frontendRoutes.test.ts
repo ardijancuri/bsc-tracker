@@ -127,6 +127,16 @@ describe('retained deployment chunks', () => {
 });
 
 describe('frontend static delivery', () => {
+  it.each(['GET', 'HEAD'] as const)('keeps the %s bot-login return page inert, private and outside frames', async method => {
+    const response = await app.inject({ method, url: '/auth/telegram/finish' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['x-frame-options']).toBe('DENY');
+    expect(response.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(method === 'HEAD' ? response.body : response.body === shell).toBe(method === 'HEAD' ? '' : true);
+  });
   it('returns a genuine uncached 404 for a lazy chunk removed by a release, even with an HTML Accept header', async () => {
     const response = await app.inject({ url: '/assets/KolTokenTradeModal-kl4bLLrn.js', headers: { accept: 'text/html' } });
     expect(response.statusCode).toBe(404);

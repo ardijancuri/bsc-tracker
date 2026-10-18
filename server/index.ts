@@ -16,7 +16,10 @@ import { getTokenTranslation } from './tokenTranslation.js';
 import { registerTradeReplayChartRoutes } from './tradeReplayChart.js';
 import { registerFrontendRoutes } from './frontendRoutes.js';
 import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolProfile.js';
-import { registerTelegramAuthRoutes } from './telegramAuth.js';
+import { registerTelegramAuthRoutes, telegramAuthConfig } from './telegramAuth.js';
+import { createTelegramBot, telegramBotConfig } from './telegramBot.js';
+import { createTelegramBotLogin } from './telegramBotLogin.js';
+import { createTelegramAvatarCache, registerTelegramAvatarRoute } from './telegramBotAvatar.js';
 import { registerTelegramNotificationRoutes } from './telegramNotificationsApi.js';
 import { telegramNotifications } from './telegramNotifications.js';
 import { captureGuestWatchlist, mergeGuestWatchlist } from './accountWatchlist.js';
@@ -29,10 +32,17 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, '..', 'dist');
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
 const clients = new Set<import('node:http').ServerResponse>();
-registerTelegramAuthRoutes(app, { captureGuest: captureGuestWatchlist, mergeGuest: mergeGuestWatchlist,
+const botConfig = telegramBotConfig();
+const loginBot = botConfig?.webhookSecret ? createTelegramBot(botConfig) : null;
+const botLogin = createTelegramBotLogin({ pool, config: telegramAuthConfig(), bot: loginBot,
+  captureGuest: captureGuestWatchlist, mergeGuest: mergeGuestWatchlist,
+  avatarUrl: loginBot ? createTelegramAvatarCache(pool, loginBot.profilePhoto) : undefined });
+botLogin.registerRoutes(app);
+registerTelegramAvatarRoute(app, pool);
+registerTelegramAuthRoutes(app, { captureGuest: captureGuestWatchlist, mergeGuest: mergeGuestWatchlist, botLogin,
   notificationConsent: { available: telegramNotifications.available, onAuthorized: telegramNotifications.authorize, onFailed: telegramNotifications.consentFailed } });
 registerTelegramNotificationRoutes(app, { available: telegramNotifications.available, state: telegramNotifications.state,
-  update: telegramNotifications.update, mute: telegramNotifications.mute, webhook: telegramNotifications.webhook });
+  update: telegramNotifications.update, mute: telegramNotifications.mute, webhook: telegramNotifications.webhook, botLoginStart: botLogin.handleStart });
 registerIntelligenceRoutes(app);
 registerTradeReplayChartRoutes(app);
 registerCreatorRoutes(app);

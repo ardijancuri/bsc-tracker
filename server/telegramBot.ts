@@ -74,13 +74,15 @@ function validEntities(text: string, entities?: TelegramMessageEntity[]) {
 export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: typeof fetch; now?: () => number } = {}) {
   const fetcher = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
-  let identity: { valid: boolean; expiresAt: number } | null = null;
+  let identity: { valid: boolean; username: string | null; expiresAt: number } | null = null;
   let identityRequest: Promise<boolean> | null = null;
+  let webhookState: { matches: boolean; expiresAt: number } | null = null;
+  let webhookRequest: Promise<boolean> | null = null;
 
-  async function request(method: 'getMe' | 'sendMessage' | 'editMessageText', payload: Record<string, unknown>): Promise<BotResponse> {
+  async function request(method: 'getMe' | 'getWebhookInfo' | 'sendMessage' | 'editMessageText' | 'getUserProfilePhotos' | 'getFile', payload: Record<string, unknown>, timeoutMs = 8_000): Promise<BotResponse> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new BotRequestError('timeout')); }, 8_000); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new BotRequestError('timeout')); }, timeoutMs); });
     try {
       return await Promise.race([timeout, (async () => {
         let response: Response;
@@ -102,20 +104,70 @@ export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: 
     } finally { if (timer) clearTimeout(timer); controller.abort(); }
   }
 
+  /** A shared live bot cannot receive a localhost attempt. Do not change its registered webhook here. */
+  async function webhookMatchesOrigin(): Promise<boolean> {
+    if (webhookState && webhookState.expiresAt > now()) return webhookState.matches;
+    if (webhookRequest) return webhookRequest;
+    webhookRequest = (async () => {
+      let matches = false;
+      try {
+        const response = await request('getWebhookInfo', {}, 3_000);
+        const value = response.body.result as { url?: unknown } | undefined;
+        matches = response.status === 200 && response.body.ok === true && value?.url === `${config.origin}/api/telegram/webhook`;
+      } catch { /* Fixed readiness only: never log Bot API URLs or provider bodies. */ }
+      webhookState = { matches, expiresAt: now() + (matches ? 60_000 : 15_000) };
+      return matches;
+    })().finally(() => { webhookRequest = null; });
+    return webhookRequest;
+  }
+
   async function verifyIdentity(): Promise<boolean> {
     if (identity && identity.expiresAt > now()) return identity.valid;
     if (identityRequest) return identityRequest;
     identityRequest = (async () => {
       let valid = false;
+      let username: string | null = null;
       try {
         const response = await request('getMe', {});
-        const user = response.body.result as { id?: unknown; is_bot?: unknown } | undefined;
+        const user = response.body.result as { id?: unknown; is_bot?: unknown; username?: unknown } | undefined;
         valid = response.status === 200 && response.body.ok === true && user?.is_bot === true && typeof user.id === 'number' && Number.isSafeInteger(user.id) && String(user.id) === config.botId;
+        if (valid && typeof user?.username === 'string' && /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(user.username)) username = user.username;
       } catch { /* Fixed identity state only; provider errors may contain the bot token. */ }
-      identity = { valid, expiresAt: now() + (valid ? 600_000 : 30_000) };
+      identity = { valid, username, expiresAt: now() + (valid ? 600_000 : 30_000) };
       return valid;
     })().finally(() => { identityRequest = null; });
     return identityRequest;
+  }
+
+  /** Optional profile bytes stay server-side; file URLs contain the bot credential. */
+  async function profilePhoto(telegramId: string): Promise<Buffer | null> {
+    if (!positiveId(telegramId) || !await verifyIdentity()) return null;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + 3_000;
+    const loading = (async () => { try {
+      const photos = await request('getUserProfilePhotos', { user_id: telegramId, limit: 1 }, Math.max(1, deadline - Date.now()));
+      const result = photos.body.result as { photos?: { file_id?: unknown; file_size?: unknown }[][] } | undefined;
+      const photo = result?.photos?.[0]?.[0];
+      if (!photos.body.ok || typeof photo?.file_id !== 'string' || photo.file_id.length > 512 || Number(photo.file_size) > 2_097_152) return null;
+      const file = await request('getFile', { file_id: photo.file_id }, Math.max(1, deadline - Date.now()));
+      const info = file.body.result as { file_path?: unknown; file_size?: unknown } | undefined;
+      if (!file.body.ok || typeof info?.file_path !== 'string' || !/^[A-Za-z0-9_/-]+\.(?:jpg|jpeg|png|webp)$/i.test(info.file_path)
+        || info.file_path.includes('..') || info.file_path.length > 512 || Number(info.file_size) > 2_097_152 || controller.signal.aborted) return null;
+      const response = await fetcher(`https://api.telegram.org/file/bot${config.token}/${info.file_path}`, { signal: controller.signal, redirect: 'error' });
+      if (!response.ok || !response.body || Number(response.headers.get('content-length')) > 2_097_152) { void response.body?.cancel().catch(() => undefined); return null; }
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      let length = 0;
+      try { while (true) {
+        const chunk = await reader.read(); if (chunk.done) break;
+        length += chunk.value.byteLength;
+        if (length > 2_097_152 || controller.signal.aborted) { void reader.cancel().catch(() => undefined); return null; }
+        chunks.push(chunk.value);
+      } } finally { reader.releaseLock(); }
+      return Buffer.concat(chunks);
+    } catch { return null; } })();
+    try { return await Promise.race([loading, new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, 3_000); })]); }
+    finally { if (timer) clearTimeout(timer); controller.abort(); }
   }
 
   async function deliver(method: 'sendMessage' | 'editMessageText', chatId: string, text: string, buttons?: TelegramMessageButton[][], messageId?: number, entities?: TelegramMessageEntity[]): Promise<TelegramBotResult> {
@@ -147,6 +199,9 @@ export function createTelegramBot(config: TelegramBotConfig, options: { fetch?: 
 
   return {
     verifyIdentity,
+    webhookMatchesOrigin,
+    identity: async () => await verifyIdentity() && identity?.username ? { username: identity.username } : null,
+    profilePhoto,
     send: (chatId: string, text: string, buttons?: TelegramMessageButton[][], entities?: TelegramMessageEntity[]) => deliver('sendMessage', chatId, text, buttons, undefined, entities),
     edit: (chatId: string, messageId: number, text: string, buttons?: TelegramMessageButton[][], entities?: TelegramMessageEntity[]) => deliver('editMessageText', chatId, text, buttons, messageId, entities),
   };

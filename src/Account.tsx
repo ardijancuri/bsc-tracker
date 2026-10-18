@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, UserRound, X } from 'lucide-react';
 import type { AuthState, AuthUser } from '../shared/auth';
+import { telegramBotLoginUrl } from './telegramBotLoginRequest';
 import { t } from './i18n';
 import './account.css';
 
@@ -69,11 +70,16 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     const controller = new AbortController(), timeout = window.setTimeout(() => controller.abort(), 15_000);
     try {
       const response = await fetch('/api/auth/telegram/start', { method: 'POST', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ returnTo: `${location.pathname}${location.search}${location.hash}` }) });
-      if (!response.ok) throw new Error('Could not log in with Telegram. Try again.');
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null) as {code?: string} | null;
+        if (failure?.code === 'bot_webhook_mismatch') {
+          if (mounted.current) setError('Telegram login is not connected to this app. The bot still uses the live site.');
+          return;
+        }
+        throw new Error('Could not log in with Telegram. Try again.');
+      }
       const result = await response.json() as { url: string };
-      const url = new URL(result.url);
-      if (url.protocol !== 'https:' || url.hostname !== 'oauth.telegram.org') throw new Error('Could not log in with Telegram. Try again.');
-      window.location.assign(url.href);
+      window.location.assign(telegramBotLoginUrl(result.url));
     } catch { if (mounted.current) setError('Could not log in with Telegram. Try again.'); }
     finally { window.clearTimeout(timeout); operation.current = false; if (mounted.current) setBusy(false); }
   };

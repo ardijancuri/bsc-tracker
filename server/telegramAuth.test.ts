@@ -24,7 +24,7 @@ function fakeDatabase() {
     if (sql === 'ROLLBACK' && backup) { sessions.clear(); users.clear(); for (const [k, v] of backup.sessions) sessions.set(k, v); for (const [k, v] of backup.users) users.set(k, v); }
     if (sql.startsWith('INSERT INTO auth_login_attempts')) loginAttempts.set(args[0] as string, { browser_hash: args[1], code_verifier: args[2], nonce: args[3], return_to: args[4], ...(sql.includes("'notifications'")
       ? { guest_snapshot: null, purpose: 'notifications', expected_user_id: args[5], expected_issuer: args[6], expected_subject: args[7], expected_session_hash: args[8], notification_language: args[9] }
-      : { guest_snapshot: JSON.parse(args[5] as string), purpose: 'login' }) });
+      : { guest_snapshot: JSON.parse(args[5] as string), purpose: 'login', expected_telegram_id: args[6], bot_finish_hash: args[7] }) });
     if (sql.startsWith('DELETE FROM auth_login_attempts WHERE state_hash')) {
       const attempt = loginAttempts.get(args[0] as string);
       if (attempt?.browser_hash === args[1]) { loginAttempts.delete(args[0] as string); return { rows: [attempt] }; }
@@ -35,6 +35,14 @@ function fakeDatabase() {
       users.set(args[2] as string, user);
       return { rows: [{ id: args[0] }] };
     }
+    if (sql.startsWith('SELECT id,issuer,subject FROM auth_users WHERE telegram_id')) return { rows: [...users.values()].filter(user => user.telegramId === args[0]) };
+    if (sql.startsWith('SELECT id FROM auth_users WHERE issuer')) return { rows: [...users.values()].filter(user => user.issuer === args[0] && user.subject === args[1]) };
+    if (sql.startsWith('SELECT id FROM auth_bot_login_attempts WHERE finish_hash')) return { rows: args[0] === digest('a'.repeat(43)) ? [{ id: 'bot-attempt' }] : [] };
+    if (sql.startsWith('UPDATE auth_users SET telegram_id')) {
+      const user = [...users.values()].find(user => user.id === args[0]); if (user) user.telegramId = args[1];
+      return { rows: user ? [{ id: user.id }] : [] };
+    }
+    if (sql.startsWith('UPDATE auth_users SET name=$2')) return { rows: [...users.values()].filter(user => user.id === args[0]) };
     if (sql.startsWith('UPDATE auth_users')) return { rows: [{ id: users.get(args[1] as string)?.id }] };
     if (sql.startsWith('INSERT INTO auth_sessions')) sessions.set(args[2] as string, args[1] as string);
     if (sql.startsWith('DELETE FROM auth_sessions WHERE secret_hash')) sessions.delete(args[0] as string);
@@ -49,7 +57,7 @@ function fakeDatabase() {
   return { db: { query, connect: vi.fn(async () => connection) } as unknown as Pool, queries, users, sessions, loginAttempts };
 }
 
-async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; notifications?: boolean; tokenError?: { error: string; status: number } } = {}) {
+async function fixture(overrides: Record<string, unknown> = {}, options: { badSignature?: boolean; disabled?: boolean; mergeLimit?: boolean; notifications?: boolean; tokenError?: { error: string; status: number }; botRecovery?: {telegramId: string; returnTo: string} } = {}) {
   const database = fakeDatabase();
   let nonce = '';
   const tokenRequests: RequestInit[] = [];
@@ -82,9 +90,10 @@ async function fixture(overrides: Record<string, unknown> = {}, options: { badSi
   const app = Fastify({ logger: options.tokenError ? { level: 'warn', stream: { write: value => { failures.push(JSON.parse(value)); } } } : false });
   apps.push(app);
   registerTelegramAuthRoutes(app, { pool: database.db, config: options.disabled ? null : config, oidcConfiguration: () => createTelegramOidc(config, fetcher as never), captureGuest, mergeGuest,
+    botLogin: options.botRecovery ? { available: () => true, start: async (_request, reply) => reply.send({ url: 'https://t.me/kollens_login_bot?start=login_' + 'a'.repeat(43) }), recoveryIdentity: async () => options.botRecovery! } : undefined,
     notificationConsent: { available: () => !!options.notifications, onAuthorized: authorized, onFailed: consentFailed } });
-  async function start(returnTo: unknown = '/token/0xabc?period=7d#chart') {
-    const response = await app.inject({ method: 'POST', url: '/api/auth/telegram/start', headers: { origin: config.origin }, payload: { returnTo } });
+  async function start(returnTo: unknown = '/token/0xabc?period=7d#chart', legacy = false, botToken?: string) {
+    const response = await app.inject({ method: 'POST', url: legacy ? '/api/auth/telegram/oidc/start' : '/api/auth/telegram/start', headers: { origin: config.origin }, payload: { returnTo, ...(botToken ? {botToken} : {}) } });
     if (response.statusCode !== 200) throw new Error(response.body);
     const url = new URL(response.json().url);
     nonce = url.searchParams.get('nonce')!;
@@ -145,6 +154,15 @@ describe('Telegram auth configuration and inputs', () => {
 });
 
 describe('Telegram notification consent', () => {
+  it('accepts the same verified numeric Telegram identity for a bot-created account', async () => {
+    const f = await fixture({ id: 123456789, sub: 'provider-subject' }, { notifications: true });
+    f.users.set('bot:123456789', { id: 'existing-bot-account', issuer: telegramIssuer, subject: 'bot:123456789', telegramId: '123456789', name: 'Existing', avatarUrl: null });
+    f.sessions.set(digest('a'.repeat(64)), 'existing-bot-account');
+    const consent = await f.consent('a'.repeat(64));
+    const response = await f.callback(consent.state, consent.cookie, '&code=consent-code', 'a'.repeat(64));
+    expect(response.headers.location).toContain('telegramAlerts=pending');
+    expect(f.authorized).toHaveBeenCalledWith({ userId: 'existing-bot-account', telegramId: '123456789', language: 'zh-CN' });
+  });
   async function signedIn(f: Awaited<ReturnType<typeof fixture>>) {
     const { state, cookie } = await f.start('/watchlist');
     const login = await f.callback(state, cookie);
@@ -225,6 +243,33 @@ describe('Telegram notification consent', () => {
 });
 
 describe('Telegram OIDC route flow', () => {
+  it('binds one-time legacy recovery to the bot identity, restores the old account and consumes its bot proof', async () => {
+    const f = await fixture({ id: 1234, sub: 'old-subject' }, { botRecovery: { telegramId: '1234', returnTo: '/journal' } });
+    f.users.set('old-subject', { id: 'old-account', issuer: telegramIssuer, subject: 'old-subject', name: 'Old account' });
+    const started = await f.start('/watchlist', true, 'a'.repeat(43));
+    expect(f.loginAttempts.get(digest(started.state))?.expected_telegram_id).toBe('1234');
+    const response = await f.callback(started.state, started.cookie);
+    expect(response.headers.location).toBe('/journal?telegramLogin=success');
+    expect(f.users.size).toBe(1); expect(f.users.get('old-subject')?.telegramId).toBe('1234');
+    expect([...f.sessions.values()]).toEqual(['old-account']);
+    expect(f.queries.some(q => q.sql.startsWith('UPDATE auth_bot_login_attempts SET completed_at=now()') && q.args[0] === digest('a'.repeat(43)))).toBe(true);
+  });
+  it('rejects recovery through a different Telegram identity without modifying accounts', async () => {
+    const f = await fixture({ id: 5678, sub: 'other-subject' }, { botRecovery: { telegramId: '1234', returnTo: '/journal' } });
+    const started = await f.start('/watchlist', true, 'a'.repeat(43));
+    expect((await f.callback(started.state, started.cookie)).headers.location).toContain('authError=failed');
+    expect(f.users.size).toBe(0); expect(f.sessions.size).toBe(0);
+  });
+  it('reuses a bot-created account by signed numeric identity without replacing its subject', async () => {
+    const f = await fixture({ id: 123456789, sub: 'provider-subject' });
+    f.users.set('bot:123456789', { id: 'existing-bot-account', issuer: telegramIssuer, subject: 'bot:123456789', telegramId: '123456789', name: 'Existing', avatarUrl: null });
+    const started = await f.start('/watchlist');
+    const response = await f.callback(started.state, started.cookie);
+    expect(response.headers.location).toBe('/watchlist?telegramLogin=success');
+    expect(f.users.size).toBe(1);
+    expect([...f.sessions.values()]).toEqual(['existing-bot-account']);
+    expect(f.users.get('bot:123456789')?.subject).toBe('bot:123456789');
+  });
   it('is disabled safely when credentials are absent and keeps responses private', async () => {
     const f = await fixture({}, { disabled: true });
     const me = await f.app.inject('/api/auth/me');

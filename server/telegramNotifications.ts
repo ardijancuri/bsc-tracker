@@ -18,7 +18,7 @@ export class TelegramNotificationInputError extends Error {
 }
 export type TelegramNotificationPatch = { enabled?: boolean; buys?: boolean; sells?: boolean; language?: Language };
 export type TelegramNotificationUpdate = { updateId: string; telegramId: string; command: 'stop' | 'start' | 'status' | null; blocked?: boolean };
-type Options = { db?: Pool; now?: () => number; config?: TelegramBotConfig | null; bot?: ReturnType<typeof createTelegramBot> | null };
+type Options = { db?: Pool; now?: () => number; config?: TelegramBotConfig | null; bot?: Pick<ReturnType<typeof createTelegramBot>, 'verifyIdentity' | 'send' | 'edit'> | null };
 const date = (milliseconds: number) => new Date(milliseconds).toISOString();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 

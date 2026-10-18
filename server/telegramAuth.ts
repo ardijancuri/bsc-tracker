@@ -69,6 +69,8 @@ export async function ensureAuthSchema(db: Pool) {
     ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_subject text;
     ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_session_hash text;
     ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS notification_language text;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS expected_telegram_id bigint;
+    ALTER TABLE auth_login_attempts ADD COLUMN IF NOT EXISTS bot_finish_hash text;
   `);
   await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -94,7 +96,7 @@ export function safeAuthReturnTo(value: unknown) {
   if (typeof value !== 'string' || value.length > 2048 || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u0020\u007f]/.test(value)) return '/watchlist';
   try {
     const url = new URL(value, 'https://kollens.com');
-    if (url.origin !== 'https://kollens.com' || url.pathname.startsWith('/api/')) return '/watchlist';
+    if (url.origin !== 'https://kollens.com' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/')) return '/watchlist';
     url.searchParams.delete('authError');
     return `${url.pathname}${url.search}${url.hash}`;
   } catch { return '/watchlist'; }
@@ -190,11 +192,14 @@ type AuthOptions = {
   captureGuest?: (request: FastifyRequest) => Promise<GuestLoginSnapshot>;
   mergeGuest?: (client: PoolClient, userId: string, snapshot: GuestLoginSnapshot, isNewUser: boolean) => Promise<void>;
   notificationConsent?: TelegramNotificationConsent;
+  botLogin?: { available(): boolean; start(request: FastifyRequest, reply: FastifyReply, returnTo: string): Promise<unknown>;
+    recoveryIdentity?(token: string): Promise<{ telegramId: string; returnTo: string } | null> };
 };
 type LoginAttempt = {
   code_verifier: string; nonce: string; return_to: string; guest_snapshot: GuestLoginSnapshot;
   purpose?: 'login' | 'notifications'; expected_user_id?: string; expected_issuer?: string; expected_subject?: string;
   expected_session_hash?: string; notification_language?: 'en' | 'zh-CN';
+  expected_telegram_id?: string; bot_finish_hash?: string;
 };
 
 export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOptions = {}) {
@@ -228,9 +233,9 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
   async function currentIdentity(request: FastifyRequest) {
     const value = authSessionSecret(request.headers.cookie);
     if (!value) return null;
-    const result = await db.query(`SELECT u.id,u.issuer,u.subject FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
+    const result = await db.query(`SELECT u.id,u.issuer,u.subject,u.telegram_id::text AS "telegramId" FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
       WHERE s.secret_hash=$1 AND s.expires_at>now()`, [digest(value)]);
-    return result.rows[0] ? { ...result.rows[0], sessionHash: digest(value) } as { id: string; issuer: string; subject: string; sessionHash: string } : null;
+    return result.rows[0] ? { ...result.rows[0], sessionHash: digest(value) } as { id: string; issuer: string; subject: string; telegramId?: string; sessionHash: string } : null;
   }
   async function consentIdentityMatches(request: FastifyRequest, attempt: LoginAttempt) {
     const identity = await currentIdentity(request);
@@ -241,15 +246,23 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     privateResponse(reply);
     const user = await resolveAuthUser(request, db);
     if (!user && (request.headers.cookie ?? '').split(';').some(value => value.trim().startsWith(`${authCookie}=`))) cookies(reply, [formatCookie(authCookie, '', 0, secure)]);
-    return { enabled: !!config, user: user ? { id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl } : null };
+    return { enabled: options.botLogin ? options.botLogin.available() : !!config, user: user ? { id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl } : null };
   });
-  app.post('/api/auth/telegram/start', { logLevel: 'silent', bodyLimit: 4096 }, async (request, reply) => {
+  async function startLogin(request: FastifyRequest, reply: FastifyReply, previousLogin = false) {
     privateResponse(reply);
     if (!mutationAllowed(request, reply)) return;
     if (!config) return reply.code(503).send({ error: 'Telegram login is not configured' });
-    const body = request.body as { returnTo?: unknown } | null;
-    if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'returnTo')) return reply.code(400).send({ error: 'Invalid login request' });
-    const returnTo = safeAuthReturnTo(body.returnTo);
+    const body = request.body as { returnTo?: unknown; botToken?: unknown } | null;
+    if (body === null || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'returnTo' && !(previousLogin && key === 'botToken'))) return reply.code(400).send({ error: 'Invalid login request' });
+    let recovery: { telegramId: string; returnTo: string } | null = null;
+    if (previousLogin && body.botToken !== undefined) {
+      if (typeof body.botToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.botToken)) return reply.code(400).send({ error: 'Invalid login request' });
+      try { recovery = await options.botLogin?.recoveryIdentity?.(body.botToken) ?? null; }
+      catch { return reply.code(503).send({ error: 'Telegram login is temporarily unavailable' }); }
+      if (!recovery) return reply.code(410).send({ error: 'This login link has expired or was already used.' });
+    }
+    const returnTo = safeAuthReturnTo(recovery?.returnTo ?? body.returnTo);
+    if (options.botLogin && !previousLogin) return options.botLogin.start(request, reply, returnTo);
     try {
       const client = await getConfiguration();
       const state = secret(), browser = secret(), nonce = oidc.randomNonce(), verifier = oidc.randomPKCECodeVerifier();
@@ -257,13 +270,16 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       const guest = await options.captureGuest?.(request) ?? null;
       await db.query('DELETE FROM auth_login_attempts WHERE expires_at<=now()');
       await db.query('DELETE FROM auth_sessions WHERE expires_at<=now()');
-      await db.query(`INSERT INTO auth_login_attempts (state_hash,browser_hash,code_verifier,nonce,return_to,guest_snapshot,expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6::jsonb,now()+interval '10 minutes')`, [digest(state), digest(browser), verifier, nonce, returnTo, JSON.stringify(guest)]);
+      await db.query(`INSERT INTO auth_login_attempts (state_hash,browser_hash,code_verifier,nonce,return_to,guest_snapshot,expires_at,expected_telegram_id,bot_finish_hash)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,now()+interval '10 minutes',$7,$8)`, [digest(state), digest(browser), verifier, nonce, returnTo, JSON.stringify(guest), recovery?.telegramId ?? null, recovery ? digest(body.botToken as string) : null]);
       const url = oidc.buildAuthorizationUrl(client, { redirect_uri: `${config.origin}/api/auth/telegram/callback`, scope: 'openid profile', state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256' });
       cookies(reply, [formatCookie(loginCookie, browser, loginSeconds, secure)]);
       return { url: url.href };
     } catch { return reply.code(503).send({ error: 'Telegram login is temporarily unavailable' }); }
-  });
+  }
+  app.post('/api/auth/telegram/start', { logLevel: 'silent', bodyLimit: 4096 }, (request, reply) => startLogin(request, reply));
+  // Recovery for accounts created before Telegram's numeric ID was stored.
+  app.post('/api/auth/telegram/oidc/start', { logLevel: 'silent', bodyLimit: 4096 }, (request, reply) => startLogin(request, reply, true));
   app.post('/api/notifications/telegram/enable', { logLevel: 'silent', bodyLimit: 4096 }, async (request, reply) => {
     privateResponse(reply);
     if (!mutationAllowed(request, reply)) return;
@@ -305,7 +321,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     let stage = 'login_attempt';
     try {
       const consumed = await db.query(`DELETE FROM auth_login_attempts WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>now()
-        RETURNING code_verifier,nonce,return_to,guest_snapshot,purpose,expected_user_id,expected_issuer,expected_subject,expected_session_hash,notification_language`, [digest(state), digest(browser)]);
+        RETURNING code_verifier,nonce,return_to,guest_snapshot,purpose,expected_user_id,expected_issuer,expected_subject,expected_session_hash,notification_language,expected_telegram_id::text,bot_finish_hash`, [digest(state), digest(browser)]);
       attempt = consumed.rows[0];
       if (!attempt) { reportFailure(stage); return reply.redirect('/watchlist?authError=failed'); }
       if (url.searchParams.has('error')) {
@@ -325,10 +341,14 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       // openid-client enforces issuer, audience, time, nonce and PKCE; non-repudiation additionally verifies the JWKS signature.
       if (!claims || claims.iss !== telegramIssuer || typeof claims.sub !== 'string' || !claims.sub || claims.sub.length > 255 || !claims.exp || claims.exp <= Date.now() / 1000 || !Number.isFinite(claims.iat) || claims.iat > Date.now() / 1000 + 60) throw new Error('Invalid Telegram identity');
       const telegramId = verifiedTelegramId(claims.id);
+      if (attempt.expected_telegram_id && telegramId !== attempt.expected_telegram_id) throw new Error('Telegram recovery identity changed');
       if (attempt.purpose === 'notifications') {
         stage = 'notification_identity';
         if (!options.notificationConsent?.available() || !telegramId) throw new Error('Telegram notification identity unavailable');
-        if (claims.iss !== attempt.expected_issuer || claims.sub !== attempt.expected_subject || !await consentIdentityMatches(request, attempt)) {
+        const current = await currentIdentity(request);
+        const sameTelegram = claims.sub === attempt.expected_subject
+          || attempt.expected_subject === `bot:${telegramId}` && current?.telegramId === telegramId;
+        if (claims.iss !== attempt.expected_issuer || !sameTelegram || !await consentIdentityMatches(request, attempt)) {
           if (await consentIdentityMatches(request, attempt)) await options.notificationConsent.onFailed?.(attempt.expected_user_id!, 'identity_mismatch');
           return reply.redirect(returnWithNotificationStatus(attempt.return_to, 'identity_mismatch'));
         }
@@ -341,10 +361,19 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
       const session = secret();
       try {
         await connection.query('BEGIN');
-        const inserted = await connection.query(`INSERT INTO auth_users (id,issuer,subject,name,username,avatar_url) VALUES ($1,$2,$3,$4,$5,$6)
+        if (attempt.bot_finish_hash) {
+          const botProof = await connection.query(`SELECT id FROM auth_bot_login_attempts WHERE finish_hash=$1 AND telegram_id=$2
+            AND expires_at>now() AND completed_at IS NULL FOR UPDATE`, [attempt.bot_finish_hash, telegramId]);
+          if (!botProof.rows.length) throw new Error('Telegram recovery link expired');
+        }
+        if (telegramId) await connection.query('SELECT pg_advisory_xact_lock(hashtextextended($1,782325))', [telegramId]);
+        const byId = telegramId ? await connection.query('SELECT id,issuer,subject FROM auth_users WHERE telegram_id=$1 FOR UPDATE', [telegramId]) : { rows: [] };
+        const bySubject = byId.rows.length ? await connection.query('SELECT id FROM auth_users WHERE issuer=$1 AND subject=$2 FOR UPDATE', [telegramIssuer, claims.sub]) : { rows: [] };
+        if (bySubject.rows.length && bySubject.rows[0].id !== byId.rows[0].id) throw new Error('Telegram account identities require explicit recovery');
+        const inserted = byId.rows.length ? { rows: [] } : await connection.query(`INSERT INTO auth_users (id,issuer,subject,name,username,avatar_url) VALUES ($1,$2,$3,$4,$5,$6)
           ON CONFLICT (issuer,subject) DO NOTHING RETURNING id`, [randomUUID(), telegramIssuer, claims.sub, identity.name, identity.username, identity.avatarUrl]);
         const isNewUser = inserted.rows.length === 1;
-        const existing = isNewUser ? inserted : await connection.query(`UPDATE auth_users SET name=$3,username=$4,avatar_url=$5,updated_at=now()
+        const existing = byId.rows.length ? await connection.query(`UPDATE auth_users SET name=$2,username=$3,avatar_url=COALESCE($4,avatar_url),updated_at=now() WHERE id=$1 RETURNING id`, [byId.rows[0].id, identity.name, identity.username, identity.avatarUrl]) : isNewUser ? inserted : await connection.query(`UPDATE auth_users SET name=$3,username=$4,avatar_url=$5,updated_at=now()
           WHERE issuer=$1 AND subject=$2 RETURNING id`, [telegramIssuer, claims.sub, identity.name, identity.username, identity.avatarUrl]);
         const userId = existing.rows[0].id as string;
         if (telegramId) await connection.query('UPDATE auth_users SET telegram_id=$2 WHERE id=$1 AND (telegram_id IS NULL OR telegram_id=$2)', [userId, telegramId]);
@@ -352,6 +381,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
         const oldSession = authSessionSecret(request.headers.cookie);
         if (oldSession) await connection.query('DELETE FROM auth_sessions WHERE secret_hash=$1', [digest(oldSession)]);
         await connection.query(`INSERT INTO auth_sessions (id,user_id,secret_hash,expires_at) VALUES ($1,$2,$3,now()+interval '30 days')`, [randomUUID(), userId, digest(session)]);
+        if (attempt.bot_finish_hash) await connection.query('UPDATE auth_bot_login_attempts SET completed_at=now(),finish_hash=NULL WHERE finish_hash=$1', [attempt.bot_finish_hash]);
         await connection.query('COMMIT');
       } catch (error) { await connection.query('ROLLBACK'); throw error; } finally { connection.release(); }
       cookies(reply, [formatCookie(loginCookie, '', 0, secure), formatCookie(authCookie, session, sessionSeconds, secure), clearGuestCookie(secure)]);
@@ -371,6 +401,6 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     const value = authSessionSecret(request.headers.cookie);
     if (value) await db.query('DELETE FROM auth_sessions WHERE secret_hash=$1', [digest(value)]);
     cookies(reply, [formatCookie(authCookie, '', 0, secure), formatCookie(loginCookie, '', 0, secure), clearGuestCookie(secure)]);
-    return { enabled: !!config, user: null } satisfies AuthState;
+    return { enabled: options.botLogin ? options.botLogin.available() : !!config, user: null } satisfies AuthState;
   });
 }

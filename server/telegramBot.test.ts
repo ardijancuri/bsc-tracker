@@ -23,6 +23,65 @@ describe('Telegram server configuration', () => {
 });
 
 describe('Telegram Bot API transport', () => {
+  it('checks and coalesces the registered webhook without changing it', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, result: { url: 'https://kollens.com/api/telegram/webhook' } }));
+    const bot = createTelegramBot(config, { fetch: fetcher });
+    expect(await Promise.all([bot.webhookMatchesOrigin(), bot.webhookMatchesOrigin()])).toEqual([true, true]);
+    expect(await bot.webhookMatchesOrigin()).toBe(true); expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0][0])).toContain('/getWebhookInfo');
+  });
+  it('does not authorize a localhost handoff through the production bot webhook', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, result: { url: 'https://kollens.com/api/telegram/webhook' } }));
+    const bot = createTelegramBot({ ...config, origin: 'http://127.0.0.1:5173' }, { fetch: fetcher });
+    expect(await bot.webhookMatchesOrigin()).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('rechecks a mismatched webhook after fifteen seconds and never exposes its URL', async () => {
+    let time = 0;
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { url: 'https://another.example/private-hook' } }))
+      .mockResolvedValue(Response.json({ ok: true, result: { url: 'https://kollens.com/api/telegram/webhook' } }));
+    const bot = createTelegramBot(config, { fetch: fetcher, now: () => time });
+    expect(await bot.webhookMatchesOrigin()).toBe(false);
+    time = 14_999; expect(await bot.webhookMatchesOrigin()).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+    time++; expect(await bot.webhookMatchesOrigin()).toBe(true); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('returns only the username of the verified bot for deep links', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, result: { id: 12345, is_bot: true, username: 'kollens_login_bot' } }));
+    const bot = createTelegramBot(config, { fetch: fetcher });
+    expect(await bot.identity()).toEqual({ username: 'kollens_login_bot' });
+    expect(await bot.identity()).toEqual({ username: 'kollens_login_bot' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await createTelegramBot(config, { fetch: vi.fn().mockResolvedValue(identity()) }).identity()).toBeNull();
+  });
+  it('downloads an optional photo only from the verified Bot API file path', async () => {
+    const bytes = Buffer.from('test image bytes');
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(identity())
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { photos: [[{ file_id: 'photo-id', file_size: bytes.length }]] } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { file_path: 'photos/file_1.jpg', file_size: bytes.length } }))
+      .mockResolvedValueOnce(new Response(bytes));
+    expect(await createTelegramBot(config, { fetch: fetcher }).profilePhoto('44')).toEqual(bytes);
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({ user_id: '44', limit: 1 });
+    expect(String(fetcher.mock.calls[3][0])).toBe(`https://api.telegram.org/file/bot${config.token}/photos/file_1.jpg`);
+  });
+  it.each(['../file.jpg', 'https://evil.example/photo.jpg', 'photos/file.svg'])('rejects an unsafe photo path %s without fetching it', async file_path => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(identity())
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { photos: [[{ file_id: 'photo-id' }]] } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { file_path } }));
+    expect(await createTelegramBot(config, { fetch: fetcher }).profilePhoto('44')).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it('bounds an optional photo download even if its transport ignores cancellation', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(identity())
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { photos: [[{ file_id: 'photo-id' }]] } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { file_path: 'photos/file.jpg' } }))
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const bot = createTelegramBot(config, { fetch: fetcher });
+    await bot.verifyIdentity();
+    const photo = bot.profilePhoto('44');
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await photo).toBeNull();
+  });
   it('coalesces identity checks, caches successful checks for ten minutes and sends plain text', async () => {
     let time = 10;
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => String(url).endsWith('/getMe') ? identity() : success());

@@ -5,6 +5,8 @@ import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 import { ensureAuthSchema } from './telegramAuth.js';
 import { ensureAccountWatchlistSchema } from './accountWatchlist.js';
 import { ensureTelegramNotificationsSchema } from './telegramNotificationsSchema.js';
+import { ensureTelegramBotLoginSchema } from './telegramBotLogin.js';
+import { ensureTelegramAvatarSchema } from './telegramBotAvatar.js';
 
 const { Pool } = pg;
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12 });
@@ -117,6 +119,8 @@ export async function ensureSchema() {
   `);
   await ensureIntelligenceSchema(pool);
   await ensureAuthSchema(pool);
+  await ensureTelegramBotLoginSchema(pool);
+  await ensureTelegramAvatarSchema(pool);
   await ensureCreatorSchema(pool);
   await ensureJournalSchema(pool);
   await ensureAccountWatchlistSchema(pool);

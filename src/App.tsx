@@ -4,6 +4,7 @@ import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { AccountButton, AccountProvider } from './Account';
 import { TelegramNotificationsProvider } from './TelegramNotifications';
+import { TelegramBotLogin } from './TelegramBotLogin';
 import { TokenMarketPanel } from './TokenMarketPanel';
 import { TokenReplayTrigger } from './TokenReplayTrigger';
 import { KolTokenRealizedPnl } from './KolTokenRealizedPnl';
@@ -420,6 +421,7 @@ export default function App() {
       <Route path="/trades" element={<TradesPage overview={overview} />} />
       <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
+      <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
       <Route path="/journal" element={<JournalPage />} />
       <Route path="/creator" element={<CreatorProfilesPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
