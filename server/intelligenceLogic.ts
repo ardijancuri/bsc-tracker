@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { AlertPreferences, PositionStatus, SignalKind } from '../shared/intelligence.js';
+import type { PositionStatus, SignalKind } from '../shared/intelligence.js';
+
+export interface SignalSettings { windowMinutes: 5 | 10 | 30; minBuyers: number }
+export const defaultSignalSettings: Readonly<SignalSettings> = { windowMinutes: 10, minBuyers: 3 };
 
 export interface ObservedTrade {
   id: string; txHash: string; walletAddress: string; tokenAddress: string; kolName: string | null;
@@ -7,23 +10,23 @@ export interface ObservedTrade {
   observedLive?: boolean;
 }
 export interface SignalCandidate { id: string; kind: SignalKind; entity: string; wallets: string[]; evidence: ObservedTrade[]; timestamp: string }
-export const profileKey = (preferences: Pick<AlertPreferences, 'windowMinutes' | 'minBuyers'>) => `${preferences.windowMinutes}:${preferences.minBuyers}`;
+export const profileKey = (settings: SignalSettings) => `${settings.windowMinutes}:${settings.minBuyers}`;
 export const signalId = (kind: SignalKind, entity: string, trigger: string, profile = '10:3') => createHash('sha256').update(`${profile}:${kind}:${entity}:${trigger}`).digest('hex');
 export function compareTrades(a: ObservedTrade, b: ObservedTrade) {
   const height = BigInt(a.blockNumber) - BigInt(b.blockNumber);
   return height < 0n ? -1 : height > 0n ? 1 : (a.transactionIndex ?? 0) - (b.transactionIndex ?? 0) || a.id.localeCompare(b.id);
 }
-export function detectSignals(trigger: ObservedTrade, history: ObservedTrade[], preferences: AlertPreferences): SignalCandidate[] {
+export function detectSignals(trigger: ObservedTrade, history: ObservedTrade[], settings: SignalSettings): SignalCandidate[] {
   const time = Date.parse(trigger.timestamp);
   const previous = [...new Map(history.filter(row => row.tokenAddress === trigger.tokenAddress && compareTrades(row, trigger) <= 0).map(row => [`${row.txHash}:${row.walletAddress}`, row])).values()].sort(compareTrades);
-  const recent = previous.filter(row => row.side === 'buy' && Date.parse(row.timestamp) >= time - preferences.windowMinutes * 60_000 && Date.parse(row.timestamp) <= time);
+  const recent = previous.filter(row => row.side === 'buy' && Date.parse(row.timestamp) >= time - settings.windowMinutes * 60_000 && Date.parse(row.timestamp) <= time);
   const result: SignalCandidate[] = [];
   const add = (kind: SignalKind, entity: string, evidence: ObservedTrade[]) => {
-    result.push({ id: signalId(kind, entity, `${trigger.id}:${trigger.blockHash}`, profileKey(preferences)), kind, entity,
+    result.push({ id: signalId(kind, entity, `${trigger.id}:${trigger.blockHash}`, profileKey(settings)), kind, entity,
       wallets: [...new Set(evidence.map(row => row.walletAddress))], evidence, timestamp: trigger.timestamp });
   };
   if (trigger.side === 'buy') {
-    if (new Set(recent.map(row => row.walletAddress)).size >= preferences.minBuyers) add('clustered_buys', trigger.tokenAddress, recent);
+    if (new Set(recent.map(row => row.walletAddress)).size >= settings.minBuyers) add('clustered_buys', trigger.tokenAddress, recent);
     const own = recent.filter(row => row.walletAddress === trigger.walletAddress);
     if (new Set(own.map(row => row.txHash)).size >= 2) add('repeat_buy', `${trigger.tokenAddress}:${trigger.walletAddress}`, own);
   }

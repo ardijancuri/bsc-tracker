@@ -34,12 +34,12 @@ export async function captureGuestWatchlist(request: FastifyRequest) {
   return found.rows[0] ? { sessionId: found.rows[0].id, secretHash } : null;
 }
 
-export async function mergeGuestWatchlist(client: PoolClient, userId: string, snapshot: unknown, isNewUser: boolean) {
+export async function mergeGuestWatchlist(client: PoolClient, userId: string, snapshot: unknown) {
   if (!snapshot || typeof snapshot !== 'object' || !('sessionId' in snapshot) || !('secretHash' in snapshot)
     || typeof snapshot.sessionId !== 'string' || typeof snapshot.secretHash !== 'string') return;
   // The callback already locks this account. Re-locking also makes this hook safe independently.
   await client.query('SELECT id FROM auth_users WHERE id=$1 FOR UPDATE', [userId]);
-  const guest = await client.query(`SELECT id,preferences FROM watch_sessions
+  const guest = await client.query(`SELECT id FROM watch_sessions
     WHERE id=$1 AND secret_hash=$2 AND expires_at>now() FOR UPDATE`, [snapshot.sessionId, snapshot.secretHash]);
   if (!guest.rows[0]) return;
   const counts = await client.query(`SELECT kind,COUNT(*)::int AS count FROM (
@@ -49,6 +49,5 @@ export async function mergeGuestWatchlist(client: PoolClient, userId: string, sn
   if (counts.rows.some(row => row.count > 100)) throw new AuthMergeLimitError();
   await client.query(`INSERT INTO account_watch_entries(user_id,kind,address)
     SELECT $1,kind,address FROM watch_entries WHERE session_id=$2 ON CONFLICT DO NOTHING`, [userId, snapshot.sessionId]);
-  if (isNewUser) await client.query('UPDATE auth_users SET preferences=$2::jsonb WHERE id=$1', [userId, JSON.stringify(guest.rows[0].preferences)]);
   await client.query('DELETE FROM watch_sessions WHERE id=$1', [snapshot.sessionId]);
 }

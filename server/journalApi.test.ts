@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
 import { registerJournalRoutes } from './journalApi.js';
 import { JournalInputError } from './journalService.js';
-import { defaultPreferences } from '../shared/intelligence.js';
 
-const user = { id: 'account-a', name: 'Test', username: null, avatarUrl: null, preferences: defaultPreferences };
+const user = { id: 'account-a', name: 'Test', username: null, avatarUrl: null };
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); vi.unstubAllEnvs(); });
 function setup(authenticated = true) {
@@ -52,7 +51,7 @@ describe('private journal API boundaries', () => {
     const { app, service } = setup(); service.summary.mockRejectedValueOnce(Error('secret upstream response and private label'));
     const response = await app.inject({ url: '/api/journal/summary' }); expect(response.statusCode).toBe(503);
     expect(response.body).not.toMatch(/secret|upstream|label/);
-    service.remove.mockRejectedValueOnce(new JournalInputError('Journal wallet not found', 404));
+    service.remove.mockRejectedValueOnce(new JournalInputError('Portfolio wallet not found', 404));
     expect((await app.inject({ method: 'DELETE', url: '/api/journal/wallets/nope', headers: { origin: 'https://kollens.com' } })).statusCode).toBe(404);
   });
 });

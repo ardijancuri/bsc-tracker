@@ -152,7 +152,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   async function download() {
     if (!file) return;
     try { if (definition.validateAccess) await definition.validateAccess(); downloadTradeReplay(file); setNotice(t('Download started.')); }
-    catch { setError(t(definition.validateAccess ? 'Journal access changed. Close this replay and try again.' : 'Video download failed. Try again.')); setFile(null); }
+    catch { setError(t(definition.validateAccess ? 'Portfolio access changed. Close this replay and try again.' : 'Video download failed. Try again.')); setFile(null); }
   }
 
   function captureImage() {

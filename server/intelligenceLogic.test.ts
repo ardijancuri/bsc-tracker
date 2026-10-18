@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultPreferences } from '../shared/intelligence.js';
-import { classifyPosition, compareTrades, cooldownAllows, decimalUnits, detectSignals, positionIsFresh, type ObservedTrade } from './intelligenceLogic.js';
+import { classifyPosition, compareTrades, cooldownAllows, decimalUnits, defaultSignalSettings, detectSignals, positionIsFresh, type ObservedTrade } from './intelligenceLogic.js';
 
 const origin = Date.parse('2026-10-03T12:00:00Z');
 function trade(id: number, wallet = 'alice', side = 'buy', minutes = id): ObservedTrade {
@@ -10,38 +9,38 @@ function trade(id: number, wallet = 'alice', side = 'buy', minutes = id): Observ
 describe('radar rules', () => {
   it('requires distinct wallets, never repeated buys by one wallet', () => {
     const rows = [trade(1), trade(2), trade(3, 'bob')];
-    expect(detectSignals(rows[2], rows, defaultPreferences).map(row => row.kind)).not.toContain('clustered_buys');
+    expect(detectSignals(rows[2], rows, defaultSignalSettings).map(row => row.kind)).not.toContain('clustered_buys');
     rows.push(trade(4, 'carol'));
-    expect(detectSignals(rows[3], rows, defaultPreferences).find(row => row.kind === 'clustered_buys')?.wallets).toEqual(['alice', 'bob', 'carol']);
+    expect(detectSignals(rows[3], rows, defaultSignalSettings).find(row => row.kind === 'clustered_buys')?.wallets).toEqual(['alice', 'bob', 'carol']);
   });
   it.each([5, 10, 30] as const)('uses the configured %i minute window and threshold', windowMinutes => {
     const rows = [trade(1, 'alice', 'buy', 0), trade(2, 'bob', 'buy', windowMinutes)];
-    const preferences = { ...defaultPreferences, windowMinutes, minBuyers: 2 };
-    expect(detectSignals(rows[1], rows, preferences).some(row => row.kind === 'clustered_buys')).toBe(true);
+    const settings = { ...defaultSignalSettings, windowMinutes, minBuyers: 2 };
+    expect(detectSignals(rows[1], rows, settings).some(row => row.kind === 'clustered_buys')).toBe(true);
     rows[1].timestamp = new Date(origin + windowMinutes * 60_000 + 1).toISOString();
-    expect(detectSignals(rows[1], rows, preferences)).toEqual([]);
+    expect(detectSignals(rows[1], rows, settings)).toEqual([]);
   });
   it('deduplicates transaction evidence and requires two separate purchases', () => {
     const first = trade(1), duplicate = { ...first, id: 'duplicate' }, second = trade(2);
-    expect(detectSignals(duplicate, [first, duplicate], defaultPreferences)).toEqual([]);
-    expect(detectSignals(second, [first, duplicate, second], defaultPreferences)[0].evidence).toHaveLength(2);
+    expect(detectSignals(duplicate, [first, duplicate], defaultSignalSettings)).toEqual([]);
+    expect(detectSignals(second, [first, duplicate, second], defaultSignalSettings)[0].evidence).toHaveLength(2);
   });
   it('excludes future chain activity, even with an earlier timestamp', () => {
     const first = trade(1), next = trade(2, 'bob', 'buy', 0);
-    expect(detectSignals(first, [first, next], { ...defaultPreferences, minBuyers: 2 })).toEqual([]);
+    expect(detectSignals(first, [first, next], { ...defaultSignalSettings, minBuyers: 2 })).toEqual([]);
   });
   it('requires the selling wallet to have an observed purchase within 24 hours', () => {
     const buy = trade(1, 'alice', 'buy', 0), sell = trade(2, 'alice', 'sell', 1440);
-    expect(detectSignals(sell, [buy, sell], defaultPreferences)[0].kind).toBe('buyer_selling');
-    expect(detectSignals({ ...sell, walletAddress: 'bob' }, [buy, sell], defaultPreferences)).toEqual([]);
+    expect(detectSignals(sell, [buy, sell], defaultSignalSettings)[0].kind).toBe('buyer_selling');
+    expect(detectSignals({ ...sell, walletAddress: 'bob' }, [buy, sell], defaultSignalSettings)).toEqual([]);
     sell.timestamp = new Date(origin + 86400_001).toISOString();
-    expect(detectSignals(sell, [buy, sell], defaultPreferences)).toEqual([]);
+    expect(detectSignals(sell, [buy, sell], defaultSignalSettings)).toEqual([]);
   });
   it('enforces ten minute cooldowns and produces a new ID on a changed canonical block', () => {
     const first = trade(1), second = trade(2);
     expect(cooldownAllows(first.timestamp, new Date(Date.parse(first.timestamp) + 599_999).toISOString())).toBe(false);
     expect(cooldownAllows(first.timestamp, new Date(Date.parse(first.timestamp) + 600_000).toISOString())).toBe(true);
-    expect(detectSignals(second, [first, second], defaultPreferences)[0].id).not.toBe(detectSignals({ ...second, blockHash: 'replacement' }, [first, { ...second, blockHash: 'replacement' }], defaultPreferences)[0].id);
+    expect(detectSignals(second, [first, second], defaultSignalSettings)[0].id).not.toBe(detectSignals({ ...second, blockHash: 'replacement' }, [first, { ...second, blockHash: 'replacement' }], defaultSignalSettings)[0].id);
   });
   it('compares block numbers without losing bigint precision', () => {
     expect(compareTrades({ ...trade(1), blockNumber: '9007199254740993' }, { ...trade(2), blockNumber: '9007199254740992' })).toBe(1);

@@ -6,8 +6,8 @@ import { watchlistMarket } from './watchlistMarket.js';
 import { chartSettings, currentMarketChart } from './tokenChart.js';
 import { currentFullMarketChart } from './tokenFullHistory.js';
 import { nonStockTokenSql } from './stockToken.js';
-import { candleIntervals, defaultPreferences, signalKinds, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
-import { decimalUnits, positionIsFresh } from './intelligenceLogic.js';
+import { candleIntervals, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
+import { decimalUnits, defaultSignalSettings, positionIsFresh } from './intelligenceLogic.js';
 import { registerKolTokenTradesRoutes } from './kolTokenTradesApi.js';
 import { tokenSupplyRequests } from './tokenSupply.js';
 import { resolveAuthUser, authSessionSecret } from './telegramAuth.js';
@@ -15,10 +15,9 @@ import { hashSecret, sessionSecret, watchCookieName } from './watchSessionSecret
 export { hashSecret, sessionSecret } from './watchSessionSecrets.js';
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
-const preferencesSchema = z.object({ windowMinutes: z.union([z.literal(5), z.literal(10), z.literal(30)]), minBuyers: z.number().int().min(2).max(10), categories: z.array(z.enum(signalKinds)).max(5).transform(values => [...new Set(values)]), muted: z.boolean() }).strict();
-const watchSchema = z.object({ items: z.array(z.object({ kind: z.enum(['kol', 'token']), address: addressSchema }).strict()).max(200).optional(), preferences: preferencesSchema.optional() }).strict();
+const watchSchema = z.object({ items: z.array(z.object({ kind: z.enum(['kol', 'token']), address: addressSchema }).strict()).max(200) }).strict();
 const cookieName = watchCookieName;
-type Session = { id: string; kind: 'guest' | 'account'; preferences: typeof defaultPreferences };
+type Session = { id: string; kind: 'guest' | 'account' };
 const entryTable = (session: Session) => session.kind === 'account' ? 'account_watch_entries' : 'watch_entries';
 const ownerColumn = (session: Session) => session.kind === 'account' ? 'user_id' : 'session_id';
 const ownerTable = (session: Session) => session.kind === 'account' ? 'auth_users' : 'watch_sessions';
@@ -39,10 +38,10 @@ function mutationAllowed(request: FastifyRequest, reply: FastifyReply) {
 }
 async function getSession(request: FastifyRequest): Promise<Session | null> {
   const user = await resolveAuthUser(request);
-  if (user) return { id: user.id, kind: 'account', preferences: user.preferences };
+  if (user) return { id: user.id, kind: 'account' };
   const secret = sessionSecret(request.headers.cookie);
   if (!secret) return null;
-  const result = await pool.query('SELECT id,preferences FROM watch_sessions WHERE secret_hash=$1 AND expires_at>now()', [hashSecret(secret)]);
+  const result = await pool.query('SELECT id FROM watch_sessions WHERE secret_hash=$1 AND expires_at>now()', [hashSecret(secret)]);
   return result.rows[0] ? { ...result.rows[0], kind: 'guest' } : null;
 }
 function ownerAllowed(request: FastifyRequest, reply: FastifyReply, session: Session | null) {
@@ -104,7 +103,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
         WHERE samples.first_in_bucket=1 OR samples.last_in_bucket=1) p
     ) history ON true
     WHERE (e.kind='kol' OR ${nonStockTokenSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [tokenAddress || session!.id, seconds, bucketSeconds])).rows : [];
-  return { items: items.map(item => watchlistMarket(item, period)), preferences: session?.preferences ?? defaultPreferences, period };
+  return { items: items.map(item => watchlistMarket(item, period)), period };
 }
 function pageCursor(value: unknown) {
   if (value == null) return null;
@@ -183,8 +182,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     privateResponse(reply);
     if (!mutationAllowed(request, reply)) return;
     const parsed = watchSchema.safeParse(request.body);
-    if (!parsed.success || !parsed.data.items && !parsed.data.preferences) return reply.code(400).send({ error: 'Invalid watchlist' });
-    const { items, preferences } = parsed.data;
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid watchlist' });
+    const { items } = parsed.data;
     let session = await getSession(request);
     if (!ownerAllowed(request, reply, session)) return;
     if (session?.kind === 'account' && items) return reply.code(409).send({ error: 'Refresh the page to update your account favorites.' });
@@ -203,7 +202,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       await client.query('BEGIN');
       if (!session) {
         const secret = randomBytes(32).toString('hex');
-        const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at) VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences`, [randomUUID(), hashSecret(secret)]);
+        const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at) VALUES($1,$2,now()+interval '1 year') RETURNING id`, [randomUUID(), hashSecret(secret)]);
         session = { ...result.rows[0], kind: 'guest' }; createdSecret = secret;
       }
       const locked = await client.query(`SELECT id FROM ${ownerTable(session!)} WHERE id=$1 FOR UPDATE`, [session!.id]);
@@ -215,9 +214,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         await client.query('DELETE FROM watch_entries WHERE session_id=$1', [session!.id]);
         for (const item of unique) await client.query('INSERT INTO watch_entries(session_id,kind,address) VALUES($1,$2,$3)', [session!.id, item.kind, item.address]);
       }
-      const updated = await client.query(`UPDATE ${ownerTable(session!)} SET preferences=COALESCE($2::jsonb,preferences),updated_at=now()${session!.kind === 'guest' ? ",expires_at=now()+interval '1 year'" : ''} WHERE id=$1 RETURNING id,preferences`, [session!.id, preferences ? JSON.stringify(preferences) : null]);
+      const updated = await client.query(`UPDATE ${ownerTable(session!)} SET updated_at=now()${session!.kind === 'guest' ? ",expires_at=now()+interval '1 year'" : ''} WHERE id=$1 RETURNING id`, [session!.id]);
       session = { ...updated.rows[0], kind: session!.kind };
-      if (preferences) await client.query(`INSERT INTO radar_profiles(profile,window_minutes,min_buyers) VALUES($1,$2,$3) ON CONFLICT(profile) DO NOTHING`, [`${preferences.windowMinutes}:${preferences.minBuyers}`, preferences.windowMinutes, preferences.minBuyers]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
@@ -250,7 +248,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         if (!session) {
           createdSecret = randomBytes(32).toString('hex');
           const result = await client.query(`INSERT INTO watch_sessions(id,secret_hash,expires_at)
-            VALUES($1,$2,now()+interval '1 year') RETURNING id,preferences`, [randomUUID(), hashSecret(createdSecret)]);
+            VALUES($1,$2,now()+interval '1 year') RETURNING id`, [randomUUID(), hashSecret(createdSecret)]);
           session = { ...result.rows[0], kind: 'guest' };
         }
         const locked = await client.query(`SELECT id FROM ${ownerTable(session!)} WHERE id=$1 FOR UPDATE`, [session!.id]);
@@ -283,28 +281,26 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         await client.query('BEGIN');
         await client.query('SELECT id FROM auth_users WHERE id=$1 FOR UPDATE', [session.id]);
         await client.query('DELETE FROM account_watch_entries WHERE user_id=$1', [session.id]);
-        await client.query('UPDATE auth_users SET preferences=$2::jsonb,updated_at=now() WHERE id=$1', [session.id, JSON.stringify(defaultPreferences)]);
+        await client.query('UPDATE auth_users SET updated_at=now() WHERE id=$1', [session.id]);
         await client.query('COMMIT');
       } catch (error) { await client.query('ROLLBACK'); throw error; }
       finally { client.release(); }
-      return watchlist({ ...session, preferences: defaultPreferences });
+      return watchlist(session);
     }
     if (session) await pool.query('DELETE FROM watch_sessions WHERE id=$1', [session.id]);
     reply.header('Set-Cookie', `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
     return watchlist(null);
   });
-  app.get<{ Querystring: { limit?: string; cursor?: string; watched?: string; token?: string; kol?: string; window?: string; buyers?: string } }>('/api/signals', async (request, reply) => {
+  app.get<{ Querystring: { limit?: string; cursor?: string; watched?: string; token?: string; kol?: string } }>('/api/signals', async (request, reply) => {
     const session = await getSession(request);
     if (session || request.query.watched === '1') privateResponse(reply);
     if (request.query.watched === '1' && !session) return { items: [], nextCursor: null };
     const values: unknown[] = [];
     const where: string[] = [nonStockTokenSql(), `cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`];
-    const preference = session?.preferences ?? defaultPreferences;
-    values.push(preference.windowMinutes, preference.minBuyers);
+    values.push(defaultSignalSettings.windowMinutes, defaultSignalSettings.minBuyers);
     where.push('(s.window_minutes=0 OR s.window_minutes=$1 AND s.min_buyers=$2)');
     if (session) {
       if (request.query.watched === '1') { values.push(session.id); where.push(`EXISTS(SELECT 1 FROM ${entryTable(session)} e WHERE e.${ownerColumn(session)}=$${values.length} AND (e.kind='token' AND e.address=s.token_address OR e.kind='kol' AND e.address=ANY(s.wallet_addresses)))`); }
-      values.push(session.preferences.categories); where.push(`s.kind=ANY($${values.length}::text[])`);
     }
     for (const [filter, field] of [[request.query.token, 's.token_address'], [request.query.kol, 'wallet']] as const) {
       if (!filter) continue;

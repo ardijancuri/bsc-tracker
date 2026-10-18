@@ -1,5 +1,5 @@
 import { CreatorProfile } from './CreatorProfile';
-import { JournalPage, CreatorProfilesPage } from './Journal';
+import { PortfolioPage, CreatorProfilesPage } from './Journal';
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
 import { AccountButton, AccountProvider } from './Account';
@@ -153,7 +153,7 @@ function Header({ overview }: { overview: Overview }) {
     <Link className="brand" to="/trades"><img className="brand-logo" src={BRAND_HEADER_LOGO_SRC} alt="kollens" width="105" height="22" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
-      <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink><NavLink to="/journal" onClick={() => setMobileOpen(false)}>{t("Journal")}</NavLink>
+      <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
       <a className="mobile-social-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
     <div className="header-social">
@@ -410,7 +410,7 @@ function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
 
 export default function App() {
   const [language] = useLanguage();
-  const { pathname } = useLocation();
+  const { pathname, search, hash } = useLocation();
   useEffect(() => { document.documentElement.lang = language; if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) document.title = t('kollens — BSC KOL tracker'); }, [language, pathname]);
   const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <AccountProvider><WatchlistProvider><TelegramNotificationsProvider>
@@ -422,7 +422,8 @@ export default function App() {
       <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
-      <Route path="/journal" element={<JournalPage />} />
+      <Route path="/portfolio" element={<PortfolioPage />} />
+      <Route path="/journal" element={<Navigate to={{ pathname: '/portfolio', search, hash }} replace />} />
       <Route path="/creator" element={<CreatorProfilesPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
       <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />

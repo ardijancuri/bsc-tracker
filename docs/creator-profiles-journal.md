@@ -1,4 +1,4 @@
-# Creator profiles and private journal
+# Creator profiles and private portfolio
 
 These features use the existing Telegram account/session, PostgreSQL database,
 BSC RPC and GMGN credentials. They introduce no new provider keys or archive
@@ -40,11 +40,11 @@ ownership. Labels are private membership data. Removing a membership revokes
 all private routes and its saved replay leases, even if another subscriber
 still needs the same public blockchain evidence.
 
-The worker collects the union of public KOLs and active journal subscriptions.
+The worker collects the union of public KOLs and active portfolio subscriptions.
 It keeps `kols.is_tracked` reserved for the public roster. Registration records
 the committed node checkpoint and a repair cursor; a wallet added while a scan
 is running is repaired independently. Missing or mismatched transaction
-receipts fail the range. Journal evidence, coverage, opening balances and
+receipts fail the range. Portfolio evidence, coverage, opening balances and
 snapshots participate in reorg rollback. Private-only activity is excluded
 from public feeds, counts, rankings, searches, signals, KOL alerts and roster
 positions. Public signal APIs also withhold stale mixed/private signal rows.
@@ -77,7 +77,7 @@ totals are published only when the selected inputs reconcile. During temporary
 delays, a dated valid snapshot may be returned. Its identity includes the
 account membership revisions, selected wallet set and valuation time.
 
-Journal trade details reuse the market chart, canvas and MP4 encoder. A
+Portfolio trade details reuse the market chart, canvas and MP4 encoder. A
 server-side, account-bound replay snapshot freezes accounting and ending
 valuation for both the modal and video. Its private lease is checked around
 preparation and export; private labels never enter replay identity. The public
@@ -98,7 +98,7 @@ send `private, no-store` and do not log private payloads. Routes:
 - `GET /api/journal/wallets/:wallet/tokens/:token/replay-chart`
 
 Replay requests can supply the returned `snapshot` ID. A removed/re-added
-membership cannot reuse an earlier lease. There are no public journal pages,
+membership cannot reuse an earlier lease. There are no public portfolio pages,
 notes, manual trades, calendars or advanced performance analytics.
 
 ## Local validation

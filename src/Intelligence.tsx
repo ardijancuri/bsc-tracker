@@ -2,7 +2,7 @@ import { t, localDate } from './i18n';
 import { TelegramKolBell } from './TelegramNotifications';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ExternalLink, Star, X } from 'lucide-react';
+import { ChevronDown, ExternalLink, Star } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress } from './lib';
 import { TokenName } from './TokenName';
 import { WatchTokenDetails } from './WatchTokenVisuals';
@@ -11,10 +11,10 @@ import { subscribeToUpdates } from './updateStream';
 import { accountCheckEvent, notifyWatchlistTabs, useAccount, watchlistSyncKey } from './Account';
 import { loadWatchlist, mutateWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import './tokenWatchlist.css';
-import { defaultPreferences, signalKinds, signalLabels, type AlertPreferences, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
+import { signalLabels, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
-const emptyWatchlist: Watchlist = { items: [], preferences: defaultPreferences };
-type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void>; preferences: (value: AlertPreferences) => Promise<void>; clear: () => Promise<void> };
+const emptyWatchlist: Watchlist = { items: [] };
+type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void> };
 const WatchContext = createContext<WatchContextValue | null>(null);
 export function WatchlistProvider({ children }: { children: ReactNode }) {
   const account = useAccount();
@@ -41,11 +41,11 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     revision.current++; locked.current = false; setBusy(false); accept(emptyWatchlist); setLoaded(false); setError(null);
   }, [account.revision, accept]);
   useEffect(() => { if (account.loaded && !account.checking && !account.busy && !account.unavailable) void refresh(); }, [account.loaded, account.checking, account.busy, account.unavailable, account.revision, refresh]);
-  const save = async (url: string, method: 'PUT' | 'DELETE', body?: unknown) => {
+  const save = async (url: string, method: 'PUT' | 'DELETE') => {
     if (locked.current || !loaded || account.checking || account.busy || account.unavailable) return;
     locked.current = true; const version = ++revision.current; setBusy(true); setError(null);
     try {
-      const value = await mutateWatchlist(url, method, account.state.user?.id || 'guest', body);
+      const value = await mutateWatchlist(url, method, account.state.user?.id || 'guest');
       if (version === revision.current) { accept(value); notifyWatchlistTabs(); }
     } catch (reason) {
       if (version !== revision.current) return;
@@ -58,9 +58,8 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     const followed = current.current.items.some(item => item.kind === kind && item.address === key);
     await save(`/api/watchlist/items/${kind}/${encodeURIComponent(key)}`, followed ? 'DELETE' : 'PUT');
   };
-  const clear = () => save('/api/watchlist', 'DELETE');
   const ownerMatches = dataOwner.current === (account.state.user?.id || 'guest');
-  return <WatchContext.Provider value={{ data: ownerMatches ? data : emptyWatchlist, busy: busy || account.checking || account.busy || account.unavailable, loaded: loaded && ownerMatches, error, refresh, toggle, preferences: value => save('/api/watchlist', 'PUT', { preferences: value }), clear }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
+  return <WatchContext.Provider value={{ data: ownerMatches ? data : emptyWatchlist, busy: busy || account.checking || account.busy || account.unavailable, loaded: loaded && ownerMatches, error, refresh, toggle }}>{children}{error && <div className="watchlist-error" role="alert">{t(error)}</div>}</WatchContext.Provider>;
 }
 export function useWatchlist() { const value = useContext(WatchContext); if (!value) throw new Error('Watchlist provider missing'); return value; }
 export function FollowButton({ kind, address, label }: { kind: 'kol' | 'token'; address: string; label?: string | null }) {
@@ -138,26 +137,16 @@ export function RadarFeed({ watched = false }: { watched?: boolean }) {
   const [params] = useSearchParams();
   const watch = useWatchlist();
   const following = watched ? [...watch.data.items.map(item => `${item.kind}:${item.address}`).sort().join('|')].reduce((value, character) => (value * 31 + character.charCodeAt(0)) | 0, 0) : 0;
-  const profile = `${watch.data.preferences.windowMinutes}:${watch.data.preferences.minBuyers}:${watch.data.preferences.categories.join(',')}:${following}`;
-  const list = useFeatureList<Signal>(`/api/signals?limit=20&profile=${profile}${watched ? '&watched=1' : ''}`);
+  const list = useFeatureList<Signal>(`/api/signals?limit=20${watched ? `&watched=1&following=${following}` : ''}`);
   const selectedId = params.get('signal');
   const selected = useFeatureData<{ signal: Signal | null }>(selectedId ? `/api/signals/${selectedId}` : null, { signal: null });
   const pinned = selectedId && selected.data.signal && !list.items.some(signal => signal.id === selectedId) ? selected.data.signal : null;
-  return <>{!watched && <AlertSettings watchlist={false} />}<div className="data-table feature-table">{pinned && <SignalRow signal={pinned} open />}{list.items.map(signal => <SignalRow key={signal.id} signal={signal} open={signal.id === selectedId} />)}{!list.items.length && !pinned && <FeatureEmpty>{list.loading ? t("Loading radar…") : list.error ? t("Radar unavailable") : watched ? t("No watched signals yet") : t("No signals yet")}</FeatureEmpty>}</div>
+  return <><div className="data-table feature-table">{pinned && <SignalRow signal={pinned} open />}{list.items.map(signal => <SignalRow key={signal.id} signal={signal} open={signal.id === selectedId} />)}{!list.items.length && !pinned && <FeatureEmpty>{list.loading ? t("Loading radar…") : list.error ? t("Radar unavailable") : watched ? t("No watched signals yet") : t("No signals yet")}</FeatureEmpty>}</div>
     {list.more && <button className="profile-load-more" disabled={list.busy} onClick={() => void list.loadMore()}>{list.busy ? t("Loading…") : t("Load more")}</button>}{list.moreError && <p className="profile-more-error">{t("Could not load more. Try again.")}</p>}</>;
-}
-export function AlertSettings({ watchlist = true, label = 'Filters' }: { watchlist?: boolean; label?: string }) {
-  const watch = useWatchlist();
-  const preferences = watch.data.preferences;
-  const change = (value: Partial<AlertPreferences>) => void watch.preferences({ ...preferences, ...value });
-  return <details className={`watch-settings${watchlist ? '' : ' radar-settings'}`} open={!watchlist}><summary>{t(label)}<ChevronDown size={14} /></summary><div className="alert-settings"><div className="alert-controls"><label>{t("Window")}<select aria-label={t("Buying window")} value={preferences.windowMinutes} disabled={watch.busy || !watch.loaded} onChange={event => change({ windowMinutes: Number(event.target.value) as AlertPreferences['windowMinutes'] })}>{[5, 10, 30].map(value => <option key={value} value={value}>{t('{minutes}m', { minutes: value })}</option>)}</select></label><label>{t("KOLs")}<select aria-label={t("KOL threshold")} value={preferences.minBuyers} disabled={watch.busy || !watch.loaded} onChange={event => change({ minBuyers: Number(event.target.value) })}>{Array.from({ length: 9 }, (_, i) => i + 2).map(value => <option key={value} value={value}>{value}+</option>)}</select></label></div>
-      <div className="alert-categories">{signalKinds.map(kind => <label key={kind}><input type="checkbox" checked={preferences.categories.includes(kind)} disabled={watch.busy || !watch.loaded} onChange={event => change({ categories: event.target.checked ? [...preferences.categories, kind] : preferences.categories.filter(value => value !== kind) })} />{t(signalLabels[kind])}</label>)}</div>
-      {watchlist && <button className="watch-clear" disabled={watch.busy || !watch.loaded} onClick={() => void watch.clear()}><X size={12} />{t("Clear watchlist")}</button>}</div></details>;
 }
 export function WatchlistView() {
   const watch = useWatchlist();
   return <><div className="watchlist-grid">{(['kol', 'token'] as const).map(kind => <section key={kind}><div className="table-toolbar"><h2>{kind === 'kol' ? t("KOLs") : t("Tokens")}</h2><span>{watch.data.items.filter(item => item.kind === kind).length}</span>{kind === 'token' && <Link className="watch-token-more" to="/watchlist">{t('View token watchlist')}<ExternalLink size={12} /></Link>}</div><div className="data-table feature-table">{watch.data.items.filter(item => item.kind === kind).map(item => <div className={`watch-row${kind === 'token' ? ' watch-row-token' : ''}`} key={`${kind}:${item.address}`}><div><Link to={`/${kind}/${item.address}`}><FeatureIdentity token={kind === 'token'} address={item.address} name={item.name} symbol={kind === 'token' ? item.symbol : undefined} image={kind === 'token' ? item.logoUrl : item.avatarUrl} /></Link>{kind === 'token' && <WatchTokenDetails token={item} />}</div><div className="telegram-kol-controls">{kind === 'kol' && <KolAlertButton address={item.address} label={item.name} />}<FollowButton kind={kind} address={item.address} label={item.name} /></div></div>)}{!watch.data.items.some(item => item.kind === kind) && <FeatureEmpty>{watch.loaded ? t(kind === 'kol' ? 'No followed KOLs' : 'No followed tokens') : t("Loading…")}</FeatureEmpty>}</div></section>)}</div>
-    <AlertSettings />
     {watch.error && <p className="profile-more-error" role="alert">{t(watch.error)}</p>}<div className="table-toolbar watch-signals-heading"><h2>{t("Watched signals")}</h2></div><RadarFeed watched />
   </>;
 }

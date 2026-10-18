@@ -12,7 +12,7 @@ export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool
   const account = async (request: FastifyRequest, reply: FastifyReply, mutation = false) => {
     reply.header('Cache-Control', 'private, no-store').header('Vary', 'Cookie').header('Referrer-Policy', 'no-referrer');
     const user = await resolve(request);
-    if (!user) { reply.code(401).send({ error: 'Sign in with Telegram to use your private journal' }); return null; }
+    if (!user) { reply.code(401).send({ error: 'Sign in with Telegram to use your private portfolio' }); return null; }
     const expected = request.headers['x-watchlist-owner'];
     if (expected !== undefined && expected !== user.id) { reply.code(409).send({ error: 'Your account changed. Refresh and try again.' }); return null; }
     if (mutation) {
@@ -31,8 +31,8 @@ export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool
     try { return await work(); }
     catch (error) {
       if (error instanceof JournalInputError) return reply.code(error.statusCode).send({ error: error.message });
-      app.log.warn({ event: 'journal_api_unavailable' }, 'Private journal preparation unavailable');
-      return reply.code(503).header('Retry-After', '3').send({ error: 'Your private journal is temporarily unavailable. Try again shortly.' });
+      app.log.warn({ event: 'journal_api_unavailable' }, 'Private portfolio preparation unavailable');
+      return reply.code(503).header('Retry-After', '3').send({ error: 'Your private portfolio is temporarily unavailable. Try again shortly.' });
     }
   };
   const settings = { logLevel: 'silent' as const };
@@ -60,7 +60,7 @@ export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool
     return result(reply, async () => {
       const value = await service.tokenActivity(user.id, request.params.wallet.toLowerCase(), request.params.token.toLowerCase(), request.query.replay === 'true', request.query.snapshot);
       if (value === null) return reply.code(202).header('Retry-After', '2').send({ status: 'pending' });
-      if (!value) return reply.code(404).send({ error: 'Journal token activity not found' });
+      if (!value) return reply.code(404).send({ error: 'Portfolio token activity not found' });
       return value;
     });
   });

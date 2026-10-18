@@ -15,7 +15,7 @@ function fixture(signedIn = true, available = true, botLoginStart?: (input: NonN
   const webhook = vi.fn(async () => {});
   registerTelegramNotificationRoutes(app, { config: { clientId: '1234', clientSecret: 'private', origin, secure: true }, webhookSecret: 'private_secret',
     available: () => available, state, update, mute, webhook, botLoginStart,
-    resolveUser: async () => signedIn ? { id: 'user-a', name: 'Tester', username: null, avatarUrl: null, preferences: {} as never } : null });
+    resolveUser: async () => signedIn ? { id: 'user-a', name: 'Tester', username: null, avatarUrl: null } : null });
   const request = (method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, payload?: unknown, headers: Record<string, string> = {}) => app.inject({ method, url, payload: payload as never, headers: { origin, ...headers } });
   return { app, state, update, mute, webhook, request };
 }
@@ -45,7 +45,7 @@ describe('Telegram notification account APIs', () => {
     const response = await f.request(method, method === 'PUT' ? `/api/notifications/telegram/kols/${wallet}` : '/api/notifications/telegram', method === 'GET' ? undefined : { enabled: false }, { 'x-watchlist-owner': 'user-b' });
     expect(response.statusCode).toBe(409); expect(f.update).not.toHaveBeenCalled(); expect(f.mute).not.toHaveBeenCalled();
   });
-  it('updates account preferences without changing Radar settings', async () => {
+  it('updates only Telegram notification preferences', async () => {
     const f = fixture();
     const response = await f.request('PATCH', '/api/notifications/telegram', { enabled: false, buys: false, sells: true, language: 'zh-CN' });
     expect(response.statusCode).toBe(200);

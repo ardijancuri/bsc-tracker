@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { pool, notifyUpdate, setState } from './db.js';
-import { defaultPreferences, type AlertPreferences, type SignalEvidence } from '../shared/intelligence.js';
-import { classifyPosition, compareTrades, cooldownAllows, detectSignals, profileKey, signalId, type ObservedTrade, type PositionMovement } from './intelligenceLogic.js';
+import type { SignalEvidence } from '../shared/intelligence.js';
+import { classifyPosition, compareTrades, cooldownAllows, defaultSignalSettings, detectSignals, profileKey, signalId, type ObservedTrade, type PositionMovement } from './intelligenceLogic.js';
 import { blockHex, chainRpc } from './rpc.js';
 import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
 import { transferTopic } from './swap.js';
@@ -105,28 +105,19 @@ export async function collectSignals() {
       AND t.block_number <= $3 ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`,
     [[...new Set(trades.map(trade => trade.tokenAddress))], new Date(earliest).toISOString(), trades.at(-1)!.blockNumber]);
     const history: ObservedTrade[] = historyRows.rows.map(row => ({ ...row, timestamp: new Date(row.timestamp).toISOString() }));
-    const settings = await client.query(`SELECT DISTINCT preferences->>'windowMinutes' AS window, preferences->>'minBuyers' AS buyers FROM (
-      SELECT preferences FROM watch_sessions WHERE expires_at>now() UNION ALL SELECT preferences FROM auth_users
-    ) watched`);
-    const profiles = new Map([[profileKey(defaultPreferences), defaultPreferences]]);
-    for (const row of settings.rows) {
-      const preference = { ...defaultPreferences, windowMinutes: Number(row.window) as AlertPreferences['windowMinutes'], minBuyers: Number(row.buyers) };
-      profiles.set(profileKey(preference), preference);
-    }
+    const profile = defaultSignalSettings;
     let inserted = 0;
     for (const trade of trades.sort(compareTrades)) {
-      for (const profile of profiles.values()) {
-        for (const candidate of detectSignals(trade, history, profile)) {
-          const last = await client.query(`SELECT timestamp FROM radar_signals WHERE entity=$1 AND kind=$2 AND window_minutes=$3 AND min_buyers=$4
-            AND NOT corrected AND timestamp <= $5 ORDER BY timestamp DESC LIMIT 1`, [candidate.entity, candidate.kind, profile.windowMinutes, profile.minBuyers, candidate.timestamp]);
-          if (!cooldownAllows(last.rows[0]?.timestamp ? new Date(last.rows[0].timestamp).toISOString() : null, candidate.timestamp)) continue;
-          const live = Boolean(trade.observedLive && Date.now() - Date.parse(trade.timestamp) <= 300_000);
-          const result = await client.query(`INSERT INTO radar_signals(id,kind,entity,token_address,wallet_addresses,evidence,window_minutes,min_buyers,timestamp,source_block,source_hash,live)
-            VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12) ON CONFLICT(id) DO NOTHING RETURNING id`,
-          [candidate.id, candidate.kind, candidate.entity, trade.tokenAddress, candidate.wallets, JSON.stringify(candidate.evidence.map(evidence)), profile.windowMinutes, profile.minBuyers,
-            candidate.timestamp, trade.blockNumber, trade.blockHash, live]);
-          inserted += result.rowCount ?? 0;
-        }
+      for (const candidate of detectSignals(trade, history, profile)) {
+        const last = await client.query(`SELECT timestamp FROM radar_signals WHERE entity=$1 AND kind=$2 AND window_minutes=$3 AND min_buyers=$4
+          AND NOT corrected AND timestamp <= $5 ORDER BY timestamp DESC LIMIT 1`, [candidate.entity, candidate.kind, profile.windowMinutes, profile.minBuyers, candidate.timestamp]);
+        if (!cooldownAllows(last.rows[0]?.timestamp ? new Date(last.rows[0].timestamp).toISOString() : null, candidate.timestamp)) continue;
+        const live = Boolean(trade.observedLive && Date.now() - Date.parse(trade.timestamp) <= 300_000);
+        const result = await client.query(`INSERT INTO radar_signals(id,kind,entity,token_address,wallet_addresses,evidence,window_minutes,min_buyers,timestamp,source_block,source_hash,live)
+          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12) ON CONFLICT(id) DO NOTHING RETURNING id`,
+        [candidate.id, candidate.kind, candidate.entity, trade.tokenAddress, candidate.wallets, JSON.stringify(candidate.evidence.map(evidence)), profile.windowMinutes, profile.minBuyers,
+          candidate.timestamp, trade.blockNumber, trade.blockHash, live]);
+        inserted += result.rowCount ?? 0;
       }
     }
     await client.query('UPDATE trades SET intelligence_processed=true WHERE id=ANY($1::text[])', [trades.map(trade => trade.id)]);
@@ -142,7 +133,7 @@ async function backfillSignalProfile() {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock_shared(782319)');
-    const pending = await client.query('SELECT * FROM radar_profiles WHERE backfilled_at IS NULL ORDER BY profile LIMIT 1 FOR UPDATE SKIP LOCKED');
+    const pending = await client.query('SELECT * FROM radar_profiles WHERE profile=$1 AND backfilled_at IS NULL FOR UPDATE SKIP LOCKED', [profileKey(defaultSignalSettings)]);
     const profile = pending.rows[0];
     if (!profile) { await client.query('COMMIT'); return; }
     const rows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
@@ -151,13 +142,12 @@ async function backfillSignalProfile() {
       AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
       ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`);
     const history = new Map<string, ObservedTrade[]>(), cooldown = new Map<string, string>();
-    const preferences = { ...defaultPreferences, windowMinutes: profile.window_minutes, minBuyers: profile.min_buyers };
     const candidates: Record<string, unknown>[] = [];
     for (const row of rows.rows) {
       const trade: ObservedTrade = { ...row, timestamp: new Date(row.timestamp).toISOString() };
       const tokenHistory = history.get(trade.tokenAddress) || []; tokenHistory.push(trade); history.set(trade.tokenAddress, tokenHistory);
       if (Date.now() - Date.parse(trade.timestamp) > 86400_000) continue;
-      for (const signal of detectSignals(trade, tokenHistory, preferences)) {
+      for (const signal of detectSignals(trade, tokenHistory, defaultSignalSettings)) {
         const key = `${signal.kind}:${signal.entity}`;
         if (!cooldownAllows(cooldown.get(key) ?? null, signal.timestamp)) continue;
         cooldown.set(key, signal.timestamp);
@@ -168,7 +158,7 @@ async function backfillSignalProfile() {
     for (let offset = 0; offset < candidates.length; offset += 200) await client.query(`INSERT INTO radar_signals(id,kind,entity,token_address,wallet_addresses,evidence,window_minutes,min_buyers,timestamp,source_block,source_hash,live)
       SELECT id,kind,entity,token,wallets,evidence,$2,$3,timestamp,block,hash,false FROM jsonb_to_recordset($1::jsonb)
       AS r(id text,kind text,entity text,token text,wallets text[],evidence jsonb,timestamp timestamptz,block bigint,hash text) ON CONFLICT(id) DO NOTHING`,
-    [JSON.stringify(candidates.slice(offset, offset + 200)), profile.window_minutes, profile.min_buyers]);
+    [JSON.stringify(candidates.slice(offset, offset + 200)), defaultSignalSettings.windowMinutes, defaultSignalSettings.minBuyers]);
     await client.query('UPDATE radar_profiles SET backfilled_at=now() WHERE profile=$1', [profile.profile]);
     if (profile.profile === '10:3') await client.query(`UPDATE trades SET intelligence_processed=true WHERE NOT intelligence_processed AND NOT observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours'
       AND block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)`);

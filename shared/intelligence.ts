@@ -4,13 +4,6 @@ export const signalLabels: Record<SignalKind, string> = {
   clustered_buys: 'KOLs buying', repeat_buy: 'Buying again', buyer_selling: 'Buyer selling',
   near_graduation: 'Near graduation', graduated: 'Graduated',
 };
-export interface AlertPreferences {
-  windowMinutes: 5 | 10 | 30;
-  minBuyers: number;
-  categories: SignalKind[];
-  muted: boolean;
-}
-export const defaultPreferences: AlertPreferences = { windowMinutes: 10, minBuyers: 3, categories: [...signalKinds], muted: false };
 export interface WatchPricePoint { timestamp: string; priceUsd: string }
 export interface MarketCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface TokenChart {
@@ -45,7 +38,7 @@ export interface WatchEntry {
   priceHistory?: WatchPricePoint[];
   periodChange?: string | null; periodVolumeUsd?: string | null; periodKolCount?: number;
 }
-export interface Watchlist { items: WatchEntry[]; preferences: AlertPreferences; period?: WatchPeriod }
+export interface Watchlist { items: WatchEntry[]; period?: WatchPeriod }
 export interface SignalEvidence {
   id: string; txHash: string; walletAddress: string; kolName: string | null;
   side: string; timestamp: string; blockNumber: string; blockHash: string;

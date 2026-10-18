@@ -1,6 +1,6 @@
 # Telegram login setup
 
-Telegram login is optional. Visitors can follow tokens and KOLs without an account. Logged-in favorites and filter preferences persist across devices; logging out does not delete them.
+Telegram login is optional. Visitors can follow tokens and KOLs without an account. Logged-in favorites persist across devices; logging out does not delete them.
 
 ## Bot-first sign-in
 
@@ -8,7 +8,7 @@ The header **Login** button opens the verified Kollens bot with a random ten-min
 
 Return tokens are URL fragments, removed immediately by the app and stored only as hashes on the server. Do not forward a login link. Duplicate webhook delivery does not resend it. Expired or completed links cannot be reused; a fresh `/start` can replace a failed link after any delivery cooldown.
 
-Accounts with a verified numeric Telegram ID keep the same favorites, journal and creator ownership. If older accounts without this identifier still exist, an unfamiliar ID requires one-time OIDC verification before account creation, preventing empty duplicate accounts. Recovery remains available when verification is required or a login error occurs. Accounts are never matched by display name or username.
+Accounts with a verified numeric Telegram ID keep the same favorites, portfolio and creator ownership. If older accounts without this identifier still exist, an unfamiliar ID requires one-time OIDC verification before account creation, preventing empty duplicate accounts. Recovery remains available when verification is required or a login error occurs. Accounts are never matched by display name or username.
 
 Guest favorites merge only when the return opens in the browser that began sign-in. A different browser signs in independently and does not import the original browser's guest favorites. A different signed-in account must log out explicitly before completing a bot link. Login does not enable trade alerts.
 
@@ -52,7 +52,7 @@ Only confirmed, live-observed trades by tracked, favorited KOLs qualify. Histori
 
 After a successful login, users return to Kollens without an alert invitation modal. Telegram alerts can be enabled or resumed manually in the Watchlist KOL tab, with separate explicit messaging consent. The header Login button retains its appearance while sign-in starts.
 
-The Watchlist KOL tab places followed KOLs on the left and Telegram settings on the right; settings move above the list on mobile. Radar filters stay separate. Trade messages use buy/sell emojis, bold names and values, linked token names, plain UTC trade times, and Kollens navigation buttons. BscScan links are omitted. Formatting uses explicit [Telegram message entities](https://core.telegram.org/bots/api#messageentity), so token metadata is never interpreted as HTML or Markdown.
+The Watchlist KOL tab places followed KOLs on the left and Telegram settings on the right; settings move above the list on mobile. Trade messages use buy/sell emojis, bold names and values, linked token names, plain UTC trade times, and Kollens navigation buttons. BscScan links are omitted. Formatting uses explicit [Telegram message entities](https://core.telegram.org/bots/api#messageentity), so token metadata is never interpreted as HTML or Markdown.
 
 Use a separately registered HTTPS development origin, with its `/api/auth/telegram/callback` URL and matching `PUBLIC_APP_URL`. Use localhost only if BotFather explicitly accepts that callback. The development address must serve both the frontend and `/api` routes; do not point Telegram at the backend while browsing a different origin.
 
@@ -70,8 +70,8 @@ Notification tests use an injected fake Bot API transport and a disposable integ
 
 ## Data and account behavior
 
-The backend verifies Telegram identity before creating a local account. Telegram identity, favorites and preferences are stored in PostgreSQL; session secrets are hashed before storage. Account favorites do not expire when a device's 30-day login expires. Browser-only favorites retain the existing guest lifetime.
+The backend verifies Telegram identity before creating a local account. Telegram identity, favorites and Telegram alert settings are stored in PostgreSQL; session secrets are hashed before storage. Account favorites do not expire when a device's 30-day login expires. Browser-only favorites retain the existing guest lifetime.
 
-Telegram alert settings are separate from Radar filters. Alerts default off; once enabled, new favorite KOLs are included from their favorite time unless individually muted. Activation, resume and unmute boundaries prevent older trades from being delivered. Notification settings, verified chat IDs, update IDs and delivery evidence survive API/worker restarts. A reorg cancels pending orphaned trades and schedules corrections for already delivered messages. Operational metrics contain counts, timings and fixed failure categories, never tokens or complete message bodies.
+Telegram alerts default off; once enabled, new favorite KOLs are included from their favorite time unless individually muted. Activation, resume and unmute boundaries prevent older trades from being delivered. Notification settings, verified chat IDs, update IDs and delivery evidence survive API/worker restarts. A reorg cancels pending orphaned trades and schedules corrections for already delivered messages. Operational metrics contain counts, timings and fixed failure categories, never tokens or complete message bodies.
 
-Sign-in merges guest tokens and KOLs, preserving the account's existing filters. New accounts inherit guest filters. Each kind has a 100-item limit; an over-limit merge cancels login without modifying either list. Remove some guest or account favorites and retry. Clear Watchlist removes favorites and resets filters while keeping the current account signed in. Logout revokes only this device's login and starts an empty guest list; it does not erase account favorites.
+Sign-in merges guest tokens and KOLs. Each kind has a 100-item limit; an over-limit merge cancels login without modifying either list. Remove some guest or account favorites and retry. Removing favorites does not end the current account session. Logout revokes only this device's login and starts an empty guest list; it does not erase account favorites.

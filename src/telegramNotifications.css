@@ -22,6 +22,6 @@
 .watchlist-kol-layout .watch-kol-list{max-width:none}.watchlist-kol-settings .telegram-alert-settings{margin-bottom:16px;padding:20px}
 .watchlist-kol-layout .watch-kol-list:empty{border:0}
 .watchlist-kol-settings .telegram-alert-options>.feature-button{width:100%;justify-content:center;margin:5px 0 0}
-.watchlist-kol-settings .watch-settings{margin-top:0}.watchlist-kol-settings .alert-controls{flex-wrap:wrap}
+
 @media(max-width:850px){.watchlist-kol-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"settings" "following";gap:22px}}
 @media(max-width:600px){.telegram-alert-settings{padding:14px;margin-bottom:16px}.telegram-alert-options{gap:12px 17px}.telegram-alert-options>.feature-button{margin-left:0}.telegram-alert-options>span{flex-basis:100%}.telegram-kol-controls{gap:3px}}

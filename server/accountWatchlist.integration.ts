@@ -6,7 +6,6 @@ import { ensureSchema, pool } from './db.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
 import { captureGuestWatchlist, mergeGuestWatchlist } from './accountWatchlist.js';
 import { createTelegramOidc, registerTelegramAuthRoutes, telegramIssuer, type TelegramAuthConfig } from './telegramAuth.js';
-import { defaultPreferences } from '../shared/intelligence.js';
 
 if (!/^\/bscan_auth_test(?:_\d+)?$/.test(new URL(process.env.DATABASE_URL || '').pathname)) throw new Error('Use a disposable bscan_auth_test database');
 process.env.NODE_ENV = 'production';
@@ -60,8 +59,7 @@ try {
   const first = await request('PUT', `/api/watchlist/items/token/${token}`, '', undefined, 'guest');
   assert.equal(first.statusCode, 200, first.body);
   const guestJar = cookie(first, 'bscan_watch'); assert.ok(guestJar);
-  const preferences = { ...defaultPreferences, windowMinutes: 30, minBuyers: 4 };
-  assert.equal((await request('PUT', '/api/watchlist', guestJar, { preferences }, 'guest')).statusCode, 200);
+  assert.equal((await request('PUT', '/api/watchlist', guestJar, { preferences: { windowMinutes: 30, minBuyers: 4 } }, 'guest')).statusCode, 400, 'Removed Radar filters are no longer accepted');
   const firstLogin = await login('telegram-user-one', guestJar);
   assert.equal(firstLogin.callback.headers.location, '/watchlist?kind=kol&telegramLogin=success', firstLogin.callback.body);
   assert.ok(firstLogin.jar);
@@ -69,7 +67,7 @@ try {
   assert.ok(identity.id);
   const signed = (await request('GET', '/api/watchlist', firstLogin.jar)).json();
   assert.equal(signed.items[0].address, token);
-  assert.equal(signed.preferences.windowMinutes, 30);
+  assert.equal(Object.hasOwn(signed, 'preferences'), false, 'Watchlist responses contain no saved Radar filters');
   assert.equal((await request('GET', '/api/watchlist', guestJar)).json().items.length, 0, 'Merged guest cookie is revoked');
   assert.equal((await request('PUT', '/api/watchlist', firstLogin.jar, { items: [] }, identity.id)).statusCode, 409, 'Legacy stale replacement cannot erase account favorites');
 
@@ -91,7 +89,7 @@ try {
 
   const cleared = await request('DELETE', '/api/watchlist', secondDevice.jar, undefined, identity.id);
   assert.equal(cleared.json().items.length, 0);
-  assert.deepEqual(cleared.json().preferences, defaultPreferences);
+  assert.equal(Object.hasOwn(cleared.json(), 'preferences'), false);
   assert.equal((await request('GET', '/api/auth/me', secondDevice.jar)).json().user.id, identity.id, 'Clear retains login');
   await request('PUT', `/api/watchlist/items/token/${token}`, firstLogin.jar, undefined, identity.id);
   await request('POST', '/api/auth/logout', firstLogin.jar);
@@ -99,12 +97,11 @@ try {
   assert.equal((await request('GET', '/api/auth/me', secondDevice.jar)).json().user.id, identity.id, 'Logout revokes only one device');
   assert.equal((await request('GET', '/api/watchlist', secondDevice.jar)).json().items.length, 1);
 
-  const preferenceGuest = await request('PUT', `/api/watchlist/items/token/${token2}`);
-  const returningGuestJar = cookie(preferenceGuest, 'bscan_watch');
-  await request('PUT', '/api/watchlist', returningGuestJar, { preferences: { ...defaultPreferences, windowMinutes: 5 } });
+  const returningGuest = await request('PUT', `/api/watchlist/items/token/${token2}`);
+  const returningGuestJar = cookie(returningGuest, 'bscan_watch');
   const returning = await login('telegram-user-one', returningGuestJar);
   assert.equal((await request('GET', '/api/watchlist', returning.jar)).json().items.length, 2);
-  assert.equal((await request('GET', '/api/watchlist', returning.jar)).json().preferences.windowMinutes, 10, 'Returning account retains its preferences');
+  assert.equal(Object.hasOwn((await request('GET', '/api/watchlist', returning.jar)).json(), 'preferences'), false);
 
   // Exceeding a merge limit must roll back both the account merge and guest consumption.
   const overflowGuest = await request('PUT', `/api/watchlist/items/kol/${kol}`);

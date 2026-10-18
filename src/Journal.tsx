@@ -17,15 +17,15 @@ export async function journalRequest<T>(accountId: string, path: string, signal?
   const response = await fetch(`/api/journal${path}`, { method, cache: 'no-store', signal,
     headers: { 'Content-Type': 'application/json', 'X-Watchlist-Owner': accountId }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Journal could not load. Try again.');
+  if (!response.ok) throw new Error(result.error || 'Portfolio could not load. Try again.');
   return result as T;
 }
 const emptyWallets: JournalWallets = { wallets: [], limit: 3 };
-export function JournalPage() {
+export function PortfolioPage() {
   const account = useAccount();
-  return <JournalContent key={account.state.user?.id ?? 'guest'} />;
+  return <PortfolioContent key={account.state.user?.id ?? 'guest'} />;
 }
-function JournalContent() {
+function PortfolioContent() {
   useLanguage();
   const account = useAccount(), user = account.state.user;
   const [wallets, setWallets] = useState<JournalWallets>(emptyWallets), [selection, setSelection] = useState('all');
@@ -60,7 +60,7 @@ function JournalContent() {
           ? { ...nextActivity, trades: [...nextActivity.trades, ...current.trades.slice(nextActivity.trades.length)], cursor: current.cursor } : nextActivity);
         setError('');
         timer = setTimeout(() => void load(), nextSummary.preparing ? Math.max(3000, nextSummary.retryAfterMs ?? 3000) : 30_000);
-      } catch (problem) { if (!controller.signal.aborted) { setError(problem instanceof Error ? problem.message : 'Journal could not load. Try again.'); timer = setTimeout(() => void load(), 10_000); } }
+      } catch (problem) { if (!controller.signal.aborted) { setError(problem instanceof Error ? problem.message : 'Portfolio could not load. Try again.'); timer = setTimeout(() => void load(), 10_000); } }
       finally { if (!controller.signal.aborted) setBusy(false); }
     };
     void load(); return () => { controller.abort(); clearTimeout(timer); };
@@ -69,27 +69,27 @@ function JournalContent() {
     if (!user || busy) return;
     const owner = user.id; setBusy(true); setError('');
     try { await journalRequest(owner, path, undefined, method, body); if (identity.current === owner) { setAdding(false); setAddress(''); setLabel(''); setSelected(null); reload(); } }
-    catch (problem) { if (identity.current === owner) setError(problem instanceof Error ? problem.message : 'Journal could not load. Try again.'); }
+    catch (problem) { if (identity.current === owner) setError(problem instanceof Error ? problem.message : 'Portfolio could not load. Try again.'); }
     finally { if (identity.current === owner) setBusy(false); }
   };
   const more = async () => {
     if (!user || !activity?.cursor || busy) return;
     const owner = user.id; setBusy(true);
     try { const next = await journalRequest<JournalActivity>(owner, `/activity?wallet=${encodeURIComponent(selection)}&cursor=${encodeURIComponent(activity.cursor)}`); if (identity.current === owner) setActivity(current => ({ ...next, trades: [...(current?.trades ?? []), ...next.trades.filter(row => !current?.trades.some(old => old.id === row.id && old.walletAddress === row.walletAddress))] })); }
-    catch { setError('Journal could not load. Try again.'); } finally { if (identity.current === owner) setBusy(false); }
+    catch { setError('Portfolio could not load. Try again.'); } finally { if (identity.current === owner) setBusy(false); }
   };
-  if (!user) return <div className="page journal-page"><div className="journal-title"><h1>{t('Trading journal')}</h1><Shield size={20} /></div><div className="journal-empty"><Wallet size={30} /><h2>{t('Your wallets, privately tracked')}</h2><p>{t('Sign in with Telegram to track up to three BNB wallets. No wallet connection is needed.')}</p><button className="journal-primary" type="button" disabled={!account.loaded || !account.state.enabled} onClick={() => void account.login()}>{t('Log in with Telegram')}</button></div></div>;
+  if (!user) return <div className="page journal-page"><div className="journal-title"><h1>{t('Portfolio')}</h1><Shield size={20} /></div><div className="journal-empty"><Wallet size={30} /><h2>{t('Your wallets, privately tracked')}</h2><p>{t('Sign in with Telegram to track up to three BNB wallets. No wallet connection is needed.')}</p><button className="journal-primary" type="button" disabled={!account.loaded || !account.state.enabled} onClick={() => void account.login()}>{t('Log in with Telegram')}</button></div></div>;
   const selectedWallets = selection === 'all' ? wallets.wallets : wallets.wallets.filter(value => value.address === selection);
   const positions = summary?.positions.filter(value => positionFilter === 'all' || value.status === positionFilter) ?? [];
   const totals = summary?.complete ? summary.totals : summary?.savedSnapshot?.totals;
   const dated = summary?.complete ? summary.asOf : summary?.savedSnapshot?.asOf;
   const identityFor = (wallet: string): Kol => { const item = wallets.wallets.find(value => value.address === wallet); return { address: wallet, name: item?.publicIdentity?.name || shortAddress(wallet), avatarUrl: item?.publicIdentity?.avatarUrl ?? null, twitter: null, source: 'journal', lastSeenAt: null }; };
   return <div className="page journal-page">
-    <header className="journal-title"><div><span className="journal-private"><Shield size={12} />{t('Private to your account')}</span><h1>{t('Trading journal')}</h1></div><button type="button" className="journal-add" onClick={() => setAdding(!adding)} disabled={wallets.wallets.length >= wallets.limit}><Plus size={16} />{t('Add wallet')} <small>{wallets.wallets.length}/{wallets.limit}</small></button></header>
+    <header className="journal-title"><div><span className="journal-private"><Shield size={12} />{t('Private to your account')}</span><h1>{t('Portfolio')}</h1></div><button type="button" className="journal-add" onClick={() => setAdding(!adding)} disabled={wallets.wallets.length >= wallets.limit}><Plus size={16} />{t('Add wallet')} <small>{wallets.wallets.length}/{wallets.limit}</small></button></header>
     {adding && <form className="journal-add-form" onSubmit={event => { event.preventDefault(); void mutate('/wallets', 'POST', { address: address.trim(), label: label.trim() }); }}><label>{t('BNB wallet address')}<input required pattern="0x[0-9a-fA-F]{40}" value={address} onChange={event => setAddress(event.target.value)} placeholder="0x…" /></label><label>{t('Private label')}<input value={label} maxLength={60} onChange={event => setLabel(event.target.value)} placeholder={t('Optional')} /></label><button className="journal-primary" disabled={busy}>{t('Track wallet')}</button></form>}
     {error && <div className="journal-error" role="alert">{t(error)} <button type="button" onClick={reload}>{t('Retry')}</button></div>}
     {!wallets.wallets.length ? <div className="journal-empty"><Wallet size={28} /><h2>{busy ? t('Loading wallets…') : t('Add your first wallet')}</h2><p>{t('Track any BNB wallet privately. Recent activity loads first; older purchase evidence is recovered when available.')}</p></div> : <>
-      <div className="journal-toolbar"><label className="journal-selector"><span>{t('Portfolio')}</span><select value={selection} onChange={event => { setSelection(event.target.value); setSelected(null); }}><option value="all">{t('Combined portfolio')}</option>{wallets.wallets.map(value => <option key={value.address} value={value.address}>{value.label || value.publicIdentity?.name || shortAddress(value.address)}</option>)}</select></label><button type="button" onClick={reload} aria-label={t('Refresh journal')} disabled={busy}><RefreshCw size={16} /></button></div>
+      <div className="journal-toolbar"><label className="journal-selector"><span>{t('Portfolio')}</span><select value={selection} onChange={event => { setSelection(event.target.value); setSelected(null); }}><option value="all">{t('Combined portfolio')}</option>{wallets.wallets.map(value => <option key={value.address} value={value.address}>{value.label || value.publicIdentity?.name || shortAddress(value.address)}</option>)}</select></label><button type="button" onClick={reload} aria-label={t('Refresh portfolio')} disabled={busy}><RefreshCw size={16} /></button></div>
       <div className="journal-metrics" aria-busy={busy || summary?.preparing}>{([['Tracked token value', totals?.valueUsd], ['Invested', totals?.investedUsd], ['Sold', totals?.soldUsd], ['Realized P&L', totals?.realizedProfitUsd], ['Est. total profit', totals?.estimatedProfitUsd]] as const).map(([name, value]) => <div key={name}><span>{t(name)}</span><strong className={name.includes('profit') || name === 'Realized P&L' ? Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : '' : ''}>{money(value, name.includes('profit') || name === 'Realized P&L')}</strong></div>)}<div><span>{t('Consolidated return')}</span><strong>{totals?.roi == null ? '—' : `${(Number(totals.roi) * 100).toLocaleString(getLocale(), { maximumFractionDigits: 2 })}%`}</strong></div></div>
       <p className="journal-coverage">{t('Profit uses available position history, not the activity window. Internal transfers preserve original costs and do not create profit.')}{dated && <> {t('Valuation as of {time}', { time: localDate(dated) })}</>}{!summary?.complete && summary?.savedSnapshot && <> · {t('Saved valid snapshot')}</>}{summary?.preparing && <> · {t('Preparing accounting…')}</>}</p>
       {!summary?.complete && <p className="journal-coverage" role="status">{t('Combined totals appear when all selected positions reconcile. Available positions are shown below.')}</p>}

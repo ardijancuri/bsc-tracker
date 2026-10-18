@@ -3,7 +3,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import * as oidc from 'openid-client';
 import { pool } from './db.js';
-import { defaultPreferences, type AlertPreferences } from '../shared/intelligence.js';
 import type { AuthError, AuthState, AuthUser } from '../shared/auth.js';
 
 export const telegramIssuer = 'https://oauth.telegram.org';
@@ -15,7 +14,7 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const secret = () => randomBytes(32).toString('hex');
 
 export type TelegramAuthConfig = { clientId: string; clientSecret: string; origin: string; secure: boolean };
-export type ResolvedAuthUser = AuthUser & { preferences: AlertPreferences };
+export type ResolvedAuthUser = AuthUser;
 export type GuestLoginSnapshot = { sessionId: string; secretHash: string } | null;
 export type TelegramNotificationConsent = {
   available(): boolean;
@@ -46,7 +45,7 @@ export async function ensureAuthSchema(db: Pool) {
     CREATE TABLE IF NOT EXISTS auth_users (
       id uuid PRIMARY KEY, issuer text NOT NULL, subject text NOT NULL,
       name text NOT NULL, username text, avatar_url text,
-      preferences jsonb NOT NULL DEFAULT '${JSON.stringify(defaultPreferences)}',
+      preferences jsonb NOT NULL DEFAULT '{}',
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (issuer,subject)
     );
@@ -87,7 +86,7 @@ export const authSessionSecret = (cookie: string | undefined) => cookieValue(coo
 export async function resolveAuthUser(request: FastifyRequest, db: Pool = pool): Promise<ResolvedAuthUser | null> {
   const value = authSessionSecret(request.headers.cookie);
   if (!value) return null;
-  const result = await db.query(`SELECT u.id,u.name,u.username,u.avatar_url AS "avatarUrl",u.preferences
+  const result = await db.query(`SELECT u.id,u.name,u.username,u.avatar_url AS "avatarUrl"
     FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.secret_hash=$1 AND s.expires_at>now()`, [digest(value)]);
   return result.rows[0] ?? null;
 }

@@ -288,7 +288,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
         (history.retryAfterMs ?? 0) - (Date.now() - history.settledAt)) } : {}),
       ...(open && !currentQuote ? { currentPriceNotice: currentPriceUnavailableNotice } : {}),
       ...(selected.inventory && !replayInventoryIsFresh(selected) ? { inventoryNotice: inventoryUnavailableNotice } : {}),
-      accountingNotice: selected.requestContext && accountingKnown ? 'Profit uses reconciled position history and the frozen journal valuation. Earlier values are estimates.' : exactFinal ? accountingExactNotice : accountingKnown ? accountingEstimateNotice
+      accountingNotice: selected.requestContext && accountingKnown ? 'Profit uses reconciled position history and the frozen portfolio valuation. Earlier values are estimates.' : exactFinal ? accountingExactNotice : accountingKnown ? accountingEstimateNotice
         : selected.replayAccounting?.status === 'pending' ? undefined : accountingUnavailableNotice };
   } finally {
     clearTimeout(timeout); signal.removeEventListener('abort', abort);

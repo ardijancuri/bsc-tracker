@@ -11,7 +11,7 @@ export async function ensureIntelligenceSchema(pool: Pool) {
     CREATE INDEX IF NOT EXISTS trades_intelligence_pending_idx ON trades(block_number,transaction_index,id) WHERE NOT intelligence_processed AND block_number IS NOT NULL;
     CREATE TABLE IF NOT EXISTS watch_sessions (
       id text PRIMARY KEY, secret_hash text UNIQUE NOT NULL, expires_at timestamptz NOT NULL,
-      preferences jsonb NOT NULL DEFAULT '{"windowMinutes":10,"minBuyers":3,"categories":["clustered_buys","repeat_buy","buyer_selling","near_graduation","graduated"],"muted":false}',
+      preferences jsonb NOT NULL DEFAULT '{}',
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS watch_entries (

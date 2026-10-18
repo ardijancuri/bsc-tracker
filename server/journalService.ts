@@ -45,14 +45,14 @@ export function createJournalService({ db = pool, history = currentJournalHistor
     const all = result.rows as Membership[];
     if (selected && selected !== 'all') {
       const wallet = journalAddress(selected), found = all.find(row => row.wallet_address === wallet);
-      if (!found) throw new JournalInputError('Journal wallet not found', 404);
+      if (!found) throw new JournalInputError('Portfolio wallet not found', 404);
       return [found];
     }
     return all;
   };
   async function authorize(userId: string, wallet: string, revision?: string) {
     const rows = await memberships(userId, wallet);
-    if (revision && rows[0].revision !== revision) throw new JournalInputError('Journal membership changed. Refresh and try again.', 409);
+    if (revision && rows[0].revision !== revision) throw new JournalInputError('Portfolio membership changed. Refresh and try again.', 409);
     return rows[0];
   }
   async function list(userId: string): Promise<JournalWallets> {
@@ -80,7 +80,7 @@ export function createJournalService({ db = pool, history = currentJournalHistor
       const existing = await client.query(`SELECT 1 FROM journal_wallets WHERE user_id=$1 AND wallet_address=$2`, [userId, wallet]);
       if (!existing.rowCount) {
         const count = await client.query('SELECT count(*)::integer AS count FROM journal_wallets WHERE user_id=$1', [userId]);
-        if (count.rows[0].count >= journalWalletLimit) throw new JournalInputError('You can track up to three journal wallets', 409);
+        if (count.rows[0].count >= journalWalletLimit) throw new JournalInputError('You can track up to three portfolio wallets', 409);
         // kols supplies the canonical wallet foreign key only. Private wallets
         // never become members of the public tracked roster.
         await client.query(`INSERT INTO kols(address,display_name,source,is_tracked) VALUES($1,NULL,'journal',false) ON CONFLICT(address) DO NOTHING`, [wallet]);
@@ -111,7 +111,7 @@ export function createJournalService({ db = pool, history = currentJournalHistor
   async function updateLabel(userId: string, value: unknown, labelValue: unknown) {
     const wallet = journalAddress(value), label = journalLabel(labelValue);
     const result = await db.query(`UPDATE journal_wallets SET label=$3 WHERE user_id=$1 AND wallet_address=$2 RETURNING wallet_address`, [userId, wallet, label]);
-    if (!result.rowCount) throw new JournalInputError('Journal wallet not found', 404);
+    if (!result.rowCount) throw new JournalInputError('Portfolio wallet not found', 404);
     return list(userId);
   }
   async function remove(userId: string, value: unknown) {
@@ -130,7 +130,7 @@ export function createJournalService({ db = pool, history = currentJournalHistor
   async function older(userId: string, value: unknown) {
     const wallet = journalAddress(value);
     const result = await db.query(`UPDATE journal_wallets SET activity_from=activity_from-interval '7 days',revision=$3 WHERE user_id=$1 AND wallet_address=$2 RETURNING wallet_address`, [userId, wallet, randomUUID()]);
-    if (!result.rowCount) throw new JournalInputError('Journal wallet not found', 404);
+    if (!result.rowCount) throw new JournalInputError('Portfolio wallet not found', 404);
     await db.query('DELETE FROM journal_snapshots WHERE user_id=$1', [userId]);
     return list(userId);
   }
@@ -194,7 +194,7 @@ export function createJournalService({ db = pool, history = currentJournalHistor
             AND EXISTS(SELECT 1 FROM journal_wallets WHERE wallet_address=$1)
           ON CONFLICT(wallet_address,token_address) DO UPDATE SET
           history_revision=EXCLUDED.history_revision,balance_proof=EXCLUDED.balance_proof,quote=EXCLUDED.quote,checked_at=now(),attempted_at=now(),status=EXCLUDED.status,reason=EXCLUDED.reason,events=EXCLUDED.events,source='node',coverage=EXCLUDED.coverage,generation=EXCLUDED.generation,canonical_revision=EXCLUDED.canonical_revision`, [pair.wallet, pair.token, digest(node.events), JSON.stringify(node.proof), currentQuote ? JSON.stringify(currentQuote) : null, node.coverage.complete ? 'ready' : 'pending', node.reason ?? null, JSON.stringify(node.events), JSON.stringify(node.coverage), generation, originalCanonical]);
-        if (!saved.rowCount) throw new JournalInputError('Journal membership changed. Refresh and try again.', 409);
+        if (!saved.rowCount) throw new JournalInputError('Portfolio membership changed. Refresh and try again.', 409);
         return value;
       }
       job.promote = () => { void history(pair.wallet, pair.token, new Date(0).toISOString(), true).catch(() => {}); };
@@ -365,7 +365,7 @@ export function createJournalService({ db = pool, history = currentJournalHistor
       UNION ALL SELECT timestamp FROM journal_provider_movements WHERE wallet_address=$1 AND token_address=$2 AND timestamp<=now()) movements`, [wallet, token]);
     if (!rows.rows[0]?.first) throw new JournalInputError('No trading history is available yet', 404);
     const metadata = (await db.query(`SELECT CASE WHEN total_supply_raw>0 AND decimals BETWEEN 0 AND 36 AND supply_checked_at>now()-interval '2 days' THEN (total_supply_raw/power(10::numeric,decimals))::text END AS supply FROM tokens WHERE address=$1 AND ${kolProfileTokenSql('tokens')}`, [token])).rows[0];
-    if (!metadata) throw new JournalInputError('Journal token activity not found', 404);
+    if (!metadata) throw new JournalInputError('Portfolio token activity not found', 404);
     const movements = frozen?.replayAccounting?.history?.events ?? frozen?.replayAccounting?.events;
     const first = movements?.length ? Math.min(...movements.map(event => Date.parse(event.timestamp))) : Date.parse(rows.rows[0].first);
     const last = movements?.length ? Math.max(...movements.map(event => Date.parse(event.timestamp))) : Date.parse(rows.rows[0].last);
