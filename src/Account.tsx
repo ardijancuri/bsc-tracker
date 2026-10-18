@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserRound, X } from 'lucide-react';
+import { LogOut, Star, UserRound, UserRoundPen, Wallet, X } from 'lucide-react';
 import type { AuthState, AuthUser } from '../shared/auth';
 import { telegramBotLoginUrl } from './telegramBotLoginRequest';
 import { t } from './i18n';
@@ -127,7 +127,13 @@ export function AccountButton() {
   if (!account.state.user) return <button type="button" className="account-login" onClick={() => void account.login()} disabled={!account.loaded || account.checking || !account.state.enabled} aria-label={t('Log in with Telegram')} title={!account.state.enabled && account.loaded ? t('Telegram login is temporarily unavailable') : t('Log in with Telegram')}><UserRound className="account-login-user-icon" size={18} aria-hidden="true" /><span>{t('Login')}</span></button>;
   const user = account.state.user;
   return <details ref={menu} className="account-menu"><summary title={user.name} aria-label={`${t('Account menu')}: ${user.name} · ${t('Logged in with Telegram')}`}><AccountAvatar key={user.id} user={user} /><span className="account-identity"><span className="account-name">{user.name}</span><span className="account-provider">{t('Telegram')}</span></span></summary>
-    <div className="account-menu-content"><div className="account-menu-identity"><AccountAvatar key={user.id} user={user} /><div><strong>{user.name}</strong>{user.username && <small>@{user.username}</small>}<small>{t('Logged in with Telegram')}</small></div></div><Link to="/watchlist" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}>{t('Watchlist')}</Link><Link to="/portfolio" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}>{t('Portfolio')}</Link><Link to="/creator" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}>{t('My creator profiles')}</Link><button type="button" disabled={account.busy} onClick={() => void account.logout()}><LogOut size={14} aria-hidden="true" />{t('Log out')}</button></div>
+    <div className="account-menu-content">
+      <div className="account-menu-identity"><AccountAvatar key={user.id} user={user} /><div><strong>{user.name}</strong>{user.username && <small>@{user.username}</small>}<small>{t('Logged in with Telegram')}</small></div></div>
+      <Link to="/watchlist" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}><Star size={16} aria-hidden="true" />{t('Watchlist')}</Link>
+      <Link to="/portfolio" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}><Wallet size={16} aria-hidden="true" />{t('Portfolio')}</Link>
+      <Link to="/creator" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); }}><UserRoundPen size={16} aria-hidden="true" />{t('My creator profiles')}</Link>
+      <button type="button" disabled={account.busy} onClick={() => void account.logout()}><LogOut size={16} aria-hidden="true" />{t('Log out')}</button>
+    </div>
   </details>;
 }
 export function AccountWatchlistNotice() {
