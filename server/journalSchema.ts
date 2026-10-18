@@ -9,7 +9,7 @@ export async function ensureJournalSchema(db: Pool) {
       CREATE TABLE IF NOT EXISTS journal_wallets (
         user_id uuid NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
         wallet_address text NOT NULL REFERENCES kols(address), label varchar(60) NOT NULL DEFAULT '',
-        added_at timestamptz NOT NULL DEFAULT now(), activity_from timestamptz NOT NULL DEFAULT now()-interval '7 days',
+        added_at timestamptz NOT NULL DEFAULT now(), activity_from timestamptz NOT NULL DEFAULT now(),
         registration_block bigint, registration_hash text, revision uuid NOT NULL,
         PRIMARY KEY(user_id,wallet_address)
       );
@@ -51,6 +51,9 @@ export async function ensureJournalSchema(db: Pool) {
       ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS coverage jsonb;
       ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS generation uuid;
       ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS canonical_revision text;
+      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS tracking_from timestamptz;
+      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS opening_balances jsonb;
+      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS membership_revision uuid;
       ALTER TABLE wallet_transfers ADD COLUMN IF NOT EXISTS counterparty_address text;
       CREATE TABLE IF NOT EXISTS journal_node_evidence (
         tx_hash text PRIMARY KEY,block_number bigint NOT NULL,block_hash text NOT NULL,timestamp timestamptz NOT NULL,
@@ -78,6 +81,17 @@ export async function ensureJournalSchema(db: Pool) {
         PRIMARY KEY(user_id,wallet_set_hash)
       );
     `);
+    // Preserve membership/evidence data while replacing the former seven-day
+    // window. Rotate only changed memberships, invalidating their dated lifetime
+    // summaries and replay leases without replaying historical acquisitions.
+    await client.query(`ALTER TABLE journal_wallets ALTER COLUMN activity_from SET DEFAULT now();
+      UPDATE journal_wallet_coverage SET repair_from_block=GREATEST(repair_from_block,registration_block+1) WHERE repair_from_block<registration_block+1;
+      WITH changed AS (
+        UPDATE journal_wallets SET activity_from=added_at,revision=md5(revision::text||':since-wallet-added')::uuid
+          WHERE activity_from<>added_at RETURNING user_id
+      ) DELETE FROM journal_snapshots WHERE user_id IN(SELECT user_id FROM changed);
+      DELETE FROM journal_replay_snapshots s WHERE NOT EXISTS(SELECT 1 FROM journal_wallets m
+        WHERE m.user_id=s.user_id AND m.wallet_address=s.wallet_address AND m.revision=s.membership_revision);`);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }

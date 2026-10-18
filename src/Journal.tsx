@@ -1,7 +1,7 @@
 import { journalCoverageNotice } from './journalMessages';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, RefreshCw, Shield, Trash2, Wallet } from 'lucide-react';
+import { Check, ChevronDown, Copy, Plus, RefreshCw, Shield, Trash2, Wallet } from 'lucide-react';
 import type { JournalActivity, JournalPosition, JournalSummary, JournalWallet, JournalWallets } from '../shared/journal';
 import { useAccount } from './Account';
 import { t, useLanguage, getLocale, localDate } from './i18n';
@@ -21,6 +21,56 @@ export async function journalRequest<T>(accountId: string, path: string, signal?
   return result as T;
 }
 const emptyWallets: JournalWallets = { wallets: [], limit: 3 };
+
+function PortfolioSelector({ wallets, value, onChange }: { wallets: JournalWallet[]; value: string; onChange(value: string): void }) {
+  const options = [{ value: 'all', label: t('Combined portfolio') }, ...wallets.map(wallet => ({ value: wallet.address, label: wallet.label || wallet.publicIdentity?.name || shortAddress(wallet.address) }))];
+  const selectedIndex = Math.max(0, options.findIndex(option => option.value === value));
+  const [open, setOpen] = useState(false), [active, setActive] = useState(selectedIndex);
+  const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), optionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const typed = useRef({ value: '', at: 0 });
+  const id = useId();
+  const close = (restoreFocus = false) => { setOpen(false); typed.current = { value: '', at: 0 }; if (restoreFocus) trigger.current?.focus(); };
+  const choose = (index: number) => { onChange(options[index].value); close(true); };
+  useEffect(() => { if (open) optionRefs.current[Math.min(active, options.length - 1)]?.focus(); }, [open, active, options.length]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open]);
+  const navigate = (event: KeyboardEvent) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(index => (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length); }
+    else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActive(event.key === 'Home' ? 0 : options.length - 1); }
+    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(Math.min(active, options.length - 1)); }
+    else if (event.key === 'Tab' && event.shiftKey) { event.preventDefault(); close(true); }
+    else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      const key = event.key.toLocaleLowerCase(), now = Date.now();
+      const query = now - typed.current.at < 700 && typed.current.value !== key ? typed.current.value + key : key;
+      typed.current = { value: query, at: now };
+      const start = query.length > 1 ? active : active + 1;
+      for (let offset = 0; offset < options.length; offset++) {
+        const index = (start + offset) % options.length;
+        if (options[index].label.toLocaleLowerCase().startsWith(query)) { setActive(index); break; }
+      }
+    }
+  };
+  return <div className="journal-selector" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && open) { event.preventDefault(); close(true); } }}>
+    <span id={`${id}-label`}>{t('Portfolio')}</span>
+    <div className="journal-select-control">
+      <button ref={trigger} type="button" className="journal-select-trigger" aria-labelledby={`${id}-label ${id}-value`} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? `${id}-options` : undefined}
+        onClick={() => { if (open) close(); else { setActive(selectedIndex); setOpen(true); } }}
+        onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(selectedIndex); setOpen(true); } }}>
+        <Wallet size={16} aria-hidden="true" /><span id={`${id}-value`}>{options[selectedIndex].label}</span><ChevronDown size={15} aria-hidden="true" />
+      </button>
+      {open && <div className="journal-select-options" id={`${id}-options`} role="listbox" aria-labelledby={`${id}-label`} onKeyDown={navigate}>
+        {options.map((option, index) => <div key={option.value} ref={element => { optionRefs.current[index] = element; }} role="option" aria-selected={option.value === value} tabIndex={active === index ? 0 : -1}
+          onFocus={() => setActive(index)} onClick={() => choose(index)}><span>{option.label}</span>{option.value === value && <Check size={15} aria-hidden="true" />}</div>)}
+      </div>}
+    </div>
+  </div>;
+}
+
 export function PortfolioPage() {
   const account = useAccount();
   return <PortfolioContent key={account.state.user?.id ?? 'guest'} />;
@@ -78,35 +128,68 @@ function PortfolioContent() {
     try { const next = await journalRequest<JournalActivity>(owner, `/activity?wallet=${encodeURIComponent(selection)}&cursor=${encodeURIComponent(activity.cursor)}`); if (identity.current === owner) setActivity(current => ({ ...next, trades: [...(current?.trades ?? []), ...next.trades.filter(row => !current?.trades.some(old => old.id === row.id && old.walletAddress === row.walletAddress))] })); }
     catch { setError('Portfolio could not load. Try again.'); } finally { if (identity.current === owner) setBusy(false); }
   };
-  if (!user) return <div className="page journal-page"><div className="journal-title"><h1>{t('Portfolio')}</h1><Shield size={20} /></div><div className="journal-empty"><Wallet size={30} /><h2>{t('Your wallets, privately tracked')}</h2><p>{t('Sign in with Telegram to track up to three BNB wallets. No wallet connection is needed.')}</p><button className="journal-primary" type="button" disabled={!account.loaded || !account.state.enabled} onClick={() => void account.login()}>{t('Log in with Telegram')}</button></div></div>;
+  if (!user) return <div className="page journal-page portfolio-page"><div className="journal-title"><h1>{t('Portfolio')}</h1><Shield size={20} /></div><div className="journal-empty"><Wallet size={30} /><h2>{t('Your wallets, privately tracked')}</h2><p>{t('Sign in with Telegram to track up to three BNB wallets. No wallet connection is needed.')}</p><button className="journal-primary" type="button" disabled={!account.loaded || !account.state.enabled} onClick={() => void account.login()}>{t('Log in with Telegram')}</button></div></div>;
   const selectedWallets = selection === 'all' ? wallets.wallets : wallets.wallets.filter(value => value.address === selection);
   const positions = summary?.positions.filter(value => positionFilter === 'all' || value.status === positionFilter) ?? [];
   const totals = summary?.complete ? summary.totals : summary?.savedSnapshot?.totals;
   const dated = summary?.complete ? summary.asOf : summary?.savedSnapshot?.asOf;
+  const noTrackedActivity = summary !== null && activity !== null && !activity.trades.length && !activity.cursor && !summary.positions.length;
+  const status = [
+    dated && t('Valuation as of {time}', { time: localDate(dated) }),
+    !summary?.complete && summary?.savedSnapshot && t('Saved valid snapshot'),
+    noTrackedActivity ? t('No tracked activity yet') : summary?.preparing && t('Preparing accounting…'),
+  ].filter(Boolean).join(' · ');
   const identityFor = (wallet: string): Kol => { const item = wallets.wallets.find(value => value.address === wallet); return { address: wallet, name: item?.publicIdentity?.name || shortAddress(wallet), avatarUrl: item?.publicIdentity?.avatarUrl ?? null, twitter: null, source: 'journal', lastSeenAt: null }; };
-  return <div className="page journal-page">
+  return <div className="page journal-page portfolio-page">
     <header className="journal-title"><div><span className="journal-private"><Shield size={12} />{t('Private to your account')}</span><h1>{t('Portfolio')}</h1></div><button type="button" className="journal-add" onClick={() => setAdding(!adding)} disabled={wallets.wallets.length >= wallets.limit}><Plus size={16} />{t('Add wallet')} <small>{wallets.wallets.length}/{wallets.limit}</small></button></header>
     {adding && <form className="journal-add-form" onSubmit={event => { event.preventDefault(); void mutate('/wallets', 'POST', { address: address.trim(), label: label.trim() }); }}><label>{t('BNB wallet address')}<input required pattern="0x[0-9a-fA-F]{40}" value={address} onChange={event => setAddress(event.target.value)} placeholder="0x…" /></label><label>{t('Private label')}<input value={label} maxLength={60} onChange={event => setLabel(event.target.value)} placeholder={t('Optional')} /></label><button className="journal-primary" disabled={busy}>{t('Track wallet')}</button></form>}
     {error && <div className="journal-error" role="alert">{t(error)} <button type="button" onClick={reload}>{t('Retry')}</button></div>}
-    {!wallets.wallets.length ? <div className="journal-empty"><Wallet size={28} /><h2>{busy ? t('Loading wallets…') : t('Add your first wallet')}</h2><p>{t('Track any BNB wallet privately. Recent activity loads first; older purchase evidence is recovered when available.')}</p></div> : <>
-      <div className="journal-toolbar"><label className="journal-selector"><span>{t('Portfolio')}</span><select value={selection} onChange={event => { setSelection(event.target.value); setSelected(null); }}><option value="all">{t('Combined portfolio')}</option>{wallets.wallets.map(value => <option key={value.address} value={value.address}>{value.label || value.publicIdentity?.name || shortAddress(value.address)}</option>)}</select></label><button type="button" onClick={reload} aria-label={t('Refresh portfolio')} disabled={busy}><RefreshCw size={16} /></button></div>
+    {!wallets.wallets.length ? <div className="journal-empty"><Wallet size={28} /><h2>{busy ? t('Loading wallets…') : t('Add your first wallet')}</h2><p>{t('Track any BNB wallet privately. Tracking starts when you add the wallet.')}</p></div> : <>
+      <div className="journal-toolbar"><PortfolioSelector wallets={wallets.wallets} value={selection} onChange={value => { setSelection(value); setSelected(null); }} /><button type="button" onClick={reload} aria-label={t('Refresh portfolio')} disabled={busy}><RefreshCw size={16} /></button></div>
       <div className="journal-metrics" aria-busy={busy || summary?.preparing}>{([['Tracked token value', totals?.valueUsd], ['Invested', totals?.investedUsd], ['Sold', totals?.soldUsd], ['Realized P&L', totals?.realizedProfitUsd], ['Est. total profit', totals?.estimatedProfitUsd]] as const).map(([name, value]) => <div key={name}><span>{t(name)}</span><strong className={name.includes('profit') || name === 'Realized P&L' ? Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : '' : ''}>{money(value, name.includes('profit') || name === 'Realized P&L')}</strong></div>)}<div><span>{t('Consolidated return')}</span><strong>{totals?.roi == null ? '—' : `${(Number(totals.roi) * 100).toLocaleString(getLocale(), { maximumFractionDigits: 2 })}%`}</strong></div></div>
-      <p className="journal-coverage">{t('Profit uses available position history, not the activity window. Internal transfers preserve original costs and do not create profit.')}{dated && <> {t('Valuation as of {time}', { time: localDate(dated) })}</>}{!summary?.complete && summary?.savedSnapshot && <> · {t('Saved valid snapshot')}</>}{summary?.preparing && <> · {t('Preparing accounting…')}</>}</p>
-      {!summary?.complete && <p className="journal-coverage" role="status">{t('Combined totals appear when all selected positions reconcile. Available positions are shown below.')}</p>}
+      {status && <p className="journal-coverage" role="status">{status}</p>}
       <section className="journal-positions"><div className="journal-section-title"><h2>{t('Positions')}</h2><div className="journal-filter">{(['all', 'open', 'closed'] as const).map(value => <button type="button" key={value} aria-pressed={value === positionFilter} onClick={() => setPositionFilter(value)}>{t(value === 'all' ? 'All' : value === 'open' ? 'Open' : 'Closed')}</button>)}</div></div>
-        <div className="journal-position-list">{positions.map(position => <div className="journal-position" key={position.token.address}><div className="journal-token"><span className="journal-token-image">{position.token.logoUrl ? <img src={position.token.logoUrl} alt="" /> : (position.token.symbol || '?').slice(0, 1)}</span><span><strong>{position.token.symbol || shortAddress(position.token.address)}</strong><small>{position.token.name || shortAddress(position.token.address)} · {t(position.status === 'open' ? 'Open' : position.status === 'closed' ? 'Closed' : 'Unknown')}</small></span></div><dl><div><dt>{t('Value')}</dt><dd>{money(position.valueUsd)}</dd></div><div><dt>{t('Invested')}</dt><dd>{money(position.investedUsd)}</dd></div><div><dt>{t('Sold')}</dt><dd>{money(position.soldUsd)}</dd></div><div><dt>{t('Realized P&L')}</dt><dd>{money(position.realizedProfitUsd, true)}</dd></div><div><dt>{t('Est. total profit')}</dt><dd className={Number(position.estimatedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(position.estimatedProfitUsd, true)}</dd></div></dl><div className="journal-position-actions">{!position.complete && <small title={t(journalCoverageNotice(position.reasons))}>{t(journalCoverageNotice(position.reasons))}</small>}{position.wallets.map(wallet => <button key={wallet} type="button" onClick={() => setSelected({ wallet, position })}>{t('Trade details')} {position.wallets.length > 1 && shortAddress(wallet)}</button>)}</div></div>)}{!positions.length && <p className="journal-state">{summary?.preparing || busy ? t('Discovering recent positions…') : t('No eligible positions in this activity window')}</p>}</div>
+        <div className="journal-position-list">{positions.map(position => <div className="journal-position" key={position.token.address}><div className="journal-token"><span className="journal-token-image">{position.token.logoUrl ? <img src={position.token.logoUrl} alt="" /> : (position.token.symbol || '?').slice(0, 1)}</span><span><strong>{position.token.symbol || shortAddress(position.token.address)}</strong><small>{position.token.name || shortAddress(position.token.address)} · {t(position.status === 'open' ? 'Open' : position.status === 'closed' ? 'Closed' : 'Unknown')}</small></span></div><dl><div><dt>{t('Value')}</dt><dd>{money(position.valueUsd)}</dd></div><div><dt>{t('Invested')}</dt><dd>{money(position.investedUsd)}</dd></div><div><dt>{t('Sold')}</dt><dd>{money(position.soldUsd)}</dd></div><div><dt>{t('Realized P&L')}</dt><dd>{money(position.realizedProfitUsd, true)}</dd></div><div><dt>{t('Est. total profit')}</dt><dd className={Number(position.estimatedProfitUsd) >= 0 ? 'positive' : 'negative'}>{money(position.estimatedProfitUsd, true)}</dd></div></dl><div className="journal-position-actions">{!position.complete && <small title={t(journalCoverageNotice(position.reasons))}>{t(journalCoverageNotice(position.reasons))}</small>}{position.wallets.map(wallet => <button key={wallet} type="button" onClick={() => setSelected({ wallet, position })}>{t('Trade details')} {position.wallets.length > 1 && shortAddress(wallet)}</button>)}</div></div>)}{!positions.length && <p className="journal-state">{summary?.preparing || busy ? t('Loading tracked positions…') : t('No eligible positions since tracking started')}</p>}</div>
       </section>
-      <section><div className="journal-section-title"><h2>{t('Trade history')}</h2><span>{activity?.activityFrom ? t('Activity since {date}', { date: localDate(activity.activityFrom) }) : t('Recent trades first')}</span></div><div className="journal-trades">{activity?.trades.map(trade => <div className="journal-trade" key={`${trade.walletAddress}:${trade.id}`}><span className={trade.side === 'buy' ? 'positive' : 'negative'}>{t(trade.side === 'buy' ? 'Buy' : 'Sell')}</span><strong>{trade.tokenSymbol || shortAddress(trade.tokenAddress)}</strong><span className="journal-trade-wallet">{wallets.wallets.find(value => value.address === trade.walletAddress)?.label || shortAddress(trade.walletAddress)}</span><span>{trade.amountUsd == null ? `${compact(trade.quoteAmount)} ${trade.quoteSymbol || ''}` : money(trade.amountUsd)}</span><time dateTime={trade.timestamp}>{localDate(trade.timestamp)}</time></div>)}{!activity?.trades.length && <p className="journal-state">{t('No eligible trades yet')}</p>}</div>{activity?.cursor && <button className="journal-more" type="button" disabled={busy} onClick={() => void more()}>{t('Load more trades')}</button>}</section>
-      <section className="journal-wallets"><h2>{t('Tracked wallets')}</h2>{selectedWallets.map(wallet => <WalletSettings key={wallet.address} wallet={wallet} busy={busy} changeLabel={label => void mutate(`/wallets/${wallet.address}`, 'PATCH', { label })} remove={() => void mutate(`/wallets/${wallet.address}`, 'DELETE')} older={() => void mutate(`/wallets/${wallet.address}/older`, 'POST', {})} />)}</section>
+      <section><div className="journal-section-title"><h2>{t('Trade history')}</h2><span>{activity?.activityFrom ? t('Activity since {date}', { date: localDate(activity.activityFrom) }) : t('Tracking from wallet addition')}</span></div><div className="journal-trades">{activity?.trades.map(trade => <div className="journal-trade" key={`${trade.walletAddress}:${trade.id}`}><span className={trade.side === 'buy' ? 'positive' : 'negative'}>{t(trade.side === 'buy' ? 'Buy' : 'Sell')}</span><strong>{trade.tokenSymbol || shortAddress(trade.tokenAddress)}</strong><span className="journal-trade-wallet">{wallets.wallets.find(value => value.address === trade.walletAddress)?.label || shortAddress(trade.walletAddress)}</span><span>{trade.amountUsd == null ? `${compact(trade.quoteAmount)} ${trade.quoteSymbol || ''}` : money(trade.amountUsd)}</span><time dateTime={trade.timestamp}>{localDate(trade.timestamp)}</time></div>)}{!activity?.trades.length && <p className="journal-state">{t('No eligible trades yet')}</p>}</div>{activity?.cursor && <button className="journal-more" type="button" disabled={busy} onClick={() => void more()}>{t('Load more trades')}</button>}</section>
+      <section className="journal-wallets"><h2>{t('Tracked wallets')}</h2>
+        <div className="portfolio-wallet-table" role="table" aria-label={t('Tracked wallets')}>
+          <div className="portfolio-wallet-head" role="row">
+            <span role="columnheader">{t('Private label')}</span><span role="columnheader">{t('Wallet address')}</span>
+            <span role="columnheader">{t('Activity since')}</span><span role="columnheader">{t('Status')}</span><span role="columnheader" className="portfolio-wallet-actions-heading">{t('Actions')}</span>
+          </div>
+          {selectedWallets.map(wallet => <WalletSettings key={wallet.address} wallet={wallet} busy={busy} changeLabel={label => void mutate(`/wallets/${wallet.address}`, 'PATCH', { label })} remove={() => void mutate(`/wallets/${wallet.address}`, 'DELETE')} />)}
+        </div>
+      </section>
     </>}
     {selected && <TradeModalLoader key={`${user.id}:${selected.wallet}:${selected.position.token.address}`} journalAccountId={user.id} kol={identityFor(selected.wallet)} token={{ ...selected.position.token, priceUsd: null, marketCapUsd: null, change24h: null, kolCount24h: 0, buys24h: 0, sells24h: 0, volume24hUsd: null, lastTradeAt: null } as Token} kolIdentity={<strong>{identityFor(selected.wallet).name}</strong>} tokenIdentity={<strong>{selected.position.token.symbol || shortAddress(selected.position.token.address)}</strong>} tokenAddress={<span>{shortAddress(selected.position.token.address)}</span>} onClose={() => setSelected(null)} />}
   </div>;
 }
 
-function WalletSettings({ wallet, busy, changeLabel, remove, older }: { wallet: JournalWallet; busy: boolean; changeLabel(label: string): void; remove(): void; older(): void }) {
+function WalletSettings({ wallet, busy, changeLabel, remove }: { wallet: JournalWallet; busy: boolean; changeLabel(label: string): void; remove(): void }) {
   const [value, setValue] = useState(wallet.label), [removing, setRemoving] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   useEffect(() => setValue(wallet.label), [wallet.label]);
-  return <div className="journal-wallet-row"><Wallet size={19} /><div><input aria-label={t('Private label')} maxLength={60} value={value} onChange={event => setValue(event.target.value)} onBlur={() => { if (value.trim() !== wallet.label) changeLabel(value.trim()); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} disabled={busy} placeholder={shortAddress(wallet.address)} /><small>{wallet.address}</small><small>{t('Activity since {date}', { date: localDate(wallet.activityFrom) })} · {t(wallet.preparation.status === 'ready' ? 'Ready' : wallet.preparation.status === 'cooldown' ? 'Provider cooldown' : wallet.preparation.status === 'unavailable' ? 'History unavailable' : 'Preparing…')}</small></div><div className="journal-wallet-actions"><button type="button" disabled={busy || wallet.preparation.historyComplete} onClick={older}>{t('Load older history')}</button>{removing ? <><button type="button" disabled={busy} className="negative" onClick={remove}>{t('Remove wallet')}</button><button type="button" onClick={() => setRemoving(false)}>{t('Cancel')}</button></> : <button type="button" disabled={busy} onClick={() => setRemoving(true)} aria-label={t('Remove wallet')}><Trash2 size={15} /></button>}</div></div>;
+  useEffect(() => {
+    if (copyState === 'idle') return;
+    const timer = window.setTimeout(() => setCopyState('idle'), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+  const copyAddress = async () => {
+    try { await navigator.clipboard.writeText(wallet.address); setCopyState('copied'); }
+    catch { setCopyState('failed'); }
+  };
+  return <div className="portfolio-wallet-row" role="row">
+    <div className="portfolio-wallet-label" role="cell" data-label={t('Private label')}><input aria-label={t('Private label')} maxLength={60} value={value} onChange={event => setValue(event.target.value)} onBlur={() => { if (value.trim() !== wallet.label) changeLabel(value.trim()); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} disabled={busy} placeholder={shortAddress(wallet.address)} /></div>
+    <div className="portfolio-wallet-address" role="cell" data-label={t('Wallet address')}>
+      <button type="button" className="portfolio-wallet-copy" onClick={() => void copyAddress()} title={`${t('Copy wallet address')}: ${wallet.address}`} aria-label={copyState === 'copied' ? t('{label} copied', {label: t('Wallet address')}) : copyState === 'failed' ? t('Copy failed') : `${t('Copy wallet address')}: ${wallet.address}`} aria-live="polite">
+        <span>{copyState === 'copied' ? t('Copied') : copyState === 'failed' ? t('Copy failed') : wallet.address}</span>{copyState === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+      </button>
+    </div>
+    <div className="portfolio-wallet-since" role="cell" data-label={t('Activity since')}><time dateTime={wallet.activityFrom}>{localDate(wallet.activityFrom)}</time></div>
+    <div className="portfolio-wallet-status" role="cell" data-label={t('Status')}>{t(wallet.preparation.status === 'ready' ? 'Ready' : wallet.preparation.status === 'cooldown' ? 'Provider cooldown' : wallet.preparation.status === 'unavailable' ? 'History unavailable' : 'Waiting for activity')}</div>
+    <div className="portfolio-wallet-actions" role="cell">{removing ? <><button type="button" disabled={busy} className="negative" onClick={remove}>{t('Remove wallet')}</button><button type="button" onClick={() => setRemoving(false)}>{t('Cancel')}</button></> : <button type="button" disabled={busy} onClick={() => setRemoving(true)} aria-label={t('Remove wallet')}><Trash2 size={15} /></button>}</div>
+  </div>;
 }
 
 export function CreatorProfilesPage() {

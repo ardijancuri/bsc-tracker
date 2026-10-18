@@ -10,7 +10,7 @@ function setup(authenticated = true) {
   vi.stubEnv('PUBLIC_APP_URL', 'https://kollens.com'); vi.stubEnv('NODE_ENV', 'production');
   const service = { list: vi.fn(async () => ({ wallets: [], limit: 3 })), add: vi.fn(async () => ({ wallets: [], limit: 3 })),
     updateLabel: vi.fn(async () => ({ wallets: [], limit: 3 })), remove: vi.fn(async () => ({ wallets: [], limit: 3 })),
-    older: vi.fn(async () => ({ wallets: [], limit: 3 })), summary: vi.fn(async () => ({ complete: false, positions: [] })),
+    summary: vi.fn(async () => ({ complete: false, positions: [] })),
     activity: vi.fn(async () => ({ trades: [], cursor: null })), tokenActivity: vi.fn(async () => ({ journal: { private: true } })),
     replayChart: vi.fn(async () => ({ points: [] })), authorize: vi.fn() };
   const app = Fastify({ logger: false }); apps.push(app);
@@ -30,13 +30,17 @@ describe('private journal API boundaries', () => {
     const response = await app.inject({ url: '/api/journal/summary', headers: { 'x-watchlist-owner': 'different-account' } });
     expect(response.statusCode).toBe(409); expect(service.summary).not.toHaveBeenCalled();
   });
-  it('requires the app origin for add, removal, label and older-history mutations', async () => {
+  it('requires the app origin for add, removal and label mutations', async () => {
     const { app, service } = setup();
-    for (const [method, url] of [['POST', '/api/journal/wallets'], ['PATCH', '/api/journal/wallets/0xabc'], ['DELETE', '/api/journal/wallets/0xabc'], ['POST', '/api/journal/wallets/0xabc/older']] as const) {
+    for (const [method, url] of [['POST', '/api/journal/wallets'], ['PATCH', '/api/journal/wallets/0xabc'], ['DELETE', '/api/journal/wallets/0xabc']] as const) {
       const response = await app.inject({ method, url, headers: { origin: 'https://attacker.invalid' }, ...(method === 'DELETE' ? {} : { payload: {} }) });
       expect(response.statusCode).toBe(403);
     }
     expect(service.add).not.toHaveBeenCalled(); expect(service.remove).not.toHaveBeenCalled();
+  });
+  it('does not expose the retired older-history endpoint', async () => {
+    const { app } = setup();
+    expect((await app.inject({ method: 'POST', url: '/api/journal/wallets/0xabc/older', headers: { origin: 'https://kollens.com' } })).statusCode).toBe(404);
   });
   it('binds every read and export to the current account, including frozen snapshots', async () => {
     const { app, service } = setup();

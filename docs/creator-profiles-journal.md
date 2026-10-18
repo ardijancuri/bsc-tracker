@@ -49,16 +49,23 @@ snapshots participate in reorg rollback. Private-only activity is excluded
 from public feeds, counts, rankings, searches, signals, KOL alerts and roster
 positions. Public signal APIs also withhold stale mixed/private signal rows.
 
-The first activity window is seven days. **Load older history** extends it in
-seven-day increments. Eligible positions may need earlier purchase history,
-so the activity window is never described as a performance period. Existing
+Portfolio tracking starts when each wallet is added to the account. Existing
+memberships use their original added time; removing and adding again starts a
+new boundary. Older public KOL trades and previously recovered provider rows
+never enter that account's portfolio activity, position totals or replay.
+There is no historical discovery or **Load older history** action. Existing
 quote/reward/dividend/LP exclusions apply before position preparation.
 
-GMGN history recovery stores resumable completed pages independently of
-canonical indexed trades, without fabricated block numbers. Requests keep the
-existing accounting/market credential queues, budgets and shared upstream
-coalescing. Complete node evidence can prepare a new position without GMGN;
-missing old costs require recovery or remain explicitly unknown.
+The worker captures new node evidence after registration. A collection repair
+starts just after the committed registration checkpoint, so a wallet added
+while a scan is in flight does not lose future blocks. Timestamp filtering
+excludes pre-add activity even when the checkpoint lagged at registration.
+Complete raw transfers plus the confirmed ending balance establish opening
+holdings at that exact boundary. Pre-existing holdings retain an unknown
+original acquisition cost; they never become free tokens or fabricated profit.
+Portfolio requests do not invoke GMGN account-history recovery. Current quotes
+and genuine market chart observations retain the existing market queue and
+caches; public KOL accounting continues to use its existing historical policy.
 
 ## Accounting and replays
 
@@ -90,7 +97,6 @@ send `private, no-store` and do not log private payloads. Routes:
 
 - `GET/POST /api/journal/wallets`
 - `PATCH/DELETE /api/journal/wallets/:wallet`
-- `POST /api/journal/wallets/:wallet/older`
 - `GET /api/journal/summary?wallet=all|address`
 - `GET /api/journal/positions?wallet=all|address`
 - `GET /api/journal/activity?wallet=all|address&cursor=...`

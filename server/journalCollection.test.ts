@@ -52,6 +52,7 @@ describe('private journal collection boundaries', () => {
     expect(statements.some(sql => sql.includes("reason='chain_reorganization'"))).toBe(true);
     expect(statements.some(sql => sql.includes('DELETE FROM journal_snapshots'))).toBe(true);
     expect(statements.some(sql => sql.includes('repair_from_block=LEAST'))).toBe(true);
+    expect(statements.some(sql => sql.includes('UPDATE journal_wallets SET registration_hash') && sql.includes('revision=md5') && sql.includes('registration_block=LEAST'))).toBe(true);
   });
   it('fails an incomplete range when a receipt or transaction is missing', () => {
     expect(() => validateCollectedReceipt(hash, tx, null, 100, 101)).toThrow('incomplete');

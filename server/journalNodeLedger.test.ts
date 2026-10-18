@@ -61,6 +61,41 @@ describe('durable node journal evidence', () => {
     const { db } = fixture({ opening: '0', older: true });
     expect(await tryLoadJournalNodeEvidence(db, { wallet, token, decimals: 0 }, { balance: { ...proof, balance: '0' } })).toBeNull();
   });
+  it('starts a new tracked period despite public KOL history before registration', async () => {
+    const { db, query } = fixture({ older: true });
+    const startAt = new Date(timestamp.getTime() - 60_000).toISOString();
+    const result = await tryLoadJournalNodeEvidence(db, { wallet, token, decimals: 0, startAt, registrationBlock: '100' }, { balance: proof });
+    expect(result?.coverage.complete).toBe(true);
+    expect(result?.openingBalances).toEqual([{ walletAddress: wallet, tokenAddress: token, tokenAmount: '0' }]);
+    for (const [sql, parameters] of query.mock.calls.filter(([sql]) => sql.includes('$5::timestamptz'))) {
+      expect(sql).toContain('timestamp >= $5'); expect(parameters?.[4]).toBe(startAt);
+    }
+    expect(rpc).not.toHaveBeenCalled();
+  });
+  it('retains pre-add holdings with unknown cost without importing their older trades', async () => {
+    const { db } = fixture({ older: true, opening: '999' });
+    const trackedProof = { ...proof, balance: '30' };
+    const result = await tryLoadJournalNodeEvidence(db, { wallet, token, decimals: 0, startAt: new Date(timestamp.getTime() - 60_000).toISOString(), registrationBlock: '100' }, { balance: trackedProof });
+    expect(result?.coverage.complete).toBe(true);
+    expect(result?.openingBalances?.[0].tokenAmount).toBe('20');
+    const ledger = calculateJournalLedger({ wallets: [wallet], events: result!.events, openingBalances: result!.openingBalances, coverage: [result!.coverage], asOf: proof.checkedAt,
+      valuations: [{ tokenAddress: token, priceUsd: '2', pricedAt: proof.checkedAt, balances: [{ walletAddress: wallet, tokenAmount: '30' }] }] });
+    expect(ledger.positions[0].remainingTokenAmount).toBe('30'); expect(ledger.positions[0].valueUsd).toBe('60');
+    expect(ledger.positions[0].estimatedProfitUsd).toBeNull(); expect(ledger.positions[0].remainingCostBasisUsd).toBeNull();
+    expect(ledger.reasons).toContain('opening_cost_unknown'); expect(ledger.reasons).not.toContain('balance_unreconciled');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+  it('uses a later account checkpoint while reusing earlier captured raw coverage', async () => {
+    const { db, query } = fixture();
+    const startAt = timestamp.toISOString();
+    await tryLoadJournalNodeEvidence(db, { wallet, token, decimals: 0, startAt, registrationBlock: '103' }, { balance: proof });
+    expect(query.mock.calls.find(([sql]) => sql.includes('FROM wallet_transfers WHERE') && sql.includes('$5::timestamptz'))?.[1]).toEqual([wallet, token, '103', '110', startAt]);
+  });
+  it('keeps a confirmed checkpoint before the add time in a collection repair state', async () => {
+    const result = await tryLoadJournalNodeEvidence(fixture().db, { wallet, token, decimals: 0,
+      startAt: new Date(timestamp.getTime() + 1000).toISOString(), registrationBlock: '100' }, { balance: proof });
+    expect(result?.coverage.complete).toBe(false); expect(result?.reason).toBe('indexing_lag');
+  });
   it('never treats a registration gap or unfinished repair as complete coverage', async () => {
     expect(await tryLoadJournalNodeEvidence(fixture({ repair: '103' }).db, { wallet, token, decimals: 0 }, { balance: proof })).toBeNull();
     expect(await tryLoadJournalNodeEvidence(fixture({ from: 104 }).db, { wallet, token, decimals: 0 }, { balance: proof })).toBeNull();

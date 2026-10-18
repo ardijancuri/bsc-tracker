@@ -1,15 +1,15 @@
 import type { PoolClient } from 'pg';
 import type { KolTokenBalanceProof } from '../shared/kolTokenTrades.js';
-import { journalDecimalDivide, journalDecimalMultiply, type JournalLedgerCoverage, type JournalLedgerEvent } from './journalLedger.js';
+import { journalDecimalDivide, journalDecimalMultiply, type JournalLedgerCoverage, type JournalLedgerEvent, type JournalLedgerOpeningBalance } from './journalLedger.js';
 import { journalNodeFees } from './journalNodeFees.js';
 import { blockHex, chainRpc } from './rpc.js';
 import { hasRecognizedSwap } from './swap.js';
 import { walletTransactionContext } from './smartAccountTrades.js';
 type Database = Pick<PoolClient, 'query'>;
-type Pair = { wallet: string; token: string; decimals: number | null; trades?: unknown[] };
+type Pair = { wallet: string; token: string; decimals: number | null; trades?: unknown[]; startAt?: string; registrationBlock?: string | null };
 export interface JournalNodeEvidence {
   source: 'node'; events: JournalLedgerEvent[]; coverage: JournalLedgerCoverage;
-  proof: KolTokenBalanceProof; reason?: string;
+  proof: KolTokenBalanceProof; openingBalances?: JournalLedgerOpeningBalance[]; reason?: string;
 }
 const units = (raw: bigint, decimals: number) => {
   const absolute = raw < 0n ? -raw : raw, divisor = 10n ** BigInt(decimals), fraction = (absolute % divisor).toString().padStart(decimals, '0').replace(/0+$/, '');
@@ -36,16 +36,16 @@ export async function tryLoadJournalNodeEvidence(database: Database, pair: Pair,
     (SELECT value->>'blockHash' FROM worker_state WHERE key='node') AS confirmed_hash
     FROM journal_wallet_coverage c WHERE c.wallet_address=$1`, [wallet])).rows[0];
   if (!state || !/^\d+$/.test(state.registration || '') || !/^\d+$/.test(state.last || '') || !/^\d+$/.test(state.first || '') || !/^\d+$/.test(state.confirmed || '')) return null;
-  const registration = BigInt(state.registration), last = BigInt(state.last), confirmed = BigInt(state.confirmed);
+  const registration = pair.registrationBlock != null ? BigInt(pair.registrationBlock) : BigInt(state.registration), last = BigInt(state.last), confirmed = BigInt(state.confirmed);
   if (BigInt(state.first) > registration + 1n || state.repair != null && BigInt(state.repair) <= (last < confirmed ? last : confirmed)) return null;
   // A zero opening balance may follow an earlier closed cycle. Known historical
   // proceeds/capital must survive rather than silently becoming a new zero P&L.
-  const prior = (await database.query(`SELECT EXISTS(SELECT 1 FROM trades WHERE wallet_address=$1 AND token_address=$2
+  const prior = !pair.startAt && (await database.query(`SELECT EXISTS(SELECT 1 FROM trades WHERE wallet_address=$1 AND token_address=$2
       AND block_number IS NOT NULL AND block_number<=$3 AND side IN('buy','sell'))
     OR EXISTS(SELECT 1 FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND block_number<=$3)
     OR EXISTS(SELECT 1 FROM journal_provider_movements WHERE wallet_address=$1 AND token_address=$2 AND timestamp<$4::timestamptz) AS older`,
   [wallet, token, registration.toString(), state.registered_at ?? new Date(0).toISOString()])).rows[0]?.older;
-  if (prior) return null;
+  if (prior && !pair.startAt) return null;
   let proof = options.balance;
   if (proof.walletAddress !== wallet || proof.tokenAddress !== token || proof.chain !== 'bsc' || !/^\d+$/.test(proof.blockNumber)) return null;
   const through = last < confirmed ? last : confirmed;
@@ -71,18 +71,21 @@ export async function tryLoadJournalNodeEvidence(database: Database, pair: Pair,
           AND other.quote_symbol=t.quote_symbol AND other.quote_amount=t.quote_amount AND other.amount_usd=t.amount_usd
           AND COALESCE(asset.symbol,'') !~* 'dividend[_ ]?tracker') AS "sharedQuote"
       FROM trades t WHERE t.wallet_address=$1 AND t.token_address=$2
-      AND t.block_number>$3 AND t.block_number<=$4 AND t.side IN('buy','sell') ORDER BY t.block_number,t.transaction_index,t.id`, [wallet, token, registration.toString(), proof.blockNumber]),
+      AND t.block_number>$3 AND t.block_number<=$4 AND ($5::timestamptz IS NULL OR t.timestamp >= $5) AND t.side IN('buy','sell') ORDER BY t.block_number,t.transaction_index,t.id`, [wallet, token, registration.toString(), proof.blockNumber, pair.startAt ?? null]),
     database.query(`SELECT id,tx_hash,log_index,delta_raw::text,kind,block_number::text,block_hash,timestamp,counterparty_address
-      FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND block_number>$3 AND block_number<=$4 ORDER BY block_number,log_index,id`, [wallet, token, registration.toString(), proof.blockNumber]),
-    database.query(`SELECT e.* FROM journal_node_evidence e WHERE e.block_number>$3 AND e.block_number<=$4 AND
+      FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND block_number>$3 AND block_number<=$4 AND ($5::timestamptz IS NULL OR timestamp >= $5) ORDER BY block_number,log_index,id`, [wallet, token, registration.toString(), proof.blockNumber, pair.startAt ?? null]),
+    database.query(`SELECT e.* FROM journal_node_evidence e WHERE e.block_number>$3 AND e.block_number<=$4 AND ($5::timestamptz IS NULL OR e.timestamp >= $5) AND
       (EXISTS(SELECT 1 FROM trades t WHERE t.tx_hash=e.tx_hash AND t.wallet_address=$1 AND t.token_address=$2)
-       OR EXISTS(SELECT 1 FROM wallet_transfers m WHERE m.tx_hash=e.tx_hash AND m.wallet_address=$1 AND m.token_address=$2))`, [wallet, token, registration.toString(), proof.blockNumber]),
+       OR EXISTS(SELECT 1 FROM wallet_transfers m WHERE m.tx_hash=e.tx_hash AND m.wallet_address=$1 AND m.token_address=$2))`, [wallet, token, registration.toString(), proof.blockNumber, pair.startAt ?? null]),
   ]);
   let delta = 0n;
   try { for (const row of transfers.rows) delta += BigInt(row.delta_raw); } catch { return null; }
-  let opening: bigint | null = null, openingHash: string | null = state.registration_hash;
+  // Complete captured transfer deltas and a confirmed ending balance establish
+  // holdings at the account's exact registration time, even when the indexer
+  // checkpoint lagged behind it. Earlier public-KOL cycles do not enter P&L.
+  let opening: bigint | null = pair.startAt ? ending - delta : null, openingHash: string | null = state.registration_hash;
   const cached = (await database.query(`SELECT balance_raw::text,block_hash,decimals FROM journal_opening_balances WHERE wallet_address=$1 AND token_address=$2 AND block_number=$3`, [wallet, token, registration.toString()])).rows[0];
-  if (cached && Number(cached.decimals) === decimals && cached.block_hash === state.registration_hash) opening = BigInt(cached.balance_raw);
+  if (!pair.startAt && cached && Number(cached.decimals) === decimals && cached.block_hash === state.registration_hash) opening = BigInt(cached.balance_raw);
   if (opening == null) {
     try {
       const [block, raw] = await Promise.all([
@@ -100,9 +103,10 @@ export async function tryLoadJournalNodeEvidence(database: Database, pair: Pair,
     await database.query(`INSERT INTO journal_opening_balances(wallet_address,token_address,block_number,block_hash,balance_raw,decimals)
       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(wallet_address,token_address,block_number) DO NOTHING`, [wallet, token, registration.toString(), openingHash, opening.toString(), decimals]);
   }
-  if (opening !== 0n || opening + delta !== ending) return null;
+  if (opening < 0n || !pair.startAt && opening !== 0n || opening + delta !== ending) return null;
   const evidence = new Map<string, any>(evidenceRows.rows.map(row => [row.tx_hash, row])), reasons = new Set<string>();
   const proofTime = Date.parse(proof.blockTimestamp);
+  if (pair.startAt && proofTime < Date.parse(pair.startAt)) reasons.add('indexing_lag');
   if (!Number.isFinite(proofTime) || proofTime > now + 1000 || now - proofTime > 180_000) reasons.add('indexing_lag');
   if (proof.blockNumber === confirmed.toString() && state.confirmed_hash && state.confirmed_hash.toLowerCase() !== proof.blockHash.toLowerCase()) reasons.add('chain_reorganization');
   const feeByTx = new Map<string, string | null>();
@@ -158,5 +162,5 @@ export async function tryLoadJournalNodeEvidence(database: Database, pair: Pair,
       logIndex: row.log_index, counterparty: row.counterparty_address ?? null, transferId: `${row.tx_hash}:${token}:${row.log_index}` });
   }
   const reason = [...reasons].sort()[0];
-  return { source: 'node', events, proof, coverage: { walletAddress: wallet, tokenAddress: token, complete: reasons.size === 0, ...(reason ? { reason } : {}) }, ...(reason ? { reason } : {}) };
+  return { source: 'node', events, proof, ...(pair.startAt ? { openingBalances: [{ walletAddress: wallet, tokenAddress: token, tokenAmount: units(opening, decimals) }] } : {}), coverage: { walletAddress: wallet, tokenAddress: token, complete: reasons.size === 0, ...(reason ? { reason } : {}) }, ...(reason ? { reason } : {}) };
 }

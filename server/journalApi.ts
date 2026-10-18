@@ -46,9 +46,6 @@ export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool
   app.delete<{ Params: { wallet: string } }>('/api/journal/wallets/:wallet', settings, async (request, reply) => {
     const user = await account(request, reply, true); if (user) return result(reply, () => service.remove(user.id, request.params.wallet));
   });
-  app.post<{ Params: { wallet: string } }>('/api/journal/wallets/:wallet/older', settings, async (request, reply) => {
-    const user = await account(request, reply, true); if (user) return result(reply, () => service.older(user.id, request.params.wallet));
-  });
   for (const endpoint of ['summary', 'positions']) app.get<{ Querystring: { wallet?: string } }>(`/api/journal/${endpoint}`, settings, async (request, reply) => {
     const user = await account(request, reply); if (user) return result(reply, () => service.summary(user.id, request.query.wallet));
   });

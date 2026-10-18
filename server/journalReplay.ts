@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { KolTokenActivity, KolTokenBalanceProof, KolTokenTrade } from '../shared/kolTokenTrades.js';
 import type { ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting.js';
-import { calculateJournalLedger, journalDecimalDivide, journalDecimalMultiply, type JournalLedgerEvent, type JournalLedgerTimelineEntry } from './journalLedger.js';
-import { sumJournalDecimals } from './journalHistory.js';
+import { calculateJournalLedger, journalDecimalDivide, journalDecimalMultiply, type JournalLedgerEvent, type JournalLedgerTimelineEntry, type JournalLedgerOpeningBalance, sumJournalDecimals } from './journalLedger.js';
 
 function snapshot(position: JournalLedgerTimelineEntry['snapshot']): ReplayAccountingSnapshot {
   return { remainingTokenAmount: position.remainingTokenAmount, remainingCostBasisUsd: position.remainingCostBasisUsd,
@@ -16,13 +15,13 @@ function snapshot(position: JournalLedgerTimelineEntry['snapshot']): ReplayAccou
 /** The private adapter exposes server-evaluated prefix snapshots. Provider-only
  * executions retain null block positions and are never canonical trade rows. */
 export function applyJournalReplay(activity: KolTokenActivity, input: { events: JournalLedgerEvent[]; proof: KolTokenBalanceProof;
-  coverageComplete: boolean; quote: { priceUsd: string; timestamp: string } | null; source: 'node' | 'gmgn'; now: number }): KolTokenActivity {
+  coverageComplete: boolean; openingBalances?: JournalLedgerOpeningBalance[]; quote: { priceUsd: string; timestamp: string } | null; source: 'node' | 'gmgn'; now: number }): KolTokenActivity {
   const wallet = activity.kol.address.toLowerCase(), token = activity.token.address.toLowerCase();
   const ordered = [...input.events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
     || (a.blockNumber && b.blockNumber ? Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) : 0)
     || (a.transactionIndex ?? 0) - (b.transactionIndex ?? 0) || (a.logIndex ?? 0) - (b.logIndex ?? 0) || a.id.localeCompare(b.id));
   const checkedAt = new Date(input.now).toISOString();
-  const evaluated = calculateJournalLedger({ wallets: [wallet], events: ordered,
+  const evaluated = calculateJournalLedger({ wallets: [wallet], events: ordered, openingBalances: input.openingBalances,
     coverage: [{ walletAddress: wallet, tokenAddress: token, complete: input.coverageComplete }],
     valuations: [{ tokenAddress: token, priceUsd: input.quote?.priceUsd ?? null, pricedAt: input.quote?.timestamp ?? checkedAt,
       balances: [{ walletAddress: wallet, tokenAmount: input.proof.balance }] }], asOf: checkedAt, timeline: true });
@@ -71,7 +70,7 @@ export function applyJournalReplay(activity: KolTokenActivity, input: { events: 
     coverage: { transactionsComplete: input.coverageComplete, balanceMatched: !ending.reasons.includes('balance_unreconciled'),
       exactFinal: false, verification: 'gmgn_history', ...(complete ? { reason: `journal_${input.source}_accounting` } : { reason: ending.reasons[0] ?? 'history_preparing' }) },
     ...(!complete && recoverable ? { retryAfterMs: 1500 } : {}) };
-  return { ...activity, trades: trades.reverse(), coverage: { ...activity.coverage, complete: input.coverageComplete, returnedTradeCount: trades.length },
+  return { ...activity, trades: trades.reverse(), coverage: { ...activity.coverage, complete: input.coverageComplete, indexedTradeCount: trades.length, returnedTradeCount: trades.length },
     summary: { ...activity.summary, investedUsd: ending.investedUsd, soldUsd: ending.soldUsd, realizedProfitUsd: ending.realizedProfitUsd,
       avgBoughtPriceUsd: averageBuy, avgSoldPriceUsd: averageSell,
       avgBoughtMcapUsd: averageBuy && activity.token.marketCapSupply ? journalDecimalMultiply(averageBuy, activity.token.marketCapSupply) : null,

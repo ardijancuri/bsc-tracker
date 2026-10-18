@@ -116,7 +116,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const summary = activity?.summary;
   const profit = requestContext ? journalTokenProfit(activity, requestContext) : displayedTokenPnl(activity);
   const priceTime = tokenPositionPnlPriceTime(activity);
-  const profitDescription = requestContext ? t('Profit uses available position history and known wallet-paid fees. This is not an activity-window return.') : t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
+  const profitDescription = requestContext ? t('Profit uses trades collected since this wallet was added and known wallet-paid fees.') : t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
   const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';
   const profitExpiresAt = requestContext && activity ? Date.parse((activity as JournalTokenActivity).journal?.preparedAt ?? '') + 180001 : tokenPnlExpiresAt(activity);
   useEffect(() => {

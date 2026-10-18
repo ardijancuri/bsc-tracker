@@ -1,7 +1,6 @@
 import type { KolTokenActivity } from './kolTokenTrades.js';
 
 export const journalWalletLimit = 3;
-export const journalHistoryDays = 7;
 export interface JournalWallet {
   address: string; label: string; addedAt: string; activityFrom: string; revision: string;
   publicIdentity?: { name: string | null; avatarUrl: string | null };
@@ -23,7 +22,7 @@ export interface JournalTotals {
 }
 export interface JournalSummary {
   version: 1; snapshotId: string; selectedWallets: string[]; asOf: string;
-  activityFrom: string | null; coverage: 'available_position_history';
+  activityFrom: string | null; coverage: 'since_wallet_added';
   complete: boolean; preparing: boolean; reasons: string[]; positions: JournalPosition[];
   totals: JournalTotals; savedSnapshot?: { snapshotId: string; asOf: string; totals: JournalTotals };
   retryAfterMs?: number;

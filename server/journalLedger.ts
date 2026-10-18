@@ -10,6 +10,11 @@ export interface JournalLedgerEvent {
   transactionIndex?: number | null; logIndex?: number | null;
   counterparty?: string | null; transferId?: string | null;
 }
+/** Holdings present when tracking started. Their old acquisition cost is not
+ * recovered or presented as tracked-period investment. */
+export interface JournalLedgerOpeningBalance {
+  walletAddress: string; tokenAddress: string; tokenAmount: string;
+}
 export interface JournalLedgerCoverage { walletAddress: string; tokenAddress: string; complete: boolean; reason?: string }
 export interface JournalLedgerValuation {
   tokenAddress: string; priceUsd: string | null; pricedAt: string;
@@ -75,6 +80,11 @@ class Decimal {
 }
 const zero = new Decimal(0n), positive = (value: Decimal | null): value is Decimal => value != null && value.cmp(zero) > 0;
 const nonnegative = (value: unknown) => { const parsed = Decimal.parse(value); return parsed && parsed.cmp(zero) >= 0 ? parsed : null; };
+export function sumJournalDecimals(values: string[]) {
+  return values.reduce((total, value) => {
+    const parsed = Decimal.parse(value); if (!parsed) throw new Error('invalid_decimal'); return total.add(parsed);
+  }, zero).text();
+}
 export function journalDecimalMultiply(left: string, right: string): string | null {
   const a = Decimal.parse(left), b = Decimal.parse(right); return a && b ? a.mul(b).text() : null;
 }
@@ -102,7 +112,7 @@ const sameEvent = (left: JournalLedgerEvent, right: JournalLedgerEvent) => left.
 
 export function calculateJournalLedger(input: {
   wallets: string[]; events: JournalLedgerEvent[]; valuations: JournalLedgerValuation[];
-  coverage: JournalLedgerCoverage[]; asOf: string; timeline?: boolean;
+  coverage: JournalLedgerCoverage[]; openingBalances?: JournalLedgerOpeningBalance[]; asOf: string; timeline?: boolean;
 }): JournalLedgerResult {
   const wallets = [...new Set(input.wallets.map(wallet => wallet.toLowerCase()))].sort(), selected = new Set(wallets);
   const rejected = new Map<string, Set<string>>(), unique = new Map<string, JournalLedgerEvent>();
@@ -125,7 +135,7 @@ export function calculateJournalLedger(input: {
     else if (!existing || !existing.value && fee) feeEvidence.set(key, { value: fee, token: event.tokenAddress });
   }
   const tokens = [...new Set([...events.map(event => event.tokenAddress), ...input.coverage.filter(row => selected.has(row.walletAddress.toLowerCase())).map(row => row.tokenAddress.toLowerCase()),
-    ...input.valuations.map(row => row.tokenAddress.toLowerCase())])].sort();
+    ...input.valuations.map(row => row.tokenAddress.toLowerCase()), ...(input.openingBalances ?? []).map(row => row.tokenAddress.toLowerCase())])].sort();
   const positions: JournalLedgerPosition[] = [], timeline: JournalLedgerTimelineEntry[] = [];
   for (const token of tokens) {
     const reasons = rejected.get(token) || new Set<string>(), lots = new Map(wallets.map(wallet => [wallet, [] as Lot[]]));
@@ -180,6 +190,18 @@ export function calculateJournalLedger(input: {
       lots.get(wallet)!.push(lot); runningQuantity = runningQuantity.add(lot.quantity);
       if (lot.cost) runningBasis = runningBasis.add(lot.cost); else unknownLots++;
     };
+    for (const opening of input.openingBalances ?? []) {
+      if (opening.tokenAddress.toLowerCase() !== token || !selected.has(opening.walletAddress.toLowerCase())) continue;
+      const quantity = nonnegative(opening.tokenAmount);
+      if (!quantity) { quantitiesKnown = false; reasons.add('opening_balance_unavailable'); continue; }
+      if (positive(quantity)) {
+        addLot(opening.walletAddress.toLowerCase(), { quantity, cost: null, acquiredOrder: nextLotOrder++, acquisition: null });
+        tokenWallets.add(opening.walletAddress.toLowerCase());
+        // The portfolio deliberately starts at registration. Never request old
+        // purchases or turn these pre-existing holdings into zero-cost profit.
+        reasons.add('opening_cost_unknown'); incomingKnown = false;
+      }
+    }
     const rowKey = (event: Event) => `${event.walletAddress}:${event.id}`;
     const consume = (wallet: string, quantity: Decimal): { parts: Lot[]; cost: Decimal | null } => {
       const queue = lots.get(wallet)!, parts: Lot[] = [];

@@ -26,6 +26,11 @@ describe('journal server replay accounting', () => {
     expect(value.trades).toHaveLength(1); expect(value.trades[0].blockNumber).toBeNull();
     expect(value.summary.avgBoughtPriceUsd).toBe('1'); expect(value.summary.avgBoughtMcapUsd).toBe('1000'); expect(value.summary.avgSoldPriceUsd).toBeNull();
   });
+  it('replaces public lifetime coverage counts with the tracked replay trades', () => {
+    const value = applyJournalReplay({ ...activity, coverage: { ...activity.coverage, indexedTradeCount: 127, returnedTradeCount: 127 } },
+      { events: [event('1', 'buy', '60', '60', '1', 60_000)], proof, quote: { priceUsd: '2', timestamp: new Date(now).toISOString() }, coverageComplete: true, source: 'node', now });
+    expect(value.coverage.indexedTradeCount).toBe(1); expect(value.coverage.returnedTradeCount).toBe(1);
+  });
   it('does not invent zero costs or verified totals from an unknown acquisition', () => {
     const value = applyJournalReplay(activity, { events: [event('1', 'buy', '60', null, '1', 60_000)], proof,
       quote: { priceUsd: '2', timestamp: new Date(now).toISOString() }, coverageComplete: true, source: 'gmgn', now });

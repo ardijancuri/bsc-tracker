@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateJournalLedger, type JournalLedgerEvent } from './journalLedger.js';
+import { calculateJournalLedger, sumJournalDecimals, type JournalLedgerEvent } from './journalLedger.js';
 const a = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', b = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', c = '0xcccccccccccccccccccccccccccccccccccccccc';
 const token = '0x1111111111111111111111111111111111111111', other = '0x2222222222222222222222222222222222222222';
 const at = (second: number) => new Date(Date.UTC(2026, 9, 18, 0, 0, second)).toISOString();
@@ -12,6 +12,11 @@ function calculate(events: JournalLedgerEvent[], balance = '0', options: { walle
     valuations: [{ tokenAddress: token, priceUsd: options.price === undefined ? '2' : options.price, pricedAt: at(58), balances: wallets.map(walletAddress => ({ walletAddress, tokenAmount: walletAddress === b ? options.bBalance || '0' : balance })) }] });
 }
 describe('private journal reconciled exact-decimal ledger', () => {
+  it('preserves decimal precision in replay capital and quantity sums', () => {
+    expect(sumJournalDecimals(['0.000000000000000001', '99999999999999999999.999999999999999999'])).toBe('100000000000000000000');
+    expect(sumJournalDecimals(['1.2e-8', '0.000000008'])).toBe('0.00000002');
+    expect(() => sumJournalDecimals(['unknown'])).toThrow('invalid_decimal');
+  });
   it('calculates an open position and fee-inclusive return from lifetime movements', () => {
     const result = calculate([event('1', 'buy', '10', '10', { feeUsd: '1' }), event('2', 'sell', '4', '12', { feeUsd: '0.5' })], '6');
     expect(result.complete).toBe(true);
