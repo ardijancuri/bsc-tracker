@@ -73,8 +73,8 @@ export function formatTelegramTradeMessage(trades: TelegramMessageTrade[], langu
     if (trades.length > 1 && previousSide !== trade.side) add(trade.side === 'buy' ? (zh ? '🟢 买入\n' : '🟢 BUYS\n') : (zh ? '🔴 卖出\n' : '🔴 SELLS\n'), true);
     if (trades.length === 1) add(`${trade.side === 'buy' ? '🟢' : '🔴'} ${side} `, true);
     add(token, true, tokenAddress ? `${base}/token/${tokenAddress}` : undefined); add('\n');
-    if (usd !== null) { add(`$${usd}`, true); if (quote !== null && quoteSymbol) add(` · ${quote} ${quoteSymbol}`); add('\n'); }
-    else if (quote !== null && quoteSymbol) { add(`${quote} ${quoteSymbol}`, true); add('\n'); }
+    if (usd !== null) { add(`$${usd}`, true); if (quote !== null && quoteSymbol) add(` · ${quote} ${quoteSymbol}`); add('\n\n'); }
+    else if (quote !== null && quoteSymbol) { add(`${quote} ${quoteSymbol}`, true); add('\n\n'); }
     if (tokenAmount !== null) { add(zh ? '代币数量：' : 'Tokens: '); add(`${tokenAmount} ${token}`); add('\n'); }
     add(`🕒 ${sourceTime(trade.timestamp)}\n`);
     previousSide = trade.side; visible++;

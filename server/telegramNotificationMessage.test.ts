@@ -10,7 +10,7 @@ describe('Telegram trade messages', () => {
   it('includes source amounts and UTC trade time without P&L or provider dependencies', () => {
     const result = formatTelegramTradeMessage([trade], 'en', 'https://kollens.com');
     expect(result.text).toContain('Afeng');
-    expect(result.text).toContain('🟢 BUY BIBI\n$515.67 · 0.1234 BNB\nTokens: 12,345.678901 BIBI');
+    expect(result.text).toContain('🟢 BUY BIBI\n$515.67 · 0.1234 BNB\n\nTokens: 12,345.678901 BIBI');
     expect(result.text).toContain('2026-10-17 12:34:56 UTC');
     expect(result.buttons.flat().map(button => button.url)).toEqual([
       `https://kollens.com/kol/${trade.walletAddress}`, `https://kollens.com/token/${trade.tokenAddress}`,

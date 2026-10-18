@@ -2,6 +2,7 @@
 
 ## v1.3 updates — 2026-10-18
 
+- Add a blank line below the dollar/BNB amount in Telegram buy and sell alerts.
 - Restore the KOL watchlist table's complete border and matching rounded top/bottom corners; keep the toolbar separate.
 - Remove BscScan buttons and linked timestamps from Telegram trade alerts, retaining plain trade times and Kollens links.
 - Offer an optional Telegram alert invitation after sign-in; active accounts skip it, and paused accounts can resume.
