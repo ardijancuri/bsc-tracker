@@ -30,37 +30,6 @@ export function telegramConsentUrl(value: string) {
   if (url.protocol !== 'https:' || url.hostname !== 'oauth.telegram.org' || url.username || url.password) throw new Error('Invalid Telegram consent URL');
   return url.href;
 }
-export function shouldPromptTelegramAlerts(state: TelegramNotificationState) {
-  return state.available && !state.enabled && state.connection !== 'pending';
-}
-
-export function TelegramAlertsPrompt({ state, busy, onEnable, onDismiss }: {
-  state: TelegramNotificationState; busy: boolean; onEnable(): void; onDismiss(): void;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const element = dialog.current, previous = document.activeElement;
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    if (element && !element.open) element.showModal();
-    return () => { element?.close(); document.body.style.overflow = overflow; if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
-  }, []);
-  return <dialog ref={dialog} className="telegram-alert-prompt" aria-labelledby="telegram-alert-prompt-title" aria-describedby="telegram-alert-prompt-description"
-    onCancel={event => { event.preventDefault(); onDismiss(); }} onClick={event => {
-      if (event.target !== event.currentTarget) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onDismiss();
-    }}>
-    <button className="telegram-alert-prompt-close" type="button" onClick={onDismiss} aria-label={t('Close')}><X size={19} /></button>
-    <div className="telegram-alert-prompt-icon"><Bell size={23} aria-hidden="true" /></div>
-    <h2 id="telegram-alert-prompt-title">{t('Get your KOL trades in Telegram')}</h2>
-    <p id="telegram-alert-prompt-description">{t('Receive new buys and sells from your favorite KOLs. Choose which alerts you want in your Watchlist.')}</p>
-    <div className="telegram-alert-prompt-actions"><button type="button" className="feature-button" onClick={onEnable} disabled={busy}>
-      {t(state.connection === 'connected' ? 'Resume alerts' : state.connection === 'blocked' || state.connection === 'error' ? 'Reconnect Telegram' : 'Enable Telegram alerts')}
-    </button><button type="button" className="telegram-alert-prompt-later" onClick={onDismiss}>{t('Not now')}</button></div>
-  </dialog>;
-}
-
 type NotificationsContextValue = {
   state: TelegramNotificationState | null; loading: boolean; busy: boolean; error: string | null;
   refresh(): Promise<void>; enable(): Promise<void>; preferences(value: TelegramNotificationPreferences): Promise<void>; mute(address: string, muted: boolean): Promise<void>;
@@ -82,7 +51,6 @@ export function TelegramNotificationsProvider({ children }: { children: ReactNod
   const [value, setValue] = useState<{ owner: string; state: TelegramNotificationState } | null>(null);
   const [loading, setLoading] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [askAfterLogin, setAskAfterLogin] = useState(false), [promptOwner, setPromptOwner] = useState<string | null>(null);
   const auth = useRef(account); auth.current = account;
   const version = useRef(0), locked = useRef(false), active = useRef<AbortController | null>(null), mounted = useRef(true);
   const eligible = () => Boolean(auth.current.loaded && auth.current.state.user && !auth.current.checking && !auth.current.busy && !auth.current.unavailable);
@@ -116,7 +84,7 @@ export function TelegramNotificationsProvider({ children }: { children: ReactNod
     return () => { mounted.current = false; version.current++; active.current?.abort(); window.removeEventListener(accountCheckEvent, invalidate); };
   }, []);
   useEffect(() => {
-    version.current++; active.current?.abort(); active.current = null; locked.current = false; setValue(null); setError(null); setBusy(false); setLoading(false); setPromptOwner(null);
+    version.current++; active.current?.abort(); active.current = null; locked.current = false; setValue(null); setError(null); setBusy(false); setLoading(false);
   }, [account.revision]);
   const connection = value && value.owner === account.state.user?.id ? value.state.connection : undefined;
   useEffect(() => {
@@ -130,23 +98,13 @@ export function TelegramNotificationsProvider({ children }: { children: ReactNod
   useEffect(() => {
     const params = new URLSearchParams(location.search), code = params.get('telegramAlerts'), loggedIn = params.get('telegramLogin') === 'success';
     if (!code && !loggedIn) return;
-    if (loggedIn) setAskAfterLogin(true);
     if (code && code !== 'pending') setFeedback(callbackErrors[code] || callbackErrors.failed);
     params.delete('telegramAlerts'); params.delete('telegramLogin'); void refresh();
     navigate({ pathname: location.pathname, search: params.size ? `?${params}` : '', hash: location.hash }, { replace: true });
   }, [location, navigate, refresh]);
   const state = value && value.owner === account.state.user?.id ? value.state : null;
-  useEffect(() => {
-    if (!askAfterLogin || !account.loaded || account.checking || account.busy || account.unavailable) return;
-    if (!account.state.user) { setAskAfterLogin(false); return; }
-    if (!state || loading || busy) return;
-    if (shouldPromptTelegramAlerts(state)) setPromptOwner(account.state.user.id);
-    setAskAfterLogin(false);
-  }, [askAfterLogin, account.loaded, account.checking, account.busy, account.unavailable, account.state.user, state, loading, busy]);
   return <NotificationsContext.Provider value={{ state, loading, busy: busy || account.checking || account.busy || account.unavailable, error, refresh, preferences, mute, enable }}>
     {children}{(feedback || error) && <div className="telegram-alert-feedback" role="alert"><span>{t(feedback || error!)}</span><button type="button" onClick={() => { setFeedback(null); setError(null); }} aria-label={t('Dismiss')}><X size={16} /></button></div>}
-    {state && promptOwner === account.state.user?.id && shouldPromptTelegramAlerts(state) && <TelegramAlertsPrompt state={state} busy={busy || loading || account.checking || account.busy || account.unavailable}
-      onDismiss={() => setPromptOwner(null)} onEnable={() => { if (state.connection === 'connected') void preferences({ enabled: true }); else void enable(); }} />}
   </NotificationsContext.Provider>;
 }
 

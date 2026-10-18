@@ -1,27 +1,23 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
-import { TelegramBotLoginCard } from './TelegramBotLogin';
+import { TelegramBotLoginView } from './TelegramBotLogin';
 import { setLanguage } from './i18n';
 import type { TelegramBotLoginPreview } from './telegramBotLoginRequest';
 
-const preview: TelegramBotLoginPreview = { user: { name: 'RD - Dev', username: 'rd_dev', avatarUrl: 'https://t.me/i/userpic/320/example.jpg' }, sameBrowser: true, expiresAt: '2026-10-18T12:00:00Z' };
+const preview: TelegramBotLoginPreview = { user: { name: 'RD - Dev', username: 'rd_dev', avatarUrl: 'https://t.me/i/userpic/320/example.jpg' }, sameBrowser: false, expiresAt: '2026-10-18T12:00:00Z' };
 const actions = { onContinue() {}, onRetry() {}, onLogin() {}, onRecover() {} };
-const render = (overrides: Partial<Parameters<typeof TelegramBotLoginCard>[0]> = {}) => renderToStaticMarkup(<MemoryRouter><TelegramBotLoginCard preview={preview} busy={false} error={null} loading={false} {...actions} {...overrides} /></MemoryRouter>);
+const render = (overrides: Partial<Parameters<typeof TelegramBotLoginView>[0]> = {}) => renderToStaticMarkup(<MemoryRouter><TelegramBotLoginView preview={preview} busy={false} error={null} loading={false} {...actions} {...overrides} /></MemoryRouter>);
 afterEach(() => setLanguage('en'));
 
-describe('Telegram bot browser confirmation', () => {
-  it('shows the named Telegram identity and requires explicit browser confirmation', () => {
+describe('minimal Telegram login handoff', () => {
+  it('keeps only one compact account confirmation when a different browser needs it', () => {
     const html = render();
     expect(html).toContain('aria-labelledby="telegram-bot-login-title"');
-    expect(html).toContain('Continue as RD - Dev'); expect(html).toContain('@rd_dev');
-    expect(html).toContain('referrerPolicy="no-referrer"');
-    expect(html).toContain('Only continue if you requested this login.');
-    expect(html).toContain('Previously used Telegram login? Recover your existing account');
-    expect(html).not.toContain('You’ll be logged in to Kollens in this browser.');
-  });
-  it('explains the browser destination for a Telegram in-app or different browser', () => {
-    expect(render({ preview: { ...preview, sameBrowser: false } })).toContain('You’ll be logged in to Kollens in this browser.');
+    expect(html).toContain('Continue as RD - Dev'); expect(html).not.toContain('@rd_dev');
+    expect(html).toContain('You’ll be logged in to Kollens in this browser.');
+    expect(html).not.toContain('telegram-bot-login-avatar'); expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain('Previously used Telegram login?');
   });
   it('requires explicit one-time recovery instead of completing into an empty account', () => {
     const html = render({ preview: { ...preview, requiresRecovery: true } });
@@ -33,7 +29,8 @@ describe('Telegram bot browser confirmation', () => {
   });
   it('does not display an identity or completion button while loading or in an error state', () => {
     const loading = render({ loading: true });
-    expect(loading).toContain('Checking your Telegram login'); expect(loading).not.toContain('Continue as');
+    expect(loading).toContain('Signing you in'); expect(loading).not.toContain('Continue as');
+    expect(loading).not.toContain('Back to Watchlist'); expect(loading).not.toContain('Previously used');
     const expired = render({ error: 'This login link has expired or was already used.' });
     expect(expired).toContain('Log in with Telegram'); expect(expired).not.toContain('Continue as');
     const conflict = render({ error: 'Log out before signing in to a different Telegram account.' });

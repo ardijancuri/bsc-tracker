@@ -47,9 +47,24 @@ async function telegramLoginPost<T>(url: string, body: unknown, signal?: AbortSi
     return await response.json() as T;
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
-export async function requestTelegramBotLogin<T>(stage: 'preview' | 'complete', token: string, signal?: AbortSignal): Promise<T> {
+export async function requestTelegramBotLogin<T>(stage: 'preview' | 'complete', token: string, signal?: AbortSignal, automatic = false): Promise<T> {
   if (!tokenPattern.test(token)) throw new TelegramBotLoginRequestError(400);
-  return telegramLoginPost(`/api/auth/telegram/bot/${stage}`, stage === 'complete' ? { token, confirmed: true } : { token }, signal);
+  return telegramLoginPost(`/api/auth/telegram/bot/${stage}`, stage === 'complete' ? { token, confirmed: true, ...(automatic ? { automatic: true } : {}) } : { token }, signal);
+}
+/** Only the browser that started this login can skip the account confirmation. */
+export async function resumeTelegramBotLogin(token: string, signal: AbortSignal): Promise<{ preview: TelegramBotLoginPreview; returnTo?: string }> {
+  const preview = await requestTelegramBotLogin<TelegramBotLoginPreview>('preview', token, signal);
+  if (!preview.user?.name || typeof preview.sameBrowser !== 'boolean' || !Number.isFinite(Date.parse(preview.expiresAt))) throw new Error('Invalid login preview');
+  if (signal.aborted) throw new Error('Login cancelled');
+  if (!preview.sameBrowser || preview.requiresRecovery) return { preview };
+  try {
+    const result = await requestTelegramBotLogin<{ returnTo: string }>('complete', token, signal, true);
+    return { preview, returnTo: telegramBotLoginReturnTo(result.returnTo) };
+  } catch (error) {
+    // The cookie may disappear between preview and completion. Keep the link usable with explicit confirmation.
+    if (error instanceof TelegramBotLoginRequestError && error.status === 403) return { preview: { ...preview, sameBrowser: false } };
+    throw error;
+  }
 }
 export async function requestTelegramLoginRecovery(token?: string | null, signal?: AbortSignal) {
   if (token && !tokenPattern.test(token)) throw new TelegramBotLoginRequestError(400);

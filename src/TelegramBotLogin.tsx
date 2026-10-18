@@ -1,32 +1,23 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, UserRound } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useAccount } from './Account';
 import { t } from './i18n';
-import { requestTelegramBotLogin, requestTelegramLoginRecovery, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, type TelegramBotLoginPreview } from './telegramBotLoginRequest';
+import { requestTelegramBotLogin, requestTelegramLoginRecovery, resumeTelegramBotLogin, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, type TelegramBotLoginPreview } from './telegramBotLoginRequest';
 import './telegramBotLogin.css';
 
-export function TelegramBotLoginCard({ preview, busy, error, loading, onContinue, onRetry, onLogin, onRecover }: {
+export function TelegramBotLoginView({ preview, busy, error, loading, onContinue, onRetry, onLogin, onRecover }: {
   preview: TelegramBotLoginPreview | null; busy: boolean; error: string | null; loading: boolean;
   onContinue(): void; onRetry(): void; onLogin(): void; onRecover(): void;
 }) {
-  const [failedImage, setFailedImage] = useState(false);
   const expired = error === 'This login link has expired or was already used.';
   const differentAccount = error === 'Log out before signing in to a different Telegram account.';
   const requiresRecovery = preview?.requiresRecovery === true || error === 'One-time Telegram verification is needed to preserve existing accounts.';
   return <section className="telegram-bot-login" aria-labelledby="telegram-bot-login-title">
-    <div className="telegram-bot-login-symbol"><UserRound size={24} aria-hidden="true" /></div>
-    <h1 id="telegram-bot-login-title">{t('Log in to Kollens')}</h1>
-    {loading ? <p role="status">{t('Checking your Telegram login…')}</p> : <>
+    <h1 id="telegram-bot-login-title" hidden={loading}>{t('Log in to Kollens')}</h1>
+    {loading ? <p role="status">{t('Signing you in…')}</p> : <>
       {preview && !error && <>
-        <p>{t('Continue with the Telegram account shown below.')}</p>
-        <div className="telegram-bot-login-identity">
-          <span className="telegram-bot-login-avatar" aria-hidden="true">{preview.user.avatarUrl && !failedImage
-            ? <img src={preview.user.avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setFailedImage(true)} />
-            : Array.from(preview.user.name.trim())[0]?.toUpperCase() || '?'}</span>
-          <div><strong>{preview.user.name}</strong>{preview.user.username && <span>@{preview.user.username}</span>}</div>
-        </div>
-        <p className="telegram-bot-login-hint">{t(requiresRecovery ? 'One-time Telegram verification is needed to preserve existing accounts.' : 'Only continue if you requested this login.')}{!preview.sameBrowser && <> {t('You’ll be logged in to Kollens in this browser.')}</>}</p>
+        <p>{t(requiresRecovery ? 'One-time Telegram verification is needed to preserve existing accounts.' : 'You’ll be logged in to Kollens in this browser.')}</p>
         <button type="button" className="feature-button telegram-bot-login-continue" disabled={busy} onClick={requiresRecovery ? onRecover : onContinue}>
           {requiresRecovery ? t('Verify Telegram account') : t('Continue as {name}', { name: preview.user.name })}<ArrowRight size={16} aria-hidden="true" />
         </button>
@@ -38,7 +29,7 @@ export function TelegramBotLoginCard({ preview, busy, error, loading, onContinue
           : <button type="button" className="feature-button" disabled={busy} onClick={expired ? onLogin : onRetry}>{t(expired ? 'Log in with Telegram' : 'Retry login')}</button>}
       </>}
       <Link className="telegram-bot-login-back" to="/watchlist">{t('Back to Watchlist')}</Link>
-      {!requiresRecovery && <button type="button" className="telegram-bot-login-recover" disabled={busy} onClick={onRecover}>{t('Previously used Telegram login? Recover your existing account')}</button>}
+      {error && !requiresRecovery && !differentAccount && <button type="button" className="telegram-bot-login-recover" disabled={busy} onClick={onRecover}>{t('Previously used Telegram login? Recover your existing account')}</button>}
     </>}
   </section>;
 }
@@ -63,13 +54,12 @@ export function TelegramBotLogin() {
     if (!token) return;
     const controller = new AbortController();
     setLoading(true); setError(null); setPreview(null);
-    void requestTelegramBotLogin<TelegramBotLoginPreview>('preview', token, controller.signal).then(value => {
+    void resumeTelegramBotLogin(token, controller.signal).then(value => {
       if (!controller.signal.aborted) {
-        if (!value.user?.name || typeof value.sameBrowser !== 'boolean' || !Number.isFinite(Date.parse(value.expiresAt))) throw new Error('Invalid login preview');
-        setPreview(value);
+        if (value.returnTo) window.location.assign(value.returnTo);
+        else { setPreview(value.preview); setLoading(false); }
       }
-    }).catch(reason => { if (!controller.signal.aborted) setError(telegramBotLoginError(reason)); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    }).catch(reason => { if (!controller.signal.aborted) { setError(telegramBotLoginError(reason)); setLoading(false); } });
     return () => controller.abort();
   }, [token, revision]);
   const complete = async () => {
@@ -92,6 +82,6 @@ export function TelegramBotLogin() {
     } catch (reason) { if (mounted.current && !controller.signal.aborted) setError(telegramBotLoginError(reason)); }
     finally { operation.current = false; if (mounted.current) setBusy(false); }
   };
-  return <div className="page telegram-bot-login-page"><TelegramBotLoginCard preview={preview} busy={busy} error={error} loading={loading}
+  return <div className="page telegram-bot-login-page"><TelegramBotLoginView preview={preview} busy={busy} error={error} loading={loading}
     onContinue={() => void complete()} onRetry={() => setRevision(value => value + 1)} onLogin={() => void account.login()} onRecover={() => void recover()} /></div>;
 }

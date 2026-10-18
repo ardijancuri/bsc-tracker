@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requestTelegramBotLogin, requestTelegramLoginRecovery, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, telegramBotLoginUrl, telegramOidcLoginUrl, TelegramBotLoginRequestError } from './telegramBotLoginRequest';
+import { requestTelegramBotLogin, requestTelegramLoginRecovery, resumeTelegramBotLogin, telegramBotLoginError, telegramBotLoginReturnTo, telegramBotLoginToken, telegramBotLoginUrl, telegramOidcLoginUrl, TelegramBotLoginRequestError } from './telegramBotLoginRequest';
 
 const token = 'A'.repeat(43);
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -36,8 +36,8 @@ describe('Telegram bot login links', () => {
   });
 });
 
-describe('Telegram bot browser confirmation requests', () => {
-  it('only posts tokens in an uncached same-origin body; completion requires explicit confirmation', async () => {
+describe('Telegram bot login requests', () => {
+  it('only posts tokens in an uncached same-origin body; manual completion remains explicit', async () => {
     const fetcher = vi.fn().mockImplementation(async () => Response.json({ ok: true })); vi.stubGlobal('fetch', fetcher);
     await requestTelegramBotLogin('preview', token);
     await requestTelegramBotLogin('complete', token);
@@ -90,5 +90,45 @@ describe('Telegram bot browser confirmation requests', () => {
     expect(telegramBotLoginError(new TelegramBotLoginRequestError(422))).toBe('Your browser and account favorites exceed the limit. Remove some favorites and try again.');
     expect(telegramBotLoginError(new TelegramBotLoginRequestError(428))).toBe('One-time Telegram verification is needed to preserve existing accounts.');
     expect(telegramBotLoginError(new Error('private token'))).toBe('Could not log in with Telegram. Try again.');
+  });
+});
+
+describe('automatic login handoff', () => {
+  const preview = { user: { name: 'Test user', username: null, avatarUrl: null }, sameBrowser: true, expiresAt: '2026-10-18T12:00:00Z' };
+  it('completes the originating browser login and returns directly to its product page', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(preview)).mockResolvedValueOnce(Response.json({ returnTo: '/watchlist?telegramLogin=success' }));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await resumeTelegramBotLogin(token, new AbortController().signal);
+    expect(result.returnTo).toBe('/watchlist?telegramLogin=success');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({ token, confirmed: true, automatic: true });
+  });
+  it.each([{ sameBrowser: false }, { requiresRecovery: true }])('keeps confirmation or recovery when needed: %j', async overrides => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ ...preview, ...overrides })); vi.stubGlobal('fetch', fetcher);
+    const result = await resumeTelegramBotLogin(token, new AbortController().signal);
+    expect(result.returnTo).toBeUndefined(); expect(result.preview).toMatchObject(overrides);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('falls back to compact confirmation if the source cookie is lost after preview', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(preview)).mockResolvedValueOnce(Response.json({}, { status: 403 })); vi.stubGlobal('fetch', fetcher);
+    const result = await resumeTelegramBotLogin(token, new AbortController().signal);
+    expect(result).toEqual({ preview: { ...preview, sameBrowser: false } }); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('does not dispatch completion from the cancelled first StrictMode effect', async () => {
+    const fetcher = vi.fn().mockImplementation(async (url: string) => Response.json(url.endsWith('/preview') ? preview : { returnTo: '/watchlist' }));
+    vi.stubGlobal('fetch', fetcher);
+    const first = new AbortController(), cancelled = resumeTelegramBotLogin(token, first.signal).catch(error => error);
+    first.abort();
+    const result = await resumeTelegramBotLogin(token, new AbortController().signal);
+    expect(await cancelled).toBeInstanceOf(Error); expect(result.returnTo).toBe('/watchlist');
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/complete'))).toHaveLength(1);
+  });
+  it('does not retry a rejected completion or follow an external return path', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(preview)).mockResolvedValueOnce(Response.json({}, { status: 409 })); vi.stubGlobal('fetch', fetcher);
+    await expect(resumeTelegramBotLogin(token, new AbortController().signal)).rejects.toMatchObject({ status: 409 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    fetcher.mockReset().mockResolvedValueOnce(Response.json(preview)).mockResolvedValueOnce(Response.json({ returnTo: 'https://evil.example' }));
+    await expect(resumeTelegramBotLogin(token, new AbortController().signal)).rejects.toThrow('Invalid login return path');
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

@@ -342,6 +342,63 @@ describe('explicit one-time completion', () => {
   });
 });
 
+describe('automatic completion remains bound to the initiating browser', () => {
+  it('completes a source-browser request automatically and preserves its normal guest merge and one-use session behavior', async () => {
+    const f = await fixture(), start = await f.start(), secret = await f.authorize(start.startToken);
+    const response = await f.post('complete', secret, `bscan_bot_login=${start.browser}`, { automatic: true });
+    expect(response.statusCode).toBe(200); expect(f.sessions.size).toBe(1); expect(f.mergeGuest).toHaveBeenCalledOnce();
+    expect(response.cookies.find(cookie => cookie.name === 'bscan_auth')?.value).toMatch(/^[a-f0-9]{64}$/);
+    expect((await f.post('complete', secret, `bscan_bot_login=${start.browser}`, { automatic: true })).statusCode).toBe(410);
+  });
+  it.each(['missing', 'wrong', 'duplicate'] as const)('rejects automatic completion for a %s browser cookie before account/session mutation, without consuming the link', async kind => {
+    const f = await fixture(); f.users.set('existing', { id: 'existing', issuer: telegramIssuer, telegram_id: '12345678', subject: 'original-opaque', name: 'Before login' });
+    const start = await f.start(), secret = await f.authorize(start.startToken);
+    expect((await f.post('preview', secret, `bscan_bot_login=${start.browser}`)).json().sameBrowser).toBe(true);
+    const jar = kind === 'missing' ? '' : kind === 'wrong' ? `bscan_bot_login=${'a'.repeat(64)}` : `bscan_bot_login=${start.browser}; bscan_bot_login=${start.browser}`;
+    const before = f.queries.length;
+    const response = await f.post('complete', secret, jar, { automatic: true });
+    expect(response.statusCode).toBe(403); expect(response.cookies).toHaveLength(0);
+    expect(f.sessions.size).toBe(0); expect(f.users.size).toBe(1); expect(f.users.get('existing')?.name).toBe('Before login'); expect(f.mergeGuest).not.toHaveBeenCalled();
+    expect(f.queries.slice(before).some(({ sql }) => /^(?:UPDATE auth_users|INSERT INTO auth_users|INSERT INTO auth_sessions)/.test(sql))).toBe(false);
+    expect((await f.post('preview', secret)).statusCode).toBe(200);
+    expect((await f.post('complete', secret, jar)).statusCode).toBe(200); expect(f.mergeGuest).not.toHaveBeenCalled();
+  });
+  it('never automatically completes a standalone bot-origin link, while retaining manual confirmation', async () => {
+    const f = await fixture(), secret = await f.authorize('');
+    expect((await f.post('complete', secret, '', { automatic: true })).statusCode).toBe(403); expect(f.users.size).toBe(0); expect(f.sessions.size).toBe(0);
+    expect((await f.post('preview', secret)).statusCode).toBe(200); expect((await f.post('complete', secret)).statusCode).toBe(200);
+  });
+  it('retains the different-account conflict guard for otherwise valid automatic browser proof', async () => {
+    const f = await fixture(); f.users.set('other', { id: 'other', telegram_id: '999' }); f.sessions.set(hash('a'.repeat(64)), 'other');
+    const start = await f.start(), secret = await f.authorize(start.startToken);
+    const response = await f.post('complete', secret, `bscan_bot_login=${start.browser}; bscan_auth=${'a'.repeat(64)}`, { automatic: true });
+    expect(response.statusCode).toBe(409); expect(f.users.size).toBe(1); expect(f.sessions.size).toBe(1);
+    expect(f.sessions.get(hash('a'.repeat(64)))).toBe('other'); expect((await f.post('preview', secret)).statusCode).toBe(200);
+  });
+  it('retains the legacy-account recovery guard for otherwise valid automatic browser proof', async () => {
+    const f = await fixture(); f.users.set('legacy', { id: 'legacy', issuer: telegramIssuer, telegram_id: null, subject: 'legacy-subject' });
+    const start = await f.start(), secret = await f.authorize(start.startToken);
+    expect((await f.post('complete', secret, `bscan_bot_login=${start.browser}`, { automatic: true })).statusCode).toBe(428);
+    expect(f.users.size).toBe(1); expect(f.sessions.size).toBe(0); expect(f.mergeGuest).not.toHaveBeenCalled();
+    expect((await f.post('preview', secret)).json().requiresRecovery).toBe(true);
+  });
+  it.each(['true', 1, null])('rejects non-boolean automatic metadata (%j) without consuming the proof', async automatic => {
+    const f = await fixture(), start = await f.start(), secret = await f.authorize(start.startToken);
+    expect((await f.post('complete', secret, `bscan_bot_login=${start.browser}`, { automatic })).statusCode).toBe(400);
+    expect(f.sessions.size).toBe(0); expect((await f.post('preview', secret)).statusCode).toBe(200);
+  });
+  it('does not allow the automatic flag to replace the confirmed=true request contract', async () => {
+    const f = await fixture(), start = await f.start(), secret = await f.authorize(start.startToken);
+    expect((await f.post('complete', secret, `bscan_bot_login=${start.browser}`, { automatic: true, confirmed: false })).statusCode).toBe(400);
+    expect(f.sessions.size).toBe(0); expect((await f.post('preview', secret)).statusCode).toBe(200);
+  });
+  it('allows exactly one concurrent automatic completion under the server row lock', async () => {
+    const f = await fixture(), start = await f.start(), secret = await f.authorize(start.startToken), binding = `bscan_bot_login=${start.browser}`;
+    const results = await Promise.all([f.post('complete', secret, binding, { automatic: true }), f.post('complete', secret, binding, { automatic: true })]);
+    expect(results.map(result => result.statusCode).sort()).toEqual([200, 410]); expect(f.sessions.size).toBe(1); expect(f.users.size).toBe(1); expect(f.mergeGuest).toHaveBeenCalledOnce();
+  });
+});
+
 it('creates independent login tables without modifying notification deduplication or existing sessions', async () => {
   const f = fakeDatabase(Date.now); await ensureTelegramBotLoginSchema(f.db);
   const schema = f.queries.map(query => query.sql).join('\n');

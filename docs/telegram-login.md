@@ -4,11 +4,11 @@ Telegram login is optional. Visitors can follow tokens and KOLs without an accou
 
 ## Bot-first sign-in
 
-The header **Login** button opens the verified Kollens bot with a random ten-minute `/start` challenge. The bot sends **Continue to Kollens** privately, using a different one-time token. The return page shows the Telegram identity and asks for confirmation before a same-origin POST creates a session. Opening or previewing a link never signs anyone in.
+The header **Login** button opens the verified Kollens bot with a random ten-minute `/start` challenge. The bot sends **Continue to Kollens** privately, using a different one-time token. Returning to the browser that began sign-in completes it automatically through a same-origin POST after the server rechecks the browser binding. There is no normal confirmation card or post-login alerts popup. GET/HEAD and API previews do not create sessions. A link opened in a different browser or issued directly from the bot keeps one compact account confirmation to prevent forwarded-link login CSRF.
 
 Return tokens are URL fragments, removed immediately by the app and stored only as hashes on the server. Do not forward a login link. Duplicate webhook delivery does not resend it. Expired or completed links cannot be reused; a fresh `/start` can replace a failed link after any delivery cooldown.
 
-Accounts with a verified numeric Telegram ID keep the same favorites, journal and creator ownership. If older accounts without this identifier still exist, an unfamiliar ID requires one-time OIDC verification before account creation, preventing empty duplicate accounts. The return page also offers explicit legacy account recovery. Accounts are never matched by display name or username.
+Accounts with a verified numeric Telegram ID keep the same favorites, journal and creator ownership. If older accounts without this identifier still exist, an unfamiliar ID requires one-time OIDC verification before account creation, preventing empty duplicate accounts. Recovery remains available when verification is required or a login error occurs. Accounts are never matched by display name or username.
 
 Guest favorites merge only when the return opens in the browser that began sign-in. A different browser signs in independently and does not import the original browser's guest favorites. A different signed-in account must log out explicitly before completing a bot link. Login does not enable trade alerts.
 
@@ -50,7 +50,7 @@ Only confirmed, live-observed trades by tracked, favorited KOLs qualify. Histori
 
 ## Local testing and release
 
-After a successful ordinary login, accounts with inactive alerts see an optional invitation to enable or resume them. “Not now” dismisses it for that login; active accounts skip it. Messaging permission remains a separate explicit consent. The header Login button retains its appearance while sign-in starts.
+After a successful login, users return to Kollens without an alert invitation modal. Telegram alerts can be enabled or resumed manually in the Watchlist KOL tab, with separate explicit messaging consent. The header Login button retains its appearance while sign-in starts.
 
 The Watchlist KOL tab places followed KOLs on the left and Telegram settings on the right; settings move above the list on mobile. Radar filters stay separate. Trade messages use buy/sell emojis, bold names and values, linked token names, plain UTC trade times, and Kollens navigation buttons. BscScan links are omitted. Formatting uses explicit [Telegram message entities](https://core.telegram.org/bots/api#messageentity), so token metadata is never interpreted as HTML or Markdown.
 

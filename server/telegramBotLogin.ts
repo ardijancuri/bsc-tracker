@@ -210,7 +210,8 @@ export function createTelegramBotLogin(options: TelegramBotLoginOptions) {
     function readToken(body: unknown, completing: boolean) {
       if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
       const value = body as Record<string, unknown>;
-      if (Object.keys(value).some(key => !['token', ...(completing ? ['confirmed'] : [])].includes(key)) || !validToken(value.token) || (completing && value.confirmed !== true)) return null;
+      if (Object.keys(value).some(key => !['token', ...(completing ? ['confirmed', 'automatic'] : [])].includes(key)) || !validToken(value.token)
+        || (completing && (value.confirmed !== true || (value.automatic !== undefined && typeof value.automatic !== 'boolean')))) return null;
       return value.token;
     }
     const requestOptions = { logLevel: 'silent' as const, bodyLimit: 4096, onRequest: async (_request: FastifyRequest, reply: FastifyReply) => { privateResponse(reply); } };
@@ -237,6 +238,8 @@ export function createTelegramBotLogin(options: TelegramBotLoginOptions) {
         const result = await transaction(async client => {
           const attempt = (await client.query<Attempt>(`SELECT * FROM auth_bot_login_attempts WHERE finish_hash=$1 AND expires_at>$2 AND completed_at IS NULL FOR UPDATE`, [hash(secret), new Date(now()).toISOString()])).rows[0];
           if (!attempt?.telegram_id || !attempt.name) throw new BotLoginInputError(410, 'This Telegram login link has expired. Start again from Kollens.');
+          const browser = browserSecret(request), sameBrowser = !!browser && hash(browser) === attempt.browser_hash;
+          if ((request.body as { automatic?: boolean }).automatic && !sameBrowser) throw new BotLoginInputError(403, 'Confirm your Telegram account in this browser to continue.');
           // Serialize new accounts too; a second login attempt cannot create a duplicate Telegram identity.
           await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,782325))', [String(attempt.telegram_id)]);
           const existing = (await client.query<{ id: string }>('SELECT id FROM auth_users WHERE telegram_id=$1 FOR UPDATE', [String(attempt.telegram_id)])).rows[0];
@@ -249,7 +252,6 @@ export function createTelegramBotLogin(options: TelegramBotLoginOptions) {
           if (existing) await client.query(`UPDATE auth_users SET name=$2,username=$3,avatar_url=COALESCE($4,avatar_url),updated_at=now() WHERE id=$1`, [userId, attempt.name, attempt.username, attempt.avatar_url]);
           else await client.query(`INSERT INTO auth_users(id,issuer,subject,name,username,avatar_url,telegram_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,
             [userId, telegramIssuer, `bot:${attempt.telegram_id}`, attempt.name, attempt.username, attempt.avatar_url, String(attempt.telegram_id)]);
-          const browser = browserSecret(request), sameBrowser = !!browser && hash(browser) === attempt.browser_hash;
           if (sameBrowser) await options.mergeGuest?.(client, userId, attempt.guest_snapshot, !existing);
           if (oldSession) await client.query('DELETE FROM auth_sessions WHERE secret_hash=$1', [hash(oldSession)]);
           await client.query(`INSERT INTO auth_sessions(id,user_id,secret_hash,expires_at) VALUES($1,$2,$3,$4)`, [randomUUID(), userId, hash(session), new Date(now() + sessionSeconds * 1000).toISOString()]);

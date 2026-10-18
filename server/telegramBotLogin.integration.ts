@@ -42,7 +42,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const cookie = (response: { headers: Record<string, unknown> }, name: string) => [response.headers['set-cookie']].flat().map(String).find(value => value.startsWith(`${name}=`))?.split(';')[0] ?? '';
 const post = (path: string, payload: Record<string, unknown>, jar = '') => app.inject({ method: 'POST', url: path, headers: { origin, ...(jar ? { cookie: jar } : {}) }, payload });
 const preview = (secret: string, jar = '') => post('/api/auth/telegram/bot/preview', { token: secret }, jar);
-const complete = (secret: string, jar = '') => post('/api/auth/telegram/bot/complete', { token: secret, confirmed: true }, jar);
+const complete = (secret: string, jar = '', automatic = false) => post('/api/auth/telegram/bot/complete', { token: secret, confirmed: true, ...(automatic ? { automatic: true } : {}) }, jar);
 async function count(table: 'auth_sessions' | 'auth_users' | 'auth_bot_login_updates' | 'telegram_notification_updates') {
   return Number((await pool.query(`SELECT COUNT(*)::int AS count FROM ${table}`)).rows[0].count);
 }
@@ -92,7 +92,7 @@ try {
   const firstPreview = await preview(authorized.secret, initiated.browserJar);
   assert.equal(firstPreview.statusCode, 200, firstPreview.body); assert.equal(firstPreview.json().user.name, 'Real PG Tester'); assert.equal(firstPreview.json().sameBrowser, true);
   assert.equal(firstPreview.json().user.avatarUrl, 'https://cdn4.telesco.pe/existing.jpg');
-  const signed = await complete(authorized.secret, `${initiated.browserJar}; ${sourceGuest.jar}`);
+  const signed = await complete(authorized.secret, `${initiated.browserJar}; ${sourceGuest.jar}`, true);
   assert.equal(signed.statusCode, 200, signed.body); assert.match(signed.json().returnTo, /telegramLogin=success/);
   const authenticatedJar = cookie(signed, 'bscan_auth'); assert.ok(authenticatedJar);
   const account = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: authenticatedJar } });
@@ -101,7 +101,7 @@ try {
   assert.deepEqual((await pool.query('SELECT address FROM account_watch_entries WHERE user_id=$1 ORDER BY address', [existingId])).rows.map(row => row.address), [oldFavorite, guestFavorite]);
   assert.equal((await pool.query('SELECT 1 FROM watch_sessions WHERE id=$1', [sourceGuest.id])).rowCount, 0, 'Verified source guest is consumed only on completion');
   assert.equal(await count('auth_users'), 1); assert.equal((await complete(authorized.secret)).statusCode, 410);
-  pass('full authenticated webhook flow reuses numeric OIDC account, preserves opaque identity and favorites, and merges only verified source guest');
+  pass('source-browser automatic POST reuses numeric OIDC account, preserves opaque identity and favorites, and merges only verified source guest');
 
   const duplicateBefore = sent.length;
   await app.inject({ method: 'POST', url: '/api/telegram/webhook', headers: { 'x-telegram-bot-api-secret-token': webhookSecret }, payload: authorized.body });
@@ -116,18 +116,27 @@ try {
   const otherGuest = await guest(crossFavorite), otherStart = await start(otherGuest.jar), otherAuthorized = await authorize(otherStart.payload);
   assert.ok(otherAuthorized.secret); const crossPreview = await preview(otherAuthorized.secret);
   assert.equal(crossPreview.json().sameBrowser, false);
+  assert.equal((await preview(otherAuthorized.secret, otherStart.browserJar)).json().sameBrowser, true, 'A prior valid preview does not replace the completion-time browser check');
+  const sessionsBeforeBadAutomatic = await count('auth_sessions');
+  for (const jar of ['', `bscan_bot_login=${'a'.repeat(64)}`, `${otherStart.browserJar}; ${otherStart.browserJar}`]) {
+    const rejected = await complete(otherAuthorized.secret, jar, true); assert.equal(rejected.statusCode, 403, rejected.body);
+    assert.equal(cookie(rejected, 'bscan_auth'), ''); assert.equal(await count('auth_sessions'), sessionsBeforeBadAutomatic);
+    assert.equal((await preview(otherAuthorized.secret)).statusCode, 200, 'A rejected automatic request must not consume the proof');
+  }
+  assert.equal((await pool.query('SELECT 1 FROM watch_sessions WHERE id=$1', [otherGuest.id])).rowCount, 1);
+  pass('missing, wrong and duplicate source cookies reject automatic completion before mutation and leave the proof usable');
   const crossComplete = await complete(otherAuthorized.secret); assert.equal(crossComplete.statusCode, 200, crossComplete.body);
   assert.equal((await pool.query('SELECT 1 FROM watch_sessions WHERE id=$1', [otherGuest.id])).rowCount, 1);
   assert.equal((await pool.query('SELECT 1 FROM account_watch_entries WHERE user_id=$1 AND address=$2', [existingId, crossFavorite])).rowCount, 0);
   assert.ok(!cookie(crossComplete, 'bscan_watch'), 'Cross-browser completion must not erase unmerged guest state');
   pass('Telegram browser completion isolates source-browser guest favorites');
 
-  const concurrent = await authorize((await start()).payload); assert.ok(concurrent.secret);
+  const concurrentStart = await start(), concurrent = await authorize(concurrentStart.payload); assert.ok(concurrent.secret);
   const beforeConcurrent = await count('auth_sessions');
-  const concurrentResults = await Promise.all([complete(concurrent.secret), complete(concurrent.secret)]);
+  const concurrentResults = await Promise.all([complete(concurrent.secret, concurrentStart.browserJar, true), complete(concurrent.secret, concurrentStart.browserJar, true)]);
   assert.deepEqual(concurrentResults.map(result => result.statusCode).sort(), [200, 410]);
   assert.equal(await count('auth_sessions'), beforeConcurrent + 1); assert.equal(await count('auth_users'), 1);
-  pass('real PostgreSQL row locks allow exactly one concurrent completion');
+  pass('real PostgreSQL row locks allow exactly one concurrent automatic completion');
 
   const expired = await authorize((await start()).payload); assert.ok(expired.secret);
   await pool.query("UPDATE auth_bot_login_attempts SET expires_at=now()-interval '1 second' WHERE finish_hash=$1", [hash(expired.secret)]);
@@ -143,7 +152,8 @@ try {
   const differentId = randomUUID(), differentSession = randomBytes(32).toString('hex');
   await pool.query(`INSERT INTO auth_users(id,issuer,subject,name,telegram_id) VALUES($1,$2,'other-subject','Other',87654321)`, [differentId, telegramIssuer]);
   await pool.query(`INSERT INTO auth_sessions(id,user_id,secret_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')`, [randomUUID(), differentId, hash(differentSession)]);
-  const switching = await authorize((await start()).payload); assert.ok(switching.secret);
+  const switchingStart = await start(), switching = await authorize(switchingStart.payload); assert.ok(switching.secret);
+  assert.equal((await complete(switching.secret, `${switchingStart.browserJar}; bscan_auth=${differentSession}`, true)).statusCode, 409);
   assert.equal((await complete(switching.secret, `bscan_auth=${differentSession}`)).statusCode, 409);
   assert.equal((await preview(switching.secret)).statusCode, 200, 'Rejected account switching must retain the proof');
   pass('an authenticated different account cannot be silently replaced');
@@ -153,6 +163,7 @@ try {
   assert.equal((await preview(knownPlain.secret)).json().sameBrowser, false);
   const standalone = (await pool.query('SELECT guest_snapshot,return_to FROM auth_bot_login_attempts WHERE finish_hash=$1', [hash(knownPlain.secret)])).rows[0];
   assert.equal(standalone.guest_snapshot, null); assert.equal(standalone.return_to, '/watchlist');
+  assert.equal((await complete(knownPlain.secret, '', true)).statusCode, 403, 'Bot-origin links still require manual confirmation');
   const knownPlainResult = await complete(knownPlain.secret); assert.equal(knownPlainResult.statusCode, 200, knownPlainResult.body);
   const knownPlainMe = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: cookie(knownPlainResult, 'bscan_auth') } });
   assert.equal(knownPlainMe.json().user.id, existingId);
@@ -179,8 +190,9 @@ try {
 
   const legacyId = randomUUID();
   await pool.query(`INSERT INTO auth_users(id,issuer,subject,name,username) VALUES($1,$2,'legacy-opaque-subject','Legacy','pg_test')`, [legacyId, telegramIssuer]);
-  const usersBeforeRecovery = await count('auth_users'), legacy = await authorize((await start()).payload, 22223333); assert.ok(legacy.secret);
+  const usersBeforeRecovery = await count('auth_users'), legacyStart = await start(), legacy = await authorize(legacyStart.payload, 22223333); assert.ok(legacy.secret);
   assert.equal((await preview(legacy.secret)).json().requiresRecovery, true);
+  assert.equal((await complete(legacy.secret, legacyStart.browserJar, true)).statusCode, 428, 'Automatic mode cannot bypass legacy identity recovery');
   assert.equal((await complete(legacy.secret)).statusCode, 428); assert.equal(await count('auth_users'), usersBeforeRecovery);
   assert.deepEqual(await service.recoveryIdentity(legacy.secret), { telegramId: '22223333', returnTo: '/watchlist?tab=kols' });
   assert.equal((await pool.query('SELECT telegram_id FROM auth_users WHERE id=$1', [legacyId])).rows[0].telegram_id, null);
