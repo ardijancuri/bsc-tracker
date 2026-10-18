@@ -28,7 +28,7 @@ export function TradeModalLoader(props: ModalProps) {
   useEffect(() => {
     let active = true;
     void loadModal().then(value => { if (active) setModule(value); }).catch(async error => {
-      const reloading = await reloadOutdatedModule(error, props.kol.address, props.token.address, () => active);
+      const reloading = await reloadOutdatedModule(error, props.kol.address, props.token.address, () => active, !props.journalAccountId);
       if (active && !reloading) setFailed(true);
     });
     return () => { active = false; };

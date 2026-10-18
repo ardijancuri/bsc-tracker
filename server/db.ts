@@ -1,3 +1,5 @@
+import { ensureCreatorSchema } from './creatorSchema.js';
+import { ensureJournalSchema } from './journalSchema.js';
 import pg from 'pg';
 import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 import { ensureAuthSchema } from './telegramAuth.js';
@@ -115,6 +117,8 @@ export async function ensureSchema() {
   `);
   await ensureIntelligenceSchema(pool);
   await ensureAuthSchema(pool);
+  await ensureCreatorSchema(pool);
+  await ensureJournalSchema(pool);
   await ensureAccountWatchlistSchema(pool);
   await ensureTelegramNotificationsSchema(pool);
 }

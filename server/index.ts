@@ -1,3 +1,5 @@
+import { registerCreatorRoutes } from './creatorApi.js';
+import { registerJournalRoutes } from './journalApi.js';
 import Fastify from 'fastify';
 import { Client } from 'pg';
 import path from 'node:path';
@@ -21,7 +23,7 @@ import { captureGuestWatchlist, mergeGuestWatchlist } from './accountWatchlist.j
 
 const app = Fastify({ logger: {
   redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers.x-telegram-bot-api-secret-token', 'res.headers.set-cookie'],
-  serializers: { req(request) { return { method: request.method, url: request.url?.startsWith('/api/auth/') ? request.url.split('?')[0] : request.url, hostname: request.hostname, remoteAddress: request.ip }; } },
+  serializers: { req(request) { return { method: request.method, url: (request.url?.startsWith('/api/auth/') || request.url?.startsWith('/api/journal') || request.url?.startsWith('/api/creator')) ? request.url.split('?')[0] : request.url, hostname: request.hostname, remoteAddress: request.ip }; } },
 }, trustProxy: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, '..', 'dist');
@@ -33,6 +35,8 @@ registerTelegramNotificationRoutes(app, { available: telegramNotifications.avail
   update: telegramNotifications.update, mute: telegramNotifications.mute, webhook: telegramNotifications.webhook });
 registerIntelligenceRoutes(app);
 registerTradeReplayChartRoutes(app);
+registerCreatorRoutes(app);
+registerJournalRoutes(app);
 
 function int(input: unknown, fallback: number, maximum: number) {
   const parsed = Number(input);
@@ -63,10 +67,10 @@ app.get<{ Params: { address: string } }>('/api/token-image/:address', async (req
 
 app.get('/api/overview', async () => {
   const [counts, states] = await Promise.all([
-    pool.query(`SELECT (SELECT COUNT(*)::int FROM kols WHERE is_tracked) AS "trackedKols",
-      (SELECT COUNT(*)::int FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp > now() - interval '24 hours') AS "trades24h",
-      (SELECT COUNT(DISTINCT t.token_address)::int FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp > now() - interval '24 hours') AS "tokens24h",
-      (SELECT MAX(t.timestamp) FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')}) AS "latestTradeAt",
+    pool.query(`SELECT (SELECT COUNT(*)::int FROM published_kols WHERE is_tracked) AS "trackedKols",
+      (SELECT COUNT(*)::int FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp > now() - interval '24 hours') AS "trades24h",
+      (SELECT COUNT(DISTINCT t.token_address)::int FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp > now() - interval '24 hours') AS "tokens24h",
+      (SELECT MAX(t.timestamp) FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')}) AS "latestTradeAt",
       (SELECT MAX(metadata_updated_at) FROM tokens WHERE price_source='onchain' AND price_usd IS NOT NULL) AS "lastTokenPriceAt"`),
     pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN ('node','bnb_price','leaderboard_24h')`),
   ]);
@@ -90,7 +94,7 @@ app.get<{ Querystring: { limit?: string; cursor?: string; side?: string; kol?: s
   }
   const count = int(limit, 50, 100);
   values.push(count + 1);
-  const result = await pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY t.timestamp DESC,t.id DESC LIMIT $${values.length}`, values);
+  const result = await pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY t.timestamp DESC,t.id DESC LIMIT $${values.length}`, values);
   const rows = result.rows.slice(0, count);
   const last = rows.at(-1);
   return { items: rows, nextCursor: result.rows.length > count ? nextTradeCursor(last) : null };
@@ -104,17 +108,17 @@ app.get<{ Querystring: { limit?: string; offset?: string; since?: string; withTr
   if (since && Number.isNaN(since.getTime())) return reply.code(400).send({ error: 'Invalid since date' });
   const sinceValue = since?.toISOString();
   const [result, count] = await Promise.all([
-    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND ${memeTokenSql()} GROUP BY v.address ${sinceValue ? 'HAVING MAX(t.timestamp) >= $3::timestamptz' : ''} ORDER BY MAX(t.timestamp) DESC,v.address ASC LIMIT $1 OFFSET $2`, sinceValue ? [limit, offset, sinceValue] : [limit, offset]),
-    pool.query(`SELECT COUNT(DISTINCT t.token_address)::int AS total FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND ${memeTokenSql()} ${sinceValue ? 'AND t.timestamp >= $1::timestamptz' : ''}`, sinceValue ? [sinceValue] : []),
+    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND ${memeTokenSql()} GROUP BY v.address ${sinceValue ? 'HAVING MAX(t.timestamp) >= $3::timestamptz' : ''} ORDER BY MAX(t.timestamp) DESC,v.address ASC LIMIT $1 OFFSET $2`, sinceValue ? [limit, offset, sinceValue] : [limit, offset]),
+    pool.query(`SELECT COUNT(DISTINCT t.token_address)::int AS total FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND ${memeTokenSql()} ${sinceValue ? 'AND t.timestamp >= $1::timestamptz' : ''}`, sinceValue ? [sinceValue] : []),
   ]);
   const tradeRows = request.query.withTrades === '1' && result.rows.length ? (await pool.query(`
     SELECT ${tradeSelect()} FROM unnest($1::text[]) AS candidate(address)
     CROSS JOIN LATERAL (
-      SELECT t.* FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address
+      SELECT t.* FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address
       WHERE t.token_address=candidate.address AND tracked.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')}
       ORDER BY t.timestamp DESC,t.id DESC LIMIT 5
     ) t
-    JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
+    JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
     ORDER BY t.token_address,t.timestamp DESC,t.id DESC
   `, [result.rows.map(row => row.address)])).rows : [];
   const tradesByToken = new Map<string, typeof tradeRows>();
@@ -158,9 +162,9 @@ app.get<{ Params: { address: string } }>('/api/tokens/:address', async request =
   const key = address(request.params.address);
   if (!key) return { token: null, trades: [], tradesNextCursor: null, kols: [] };
   const [token, trades, kols] = await Promise.all([
-    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE v.address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} GROUP BY v.address`, [key]),
-    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY t.timestamp DESC,t.id DESC LIMIT 21`, [key]),
-    pool.query(`SELECT DISTINCT ON (k.address) k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt" FROM kols k JOIN trades t ON t.wallet_address=k.address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY k.address,t.timestamp DESC`, [key]),
+    pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN published_kols k ON k.address=t.wallet_address WHERE v.address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} GROUP BY v.address`, [key]),
+    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY t.timestamp DESC,t.id DESC LIMIT 21`, [key]),
+    pool.query(`SELECT DISTINCT ON (k.address) k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt",json_build_object('claimed',k.creator_claimed,'walletControlVerified',k.creator_claimed,'bio',k.creator_bio,'websiteUrl',k.creator_website_url,'xUrl',k.creator_x_url,'telegramUrl',k.creator_telegram_url,'updatedAt',k.creator_updated_at) AS creator FROM published_kols k JOIN trades t ON t.wallet_address=k.address WHERE t.token_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} ORDER BY k.address,t.timestamp DESC`, [key]),
   ]);
   const tradeRows = trades.rows.slice(0, 20);
   return { token: token.rows[0] ?? null, trades: tradeRows,
@@ -176,16 +180,16 @@ app.get('/api/leaderboard', async () => {
         COUNT(*) FILTER (WHERE t.side='sell')::int AS "sellCount24h",
         COUNT(*) FILTER (WHERE t.side='sell' AND t.amount_usd IS NULL)::int AS "unpricedSellCount24h",
         MAX(t.timestamp) AS "lastTrade24h"
-      FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address
+      FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address
       WHERE tracked.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')} AND t.timestamp >= $1::timestamptz
       GROUP BY t.wallet_address
     )
-    SELECT k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt",
+    SELECT k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,k.last_seen_at AS "lastSeenAt",json_build_object('claimed',k.creator_claimed,'walletControlVerified',k.creator_claimed,'bio',k.creator_bio,'websiteUrl',k.creator_website_url,'xUrl',k.creator_x_url,'telegramUrl',k.creator_telegram_url,'updatedAt',k.creator_updated_at) AS creator,
       CASE WHEN a.wallet_address IS NULL THEN 0 ELSE s.realized_profit_usd END AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt",
       s.valued_sell_count AS "valuedSellCount",s.excluded_sell_count AS "excludedSellCount",
       COALESCE(a."tradeCount24h",0) AS "tradeCount24h",COALESCE(a."buyCount24h",0) AS "buyCount24h",COALESCE(a."sellCount24h",0) AS "sellCount24h",
       COALESCE(a."unpricedSellCount24h",0) AS "unpricedSellCount24h"
-    FROM kols k LEFT JOIN activity a ON k.address=a.wallet_address
+    FROM published_kols k LEFT JOIN activity a ON k.address=a.wallet_address
     LEFT JOIN leaderboard_snapshots s ON s.wallet_address=k.address AND s.period='1d' AND s.window_start IS NOT NULL
     WHERE k.is_tracked
     ORDER BY (a.wallet_address IS NOT NULL) DESC,s.realized_profit_usd DESC NULLS LAST,a."tradeCount24h" DESC,a."lastTrade24h" DESC,k.display_name,k.address`, [windowStart]);
@@ -204,7 +208,7 @@ async function kolTokenPage(key: string, cursor?: string) {
       }
     } catch { /* Invalid cursor starts at latest. */ }
   }
-  const result = await pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} GROUP BY v.address ${having} ORDER BY MAX(t.timestamp) DESC,v.address DESC LIMIT ${kolProfileTokenPageSize + 1}`, values);
+  const result = await pool.query(`SELECT ${tokenSelect()} FROM tokens v JOIN trades t ON t.token_address=v.address JOIN published_kols k ON k.address=t.wallet_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} GROUP BY v.address ${having} ORDER BY MAX(t.timestamp) DESC,v.address DESC LIMIT ${kolProfileTokenPageSize + 1}`, values);
   const items = result.rows.slice(0, kolProfileTokenPageSize);
   const last = items.at(-1);
   return { items, nextCursor: result.rows.length > kolProfileTokenPageSize && last ? Buffer.from(JSON.stringify({ ts: last.lastTradeAt, address: last.address })).toString('base64url') : null };
@@ -221,13 +225,14 @@ app.get<{ Params: { address: string } }>('/api/kols/:address', async request => 
   if (!key) return { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart };
   const [kol, stats, trades, activity, tokens] = await Promise.all([
     pool.query(`SELECT k.address,k.display_name AS name,k.avatar_url AS "avatarUrl",k.twitter,k.source,
+      json_build_object('claimed',k.creator_claimed,'walletControlVerified',k.creator_claimed,'bio',k.creator_bio,'websiteUrl',k.creator_website_url,'xUrl',k.creator_x_url,'telegramUrl',k.creator_telegram_url,'updatedAt',k.creator_updated_at) AS creator,
       (SELECT t.timestamp FROM trades t JOIN tokens v ON v.address=t.token_address
         WHERE t.wallet_address=k.address AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()}
         ORDER BY t.timestamp DESC LIMIT 1) AS "lastSeenAt"
-      FROM kols k WHERE k.address=$1 AND k.is_tracked`, [key]),
-    pool.query(`SELECT s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt",s.valued_sell_count AS "valuedSellCount",s.excluded_sell_count AS "excludedSellCount" FROM leaderboard_snapshots s JOIN kols k ON k.address=s.wallet_address WHERE s.wallet_address=$1 AND s.period='1d' AND s.window_start IS NOT NULL AND k.is_tracked`, [key]),
-    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} AND t.timestamp >= $2::timestamptz ORDER BY t.timestamp DESC,t.id DESC LIMIT ${kolProfileTradePageSize + 1}`, [key, windowStart]),
-    pool.query(`SELECT COUNT(*)::int AS "tradeCount24h",COUNT(*) FILTER (WHERE t.side='buy')::int AS "buyCount24h",COUNT(*) FILTER (WHERE t.side='sell')::int AS "sellCount24h",COUNT(*) FILTER (WHERE t.side='sell' AND t.amount_usd IS NULL)::int AS "unpricedSellCount24h" FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} AND t.timestamp >= $2::timestamptz`, [key, windowStart]),
+      FROM published_kols k WHERE k.address=$1 AND k.is_tracked`, [key]),
+    pool.query(`SELECT s.realized_profit_usd AS "realizedProfitUsd",s.unrealized_profit_usd AS "unrealizedProfitUsd",s.updated_at AS "updatedAt",s.valued_sell_count AS "valuedSellCount",s.excluded_sell_count AS "excludedSellCount" FROM leaderboard_snapshots s JOIN published_kols k ON k.address=s.wallet_address WHERE s.wallet_address=$1 AND s.period='1d' AND s.window_start IS NOT NULL AND k.is_tracked`, [key]),
+    pool.query(`SELECT ${tradeSelect()} FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} AND t.timestamp >= $2::timestamptz ORDER BY t.timestamp DESC,t.id DESC LIMIT ${kolProfileTradePageSize + 1}`, [key, windowStart]),
+    pool.query(`SELECT COUNT(*)::int AS "tradeCount24h",COUNT(*) FILTER (WHERE t.side='buy')::int AS "buyCount24h",COUNT(*) FILTER (WHERE t.side='sell')::int AS "sellCount24h",COUNT(*) FILTER (WHERE t.side='sell' AND t.amount_usd IS NULL)::int AS "unpricedSellCount24h" FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address WHERE t.wallet_address=$1 AND k.is_tracked AND t.block_number IS NOT NULL AND ${kolProfileTokenSql()} AND t.timestamp >= $2::timestamptz`, [key, windowStart]),
     kolTokenPage(key),
   ]);
   const tradeRows = trades.rows.slice(0, kolProfileTradePageSize);
@@ -241,8 +246,8 @@ app.get<{ Querystring: { q?: string } }>('/api/search', async request => {
   if (!query) return { kols: [], tokens: [] };
   const like = `%${query.replace(/[%_]/g, '\\$&')}%`;
   const [kols, tokens] = await Promise.all([
-    pool.query(`SELECT address,display_name AS name,avatar_url AS "avatarUrl",twitter,source,last_seen_at AS "lastSeenAt" FROM kols WHERE is_tracked AND (display_name ILIKE $1 ESCAPE '\\' OR address ILIKE $1 ESCAPE '\\' OR twitter ILIKE $1 ESCAPE '\\') ORDER BY last_seen_at DESC NULLS LAST LIMIT 8`, [like]),
-    pool.query(`SELECT v.address,v.symbol,v.name,${logoUrl} AS "logoUrl",CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd",${tokenMarketCap} AS "marketCapUsd",NULL AS "change24h",0 AS "kolCount24h",0 AS "buys24h",0 AS "sells24h",NULL AS "volume24hUsd",NULL AS "lastTradeAt" FROM tokens v WHERE (v.symbol ILIKE $1 ESCAPE '\\' OR v.name ILIKE $1 ESCAPE '\\' OR v.address ILIKE $1 ESCAPE '\\') AND EXISTS (SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')}) ORDER BY v.metadata_updated_at DESC NULLS LAST LIMIT 8`, [like]),
+    pool.query(`SELECT address,display_name AS name,avatar_url AS "avatarUrl",twitter,source,last_seen_at AS "lastSeenAt" FROM published_kols WHERE is_tracked AND (display_name ILIKE $1 ESCAPE '\\' OR address ILIKE $1 ESCAPE '\\' OR twitter ILIKE $1 ESCAPE '\\') ORDER BY last_seen_at DESC NULLS LAST LIMIT 8`, [like]),
+    pool.query(`SELECT v.address,v.symbol,v.name,${logoUrl} AS "logoUrl",CASE WHEN v.price_source='onchain' THEN v.price_usd END AS "priceUsd",${tokenMarketCap} AS "marketCapUsd",NULL AS "change24h",0 AS "kolCount24h",0 AS "buys24h",0 AS "sells24h",NULL AS "volume24hUsd",NULL AS "lastTradeAt" FROM tokens v WHERE (v.symbol ILIKE $1 ESCAPE '\\' OR v.name ILIKE $1 ESCAPE '\\' OR v.address ILIKE $1 ESCAPE '\\') AND EXISTS (SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL AND ${nonStockTokenSql('t.token_address')}) ORDER BY v.metadata_updated_at DESC NULLS LAST LIMIT 8`, [like]),
   ]);
   return { kols: kols.rows, tokens: tokens.rows };
 });

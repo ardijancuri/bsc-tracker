@@ -1,5 +1,7 @@
 // Product copy only. Token symbols, wallet names, addresses and protocol names stay unchanged.
+import { creatorJournalChinese } from './creatorJournalChinese';
 export const chinese: Record<string, string> = {
+  ...creatorJournalChinese,
   'Get your KOL trades in Telegram': '在 Telegram 接收 KOL 交易提醒',
   'Receive new buys and sells from your favorite KOLs. Choose which alerts you want in your Watchlist.': '接收你关注的 KOL 的最新买卖交易。你可以在关注列表中选择提醒类型。',
   'Not now': '暂不开启',

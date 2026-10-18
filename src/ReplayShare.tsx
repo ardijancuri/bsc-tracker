@@ -12,6 +12,7 @@ export interface ReplayShareDefinition {
   fileName: string; url: string; caption: string; xIntent: string; controls?: ReactNode;
   prepare(signal: AbortSignal, onWait: (retryAt: number) => void): Promise<ReplayRecordingCanvas>;
   shareFile(file: File): Promise<void>;
+  validateAccess?(): Promise<void>;
 }
 
 async function loadReplayFonts() {
@@ -78,7 +79,12 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
           setRetryAt(retryAt); setRetrySeconds(retryAt ? Math.ceil((retryAt - Date.now()) / 1000) : 0);
         });
       },
-      record: (signal, onProgress) => recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind),
+      record: async (signal, onProgress) => {
+        await definition.validateAccess?.();
+        const recorded = await recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind);
+        await definition.validateAccess?.();
+        return recorded;
+      },
       onReady: () => { player.current = renderer; renderer!.render(0); paintPreview(renderer!); setReady(true); },
       onProgress: value => { progress.current = value; setSeek(value); setExportProgress(value); paintPreview(renderer!); },
       onFile: exported => { renderer!.render(1); paintPreview(renderer!); progress.current = 1; setSeek(1); setFile(exported); },
@@ -133,6 +139,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     if (!file || sharing.current) return;
     sharing.current = true; setSharePending(true); setError(''); setNotice('');
     try {
+      await definition.validateAccess?.();
       await definition.shareFile(file);
     } catch (problem) {
       if (alive.current && !(problem instanceof DOMException && problem.name === 'AbortError')) setError(t('Sharing was unavailable. Download the video and attach it on X.'));
@@ -142,10 +149,10 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     }
   }
 
-  function download() {
+  async function download() {
     if (!file) return;
-    downloadTradeReplay(file);
-    setNotice(t('Download started.'));
+    try { if (definition.validateAccess) await definition.validateAccess(); downloadTradeReplay(file); setNotice(t('Download started.')); }
+    catch { setError(t(definition.validateAccess ? 'Journal access changed. Close this replay and try again.' : 'Video download failed. Try again.')); setFile(null); }
   }
 
   function captureImage() {
@@ -161,6 +168,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     const currentGeneration = generation.current;
     setImagePending(true); setError(''); setNotice('');
     try {
+      await definition.validateAccess?.();
       const blob = await captureImage();
       if (!alive.current || generation.current !== currentGeneration) return;
       const base = file?.name.replace(/\.(mp4|webm)$/i, '') ?? `${definition.fileName}-${definition.kind}-replay`.replace(/[^a-z0-9-]+/gi, '-').slice(0, 100).toLowerCase();
@@ -178,7 +186,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     try {
       // Create the promised PNG in the click handler to preserve clipboard
       // activation while the canvas finishes producing its image bytes.
-      const image = captureImage();
+      const image = (async () => { await definition.validateAccess?.(); return captureImage(); })();
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
       if (alive.current) setNotice(t('Image copied.'));
     } catch { if (alive.current) setError(t('Image copying is unavailable. Save the image instead.')); }

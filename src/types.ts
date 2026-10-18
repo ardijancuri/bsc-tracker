@@ -1,6 +1,7 @@
 export type TradeSide = 'buy' | 'sell' | 'swap' | 'unknown';
 
 export interface Kol {
+  creator?: { claimed: boolean; walletControlVerified: boolean; bio: string | null; websiteUrl: string | null; xUrl: string | null; telegramUrl: string | null; updatedAt: string | null };
   address: string;
   name: string | null;
   avatarUrl: string | null;

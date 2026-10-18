@@ -30,7 +30,8 @@ describe('bounded confirmed trade repair queue', () => {
     const admitted = fixture(sql => sql.startsWith('SELECT COUNT') ? [{ count: 0 }] : []);
     await admitted.queue.request(hint);
     const insert = admitted.query.mock.calls.find(([sql]) => sql.startsWith('INSERT'))!;
-    expect(insert[0]).toContain('WHERE EXISTS(SELECT 1 FROM kols WHERE address=$3 AND is_tracked)');
+    expect(insert[0]).toContain('WHERE EXISTS(SELECT 1 FROM kols k WHERE k.address=$3 AND (k.is_tracked');
+    expect(insert[0]).toContain('EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=k.address)');
     expect(JSON.parse(insert[1]![1] as string)).toEqual(record());
     expect(insert[1]![2]).toBe(hint.walletAddress);
     const existing = fixture(sql => sql.startsWith('SELECT value') ? [{ value: record({ attempts: 8, nextAttemptAt: time + 3_600_000 }) }] : []);

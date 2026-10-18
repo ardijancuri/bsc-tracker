@@ -67,7 +67,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
   const bucketSeconds = { '24h': 1800, '7d': 10800, '30d': 43200 }[period];
   const items = session || tokenAddress ? (await pool.query(`WITH entries AS (
     ${tokenAddress ? `SELECT 'token'::text AS kind,v.address FROM tokens v WHERE v.address=$1 AND EXISTS (
-      SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : `SELECT kind,address FROM ${entryTable(session!)} WHERE ${ownerColumn(session!)}=$1`}
+      SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : `SELECT kind,address FROM ${entryTable(session!)} WHERE ${ownerColumn(session!)}=$1`}
     ) SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
     COALESCE(stats.latest_price,CASE WHEN v.price_source='onchain' THEN v.price_usd END) AS "priceUsd",
     stats.price_1h AS "price1hAgo",stats.price_24h AS "price24hAgo",
@@ -79,7 +79,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
       WHEN v.price_source='onchain' AND v.price_usd > 0 AND v.total_supply_raw > 0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at > now()-interval '2 days'
       THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END AS "marketCapUsd",
     CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
-    FROM entries e LEFT JOIN kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
+    FROM entries e LEFT JOIN published_kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
     LEFT JOIN LATERAL (
       SELECT (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp>now()-interval '48 hours'))[1] AS latest_price,
         (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-interval '1 hour' AND t.timestamp>now()-interval '48 hours'))[1] AS price_1h,
@@ -89,7 +89,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
         COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_kols,
         SUM(t.amount_usd) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS volume,
         COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS kols,MAX(t.timestamp) AS last_trade
-      FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
+      FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
       WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL
         AND t.timestamp>now()-($2+86400)*interval '1 second' AND t.timestamp<=now()
     ) stats ON true
@@ -98,7 +98,7 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
       FROM (SELECT samples.timestamp,samples.price_usd FROM (SELECT t.timestamp,t.price_usd,
         row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp,t.id) AS first_in_bucket,
         row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp DESC,t.id DESC) AS last_in_bucket
-        FROM trades t JOIN kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
+        FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
         WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL AND t.price_usd>0
           AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()) samples
         WHERE samples.first_in_bucket=1 OR samples.last_in_bucket=1) p
@@ -136,7 +136,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
       v.total_supply_raw::text AS "rawSupply",v.decimals,v.supply_checked_at AS "supplyCheckedAt"
       FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND EXISTS (
-        SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
+        SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const supplyRequest = tokenSupplyRequests.start(address, known.rows[0]);
     const chartRequest = fullHistory ? currentFullMarketChart(address, selected as typeof candleIntervals[number], priority ?? 'chart', before)
@@ -153,7 +153,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (interval !== undefined) return { address, period: selected, candles: [], points: [], source: 'unavailable',
       updatedAt: null, resolution: chartSettings(selected).resolution, ...supplyDetails, pending, stale: false, ...loading };
     const history = await pool.query(`SELECT t.timestamp,t.price_usd::text AS "priceUsd" FROM trades t
-      JOIN kols k ON k.address=t.wallet_address AND k.is_tracked
+      JOIN published_kols k ON k.address=t.wallet_address AND k.is_tracked
       WHERE t.token_address=$1 AND t.block_number IS NOT NULL AND t.price_usd>0
         AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()
       ORDER BY t.timestamp DESC,t.id DESC LIMIT 1000`, [address, chartSettings(selected).seconds]);
@@ -191,8 +191,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const unique = items ? [...new Map(items.map(item => [`${item.kind}:${item.address}`, item])).values()] : undefined;
     if (unique && ['kol', 'token'].some(kind => unique.filter(item => item.kind === kind).length > 100)) return reply.code(400).send({ error: 'Watch up to 100 KOLs and 100 tokens' });
     if (unique?.length) {
-      const known = await pool.query(`SELECT 'kol' AS kind,address FROM kols WHERE is_tracked AND address=ANY($1::text[])
-        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND ${nonStockTokenSql()} AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`,
+      const known = await pool.query(`SELECT 'kol' AS kind,address FROM published_kols WHERE is_tracked AND address=ANY($1::text[])
+        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND ${nonStockTokenSql()} AND EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`,
       [unique.filter(item => item.kind === 'kol').map(item => item.address), unique.filter(item => item.kind === 'token').map(item => item.address)]);
       const valid = new Set(known.rows.map(row => `${row.kind}:${row.address}`));
       if (unique.some(item => !valid.has(`${item.kind}:${item.address}`))) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
@@ -238,9 +238,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       if (method === 'DELETE' && !session) return watchlist(null);
       if (method === 'PUT') {
         const known = kind === 'kol'
-          ? await pool.query('SELECT address FROM kols WHERE address=$1 AND is_tracked', [key])
+          ? await pool.query('SELECT address FROM published_kols WHERE address=$1 AND is_tracked', [key])
           : await pool.query(`SELECT v.address FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()}
-            AND EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [key]);
+            AND EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [key]);
         if (!known.rows.length) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
       }
       const client = await pool.connect();
@@ -298,7 +298,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (session || request.query.watched === '1') privateResponse(reply);
     if (request.query.watched === '1' && !session) return { items: [], nextCursor: null };
     const values: unknown[] = [];
-    const where: string[] = [nonStockTokenSql()];
+    const where: string[] = [nonStockTokenSql(), `cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`];
     const preference = session?.preferences ?? defaultPreferences;
     values.push(preference.windowMinutes, preference.minBuyers);
     where.push('(s.window_minutes=0 OR s.window_minutes=$1 AND s.min_buyers=$2)');
@@ -320,7 +320,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const result = await pool.query(`SELECT s.id,s.kind,s.token_address AS "tokenAddress",v.symbol AS "tokenSymbol",v.name AS "tokenName",
       CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
       s.wallet_addresses AS "walletAddresses",s.window_minutes AS "windowMinutes",s.min_buyers AS "minBuyers",s.timestamp,s.published_at AS "publishedAt",s.corrected,s.evidence,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url) ORDER BY k.display_name,k.address) FROM kols k WHERE k.address=ANY(s.wallet_addresses)), '[]'::jsonb) AS kols
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url) ORDER BY k.display_name,k.address) FROM published_kols k WHERE k.is_tracked AND k.address=ANY(s.wallet_addresses)), '[]'::jsonb) AS kols
       FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE ${where.join(' AND ')} ORDER BY s.timestamp DESC,s.id DESC LIMIT $${values.length}`, values);
     const items = result.rows.slice(0, count), last = items.at(-1);
     return { items, nextCursor: result.rows.length > count && last ? Buffer.from(JSON.stringify({ ts: new Date(last.timestamp).toISOString(), id: last.id })).toString('base64url') : null };
@@ -330,8 +330,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const result = await pool.query(`SELECT s.id,s.kind,s.token_address AS "tokenAddress",v.symbol AS "tokenSymbol",v.name AS "tokenName",
       CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
       s.wallet_addresses AS "walletAddresses",s.window_minutes AS "windowMinutes",s.min_buyers AS "minBuyers",s.timestamp,s.published_at AS "publishedAt",s.corrected,s.evidence,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url)) FROM kols k WHERE k.address=ANY(s.wallet_addresses)),'[]'::jsonb) AS kols
-      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1 AND ${nonStockTokenSql()}`, [request.params.id]);
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url)) FROM published_kols k WHERE k.is_tracked AND k.address=ANY(s.wallet_addresses)),'[]'::jsonb) AS kols
+      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1 AND ${nonStockTokenSql()} AND cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`, [request.params.id]);
     return { signal: result.rows[0] ?? null };
   });
   for (const mode of ['kols', 'tokens'] as const) {
@@ -348,7 +348,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       const result = await pool.query(`WITH pairs AS (
         SELECT wallet_address,token_address FROM trades WHERE block_number IS NOT NULL AND ${mode === 'kols' ? 'wallet_address' : 'token_address'}=$1
         UNION SELECT wallet_address,token_address FROM wallet_transfers WHERE ${mode === 'kols' ? 'wallet_address' : 'token_address'}=$1)
-        SELECT pairs.wallet_address,pairs.token_address,v.decimals,s.* FROM pairs JOIN kols k ON k.address=pairs.wallet_address AND k.is_tracked
+        SELECT pairs.wallet_address,pairs.token_address,v.decimals,s.* FROM pairs JOIN published_kols k ON k.address=pairs.wallet_address AND k.is_tracked
         JOIN tokens v ON v.address=pairs.token_address LEFT JOIN LATERAL(SELECT balance_raw,status,checked_at,block_number,block_timestamp,last_movement_at,error FROM position_snapshots
           WHERE wallet_address=pairs.wallet_address AND token_address=pairs.token_address ORDER BY block_number DESC LIMIT 1) s ON true
         WHERE ${nonStockTokenSql()} ${tokenFilter} ORDER BY pairs.wallet_address,pairs.token_address LIMIT 300`, values);
@@ -368,7 +368,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     return { launch: result.rows[0] ? { ...result.rows[0], progress: result.rows[0].progress == null ? null : Number(result.rows[0].progress) } : null };
   });
   app.get<{ Querystring: { limit?: string; cursor?: string; platform?: string; stage?: string } }>('/api/launches', async (request, reply) => {
-    const values: unknown[] = [], where = [nonStockTokenSql(), 'l.platform IS NOT NULL', 'EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE t.token_address=l.token_address AND k.is_tracked AND t.block_number IS NOT NULL)'];
+    const values: unknown[] = [], where = [nonStockTokenSql(), 'l.platform IS NOT NULL', 'EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=l.token_address AND k.is_tracked AND t.block_number IS NOT NULL)'];
     if (request.query.platform && ['fourmeme', 'flap'].includes(request.query.platform)) { values.push(request.query.platform); where.push(`l.platform=$${values.length}`); }
     if (request.query.stage && ['bonding', 'near_graduation', 'graduated', 'unavailable'].includes(request.query.stage)) { values.push(request.query.stage); where.push(`l.stage=$${values.length}`); }
     try { const cursor = pageCursor(request.query.cursor); if (cursor) { values.push(cursor.ts, cursor.id); where.push(`(COALESCE(l.first_kol_at,l.launched_at,to_timestamp(0)),l.token_address)<($${values.length - 1}::timestamptz,$${values.length}::text)`); } }
@@ -384,8 +384,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
   app.get('/api/intelligence/health', async () => {
     const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','telegram_notifications','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
     const metrics = await pool.query(`SELECT
-      (SELECT COUNT(*)::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
-      (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",
+      (SELECT COUNT(*)::int FROM trades WHERE EXISTS(SELECT 1 FROM kols public_kol WHERE public_kol.address=trades.wallet_address AND public_kol.is_tracked) AND ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
+      (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE EXISTS(SELECT 1 FROM kols public_kol WHERE public_kol.address=trades.wallet_address AND public_kol.is_tracked) AND ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",
       (SELECT COUNT(*)::int FROM (SELECT DISTINCT ON(wallet_address,token_address) error,checked_at,block_timestamp FROM position_snapshots ORDER BY wallet_address,token_address,block_number DESC) p
         WHERE error OR checked_at<now()-interval '5 minutes' OR block_timestamp<now()-interval '5 minutes') AS "stalePositions"`);
     return { ...metrics.rows[0], states: Object.fromEntries(states.rows.map(row => [row.key, { ...row.value, updatedAt: row.updated_at }])) };

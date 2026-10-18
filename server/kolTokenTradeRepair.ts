@@ -48,7 +48,8 @@ export function createKolTokenTradeRepairQueue({ connect = () => pool.connect(),
         if (!previous && Number(count.rows[0]?.count) >= 128) return;
         const value: RecordValue = { ...hint, version: 1, attempts: 0, nextAttemptAt: now(), requestedAt: now(), leaseId: null };
         await client.query(`INSERT INTO worker_state(key,value,updated_at)
-          SELECT $1,$2::jsonb,now() WHERE EXISTS(SELECT 1 FROM kols WHERE address=$3 AND is_tracked)
+          SELECT $1,$2::jsonb,now() WHERE EXISTS(SELECT 1 FROM kols k WHERE k.address=$3 AND (k.is_tracked
+            OR EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=k.address)))
           ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [keyOf(hint), JSON.stringify(value), hint.walletAddress]);
       });
     },

@@ -1,3 +1,5 @@
+import { prepareJournalReplay } from './journalReplay';
+import type { TradeRequestContext } from './tradeRequestContext';
 import type { Position, TokenChart } from '../shared/intelligence';
 import type { InventoryCoverage, InventoryEvent, KolTokenActivity } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
@@ -25,13 +27,15 @@ export interface ReplayInventory {
   coverage: InventoryCoverage & { verification?: 'gmgn_history' };
 }
 type AccountingNumbers = { [Key in keyof ReplayAccountingSnapshot]: number | null };
-export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final'> & {
+export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final' | 'coverage'> & {
+  coverage: TradeReplayAccounting['coverage'] & { journalFinal?: boolean };
   events: (Omit<ReplayAccountingEvent, keyof ReplayAccountingSnapshot | 'blockNumber'> & AccountingNumbers & { blockNumber: string | null })[];
   final: (Omit<ReplayAccountingFinal, keyof ReplayAccountingSnapshot | 'reportedProfitUsd' | 'reportedRoi' | 'priceUsd'> & AccountingNumbers
     & { reportedProfitUsd: number | null; reportedRoi: number | null; priceUsd: number | null }) | null;
 };
 
 export interface TradeReplayData {
+  requestContext?: TradeRequestContext;
   kol: Pick<Kol, 'address' | 'name' | 'avatarUrl' | 'twitter'>;
   token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> & { priceUsd: number | null; marketCapUsd: number | null };
   trades: ReplayTrade[];
@@ -94,6 +98,10 @@ export function replayAccountingTotal(snapshot: AccountingNumbers | null | undef
 
 export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now()) {
   const accounting = data.replayAccounting, final = accounting?.final;
+  if (data.requestContext?.kind === 'journal' && accounting?.coverage.journalFinal && final
+    && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)
+    && Number.isFinite(Date.parse(final.timestamp)) && Date.parse(final.timestamp) >= replayEndTimestamp(data)
+    && Date.parse(final.timestamp) <= now + serverClockSkewMs && now - Date.parse(final.timestamp) <= 180_000) return final;
   if (!final || accounting?.status !== 'ready' || !accounting.coverage.exactFinal || !replayAccountingIsFresh(data, now)
     || !replayInventoryIsFresh(data, now)) return null;
   const time = Date.parse(final.timestamp);
@@ -411,7 +419,7 @@ function completedCandleRun(chart: TokenChart, firstTrade: number, lastTrade: nu
 }
 
 /** Only a fresh, independently checked balance can authorize the replay's rolling gross P&L. */
-export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenChart | null, position?: Position | null, now = Date.now()): TradeReplayData | null {
+export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenChart | null, position?: Position | null, now = Date.now(), context?: TradeRequestContext): TradeReplayData | null {
   const { kol, token } = activity;
   if (!kol || !token) return null;
   const selectedChart = chart?.address.toLowerCase() === token.address.toLowerCase() ? chart : null;
@@ -435,7 +443,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   });
 
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
-  const history = prepareGmgnReplayHistory(activity, complete, now);
+  const history = prepareJournalReplay(activity, now, context) ?? prepareGmgnReplayHistory(activity, complete, now);
   const inventory = history?.inventory ?? prepareReplayInventory(activity, trades, complete, now);
   const replayAccounting = history?.accounting ?? prepareReplayAccounting(activity, trades, inventory, now);
   const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
@@ -504,6 +512,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   }
   const chartSource = points.length ? (selectedChart?.source === 'recorded' ? 'Recorded observations' : 'Historical market samples') : 'Recorded fills';
   return {
+    ...(context ? { requestContext: context } : {}),
     kol, token: { ...token, priceUsd: replayNumber(token.priceUsd), marketCapUsd: replayNumber(token.marketCapUsd) }, trades,
     position: replayPosition,
     chart: { points, marketCapSupply: supply, resolution: selectedChart?.resolution ?? '', source: chartSource },

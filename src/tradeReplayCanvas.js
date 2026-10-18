@@ -1014,7 +1014,7 @@ export class ReplayCanvas {
       prefix = event;
     }
     const completePrefix = prefix?.id === this.accountingEvents.at(-1)?.id;
-    const final = ending && completePrefix && accounting.coverage.exactFinal ? accounting.final : null;
+    const final = ending && completePrefix && (accounting.coverage.exactFinal || accounting.coverage.journalFinal) ? accounting.final : null;
     const snapshot = final ?? prefix;
     if (!snapshot) return unavailable;
     const invested = finite(snapshot.investedUsd, null), proceeds = finite(snapshot.soldUsd, null);

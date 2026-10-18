@@ -19,7 +19,7 @@ function LegalLayout({ title, children, updated = 'Last updated October 4, 2026'
 }
 
 export function PrivacyPolicyPage() {
-  return <LegalLayout title={t("Privacy Policy")} updated="Last updated October 17, 2026">
+  return <LegalLayout title={t("Privacy Policy")} updated="Last updated October 18, 2026">
     <p>{t("kollens is a public, read-only BNB Smart Chain analytics site. You can browse it without creating an account or connecting a wallet.")}</p>
 
     <section><h2>{t("Information shown on kollens")}</h2><p>{t("We display public wallet addresses, blockchain transactions, token data, and analytics derived from them. The tracked wallet roster also contains KOL names and X handles supplied to kollens, and may include publicly available profile images. A name or handle shown beside a wallet is not independent proof of who owns it.")}</p></section>
@@ -32,6 +32,10 @@ export function PrivacyPolicyPage() {
 
     <section><h2>{t('Telegram alerts')}</h2><p>{t('Telegram trade alerts are optional and require separate messaging consent. We store your verified numeric Telegram user ID, alert preferences, muted KOLs, and delivery records to send favorite KOL trade updates and prevent duplicate messages. You can pause alerts in Watchlist, mute individual KOLs, or send /stop to the bot. Signing in alone does not enable alerts.')}</p></section>
 
+    <section><h2>{t('Creator profiles and wallet proofs')}</h2><p>{t('Creators can connect a browser wallet to sign a domain-bound claim or release message. We store the account-to-wallet claim, challenge records and published profile customization. A wallet-control badge verifies control of the wallet at the time of the proof; it does not verify social accounts or trading quality. Signing a profile message does not authorize a blockchain transaction.')}</p></section>
+
+    <section><h2>{t('Private trading journal')}</h2><p>{t('Journal wallet memberships and private labels are visible only to the signed-in account. We use public blockchain and provider data to prepare their positions, history and replays. Private subscriptions do not add a wallet to public KOL rosters, rankings, feeds or alerts. Removing a wallet revokes journal access and stops monitoring it when no other subscriber or public roster requires it. Downloaded replays can be shared by you and are no longer private once you share them.')}</p></section>
+
     <section><h2>{t("How we use information")}</h2><p>{t("We use public data to display the trade feed, token pages, KOL profiles, and leaderboard. We use request information to deliver the site, diagnose problems, and protect the service. Where applicable, this processing supports our legitimate interest in operating and securing a public analytics service.")}</p></section>
 
     <section><h2>{t("External services")}</h2><p>{t("Some token images load from external hosts, which may receive standard request information from your browser. Links to X, BscScan, and GMGN take you to services with their own privacy practices. Our hosting provider processes information needed to deliver kollens. We send public token names to MyMemory to provide cached English translations; these requests do not include your browser identifiers or watchlist.")}</p><p>{t('If you choose Telegram login, Telegram handles authentication under its own privacy policy. Favorites stay in kollens. If you separately enable alerts, Telegram receives the selected KOL trade details and your chat ID to deliver those messages.')}</p></section>
@@ -43,10 +47,10 @@ export function PrivacyPolicyPage() {
 }
 
 export function TermsOfUsePage() {
-  return <LegalLayout title={t("Terms of Use")}>
+  return <LegalLayout title={t("Terms of Use")} updated="Last updated October 18, 2026">
     <p>{t("These terms apply to your use of kollens, a public, read-only BNB Smart Chain analytics site.")}</p>
 
-    <section><h2>{t("What the service does")}</h2><p>{t("kollens displays observed transactions from a curated list of wallets, token activity, KOL profiles, and a realized profit and loss leaderboard. The site does not connect to your wallet or execute trades.")}</p></section>
+    <section><h2>{t("What the service does")}</h2><p>{t('kollens displays public blockchain analytics and optional private wallet tracking. Creators may connect a browser wallet solely to prove control of an existing KOL profile with a signature. Kollens does not execute trades or request permission to spend your funds.')}</p></section>
 
     <section><h2>{t("Data and limitations")}</h2><p>{t("Blockchain and third-party data may be delayed, incomplete, inaccurate, or unavailable. Wallet names and X handles are not independently verified. Prices are based on observed trades, and realized profit and loss can be partial when earlier buys or reliable USD values are unavailable. Do not treat these figures as a complete account history or a live market quote.")}</p></section>
 

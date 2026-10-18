@@ -16,10 +16,16 @@ const evidence = (trade: ObservedTrade): SignalEvidence => ({ id: trade.id, txHa
   kolName: trade.kolName, side: trade.side, timestamp: trade.timestamp, blockNumber: trade.blockNumber, blockHash: trade.blockHash });
 
 export async function recordWalletTransfers(tx: { hash: string; from: string; to?: string | null; value?: string }, receipt: { status: string; logs: ChainLog[] }, block: Block, wallets: Set<string>, database: Pick<PoolClient, 'query'> = pool) {
-  const logs = receipt.logs.filter(log => log.topics[0]?.toLowerCase() === transferTopic && log.topics.length === 3 && /^0x[0-9a-f]{64}$/i.test(log.data));
+  if (receipt.status !== '0x1') return;
+  const logs = receipt.logs.filter(log => !log.removed && log.topics[0]?.toLowerCase() === transferTopic && log.topics.length === 3
+    && /^0x0{24}[0-9a-f]{40}$/i.test(log.topics[1]) && /^0x0{24}[0-9a-f]{40}$/i.test(log.topics[2]) && /^0x[0-9a-f]{64}$/i.test(log.data));
   if (!logs.length) return;
-  const known = await database.query(`SELECT address FROM tokens v WHERE address=ANY($1::text[]) AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND block_number IS NOT NULL)`, [[...new Set(logs.map(log => normalized(log.address)))]]);
-  const tokens = new Set<string>(known.rows.map(row => row.address));
+  // An incoming token may precede the first purchase (or never be purchased).
+  // Keep its raw evidence before display exclusions; unknown decimals stay NULL.
+  const tokens = new Set(logs.filter(log => wallets.has(`0x${log.topics[1].slice(-40)}`.toLowerCase()) || wallets.has(`0x${log.topics[2].slice(-40)}`.toLowerCase()))
+    .map(log => normalized(log.address)).filter(address => /^0x[0-9a-f]{40}$/.test(address)));
+  if (!tokens.size) return;
+  await database.query(`INSERT INTO tokens(address) SELECT unnest($1::text[]) ON CONFLICT(address) DO NOTHING`, [[...tokens]]);
   const trades = await database.query('SELECT wallet_address,token_address,side FROM trades WHERE tx_hash=$1 AND block_number IS NOT NULL', [normalized(tx.hash)]);
   const sides = new Map(trades.rows.map(row => [`${row.wallet_address}:${row.token_address}`, row.side]));
   const initiated = new Map(transactionWallets(tx, receipt).filter(wallet => wallets.has(wallet))
@@ -36,10 +42,10 @@ export async function recordWalletTransfers(tx: { hash: string; from: string; to
       const side = sides.get(`${wallet}:${token}`);
       const kind = initiated.get(wallet)?.has(log) && ['buy', 'sell'].includes(side) ? side : 'transfer';
       const logIndex = log.logIndex ? Number(BigInt(log.logIndex)) : index;
-      await database.query(`INSERT INTO wallet_transfers(id,tx_hash,log_index,wallet_address,token_address,delta_raw,kind,block_number,block_hash,timestamp)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,to_timestamp($10)) ON CONFLICT(id) DO UPDATE SET kind=EXCLUDED.kind
+      await database.query(`INSERT INTO wallet_transfers(id,tx_hash,log_index,wallet_address,token_address,delta_raw,kind,block_number,block_hash,timestamp,counterparty_address)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,to_timestamp($10),$11) ON CONFLICT(id) DO UPDATE SET kind=EXCLUDED.kind,counterparty_address=EXCLUDED.counterparty_address
           WHERE wallet_transfers.block_hash=EXCLUDED.block_hash AND wallet_transfers.delta_raw=EXCLUDED.delta_raw`,
-      [`${normalized(tx.hash)}:${logIndex}:${wallet}`, normalized(tx.hash), logIndex, wallet, token, (BigInt(log.data) * sign).toString(), kind, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp))]);
+      [`${normalized(tx.hash)}:${logIndex}:${wallet}`, normalized(tx.hash), logIndex, wallet, token, (BigInt(log.data) * sign).toString(), kind, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), sign < 0n ? to : from]);
     }
   }
 }
@@ -86,7 +92,7 @@ export async function collectSignals() {
     await client.query(`UPDATE trades SET intelligence_processed=true WHERE NOT intelligence_processed AND block_number IS NOT NULL AND (timestamp<=now()-interval '24 hours' OR NOT ${nonStockTokenSql('token_address')})`);
     const rows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex",t.observed_live AS "observedLive"
-      FROM trades t JOIN kols k ON k.address=t.wallet_address
+      FROM trades t JOIN published_kols k ON k.address=t.wallet_address
       WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND NOT t.intelligence_processed AND t.block_number IS NOT NULL AND t.timestamp > now()-interval '24 hours'
       AND t.block_number <= COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
       ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id LIMIT 200 FOR SHARE OF t`);
@@ -95,7 +101,7 @@ export async function collectSignals() {
     const earliest = Math.min(...trades.map(trade => Date.parse(trade.timestamp))) - 86400_000;
     const historyRows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex"
-      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.token_address=ANY($1::text[]) AND t.timestamp >= $2
+      FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.token_address=ANY($1::text[]) AND t.timestamp >= $2
       AND t.block_number <= $3 ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`,
     [[...new Set(trades.map(trade => trade.tokenAddress))], new Date(earliest).toISOString(), trades.at(-1)!.blockNumber]);
     const history: ObservedTrade[] = historyRows.rows.map(row => ({ ...row, timestamp: new Date(row.timestamp).toISOString() }));
@@ -141,7 +147,7 @@ async function backfillSignalProfile() {
     if (!profile) { await client.query('COMMIT'); return; }
     const rows = await client.query(`SELECT t.id,t.tx_hash AS "txHash",t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",k.display_name AS "kolName",
       t.side,t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",t.transaction_index AS "transactionIndex"
-      FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.timestamp>now()-interval '48 hours'
+      FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.timestamp>now()-interval '48 hours'
       AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
       ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id`);
     const history = new Map<string, ObservedTrade[]>(), cooldown = new Map<string, string>();

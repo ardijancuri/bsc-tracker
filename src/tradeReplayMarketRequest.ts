@@ -1,3 +1,5 @@
+import { tradeActivityBase, tradeRequestHeaders } from './tradeRequestContext';
+import type { JournalTokenActivity } from '../shared/journal';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { TokenChart } from '../shared/intelligence';
 import { applyReplayMarketChart, prepareTradeReplayData, replayAccountingIsFresh, replayAccountingTotal, replayEndTimestamp, replayInventoryIsFresh, replayIsOpen, unavailableReplayAccounting, validReplayAccountingFinal, validReplayCurrentQuote, type ReplayActivity, type TradeReplayData } from './tradeReplayData';
@@ -86,8 +88,8 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal, dea
       const startedAt = Date.now();
       let response: Response, activity: ReplayActivity;
       try {
-        response = await withinRequest(fetch(`/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/activity?replay=true`,
-          { signal: refresh.signal, cache: 'no-store' }), refresh.signal);
+        response = await withinRequest(fetch(`${tradeActivityBase(data.kol.address, data.token.address, data.requestContext)}/activity?replay=true${data.requestContext ? '&pnl=true' : ''}${data.requestContext?.snapshotId ? `&snapshot=${encodeURIComponent(data.requestContext.snapshotId)}` : ''}`,
+          { signal: refresh.signal, cache: 'no-store', headers: tradeRequestHeaders(data.requestContext) }), refresh.signal);
         if (!response.ok) {
           pending = response.status === 429 || response.status >= 500;
           if (!pending) return result();
@@ -115,9 +117,11 @@ async function refreshedActivity(data: TradeReplayData, signal: AbortSignal, dea
         marketCapSupply: data.chart.marketCapSupply === null ? null : String(data.chart.marketCapSupply),
         source: 'recorded', resolution: data.chart.resolution, updatedAt: null, pending: false, stale: false,
       };
-      const prepared = prepareTradeReplayData(activity, retainedChart, null);
+      const requestContext = data.requestContext ? { ...data.requestContext,
+        snapshotId: (activity as JournalTokenActivity).journal?.snapshotId ?? data.requestContext.snapshotId } : undefined;
+      const prepared = prepareTradeReplayData(activity, retainedChart, null, Date.now(), requestContext);
       if (!prepared?.trades.length) { pending = false; return result(); }
-      selected = { ...prepared, replayAccounting: prepared.replayAccounting ?? unavailableReplayAccounting(prepared, 'gmgn_accounting_missing') };
+      selected = { ...prepared, requestContext, replayAccounting: prepared.replayAccounting ?? unavailableReplayAccounting(prepared, 'gmgn_accounting_missing') };
       if (prepared.chart.points.length) selected = { ...selected, chart: { ...prepared.chart,
         source: data.chart.source, sparseHistory: data.chart.sparseHistory }, source: { ...prepared.source, chart: data.source.chart } };
       const inventoryPending = activity.inventory?.coverage.status === 'pending';
@@ -158,12 +162,12 @@ interface HistoryPreparation {
 
 async function replayHistory(data: TradeReplayData, current: boolean, signal: AbortSignal, deadline: number): Promise<HistoryPreparation> {
   const charts: ReplayMarketChart[] = [];
-  const url = `/api/kols/${encodeURIComponent(data.kol.address)}/tokens/${encodeURIComponent(data.token.address)}/replay-chart${current ? '?end=current' : ''}`;
+  const url = `${tradeActivityBase(data.kol.address, data.token.address, data.requestContext)}/replay-chart${current ? '?end=current' : ''}${data.requestContext?.snapshotId ? `${current ? '&' : '?'}snapshot=${encodeURIComponent(data.requestContext.snapshotId)}` : ''}`;
   const problem = 'Historical market data could not be loaded; the replay is using available data.';
   const unavailable = 'Historical market data is unavailable for this replay.';
   try {
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-      const response = await withinRequest(fetch(url, { signal, cache: 'no-store' }), signal);
+      const response = await withinRequest(fetch(url, { signal, cache: 'no-store', headers: tradeRequestHeaders(data.requestContext) }), signal);
       if (response.status === 400 || response.status === 404) return { charts, notice: unavailable, pending: false };
       if (!response.ok) return { charts, notice: problem, pending: response.status === 429 || response.status >= 500,
         ...(response.status === 429 || response.status >= 500 ? { retryAfterMs: httpRetryDelay(response, attempt) } : {}) };
@@ -207,11 +211,18 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   const initialCurrent = data.position.status !== 'closed';
   try {
     const activityWork = refreshedActivity(data, request.signal, deadline).then(value => ({ ...value, settledAt: Date.now() }));
-    const historyWork = replayHistory(data, initialCurrent, request.signal, deadline).then(value => ({ ...value, settledAt: Date.now() }));
+    const awaitingPrivateSnapshot = data.requestContext?.kind === 'journal' && !data.requestContext.snapshotId;
+    // The private window belongs to an approved accounting snapshot. Recovery
+    // may expand it; do not authorize a chart requested against an earlier window.
+    const historyWork = (awaitingPrivateSnapshot
+      ? Promise.resolve<HistoryPreparation>({ charts: [], notice: null, pending: true, retryAfterMs: 1500 })
+      : replayHistory(data, initialCurrent, request.signal, deadline)).then(value => ({ ...value, settledAt: Date.now() }));
     const activity = await activityWork;
     let history = await historyWork;
     if (signal.aborted) throw cancelled();
     let selected = activity.data;
+    if (awaitingPrivateSnapshot && selected.requestContext?.snapshotId && !request.signal.aborted)
+      history = { ...await replayHistory(selected, replayIsOpen(selected), request.signal, deadline), settledAt: Date.now() };
     for (const chart of history.charts) selected = applyReplayMarketChart(selected, chart);
     if (!initialCurrent && replayIsOpen(selected) && !validReplayCurrentQuote(selected) && !request.signal.aborted) {
       const currentHistory = await replayHistory(selected, true, request.signal, deadline);
@@ -259,7 +270,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
         (history.retryAfterMs ?? 0) - (Date.now() - history.settledAt)) } : {}),
       ...(open && !currentQuote ? { currentPriceNotice: currentPriceUnavailableNotice } : {}),
       ...(selected.inventory && !replayInventoryIsFresh(selected) ? { inventoryNotice: inventoryUnavailableNotice } : {}),
-      accountingNotice: exactFinal ? accountingExactNotice : accountingKnown ? accountingEstimateNotice
+      accountingNotice: selected.requestContext && accountingKnown ? 'Profit uses reconciled position history and the frozen journal valuation. Earlier values are estimates.' : exactFinal ? accountingExactNotice : accountingKnown ? accountingEstimateNotice
         : selected.replayAccounting?.status === 'pending' ? undefined : accountingUnavailableNotice };
   } finally {
     clearTimeout(timeout); signal.removeEventListener('abort', abort);

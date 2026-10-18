@@ -1,6 +1,8 @@
+import { tradeActivityBase, tradeRequestHeaders, type TradeRequestContext } from './tradeRequestContext';
+import { journalTokenProfit } from './journalReplay';
 import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
 
-export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null }
+export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null; requestContext?: TradeRequestContext }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
 const address = /^0x[0-9a-f]{40}$/i;
 const requestBudgetMs = 20_000;
@@ -196,7 +198,7 @@ export function tokenPnlNeedsRetry(activity: KolTokenActivity) {
 
 export function kolTokenPnlKey(selection: KolTokenPnlSelection) {
   const time = Date.parse(selection.lastTradeAt ?? '');
-  return `${selection.walletAddress.toLowerCase()}:${selection.tokenAddress.toLowerCase()}:${Number.isFinite(time) ? time : selection.lastTradeAt ?? ''}`;
+  return `${selection.requestContext ? `journal:${selection.requestContext.accountId}:` : ''}${selection.walletAddress.toLowerCase()}:${selection.tokenAddress.toLowerCase()}:${Number.isFinite(time) ? time : selection.lastTradeAt ?? ''}`;
 }
 
 function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.now()) {
@@ -517,8 +519,8 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
         let response: Response | undefined, providerDelay = 0;
         try {
           signal.throwIfAborted();
-          response = await bounded(fetcher(`/api/kols/${encodeURIComponent(walletAddress.toLowerCase())}/tokens/${encodeURIComponent(tokenAddress.toLowerCase())}/activity?pnl=true${job.foreground ? '' : '&profile=true'}`,
-            { signal: request.signal, cache: 'no-store' }), request.signal);
+          response = await bounded(fetcher(`${tradeActivityBase(walletAddress, tokenAddress, job.selection.requestContext)}/activity?pnl=true${job.selection.requestContext ? '&replay=true' : ''}${job.foreground ? '' : '&profile=true'}`,
+            { signal: request.signal, cache: 'no-store', headers: tradeRequestHeaders(job.selection.requestContext) }), request.signal);
           if (response.status === 202) {
             // Accepted profile work is still running on the server; its small
             // status response is not an activity snapshot to validate or cache.
@@ -536,6 +538,8 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
             else {
               activity = body;
               for (const client of job.clients) client.onActivity?.(body);
+              if (job.selection.requestContext && journalTokenProfit(body, job.selection.requestContext, now()) !== null)
+                return { activity: body, status: 'ready' };
               const accounting = body.realizedAccounting;
               // A terminal canonical-history failure cannot be fixed by polling
               // a downstream provider's pending status indefinitely.
@@ -572,7 +576,7 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
       // Settle ownership before notifying subscribers. Their next request can
       // start immediately, including after an unavailable result with no cache.
       if (jobs.get(job.key) === job) jobs.delete(job.key);
-      if (value.status === 'ready' && job.clients.size) {
+      if (!job.selection.requestContext && value.status === 'ready' && job.clients.size) {
         recent.delete(job.cacheKey); recent.set(job.cacheKey, { value, checkedAt: now() });
         while (recent.size > 64) recent.delete(recent.keys().next().value!);
       }
@@ -584,7 +588,7 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
     if (signal.aborted) return Promise.reject(cancelled());
     if (!address.test(selection.walletAddress) || !address.test(selection.tokenAddress)) return Promise.resolve({ activity: null, status: 'unavailable' });
     const cacheKey = kolTokenPnlKey(selection), cached = recent.get(cacheKey);
-    if (cached && now() >= cached.checkedAt && now() - cached.checkedAt < recentResultMs
+    if (!selection.requestContext && cached && now() >= cached.checkedAt && now() - cached.checkedAt < recentResultMs
       && verifiedTokenPositionPnl(cached.value.activity, now()) !== null) {
       if (cached.value.activity) options.onActivity?.(cached.value.activity);
       return Promise.resolve(cached.value);

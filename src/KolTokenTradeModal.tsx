@@ -1,8 +1,13 @@
+import { journalCoverageNotice } from './journalMessages';
+import { useAccount } from './Account';
+import type { TradeRequestContext } from './tradeRequestContext';
+import { journalTokenProfit } from './journalReplay';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Share2, X } from 'lucide-react';
 import { candleIntervals, defaultCandleInterval, type CandleInterval } from '../shared/intelligence';
+import type { JournalTokenActivity } from '../shared/journal';
 import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
 import type { Kol, Token } from './types';
 import { FollowButton, usePositions } from './Intelligence';
@@ -23,10 +28,13 @@ function money(value: string | null | undefined, signed = false) {
   return new Intl.NumberFormat(getLocale(), { style: 'currency', currency: 'USD', maximumFractionDigits: 2, signDisplay: signed ? 'exceptZero' : 'auto' }).format(Number(value));
 }
 
-export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdentity, tokenAddress, onClose }: {
-  kol: Kol; token: Token; kolIdentity: ReactNode; tokenIdentity: ReactNode; tokenAddress: ReactNode; onClose: () => void;
+export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdentity, tokenAddress, onClose, journalAccountId }: {
+  kol: Kol; token: Token; kolIdentity: ReactNode; tokenIdentity: ReactNode; tokenAddress: ReactNode; onClose: () => void; journalAccountId?: string;
 }) {
   useLanguage();
+  const account = useAccount();
+  const requestContext = useMemo<TradeRequestContext | undefined>(() => journalAccountId ? { kind: 'journal', accountId: journalAccountId } : undefined, [journalAccountId]);
+  useEffect(() => { if (journalAccountId && account.state.user?.id !== journalAccountId) onClose(); }, [journalAccountId, account.state.user?.id, onClose]);
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const shareTrigger = useRef<HTMLButtonElement>(null);
@@ -42,9 +50,9 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const [pageSize, setPageSize] = useState(6);
   const transactionList = useRef<HTMLDivElement>(null);
   const fittedPageSize = useRef(6);
-  const positions = usePositions('kol', kol.address, [token.address]);
+  const positions = usePositions('kol', kol.address, [token.address], !journalAccountId);
   const { chart } = useTokenChart(token.address, interval, !shareSnapshot);
-  const replay = useMemo(() => activity ? prepareTradeReplayData(activity, chart, positions.get(token.address)) : null, [activity, chart, positions, token.address]);
+  const replay = useMemo(() => activity ? (() => { const value = prepareTradeReplayData(activity, chart, journalAccountId ? null : positions.get(token.address), Date.now(), requestContext); return value && requestContext ? { ...value, requestContext: { ...requestContext, snapshotId: (activity as JournalTokenActivity).journal?.snapshotId } } : value; })() : null, [activity, chart, positions, token.address, requestContext]);
   const retry = useCallback(() => { setError(false); setRefresh(value => value + 1); }, []);
   const backToTrades = useCallback(() => {
     setShareSnapshot(null);
@@ -70,7 +78,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     let timer: ReturnType<typeof setTimeout> | undefined;
     let delayed = false, consecutivePending = 0;
     setActivityDelayed(false);
-    const pair = kolTokenPnlKey({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null });
+    const pair = kolTokenPnlKey({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null, requestContext });
     setActivity(current => current?.kol.address.toLowerCase() === kol.address.toLowerCase()
       && current.token.address.toLowerCase() === token.address.toLowerCase() ? current : null);
     const load = async () => {
@@ -78,7 +86,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
       try {
         // Resumed modals can carry the token's global last trade from another
         // wallet. Only the exact-pair activity response dates this selection.
-        const result = await requestKolTokenPnl({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null }, controller.signal,
+        const result = await requestKolTokenPnl({ walletAddress: kol.address, tokenAddress: token.address, lastTradeAt: null, requestContext }, controller.signal,
           { priority: 'foreground', onActivity: value => { if (active) {
             const status = verifiedTokenPositionPnl(value) !== null ? 'ready'
               : tokenPnlNeedsRetry(value) ? 'pending' : 'unavailable';
@@ -100,19 +108,19 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
     };
     void load();
     return () => { active = false; controller.abort(); if (timer) clearTimeout(timer); };
-  }, [kol.address, token.address, refresh, Boolean(shareSnapshot)]);
+  }, [kol.address, token.address, refresh, Boolean(shareSnapshot), requestContext]);
 
   const trades = useMemo(() => (activity?.trades ?? []).filter(trade => side === 'all' || trade.side === side), [activity, side]);
   const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const summary = activity?.summary;
-  const profit = displayedTokenPnl(activity);
+  const profit = requestContext ? journalTokenProfit(activity, requestContext) : displayedTokenPnl(activity);
   const priceTime = tokenPositionPnlPriceTime(activity);
-  const profitDescription = t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
+  const profitDescription = requestContext ? t('Profit uses available position history and known wallet-paid fees. This is not an activity-window return.') : t(tokenPositionPnlDescription(activity)) + (priceTime ? ' ' + t('Price as of {time} UTC.', { time: priceTime }) : '');
   const profitClass = profit === null ? '' : profit > 0 ? 'positive' : profit < 0 ? 'negative' : '';
-  const profitExpiresAt = tokenPnlExpiresAt(activity);
+  const profitExpiresAt = requestContext && activity ? Date.parse((activity as JournalTokenActivity).journal?.preparedAt ?? '') + 180001 : tokenPnlExpiresAt(activity);
   useEffect(() => {
-    if (profitExpiresAt === null) return;
+    if (profitExpiresAt === null || !Number.isFinite(profitExpiresAt)) return;
     const timer = setTimeout(() => setActivity(value => value ? { ...value } : value), Math.max(0, profitExpiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [profitExpiresAt]);
@@ -149,13 +157,13 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
-        <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityDelayed ? t('Pending') : profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
+        <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(requestContext ? activity?.realizedAccounting?.position?.status === 'closed' ? 'Realized P&L' : 'Est. profit' : tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityDelayed ? t('Pending') : profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
         <p className="kol-trade-coverage">{profitDescription}</p>
-        <dl className="kol-trade-summary"><div title={t('Indexed buy amount. GMGN realized P&L also includes transfer gains and fees.')}><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div title={t('Indexed sell amount. Transfer-out values are included in GMGN realized P&L.')}><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
+        <dl className="kol-trade-summary"><div title={requestContext ? profitDescription : t('Indexed buy amount. GMGN realized P&L also includes transfer gains and fees.')}><dt>{t('Invested')}</dt><dd>{money(summary?.investedUsd)}</dd></div><div title={requestContext ? profitDescription : t('Indexed sell amount. Transfer-out values are included in GMGN realized P&L.')}><dt>{t('Sold')}</dt><dd>{money(summary?.soldUsd)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg buy MCAP')}</dt><dd>{compact(summary?.avgBoughtMcapUsd, true)}</dd></div><div title={t('Quantity-weighted average using current verified token supply')}><dt>{t('Avg sell MCAP')}</dt><dd>{compact(summary?.avgSoldMcapUsd, true)}</dd></div></dl>
         {activity && !activity.coverage.complete && <p className="kol-trade-coverage" role="status">{t('Showing the latest {count} of {total} indexed trades. Complete totals are unavailable.', { count: activity.coverage.returnedTradeCount, total: activity.coverage.indexedTradeCount })}</p>}
         {activityDelayed && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlDelayedNotice)}</p>}
-        {activity && activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage" role="status">{t(tokenPositionPnlLoadingNotice(activity))}</p>}
-        {activity && !activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage">{t(tokenPositionPnlUnavailableNotice(activity))}</p>}
+        {activity && activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage" role="status">{t(requestContext ? 'Preparing accounting…' : tokenPositionPnlLoadingNotice(activity))}</p>}
+        {activity && !activityBusy && !activityDelayed && profit === null && <p className="kol-trade-coverage">{t(requestContext ? journalCoverageNotice([activity.realizedAccounting?.coverage.reason ?? 'history_preparing']) : tokenPositionPnlUnavailableNotice(activity))}</p>}
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
         {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{activityDelayed ? <button type="button" onClick={retry}>{t('Try again')}</button> : t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>

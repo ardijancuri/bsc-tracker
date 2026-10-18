@@ -161,9 +161,9 @@ export function WatchlistView() {
     {watch.error && <p className="profile-more-error" role="alert">{t(watch.error)}</p>}<div className="table-toolbar watch-signals-heading"><h2>{t("Watched signals")}</h2></div><RadarFeed watched />
   </>;
 }
-export function usePositions(kind: 'kol' | 'token', address: string, tokens?: string[]) {
+export function usePositions(kind: 'kol' | 'token', address: string, tokens?: string[], enabled = true) {
   const query = kind === 'kol' && tokens?.length ? `?tokens=${tokens.slice(0, 100).join(',')}` : '';
-  const result = useFeatureData<{ items: Position[] }>(`/api/${kind === 'kol' ? 'kols' : 'tokens'}/${address}/positions${query}`, { items: [] });
+  const result = useFeatureData<{ items: Position[] }>(enabled ? `/api/${kind === 'kol' ? 'kols' : 'tokens'}/${address}/positions${query}` : null, { items: [] });
   return useMemo(() => new Map(result.data.items.map(position => [kind === 'kol' ? position.tokenAddress : position.walletAddress, position])), [result.data.items, kind]);
 }
 export function PositionBadge({ position }: { position?: Position }) {

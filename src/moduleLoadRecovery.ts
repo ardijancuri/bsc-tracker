@@ -35,7 +35,7 @@ export async function recoverChangedBuild(error: unknown, environment: RecoveryE
   } catch { return false; }
 }
 
-export function reloadOutdatedModule(error: unknown, kol: string, token: string, isActive: () => boolean) {
+export function reloadOutdatedModule(error: unknown, kol: string, token: string, isActive: () => boolean, resumePublicSelection = true) {
   return recoverChangedBuild(error, {
     entry: document.querySelector<HTMLScriptElement>('script[type="module"][src]')?.getAttribute('src') ?? null,
     loadHtml: async () => {
@@ -51,7 +51,7 @@ export function reloadOutdatedModule(error: unknown, kol: string, token: string,
     writeGuard: entry => window.sessionStorage.setItem(reloadKey, entry),
     beforeReload: () => {
       if (!isActive()) return false;
-      window.sessionStorage.setItem(resumeKey, JSON.stringify({ kol: kol.toLowerCase(), token: token.toLowerCase(), at: Date.now() }));
+      if (resumePublicSelection) window.sessionStorage.setItem(resumeKey, JSON.stringify({ kol: kol.toLowerCase(), token: token.toLowerCase(), at: Date.now() }));
       return true;
     },
     reload: () => window.location.reload(),

@@ -139,7 +139,7 @@ export function createTelegramNotifications(options: Options = {}) {
         k.display_name AS "kolName",v.symbol AS "tokenSymbol",t.side,t.token_amount::text AS "tokenAmount",t.quote_amount::text AS "quoteAmount",
         t.quote_symbol AS "quoteSymbol",t.amount_usd::text AS "amountUsd",t.timestamp,t.block_number::text AS "blockNumber",t.block_hash AS "blockHash",
         (k.is_tracked AND ${kolProfileTokenSql('v')}) AS eligible
-        FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
+        FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
         WHERE t.observed_live AND NOT t.telegram_notification_processed AND t.timestamp>=$1 AND t.timestamp<=$2
         AND t.block_number IS NOT NULL AND t.block_hash IS NOT NULL
         AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
@@ -181,7 +181,7 @@ export function createTelegramNotifications(options: Options = {}) {
     });
   }
   async function eligibleItems(client: PoolClient, job: Outbox) {
-    const result = await client.query<{ payload: TelegramMessageTrade; trade_id: string; block_hash: string; eligible: boolean }>(`SELECT e.payload,e.trade_id,e.block_hash,
+    const result = await client.query<{ payload: TelegramMessageTrade; trade_id: string; block_hash: string; eligible: boolean }>(`SELECT e.payload || jsonb_build_object('kolName',k.display_name) AS payload,e.trade_id,e.block_hash,
       (t.id IS NOT NULL AND NOT e.orphaned AND k.is_tracked AND ${kolProfileTokenSql('v')}
         AND t.observed_live AND t.side IN ('buy','sell') AND t.side=e.payload->>'side'
         AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
@@ -193,7 +193,7 @@ export function createTelegramNotifications(options: Options = {}) {
       FROM telegram_notification_items i JOIN telegram_trade_events e USING(trade_id,block_hash)
       JOIN telegram_notification_settings s ON s.user_id=i.user_id
       LEFT JOIN trades t ON t.id=e.trade_id AND t.block_hash=e.block_hash
-      LEFT JOIN kols k ON k.address=e.wallet_address LEFT JOIN tokens v ON v.address=e.payload->>'tokenAddress'
+      LEFT JOIN published_kols k ON k.address=e.wallet_address LEFT JOIN tokens v ON v.address=e.payload->>'tokenAddress'
       LEFT JOIN account_watch_entries f ON f.user_id=s.user_id AND f.kind='kol' AND f.address=e.wallet_address
       LEFT JOIN telegram_kol_notification_settings m ON m.user_id=s.user_id AND m.wallet_address=e.wallet_address
       WHERE i.outbox_id=$1 AND NOT i.cancelled ORDER BY e.block_number,e.trade_timestamp,e.trade_id`,

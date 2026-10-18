@@ -19,6 +19,7 @@ import { geckoFetch } from './geckoApi.js';
 import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
 import { claimKolTokenTradeRepairs, finishKolTokenTradeRepair, type KolTokenTradeRepairJob } from './kolTokenTradeRepair.js';
 import { verifiedTradeRepair } from './verifiedTradeRepair.js';
+import { initializeJournalCollectionBoundary, monitoredWallets, nextJournalCollectionRepair, recordJournalCollectionRange, rollbackJournalCollection, validateCollectedReceipt } from './journalCollection.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
 const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
@@ -32,7 +33,7 @@ const normalized = (value: unknown) => typeof value === 'string' && addressRe.te
 let rpcId = 0;
 let featuresLiveSince = Infinity;
 
-type RpcLog = { address: string; topics: string[]; data: string; transactionHash: string; blockNumber: string; removed?: boolean };
+type RpcLog = { address: string; topics: string[]; data: string; transactionHash: string; blockNumber: string; blockHash?: string; removed?: boolean };
 type RpcTx = { hash: string; from: string; to: string | null; value: string; blockNumber: string; blockHash?: string; transactionIndex: string | null };
 type RpcReceipt = { status: string; logs: RpcLog[]; blockHash: string; transactionHash?: string; blockNumber?: string };
 type RpcBlock = { number: string; hash: string; parentHash: string; timestamp: string };
@@ -206,6 +207,7 @@ async function rollbackIfReorg() {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782319)');
     await rollbackTelegramNotifications(client, rollbackFrom);
+    await rollbackJournalCollection(client, rollbackFrom);
     await client.query('DELETE FROM trades WHERE block_number >= $1', [rollbackFrom]);
     await rollbackIntelligence(client, rollbackFrom);
     await client.query('DELETE FROM processed_blocks WHERE block_number >= $1', [rollbackFrom]);
@@ -217,9 +219,18 @@ async function rollbackIfReorg() {
   console.warn(`Reorganization at ${height}; rescanning from ${rollbackFrom}`);
 }
 
-async function scanRange(from: number, to: number, head: number) {
-  const walletRows = await pool.query('SELECT address FROM kols WHERE is_tracked');
-  const wallets = new Set<string>(walletRows.rows.map(row => row.address));
+async function scanRange(from: number, to: number, head: number, repairWallet?: string) {
+  const wallets = repairWallet ? new Set([repairWallet]) : await monitoredWallets(pool);
+  const coverageRows = await pool.query(`SELECT wallet_address,generation::text FROM journal_wallet_coverage WHERE wallet_address=ANY($1::text[])`, [[...wallets]]);
+  const coverageGenerations = new Map<string, string>(coverageRows.rows.map(row => [row.wallet_address, row.generation]));
+  if (!repairWallet) {
+    const pending = await pool.query(`SELECT 1 FROM journal_wallet_coverage WHERE wallet_address=ANY($1::text[]) AND registration_block IS NULL LIMIT 1`, [[...wallets]]);
+    if (pending.rowCount) {
+      const boundary = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Math.max(0, from - 1)), false]);
+      if (!boundary || Number(BigInt(boundary.number)) !== Math.max(0, from - 1) || !hashRe.test(boundary.hash)) throw new Error('Journal registration block unavailable');
+      await initializeJournalCollectionBoundary(pool, wallets, { number: Number(BigInt(boundary.number)), hash: boundary.hash.toLowerCase() }, coverageGenerations);
+    }
+  }
   const topics = [...wallets].map(topicAddress);
   const matched = new Set<string>();
   for (let offset = 0; offset < topics.length; offset += 300) {
@@ -235,12 +246,12 @@ async function scanRange(from: number, to: number, head: number) {
   }
   const byBlock = new Map<number, { tx: RpcTx; receipt: RpcReceipt }[]>();
   for (const hash of matched) {
-    const [tx, receipt] = await Promise.all([rpc<RpcTx>('eth_getTransactionByHash', [hash]), rpc<RpcReceipt>('eth_getTransactionReceipt', [hash])]);
-    const wallet = normalized(tx.from);
-    if (!wallet || !receipt || receipt.status !== '0x1') continue;
-    const height = Number(BigInt(tx.blockNumber));
+    const [tx, receipt] = await Promise.all([rpc<RpcTx | null>('eth_getTransactionByHash', [hash]), rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash])]);
+    const height = validateCollectedReceipt(hash, tx, receipt, from, to);
+    if (!normalized(tx!.from)) throw new Error(`Invalid transaction sender at ${height}`);
+    if (receipt!.status !== '0x1') continue;
     const list = byBlock.get(height) || [];
-    list.push({ tx, receipt });
+    list.push({ tx: tx!, receipt: receipt! });
     byBlock.set(height, list);
   }
   const previous = await pool.query('SELECT block_hash FROM processed_blocks WHERE block_number=$1', [from - 1]);
@@ -254,16 +265,34 @@ async function scanRange(from: number, to: number, head: number) {
         if (wallets.has(wallet)) await persistNodeTrade(entry.tx, entry.receipt, block, wallet, timestamp >= featuresLiveSince && Date.now() - timestamp <= 300_000);
       }
       await recordWalletTransfers(entry.tx, entry.receipt, block, wallets);
+      const feePrice = await bnbPrice(height, timestamp / 1000);
+      await pool.query(`INSERT INTO journal_node_evidence(tx_hash,block_number,block_hash,timestamp,transaction,receipt,bnb_price_usd,bnb_priced_at)
+        VALUES($1,$2,$3,to_timestamp($4),$5::jsonb,$6::jsonb,$7,to_timestamp($8))
+        ON CONFLICT(tx_hash) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,
+          timestamp=EXCLUDED.timestamp,transaction=EXCLUDED.transaction,receipt=EXCLUDED.receipt,
+          bnb_price_usd=COALESCE(EXCLUDED.bnb_price_usd,journal_node_evidence.bnb_price_usd),bnb_priced_at=COALESCE(EXCLUDED.bnb_priced_at,journal_node_evidence.bnb_priced_at)`,
+      [entry.tx.hash.toLowerCase(), height, block.hash, timestamp / 1000, JSON.stringify(entry.tx), JSON.stringify(entry.receipt), feePrice?.price ?? null, feePrice?.updatedAt ?? null]);
     }
   }
-  await recordLaunchRange(from, to, blocks);
+  if (!repairWallet) await recordLaunchRange(from, to, blocks);
   // Save the checkpoint only after every trade in this range has been persisted. Replays are idempotent.
-  await pool.query(`INSERT INTO processed_blocks(block_number,block_hash)
-    SELECT * FROM unnest($1::bigint[],$2::text[])
-    ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`,
-    [blocks.map(block => Number(BigInt(block.number))), blocks.map(block => block.hash)]);
-  await setState('node', { blockNumber: to, headBlock: head, blockHash: blocks.at(-1)!.hash });
-  await pool.query('DELETE FROM processed_blocks WHERE block_number < $1', [to - 128]);
+  const checkpoint = await pool.connect();
+  try {
+    await checkpoint.query('BEGIN');
+    await checkpoint.query('SELECT pg_advisory_xact_lock_shared(782319)');
+    if (!repairWallet) {
+      await checkpoint.query(`INSERT INTO processed_blocks(block_number,block_hash)
+        SELECT * FROM unnest($1::bigint[],$2::text[])
+        ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`,
+      [blocks.map(block => Number(BigInt(block.number))), blocks.map(block => block.hash)]);
+      await checkpoint.query(`INSERT INTO worker_state(key,value,updated_at) VALUES('node',$1::jsonb,now())
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({ blockNumber: to, headBlock: head, blockHash: blocks.at(-1)!.hash })]);
+      await checkpoint.query('DELETE FROM processed_blocks WHERE block_number < $1', [to - 128]);
+    }
+    await recordJournalCollectionRange(checkpoint, wallets, from, to, Boolean(repairWallet), coverageGenerations);
+    await checkpoint.query('COMMIT');
+  } catch (error) { await checkpoint.query('ROLLBACK'); throw error; }
+  finally { checkpoint.release(); }
   if (matched.size) await notifyUpdate();
 }
 
@@ -286,8 +315,17 @@ async function nodeLoop() {
       const latest = await pool.query('SELECT MAX(block_number) AS height FROM processed_blocks');
       const configured = Number(process.env.BSC_START_BLOCK);
       const start = latest.rows[0].height == null ? (Number.isInteger(configured) && configured > 0 ? configured : Math.max(0, target - 12)) : Number(latest.rows[0].height) + 1;
+      const repair = latest.rows[0].height == null ? null : await nextJournalCollectionRepair(pool, Number(latest.rows[0].height));
       if (start <= target) await scanRange(start, Math.min(target, start + 511), head);
-      else await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 3000); });
+      if (repair) {
+        try { await scanRange(repair.from, repair.to, head, repair.wallet); }
+        catch (error) {
+          await pool.query(`UPDATE journal_wallet_coverage SET last_error=$2,updated_at=now() WHERE wallet_address=$1`, [repair.wallet,
+            /prun|header not found|block not found|missing trie|historical|not supported/i.test(String(error)) ? 'node_history_unavailable' : 'collection_retry']);
+          console.warn('Journal collection repair pending:', String(error));
+        }
+      }
+      if (start > target) await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 3000); });
     } catch (error) {
       console.error('Node worker:', error);
       await setState('node_error', { message: String(error), at: new Date().toISOString() });
@@ -355,7 +393,8 @@ async function historicalVerificationLoop() {
 }
 
 async function repairQueuedTrade(job: KolTokenTradeRepairJob) {
-  const tracked = await pool.query('SELECT 1 FROM kols WHERE address=$1 AND is_tracked', [job.walletAddress]);
+  const tracked = await pool.query(`SELECT 1 FROM kols k WHERE k.address=$1 AND (k.is_tracked
+    OR EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=k.address))`, [job.walletAddress]);
   if (!tracked.rows.length) return false;
   const [tx, receipt, block, head] = await Promise.all([
     rpc<RpcTx | null>('eth_getTransactionByHash', [job.txHash]),

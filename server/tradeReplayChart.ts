@@ -430,6 +430,12 @@ export function createReplayChartCache(loader: typeof fetchTradeReplayChart, now
 const cachedReplayChart = createReplayChartCache(fetchTradeReplayChart, Date.now,
   path.join(process.env.TOKEN_CHART_CACHE_DIR || path.join(process.cwd(), '.cache', 'token-charts'), 'replay-history'));
 
+/** Shared genuine market loader. Private adapters must check membership around its use. */
+export async function loadReplayMarketChart(token: string, first: number, last: number, current: boolean, supply: string | null = null) {
+  const chart = await cachedReplayChart(token, first, last, current);
+  return { ...chart, marketCapSupply: supply };
+}
+
 export function registerTradeReplayChartRoutes(app: FastifyInstance) {
   app.get<{ Params: { address: string; token: string }; Querystring: { end?: string } }>('/api/kols/:address/tokens/:token/replay-chart', async (request, reply) => {
     const wallet = request.params.address.toLowerCase(), token = request.params.token.toLowerCase();
@@ -449,7 +455,7 @@ export function registerTradeReplayChartRoutes(app: FastifyInstance) {
       GROUP BY v.address`, [wallet, token]);
     const row = result.rows[0];
     if (!row) return reply.code(404).send({ error: 'KOL token activity not found' });
-    const chart = await cachedReplayChart(token, new Date(row.first).getTime(), new Date(row.last).getTime(), current);
+    const chart = await loadReplayMarketChart(token, new Date(row.first).getTime(), new Date(row.last).getTime(), current, row.supply ?? null);
     return reply.header('Cache-Control', !current && chart.points.length ? 'public, max-age=60' : 'no-store')
       .send({ ...chart, marketCapSupply: row.supply ?? null });
   });

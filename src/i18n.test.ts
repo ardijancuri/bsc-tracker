@@ -54,7 +54,7 @@ describe('Chinese app language', () => {
     ]) expect(translate(label, 'zh-CN')).not.toBe(label);
   });
   it('covers every static translation used in the UI', () => {
-    for (const file of ['App.tsx', 'Account.tsx', 'TelegramNotifications.tsx', 'TokenWatchlist.tsx', 'Intelligence.tsx', 'LegalPages.tsx', 'LanguageSelect.tsx', 'lib.ts', 'ReplayShare.tsx', 'TokenReplayTrigger.tsx', 'TokenReplayShare.tsx']) {
+    for (const file of ['App.tsx', 'Account.tsx', 'CreatorProfile.tsx', 'Journal.tsx', 'TelegramNotifications.tsx', 'TokenWatchlist.tsx', 'Intelligence.tsx', 'LegalPages.tsx', 'LanguageSelect.tsx', 'lib.ts', 'ReplayShare.tsx', 'TokenReplayTrigger.tsx', 'TokenReplayShare.tsx']) {
       const source = ts.createSourceFile(file, readFileSync(new URL(file, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
       const walk = (node: ts.Node) => {
         if (ts.isCallExpression(node) && node.expression.getText(source) === 't' && ts.isStringLiteral(node.arguments[0])) expect(chinese, `${file}: ${node.arguments[0].text}`).toHaveProperty(node.arguments[0].text);
