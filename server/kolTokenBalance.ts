@@ -1,7 +1,7 @@
 import type { KolTokenBalanceProof } from '../shared/kolTokenTrades.js';
 
 type Rpc = (method: string, params: unknown[], signal: AbortSignal) => Promise<unknown>;
-export interface KolTokenBalanceRequest { wallet: string; token: string; decimals?: number | null }
+export interface KolTokenBalanceRequest { wallet: string; token: string; decimals?: number | null; blockNumber?: string }
 const addressPattern = /^0x[0-9a-f]{40}$/;
 const hashPattern = /^0x[0-9a-f]{64}$/i;
 const wordPattern = /^0x[0-9a-f]{64}$/i;
@@ -75,7 +75,10 @@ export function createKolTokenBalance({ rpc = balanceRpc, now = Date.now, budget
       if (quantity(chain, 'balance_chain_mismatch') !== 56) return fail('balance_chain_mismatch');
       const head = quantity(headValue, 'balance_block_invalid');
       if (head < 6) return fail('balance_block_invalid');
-      const height = head - 6, blockTag = `0x${height.toString(16)}`;
+      if (request.blockNumber != null && (!/^\d+$/.test(request.blockNumber) || BigInt(request.blockNumber) > BigInt(head - 6))) return fail('balance_checkpoint_invalid');
+      const height = request.blockNumber == null ? head - 6 : Number(request.blockNumber);
+      if (!Number.isSafeInteger(height) || height < 0) return fail('balance_checkpoint_invalid');
+      const blockTag = `0x${height.toString(16)}`;
       const before = await block(height);
       const [precision, raw] = await Promise.all([
         call('eth_call', [{ to: token, data: '0x313ce567' }, blockTag]),

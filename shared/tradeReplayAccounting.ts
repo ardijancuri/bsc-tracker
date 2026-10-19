@@ -1,6 +1,6 @@
 import type { KolTokenBalanceProof } from './kolTokenTrades.js';
 
-/** GMGN replay accounting is separate from the app's indexed swap-only ledger. */
+/** Server-approved ledger values shared by details and exported replay frames. */
 export interface ReplayAccountingSnapshot {
   remainingTokenAmount: string | null;
   remainingCostBasisUsd: string | null;
@@ -46,9 +46,9 @@ export interface GmgnReplayHistory {
 }
 
 export interface TradeReplayAccounting {
-  version: 1;
-  source: 'gmgn';
-  policy: 'gmgn_total_profit_v1';
+  version: 1 | 2;
+  source: 'gmgn' | 'node' | 'mixed' | 'imported';
+  policy: 'gmgn_total_profit_v1' | 'kollens_fifo_v1';
   walletAddress: string;
   tokenAddress: string;
   status: 'ready' | 'estimated' | 'pending' | 'unavailable';
@@ -62,7 +62,7 @@ export interface TradeReplayAccounting {
     transactionsComplete: boolean;
     balanceMatched: boolean;
     exactFinal: boolean;
-    verification?: 'gmgn_history';
+    verification?: 'gmgn_history' | 'node_history' | 'mixed_history' | 'imported_history';
     reason?: string;
   };
   retryAfterMs?: number;

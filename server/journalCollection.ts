@@ -14,14 +14,14 @@ export async function monitoredWallets(database: Database): Promise<Set<string>>
  * Bind that subscription to the first collected range rather than leaving it
  * permanently unable to prove any future coverage. */
 export async function initializeJournalCollectionBoundary(database: Database, wallets: Set<string>, block: { number: number; hash: string }, generations?: Map<string, string>) {
-  await database.query(`UPDATE journal_wallet_coverage c SET registration_block=$2,registration_hash=$3,
-    repair_from_block=LEAST(c.repair_from_block,$2+1),updated_at=now()
+  await database.query(`UPDATE journal_wallet_coverage c SET registration_block=$2::bigint,registration_hash=$3,
+    repair_from_block=LEAST(c.repair_from_block,$2::bigint+1::bigint),updated_at=now()
     WHERE c.registration_block IS NULL AND c.wallet_address=ANY($1::text[])
       AND ($4::jsonb IS NULL OR c.generation::text=($4::jsonb->>c.wallet_address))
       AND EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=c.wallet_address)`, [[...wallets], block.number, block.hash, generations ? JSON.stringify(Object.fromEntries(generations)) : null]);
-  await database.query(`UPDATE journal_wallets m SET registration_block=$2,registration_hash=$3
+  await database.query(`UPDATE journal_wallets m SET registration_block=$2::bigint,registration_hash=$3
     WHERE m.registration_block IS NULL AND m.wallet_address=ANY($1::text[]) AND EXISTS(
-      SELECT 1 FROM journal_wallet_coverage c WHERE c.wallet_address=m.wallet_address AND c.registration_block=$2 AND c.registration_hash=$3
+      SELECT 1 FROM journal_wallet_coverage c WHERE c.wallet_address=m.wallet_address AND c.registration_block=$2::bigint AND c.registration_hash=$3
         AND ($4::jsonb IS NULL OR c.generation::text=($4::jsonb->>c.wallet_address)))`, [[...wallets], block.number, block.hash, generations ? JSON.stringify(Object.fromEntries(generations)) : null]);
 }
 
@@ -30,10 +30,10 @@ export async function initializeJournalCollectionBoundary(database: Database, wa
  * cursor was recorded against the previous committed node checkpoint. */
 export async function recordJournalCollectionRange(database: Database, wallets: Set<string>, from: number, to: number, repair = false, generations?: Map<string, string>) {
   await database.query(`UPDATE journal_wallet_coverage c SET
-    collected_from_block=LEAST(COALESCE(c.collected_from_block,$2),$2),
-    collected_through_block=GREATEST(COALESCE(c.collected_through_block,$3),$3),
-    repair_from_block=CASE WHEN $4 AND c.repair_from_block >= $2 AND c.repair_from_block <= $3
-      THEN CASE WHEN $3 >= COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),$3) THEN NULL ELSE $3+1 END
+    collected_from_block=LEAST(COALESCE(c.collected_from_block,$2::bigint),$2::bigint),
+    collected_through_block=GREATEST(COALESCE(c.collected_through_block,$3::bigint),$3::bigint),
+    repair_from_block=CASE WHEN $4::boolean AND c.repair_from_block >= $2::bigint AND c.repair_from_block <= $3::bigint
+      THEN CASE WHEN $3::bigint >= COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),$3::bigint) THEN NULL ELSE $3::bigint+1::bigint END
       ELSE c.repair_from_block END,
     last_error=NULL,updated_at=now()
     WHERE c.wallet_address=ANY($1::text[])
@@ -43,7 +43,7 @@ export async function recordJournalCollectionRange(database: Database, wallets: 
 
 export async function nextJournalCollectionRepair(database: Database, confirmedThrough: number): Promise<{ wallet: string; from: number; to: number } | null> {
   const result = await database.query(`SELECT c.wallet_address,c.repair_from_block FROM journal_wallet_coverage c
-    WHERE c.repair_from_block IS NOT NULL AND c.repair_from_block <= $1
+    WHERE c.repair_from_block IS NOT NULL AND c.repair_from_block <= $1::bigint
       AND EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=c.wallet_address)
     ORDER BY c.updated_at,c.wallet_address LIMIT 1`, [confirmedThrough]);
   const row = result.rows[0];
@@ -54,17 +54,17 @@ export async function nextJournalCollectionRepair(database: Database, confirmedT
 }
 
 export async function rollbackJournalCollection(database: Database, from: number) {
-  await database.query('DELETE FROM journal_node_evidence WHERE block_number >= $1', [from]);
-  await database.query('DELETE FROM journal_opening_balances WHERE block_number >= $1', [from]);
+  await database.query('DELETE FROM journal_node_evidence WHERE block_number >= $1::bigint', [from]);
+  await database.query('DELETE FROM journal_opening_balances WHERE block_number >= $1::bigint', [from]);
   await database.query(`UPDATE journal_wallet_coverage SET
-    collected_through_block=LEAST(collected_through_block,$1-1),
-    registration_hash=CASE WHEN registration_block >= $1 THEN (SELECT block_hash FROM processed_blocks WHERE block_number=$1-1) ELSE registration_hash END,
-    registration_block=LEAST(registration_block,$1-1),
-    repair_from_block=LEAST(COALESCE(repair_from_block,$1),$1),history_complete=false,
+    collected_through_block=LEAST(collected_through_block,$1::bigint-1::bigint),
+    registration_hash=CASE WHEN registration_block >= $1::bigint THEN (SELECT block_hash FROM processed_blocks WHERE block_number=$1::bigint-1::bigint) ELSE registration_hash END,
+    registration_block=LEAST(registration_block,$1::bigint-1::bigint),
+    repair_from_block=LEAST(COALESCE(repair_from_block,$1::bigint),$1::bigint),history_complete=false,
     last_error='chain_reorganization',updated_at=now()
-    WHERE collected_through_block >= $1 OR registration_block >= $1`, [from]);
-  await database.query(`UPDATE journal_wallets SET registration_hash=CASE WHEN registration_block >= $1 THEN (SELECT block_hash FROM processed_blocks WHERE block_number=$1-1) ELSE registration_hash END,
-    registration_block=LEAST(registration_block,$1-1),revision=md5(revision::text||':reorg:'||$1::text)::uuid WHERE registration_block >= $1`, [from]);
+    WHERE collected_through_block >= $1::bigint OR registration_block >= $1::bigint`, [from]);
+  await database.query(`UPDATE journal_wallets SET registration_hash=CASE WHEN registration_block >= $1::bigint THEN (SELECT block_hash FROM processed_blocks WHERE block_number=$1::bigint-1::bigint) ELSE registration_hash END,
+    registration_block=LEAST(registration_block,$1::bigint-1::bigint),revision=md5(revision::text||':reorg:'||($1::bigint)::text)::uuid WHERE registration_block >= $1::bigint`, [from]);
   await database.query(`UPDATE journal_pair_preparations SET status='pending',checked_at=NULL,balance_proof=NULL,quote=NULL,reason='chain_reorganization'`);
   await database.query('DELETE FROM journal_replay_snapshots');
   // Saved snapshots certify one canonical valuation; an orphaned proof cannot

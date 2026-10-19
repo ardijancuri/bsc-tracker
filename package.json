@@ -20,7 +20,8 @@
     "test:integration:kol-profile": "tsx server/kolProfile.integration.ts",
     "test:integration:creator": "tsx server/creatorProfiles.integration.ts",
     "test:integration:creator-public": "tsx server/creatorPublic.integration.ts",
-    "test:integration:journal": "tsx server/journal.integration.ts"
+    "test:integration:journal": "tsx server/journal.integration.ts",
+    "test:integration:node-owned": "node --env-file-if-exists=.env scripts/test-node-owned.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

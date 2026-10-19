@@ -1,0 +1,14 @@
+# Production-only worker access to the existing private node socket.
+# Use with: docker compose -f compose.yaml -f compose.vps.yaml ...
+# The API intentionally has no node IPC mount. Never expose debug HTTP RPC.
+services:
+  worker:
+    environment:
+      BSC_TRACE_IPC: /run/bsc/geth.ipc
+    volumes:
+      - type: bind
+        source: ${BSC_TRACE_HOST_IPC:-/var/lib/bsc/geth.ipc}
+        target: /run/bsc/geth.ipc
+        read_only: true
+        bind:
+          create_host_path: false

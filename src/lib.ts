@@ -33,8 +33,8 @@ export function relativeTime(value: string | null | undefined) {
   return t('{days}d ago', { days: Math.floor(seconds / 86400) });
 }
 
-export async function api<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
+export async function api<T>(url: string, options: Pick<RequestInit, 'signal'> = {}): Promise<T> {
+  const response = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' }, ...(options.signal ? { signal: options.signal } : {}) });
   if (!response.ok) throw new Error(t('Request failed ({status})', { status: response.status }));
   return response.json() as Promise<T>;
 }

@@ -7,8 +7,9 @@ export interface TokenReplayPoint { time: number; marketCap: number }
 export interface TokenReplayData {
   token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'>;
   period: WatchPeriod; points: TokenReplayPoint[]; resolutionMs: number;
-  source: 'gmgn' | 'geckoterminal' | 'coinmarketcap';
+  source: 'gmgn' | 'geckoterminal' | 'coinmarketcap' | 'node' | 'mixed' | 'imported';
   partialHistory: boolean; sparseHistory: boolean; generatedAt: string;
+  marketCapEstimated?: boolean;
 }
 const periods: Record<WatchPeriod, number> = { '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 // The existing chart endpoint refreshes weekly/monthly history every 5/10 min.
@@ -23,7 +24,7 @@ export class TokenReplayPreparationError extends Error {
 export function prepareTokenReplayData(token: Token, period: WatchPeriod, chart: TokenChart, now = Date.now()): TokenReplayData {
   const reject = () => { throw new TokenReplayPreparationError('Token market history is unavailable. Try another period or retry.'); };
   if (!/^0x[0-9a-f]{40}$/i.test(token.address) || !tokenReplayPeriods.includes(period) || chart.address?.toLowerCase() !== token.address.toLowerCase()
-    || chart.period !== period || !['gmgn', 'geckoterminal', 'coinmarketcap'].includes(chart.source)) return reject();
+    || chart.period !== period || !['gmgn', 'geckoterminal', 'coinmarketcap', 'node', 'mixed', 'imported'].includes(chart.source)) return reject();
   if (!hasFreshChartSupply(chart, now)) throw new TokenReplayPreparationError('Token market cap is still loading. Retry shortly.', chart.supplyPending || chart.pending ? 1500 : 0);
   const updated = Date.parse(chart.updatedAt ?? ''), resolutionMs = resolutions[chart.resolution], supply = Number(chart.marketCapSupply);
   if (!Number.isFinite(updated) || updated > now + 1000 || now - updated > observationMaxAge[period] || !resolutionMs || !Array.isArray(chart.candles)
@@ -36,7 +37,18 @@ export function prepareTokenReplayData(token: Token, period: WatchPeriod, chart:
     candles.set(candle.time, candle);
   }
   const cutoff = now - periods[period], points = new Map<number, TokenReplayPoint>();
-  for (const candle of [...candles.values()].sort((a, b) => a.time - b.time)) {
+  const modern = ['node', 'mixed', 'imported'].includes(chart.source);
+  if (modern) {
+    // Database observations keep their original swap/state timestamps. Minute
+    // bucket boundaries must not manufacture a flat ending or extra volume.
+    if (chart.stale) return reject();
+    for (const point of [...chart.points, ...(chart.currentQuote ? [chart.currentQuote] : [])]) {
+      const time = Date.parse(point.timestamp), price = Number(point.priceUsd);
+      const observedCap = 'marketCapUsd' in point ? Number(point.marketCapUsd) : NaN;
+      if (Number.isFinite(time) && time >= cutoff && time <= updated && time <= now && Number.isFinite(price) && price > 0)
+        points.set(time, { time, marketCap: Number.isFinite(observedCap) && observedCap > 0 ? observedCap : price * supply });
+    }
+  } else for (const candle of [...candles.values()].sort((a, b) => a.time - b.time)) {
     const start = candle.time * 1000, end = Math.min(start + resolutionMs, updated, now);
     if (end < cutoff || end <= start) continue;
     if (!points.size && start >= cutoff) points.set(start, { time: start, marketCap: candle.open * supply });
@@ -46,7 +58,7 @@ export function prepareTokenReplayData(token: Token, period: WatchPeriod, chart:
   if (samples.length < 2 || samples.at(-1)!.time <= samples[0].time) return reject();
   return { token: { address: token.address.toLowerCase(), symbol: token.symbol, name: token.name, logoUrl: token.logoUrl }, period,
     points: samples, resolutionMs, source: chart.source as TokenReplayData['source'], generatedAt: new Date(now).toISOString(),
-    partialHistory: chart.partialHistory === true || samples[0].time > cutoff + resolutionMs,
+    marketCapEstimated: chart.marketCapEstimated, partialHistory: chart.partialHistory === true || samples[0].time > cutoff + resolutionMs,
     sparseHistory: samples.some((point, index) => index > 0 && point.time - samples[index - 1].time > resolutionMs * 2) };
 }
 
@@ -66,7 +78,7 @@ export function tokenReplaySnapshot(data: TokenReplayData, progress: number) {
 }
 
 const cancelled = () => new DOMException('Video export cancelled.', 'AbortError');
-/** Use the app's existing server provider budget; no GMGN credentials reach the browser. */
+/** Read the shared database chart; only the worker collects financial evidence. */
 export async function loadTokenReplay(token: Token, period: WatchPeriod, signal: AbortSignal, options: {
   fetcher?: typeof fetch; now?: () => number; onWait?: (retryAt: number) => void;
 } = {}): Promise<TokenReplayData> {

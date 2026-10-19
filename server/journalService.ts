@@ -5,13 +5,9 @@ import { journalWalletLimit } from '../shared/journal.js';
 import type { KolTokenBalanceProof } from '../shared/kolTokenTrades.js';
 import { pool } from './db.js';
 import { kolProfileTokenSql } from './kolProfileToken.js';
-import { applyJournalReplay } from './journalReplay.js';
-import { tryLoadJournalNodeEvidence } from './journalNodeLedger.js';
+import { nodeAccountingService, type createNodeAccountingService } from './nodeAccounting.js';
+import type { NodeAccountingSource } from '../shared/nodeAccounting.js';
 import { calculateJournalLedger, type JournalLedgerEvent, type JournalLedgerCoverage, type JournalLedgerValuation, type JournalLedgerOpeningBalance } from './journalLedger.js';
-import { currentKolTokenBalance } from './kolTokenBalance.js';
-import { loadCurrentPositionQuote } from './kolTokenGmgnPnl.js';
-import { loadKolTokenActivity } from './kolTokenTradesApi.js';
-import { loadReplayMarketChart } from './tradeReplayChart.js';
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const iso = (value: string | Date) => new Date(value).toISOString();
@@ -30,13 +26,11 @@ export function journalLabel(value: unknown) {
   return value.trim();
 }
 type Pair = { wallet: string; token: string; decimals: number | null; symbol: string | null; name: string | null; logoUrl: string | null; startAt: string; registrationBlock: string | null; membershipRevision: string };
-type PairEvidence = { events: JournalLedgerEvent[]; coverage: JournalLedgerCoverage; proof: KolTokenBalanceProof | null; quote: { priceUsd: string; timestamp: string } | null; source: 'node'; openingBalances?: JournalLedgerOpeningBalance[]; reason?: string };
-export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalNodeEvidence, balance = currentKolTokenBalance, quote = loadCurrentPositionQuote,
-  loadActivity = loadKolTokenActivity, chart = loadReplayMarketChart, now = Date.now }: {
-    db?: Pool; nodeEvidence?: typeof tryLoadJournalNodeEvidence; balance?: typeof currentKolTokenBalance; quote?: typeof loadCurrentPositionQuote;
-    loadActivity?: typeof loadKolTokenActivity; chart?: typeof loadReplayMarketChart; now?: () => number;
+type PairEvidence = { events: JournalLedgerEvent[]; coverage: JournalLedgerCoverage; proof: KolTokenBalanceProof | null; quote: { priceUsd: string; timestamp: string } | null; source: NodeAccountingSource; openingBalances?: JournalLedgerOpeningBalance[]; reason?: string };
+export function createJournalService({ db = pool, accounting = nodeAccountingService, now = Date.now }: {
+    db?: Pool; accounting?: ReturnType<typeof createNodeAccountingService>;
+    now?: () => number;
   } = {}) {
-  const pairJobs = new Map<string, { foreground: boolean; work: Promise<PairEvidence>; promote?(): void }>();
   const snapshotJobs = new Map<string, Promise<JournalSummary>>();
   const memberships = async (userId: string, selected?: string) => {
     const result = await db.query(`SELECT wallet_address,label,added_at,added_at AS activity_from,revision,registration_block::text FROM journal_wallets WHERE user_id=$1 ORDER BY added_at,wallet_address`, [userId]);
@@ -60,7 +54,7 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
       THEN 'ready' ELSE 'pending' END AS status,c.last_error,
       CASE WHEN k.is_tracked THEN k.display_name END AS name,CASE WHEN k.is_tracked THEN k.avatar_url END AS "avatarUrl"
       FROM journal_wallets m JOIN published_kols k ON k.address=m.wallet_address
-      LEFT JOIN journal_wallet_coverage c ON c.wallet_address=m.wallet_address
+      LEFT JOIN node_monitored_wallets c ON c.wallet_address=m.wallet_address
       WHERE m.user_id=$1 ORDER BY m.added_at,m.wallet_address`, [userId]);
     return { limit: journalWalletLimit, wallets: rows.rows.map(row => ({ address: row.wallet_address, label: row.label, addedAt: iso(row.added_at), activityFrom: iso(row.added_at), revision: row.revision,
       ...(row.name || row.avatarUrl ? { publicIdentity: { name: row.name, avatarUrl: row.avatarUrl } } : {}),
@@ -127,7 +121,7 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
     const rows = (await db.query(`SELECT c.wallet_address,c.registration_block,c.collected_through_block,c.repair_from_block,c.last_error,
       (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') AS confirmed,
       (SELECT updated_at FROM worker_state WHERE key='node') AS updated_at
-      FROM journal_wallet_coverage c WHERE wallet_address=ANY($1)`, [members.map(member => member.wallet_address)])).rows;
+      FROM node_monitored_wallets c WHERE active AND wallet_address=ANY($1)`, [members.map(member => member.wallet_address)])).rows;
     return members.map(member => {
       const row = rows.find(value => value.wallet_address === member.wallet_address);
       const ready = row?.registration_block != null && row.confirmed != null && row.collected_through_block != null
@@ -143,84 +137,41 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
       candidates AS (SELECT t.token_address FROM trades t JOIN selected s ON s.wallet=t.wallet_address
         WHERE t.timestamp>=s.starts AND t.timestamp<=now() AND t.block_number>s.registration AND t.block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') AND t.side IN('buy','sell')
         UNION SELECT m.token_address FROM wallet_transfers m JOIN selected s ON s.wallet=m.wallet_address
-          WHERE m.timestamp>=s.starts AND m.timestamp<=now() AND m.block_number>s.registration AND m.block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'))
+          WHERE m.timestamp>=s.starts AND m.timestamp<=now() AND m.block_number>s.registration AND m.block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node')
+        UNION SELECT f.token_address FROM node_executions e JOIN selected s ON s.wallet=e.wallet_address JOIN node_execution_flows f ON f.execution_id=e.id
+          WHERE e.timestamp>=s.starts AND e.timestamp<=now() AND e.block_number>s.registration
+            AND e.block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'))
       SELECT s.wallet,v.address AS token,v.decimals,v.symbol,v.name,s.starts AS "startAt",s.registration::text AS "registrationBlock",s.revision AS "membershipRevision",
         CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl"
       FROM (SELECT DISTINCT token_address FROM candidates) c JOIN tokens v ON v.address=c.token_address CROSS JOIN selected s
       WHERE ${kolProfileTokenSql()} ORDER BY v.address,s.wallet`, [members.map(row => row.wallet_address), members.map(row => iso(row.added_at)), members.map(row => row.registration_block), members.map(row => row.revision)])).rows.map(row => ({ ...row, startAt: iso(row.startAt) }));
   }
-  async function canonicalRevision(pair: Pair) {
-    return (await db.query(`WITH evidence AS (
-      SELECT 'trade:'||t.id AS id,jsonb_build_array(t.tx_hash,t.side,t.token_amount,t.amount_usd,t.price_usd,t.quote_token_address,t.quote_symbol,t.quote_amount,t.block_number,t.block_hash,t.transaction_index,t.timestamp,
-        EXISTS(SELECT 1 FROM trades other JOIN tokens asset ON asset.address=other.token_address WHERE other.wallet_address=t.wallet_address AND other.tx_hash=t.tx_hash
-          AND other.side=t.side AND other.token_address<>t.token_address AND other.block_number IS NOT NULL AND other.quote_symbol=t.quote_symbol
-          AND other.quote_amount=t.quote_amount AND other.amount_usd=t.amount_usd AND COALESCE(asset.symbol,'') !~* 'dividend[_ ]?tracker')) AS value
-        FROM trades t WHERE t.wallet_address=$1 AND t.token_address=$2 AND t.block_number>$4 AND t.timestamp >= $3
-      UNION ALL SELECT 'transfer:'||id,jsonb_build_array(tx_hash,log_index,delta_raw,kind,block_number,block_hash,timestamp,counterparty_address)
-        FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND block_number>$4 AND timestamp >= $3
-      UNION ALL SELECT 'fee:'||e.tx_hash,jsonb_build_array(e.block_number,e.block_hash,e.bnb_price_usd,e.bnb_priced_at)
-        FROM journal_node_evidence e WHERE e.block_number>$4 AND e.timestamp >= $3 AND (EXISTS(SELECT 1 FROM trades t WHERE t.tx_hash=e.tx_hash AND t.wallet_address=$1 AND t.token_address=$2)
-          OR EXISTS(SELECT 1 FROM wallet_transfers m WHERE m.tx_hash=e.tx_hash AND m.wallet_address=$1 AND m.token_address=$2)))
-      SELECT md5(COALESCE(jsonb_agg(jsonb_build_array(id,value) ORDER BY id)::text,'[]')) AS revision FROM evidence`, [pair.wallet, pair.token, pair.startAt, pair.registrationBlock])).rows[0].revision as string;
+  const portfolioScope = (userId: string, pair: Pair) => ({ kind: 'portfolio' as const, accountId: userId,
+    membershipRevision: pair.membershipRevision, fromAt: pair.startAt, fromBlock: pair.registrationBlock ?? '0' });
+  async function evidence(userId: string, pair: Pair, foreground = false): Promise<PairEvidence> {
+    const value = await accounting.evidence({ wallet: pair.wallet, token: pair.token, scope: portfolioScope(userId, pair), foreground });
+    if (!value) return { events: [], proof: null, quote: null, source: 'node', reason: 'collection_pending',
+      coverage: { walletAddress: pair.wallet, tokenAddress: pair.token, complete: false, reason: 'collection_pending' } };
+    return { events: value.events, proof: value.proof, source: value.source, openingBalances: value.openingBalances,
+      coverage: value.coverage, reason: value.reason,
+      quote: value.quote?.priceUsd && value.quote.timestamp && !value.quote.stale ? { priceUsd: value.quote.priceUsd, timestamp: value.quote.timestamp } : null };
   }
-  async function evidence(pair: Pair, foreground = false): Promise<PairEvidence> {
-    const key = `${pair.wallet}:${pair.token}:${pair.membershipRevision}:${pair.registrationBlock}`, pending = pairJobs.get(key);
-    if (pending) { if (foreground) pending.foreground = true; return pending.work; }
-    const unavailable = (reason: string): PairEvidence => ({ events: [], proof: null, quote: null, source: 'node', reason,
-      coverage: { walletAddress: pair.wallet, tokenAddress: pair.token, complete: false, reason } });
-    if (pair.registrationBlock == null) return unavailable('collection_pending');
-    if (pairJobs.size >= (foreground ? 8 : 4)) return unavailable('collection_pending');
-    const job = { foreground, work: null as unknown as Promise<PairEvidence> };
-    const work = (async () => {
-      const originalCanonical = await canonicalRevision(pair);
-      const generation = (await db.query('SELECT generation FROM journal_wallet_coverage WHERE wallet_address=$1', [pair.wallet])).rows[0]?.generation ?? null;
-      let proof: KolTokenBalanceProof | null = null;
-      try { proof = await balance({ wallet: pair.wallet, token: pair.token, decimals: pair.decimals }); } catch { return unavailable('balance_unavailable'); }
-      const node = proof ? await nodeEvidence(db, pair, { balance: proof, now: now() }).catch(() => null) : null;
-      if (!node) return unavailable(pair.decimals == null ? 'token_decimals_unknown' : 'collection_pending');
-      const currentQuote = node.proof.balance === '0' ? null : (await quote(pair.token, { foreground: () => job.foreground })).quote ?? null;
-      const value: PairEvidence = { ...node, quote: currentQuote };
-      if (await canonicalRevision(pair) !== originalCanonical) return { ...value, coverage: { ...node.coverage, complete: false, reason: 'indexed_snapshot_changed' }, reason: 'indexed_snapshot_changed' };
-      await db.query(`INSERT INTO journal_pair_preparations(wallet_address,token_address,history_revision,balance_proof,quote,checked_at,attempted_at,status,reason,events,source,coverage,generation,canonical_revision,tracking_from,opening_balances,membership_revision)
-        SELECT $1,$2,$3,$4::jsonb,$5::jsonb,now(),now(),$6,$7,$8::jsonb,'node',$9::jsonb,$10::uuid,$11,$12::timestamptz,$13::jsonb,$14::uuid
-        WHERE EXISTS(SELECT 1 FROM journal_wallet_coverage c WHERE c.wallet_address=$1 AND c.generation=$10::uuid)
-          AND EXISTS(SELECT 1 FROM journal_wallets WHERE wallet_address=$1 AND revision=$14::uuid)
-        ON CONFLICT(wallet_address,token_address) DO UPDATE SET
-        history_revision=EXCLUDED.history_revision,balance_proof=EXCLUDED.balance_proof,quote=EXCLUDED.quote,checked_at=now(),attempted_at=now(),status=EXCLUDED.status,
-        reason=EXCLUDED.reason,events=EXCLUDED.events,source='node',coverage=EXCLUDED.coverage,generation=EXCLUDED.generation,canonical_revision=EXCLUDED.canonical_revision,
-        tracking_from=EXCLUDED.tracking_from,opening_balances=EXCLUDED.opening_balances,membership_revision=EXCLUDED.membership_revision`, [pair.wallet, pair.token, digest(node.events), JSON.stringify(node.proof), currentQuote ? JSON.stringify(currentQuote) : null,
-          node.coverage.complete ? 'ready' : 'pending', node.reason ?? null, JSON.stringify(node.events), JSON.stringify(node.coverage), generation, originalCanonical, pair.startAt, JSON.stringify(node.openingBalances ?? []), pair.membershipRevision]);
-      return value;
-    })().finally(() => pairJobs.delete(key)); job.work = work; pairJobs.set(key, job); return work;
-  }
-  async function cachedEvidence(pair: Pair): Promise<PairEvidence | null> {
-    const cached = (await db.query(`SELECT p.*,c.generation AS "currentGeneration" FROM journal_pair_preparations p
-      LEFT JOIN journal_wallet_coverage c ON c.wallet_address=p.wallet_address
-      WHERE p.wallet_address=$1 AND p.token_address=$2 AND p.tracking_from=$3::timestamptz AND p.membership_revision=$4::uuid`, [pair.wallet, pair.token, pair.startAt, pair.membershipRevision])).rows[0];
-    if (!cached || cached.source !== 'node' || cached.generation !== cached.currentGeneration
-      || cached.canonical_revision !== await canonicalRevision(pair) || !cached.balance_proof || now() - Date.parse(cached.balance_proof.checkedAt) > 30_000) return null;
-    // Rows may be written before their collection checkpoint commits. A proof
-    // capped to the previous checkpoint cannot become a valid warm result once
-    // those rows are confirmed, even when their content hash stayed unchanged.
-    const newer = (await db.query(`SELECT EXISTS(SELECT 1 FROM trades WHERE wallet_address=$1 AND token_address=$2 AND timestamp >= $3
-        AND block_number>$4 AND block_number<=(SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'))
-      OR EXISTS(SELECT 1 FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND timestamp >= $3
-        AND block_number>$4 AND block_number<=(SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node')) AS changed`,
-      [pair.wallet, pair.token, pair.startAt, cached.balance_proof.blockNumber])).rows[0]?.changed;
-    if (newer) return null;
-    return { events: cached.events ?? [], proof: cached.balance_proof, quote: cached.quote ?? null, source: 'node', coverage: cached.coverage,
-      openingBalances: cached.opening_balances ?? [], reason: cached.reason ?? undefined };
-  }
-  async function selectedLedger(members: Membership[], foreground = false, cachedOnly = false) {
+  async function selectedLedger(userId: string, members: Membership[], foreground = false, cachedOnly = false) {
     const states = await discover(members), pairs = await discoveredPairs(members);
-    const priorities = (await db.query(`SELECT wallet_address||':'||token_address AS key,attempted_at FROM journal_pair_preparations WHERE wallet_address=ANY($1)`, [members.map(row => row.wallet_address)])).rows;
-    const attempts = new Map<string, number>(priorities.map(row => [row.key, row.attempted_at ? Date.parse(row.attempted_at) : 0]));
-    const scheduled = cachedOnly ? [] : [...pairs].sort((a, b) => (attempts.get(`${a.wallet}:${a.token}`) ?? 0) - (attempts.get(`${b.wallet}:${b.token}`) ?? 0)).slice(0, foreground ? 3 : 2);
+    if (members.length) {
+      const failed = (await db.query(`WITH selected AS (SELECT * FROM unnest($1::text[],$2::uuid[],$3::bigint[]) AS s(wallet,revision,registration))
+        SELECT EXISTS(SELECT 1 FROM node_executions e JOIN selected s ON s.wallet=e.wallet_address
+          JOIN journal_wallets m ON m.user_id=$4::uuid AND m.wallet_address=s.wallet AND m.revision=s.revision
+          WHERE e.status IN('failed','unsupported') AND e.block_number>s.registration AND e.timestamp>=m.added_at
+            AND e.block_number<=(SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node')) AS unknown`,
+      [members.map(member => member.wallet_address), members.map(member => member.revision), members.map(member => member.registration_block), userId])).rows[0]?.unknown;
+      if (failed) states.push({ status: 'pending', complete: false, reason: 'failed_execution_attribution_unknown' });
+    }
     const prepared = new Map<string, PairEvidence>();
-    await Promise.all(scheduled.map(async pair => prepared.set(`${pair.wallet}:${pair.token}`, await cachedEvidence(pair) ?? await evidence(pair, foreground))));
+    await Promise.all(pairs.map(async pair => prepared.set(`${pair.wallet}:${pair.token}`, await evidence(userId, pair, foreground))));
     const events: JournalLedgerEvent[] = [], coverages: JournalLedgerCoverage[] = [], openingBalances: JournalLedgerOpeningBalance[] = [], valuations = new Map<string, JournalLedgerValuation>();
     for (const pair of pairs) {
-      const value = prepared.get(`${pair.wallet}:${pair.token}`) ?? await cachedEvidence(pair) ?? { events: [], proof: null, quote: null, source: 'node',
+      const value = prepared.get(`${pair.wallet}:${pair.token}`) ?? { events: [], proof: null, quote: null, source: 'node',
         coverage: { walletAddress: pair.wallet, tokenAddress: pair.token, complete: false, reason: 'collection_pending' } };
       events.push(...value.events); coverages.push(value.coverage); if ('openingBalances' in value) openingBalances.push(...value.openingBalances ?? []);
       let valuation = valuations.get(pair.token);
@@ -236,7 +187,7 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
   async function summary(userId: string, selected?: string): Promise<JournalSummary> {
     const members = await memberships(userId, selected), revision = journalWalletSetIdentity(members), key = `${userId}:${revision}`;
     const build = async (cachedOnly = false) => {
-      const { result, pairs, states, preparing } = await selectedLedger(members, false, cachedOnly);
+      const { result, pairs, states, preparing } = await selectedLedger(userId, members, false, cachedOnly);
       const discoveryComplete = states.every(state => state.status === 'ready');
       const complete = result.complete && discoveryComplete;
       const reasons = [...new Set([...result.reasons, ...states.filter(state => state.status !== 'ready').map(state => state.reason ?? 'collection_pending')])];
@@ -291,6 +242,11 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
     if (!/^[a-f0-9]{64}$/.test(snapshot)) throw new JournalInputError('Invalid replay snapshot');
     const saved = (await db.query(`SELECT payload FROM journal_replay_snapshots WHERE snapshot_id=$1 AND user_id=$2 AND wallet_address=$3 AND token_address=$4 AND membership_revision=$5 AND expires_at>now()`, [snapshot, userId, wallet, token, revision])).rows[0]?.payload as JournalTokenActivity | undefined;
     if (!saved) throw new JournalInputError('This saved replay has expired. Prepare the trade again.', 409);
+    const member = await authorize(userId, wallet, revision);
+    if (saved.accountingSnapshot?.version === 2 && (member.registration_block == null || !await accounting.savedActivity({ wallet, token,
+      scope: { kind: 'portfolio', accountId: userId, membershipRevision: revision, fromAt: iso(member.added_at), fromBlock: member.registration_block } }, saved.accountingSnapshot.snapshotId))) {
+      throw new JournalInputError('This saved replay changed. Prepare the trade again.', 410);
+    }
     await authorize(userId, wallet, revision);
     return saved;
   }
@@ -302,30 +258,11 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
       UNION ALL SELECT (SELECT (value->>'blockNumber')::text FROM worker_state WHERE key='node') AS confirmed FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND timestamp >= $3
       AND block_number>$4 AND block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') LIMIT 1`, [wallet, token, iso(member.added_at), member.registration_block])).rows[0];
     if (!available) return undefined;
-    // Authorize before touching shared provider/cache work, and again after it.
-    let result = await loadActivity({ wallet, token, replay: false, pnl: false, allowPrivate: true, skipInventory: true });
-    if (result) {
-      // A public KOL adapter may contain older indexed cycles. It supplies only
-      // identity/metadata here; the private ledger below supplies every amount.
-      result = { ...result, trades: result.trades.filter(trade => Date.parse(trade.timestamp) >= Date.parse(iso(member.added_at))
-        && trade.blockNumber != null && member.registration_block != null && BigInt(trade.blockNumber) > BigInt(member.registration_block)
-        && BigInt(trade.blockNumber) <= BigInt(available.confirmed)),
-        replayAccounting: undefined, realizedAccounting: undefined,
-        summary: { ...result.summary, investedUsd: null, soldUsd: null, realizedProfitUsd: null, avgBoughtPriceUsd: null, avgSoldPriceUsd: null,
-          avgBoughtMcapUsd: null, avgSoldMcapUsd: null, remainingTokenAmount: null, remainingCostBasisUsd: null, status: 'unknown',
-          firstTradeAt: null, lastTradeAt: null, buyCount: 0, sellCount: 0, valuedBuyCount: 0, valuedSellCount: 0, excludedSellCount: 0, unpricedTradeCount: 0 } };
-      result = { ...result, coverage: { ...result.coverage, indexedTradeCount: result.trades.length, returnedTradeCount: result.trades.length, complete: false },
-        trades: result.trades.map(trade => ({ ...trade, realizedProfitUsd: null, cumulativeRealizedProfitUsd: null })) };
-      const metadata = (await db.query('SELECT decimals FROM tokens WHERE address=$1', [token])).rows[0];
-      const pair: Pair = { wallet, token, startAt: iso(member.added_at), registrationBlock: member.registration_block, membershipRevision: member.revision, decimals: metadata?.decimals ?? null, symbol: result.token.symbol, name: result.token.name, logoUrl: result.token.logoUrl };
-      const prepared = await cachedEvidence(pair) ?? await evidence(pair, true);
-      if (prepared.proof) result = applyJournalReplay(result, { events: prepared.events, proof: prepared.proof, coverageComplete: prepared.coverage.complete,
-        quote: prepared.quote, source: prepared.source, openingBalances: prepared.openingBalances, now: now() });
-      else result = { ...result, realizedAccounting: { version: 1, source: prepared.source === 'node' ? 'onchain' : 'gmgn',
-        policy: prepared.source === 'node' ? 'onchain_net_trade_profit_v1' : 'gmgn_realized_profit_v1', walletAddress: wallet, tokenAddress: token,
-        status: 'pending', checkedAt: new Date(now()).toISOString(), realizedProfitUsd: null, retryAfterMs: 1500,
-        coverage: { transactionsComplete: false, balanceMatched: false, reason: prepared.reason ?? 'balance_unavailable' } } };
-    }
+    // The same snapshot service supplies public and private exports. Private
+    // scope includes the exact account, membership revision and added boundary.
+    const result = member.registration_block == null ? null : await accounting.activity({ wallet, token,
+      scope: { kind: 'portfolio', accountId: userId, membershipRevision: member.revision,
+        fromAt: iso(member.added_at), fromBlock: member.registration_block }, foreground: true });
     await authorize(userId, wallet, member.revision);
     if (!result) return result;
     const response: JournalTokenActivity = { ...result, journal: { accountId: userId, walletAddress: wallet, membershipRevision: member.revision, preparedAt: result.generatedAt, private: true } };
@@ -339,23 +276,6 @@ export function createJournalService({ db = pool, nodeEvidence = tryLoadJournalN
     }
     return response;
   }
-  async function replayChart(userId: string, wallet: string, token: string, current: boolean, snapshot?: string) {
-    const member = await authorize(userId, journalAddress(wallet)); token = journalAddress(token);
-    const frozen = snapshot ? await savedReplay(userId, wallet, token, snapshot, member.revision) : null;
-    const rows = await db.query(`SELECT MIN(timestamp) AS first,MAX(timestamp) AS last FROM (
-      SELECT timestamp FROM trades WHERE wallet_address=$1 AND token_address=$2 AND block_number>$4 AND block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') AND timestamp >= $3 AND timestamp<=now()
-      UNION ALL SELECT timestamp FROM wallet_transfers WHERE wallet_address=$1 AND token_address=$2 AND block_number>$4 AND block_number <= (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') AND timestamp >= $3 AND timestamp<=now()) movements`, [wallet, token, iso(member.added_at), member.registration_block]);
-    if (!rows.rows[0]?.first) throw new JournalInputError('No trading history is available yet', 404);
-    const metadata = (await db.query(`SELECT CASE WHEN total_supply_raw>0 AND decimals BETWEEN 0 AND 36 AND supply_checked_at>now()-interval '2 days' THEN (total_supply_raw/power(10::numeric,decimals))::text END AS supply FROM tokens WHERE address=$1 AND ${kolProfileTokenSql('tokens')}`, [token])).rows[0];
-    if (!metadata) throw new JournalInputError('Portfolio token activity not found', 404);
-    const movements = frozen?.replayAccounting?.history?.events ?? frozen?.replayAccounting?.events;
-    const first = movements?.length ? Math.min(...movements.map(event => Date.parse(event.timestamp))) : Date.parse(rows.rows[0].first);
-    const last = movements?.length ? Math.max(...movements.map(event => Date.parse(event.timestamp))) : Date.parse(rows.rows[0].last);
-    let value = await chart(token, first, last, current, frozen ? frozen.token.marketCapSupply : metadata.supply ?? null);
-    const ending = frozen?.realizedAccounting?.position;
-    if (current && ending?.priceUsd && ending.pricedAt) value = { ...value, currentQuote: { priceUsd: ending.priceUsd, timestamp: ending.pricedAt } };
-    await authorize(userId, wallet, member.revision); return value;
-  }
-  return { list, add, updateLabel, remove, summary, activity, tokenActivity, replayChart, authorize };
+  return { list, add, updateLabel, remove, summary, activity, tokenActivity, authorize };
 }
 export const journalService = createJournalService();

@@ -11,16 +11,17 @@ function setup(authenticated = true) {
   const service = { list: vi.fn(async () => ({ wallets: [], limit: 3 })), add: vi.fn(async () => ({ wallets: [], limit: 3 })),
     updateLabel: vi.fn(async () => ({ wallets: [], limit: 3 })), remove: vi.fn(async () => ({ wallets: [], limit: 3 })),
     summary: vi.fn(async () => ({ complete: false, positions: [] })),
-    activity: vi.fn(async () => ({ trades: [], cursor: null })), tokenActivity: vi.fn(async () => ({ journal: { private: true } })),
-    replayChart: vi.fn(async () => ({ points: [] })), authorize: vi.fn() };
+    activity: vi.fn(async () => ({ trades: [], cursor: null })), tokenActivity: vi.fn(async () => ({ journal: { private: true, membershipRevision: 'membership-a' } })),
+    authorize: vi.fn() };
   const app = Fastify({ logger: false }); apps.push(app);
-  registerJournalRoutes(app, { service: service as never, resolveUser: async () => authenticated ? user : null });
-  return { app, service };
+  const prepareReplay = vi.fn(async () => ({ version: 2, status: 'pending' }));
+  registerJournalRoutes(app, { service: service as never, resolveUser: async () => authenticated ? user : null, prepareReplay: prepareReplay as never });
+  return { app, service, prepareReplay };
 }
 describe('private journal API boundaries', () => {
   it('requires authentication before any data or replay work', async () => {
     const { app, service } = setup(false);
-    for (const url of ['/api/journal/wallets', '/api/journal/summary', '/api/journal/positions', '/api/journal/activity', '/api/journal/wallets/0xabc/tokens/0xdef/activity?replay=true', '/api/journal/wallets/0xabc/tokens/0xdef/replay-chart']) {
+    for (const url of ['/api/journal/wallets', '/api/journal/summary', '/api/journal/positions', '/api/journal/activity', '/api/journal/wallets/0xabc/tokens/0xdef/activity?replay=true', '/api/journal/wallets/0xabc/tokens/0xdef/replay-preparation']) {
       const response = await app.inject({ url }); expect(response.statusCode).toBe(401); expect(response.headers['cache-control']).toContain('no-store');
     }
     for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
@@ -47,9 +48,25 @@ describe('private journal API boundaries', () => {
     await app.inject({ url: '/api/journal/summary?wallet=all' }); expect(service.summary).toHaveBeenCalledWith(user.id, 'all');
     await app.inject({ url: '/api/journal/wallets/0xABC/tokens/0xDEF/activity?replay=true&snapshot=abc' });
     expect(service.tokenActivity).toHaveBeenCalledWith(user.id, '0xabc', '0xdef', true, 'abc');
-    const chart = await app.inject({ url: '/api/journal/wallets/0xABC/tokens/0xDEF/replay-chart?end=current&snapshot=abc' });
-    expect(service.replayChart).toHaveBeenCalledWith(user.id, '0xabc', '0xdef', true, 'abc');
+    const chart = await app.inject({ url: '/api/journal/wallets/0xABC/tokens/0xDEF/replay-preparation?snapshot=abc' });
+    expect(service.authorize).toHaveBeenCalledWith(user.id, '0xabc', 'membership-a');
     expect(chart.headers.vary).toBe('Cookie'); expect(chart.headers['referrer-policy']).toBe('no-referrer');
+  });
+  it('rejects removal and re-addition while replay preparation is running', async () => {
+    const { app, service, prepareReplay } = setup();
+    let release!: () => void;
+    prepareReplay.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ version: 2, status: 'pending' }); }));
+    const response = app.inject({ url: '/api/journal/wallets/0xabc/tokens/0xdef/replay-preparation' });
+    await vi.waitFor(() => expect(prepareReplay).toHaveBeenCalledOnce());
+    service.authorize.mockRejectedValueOnce(new JournalInputError('Portfolio membership changed', 404));
+    release(); expect((await response).statusCode).toBe(404);
+    expect(service.authorize).toHaveBeenCalledWith(user.id, '0xabc', 'membership-a');
+  });
+  it('keeps an authorized registration wait retryable rather than reporting missing activity', async () => {
+    const { app, service, prepareReplay } = setup(); service.tokenActivity.mockResolvedValueOnce(null as never);
+    const response = await app.inject('/api/journal/wallets/0xabc/tokens/0xdef/replay-preparation');
+    expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ version: 2, status: 'pending', reason: 'accounting_pending' });
+    expect(prepareReplay).not.toHaveBeenCalled();
   });
   it('does not expose internal provider responses or labels in errors', async () => {
     const { app, service } = setup(); service.summary.mockRejectedValueOnce(Error('secret upstream response and private label'));

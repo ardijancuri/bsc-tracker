@@ -14,6 +14,18 @@ function chart(): TokenChart {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('token replay market history', () => {
+  it('preserves node observation times and a separate frozen state quote without inventing candle endpoints', () => {
+    const raw = chart(); raw.source = 'node'; raw.resolution = '5m';
+    raw.points = [{ timestamp: new Date(now - 119_000).toISOString(), priceUsd: '2' },
+      { timestamp: new Date(now - 91_000).toISOString(), priceUsd: '3' }];
+    raw.currentQuote = { timestamp: new Date(now - 10_000).toISOString(), priceUsd: '4' };
+    const data = prepareTokenReplayData(token, '24h', raw, now);
+    expect(data.points.map(point => point.time)).toEqual([now - 119_000, now - 91_000, now - 10_000]);
+    expect(data.points.map(point => point.marketCap)).toEqual([2000, 3000, 4000]);
+    expect(data.points.at(-1)?.time).not.toBe(now);
+    raw.points[0].marketCapUsd = '6000';
+    expect(prepareTokenReplayData(token, '24h', raw, now).points[0].marketCap).toBe(6000);
+  });
   it('uses observed opens/closes and current proven supply, independent of token metadata', () => {
     const data = prepareTokenReplayData(token, '24h', chart(), now);
     expect(data.points.map(point => point.marketCap)).toEqual([1000, 2000, 3000]);

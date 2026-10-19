@@ -1,14 +1,8 @@
-import { replayMarketData, type ReplayMarketRequestResult } from './tradeReplayMarketRequest';
+import { replayMarketData, type ReplayMarketRequestResult } from './replayPreparationRequest';
+import { replayPreparationMessages } from '../shared/replayPreparation';
 import type { TradeReplayData } from './tradeReplayData';
 
-const preparationMessages = {
-  accounting_pending: 'Wallet transaction history is still being verified. Retry shortly.',
-  accounting_mismatch: 'Wallet movements and the token balance do not reconcile. This replay cannot be prepared yet.',
-  unknown_costs: 'Purchase costs or transaction fees are missing. Ending profit cannot be calculated yet.',
-  chart_coverage: 'Market chart history does not cover the full replay window yet.',
-  stale_quote: 'A recent token price is unavailable. Retry when the current price refreshes.',
-  provider_cooldown: 'GMGN is rate limited. Retry after the displayed countdown.',
-} as const;
+const preparationMessages = replayPreparationMessages;
 
 export class ReplayPreparationError extends Error {
   readonly retryAfterMs: number;
@@ -30,10 +24,7 @@ export function requirePreparedReplay(result: ReplayMarketRequestResult): Replay
 
 function cancelled() { return new DOMException('Video export cancelled.', 'AbortError'); }
 
-/** A provider cooldown is resumable work, not a failed video. Each pass remains
- * bounded by the market request's 22-second budget; the whole automatic wait is
- * bounded too. Retaining genuine observations lets later passes finish the
- * missing accounting/quote instead of rebuilding the replay from its old card. */
+/** A single bounded poll joins the server's durable preparation work. */
 export async function prepareReplayForShare(data: TradeReplayData, signal: AbortSignal, options: {
   onResult?: (result: ReplayMarketRequestResult) => void;
   onWait?: (retryAt: number) => void;
@@ -49,7 +40,7 @@ export async function prepareReplayForShare(data: TradeReplayData, signal: Abort
     if (result.preparationStatus === 'ready') return result;
     const rawDelay = result.retryAfterMs;
     const delay = typeof rawDelay === 'number' && Number.isFinite(rawDelay) && rawDelay > 0 ? Math.max(1000, rawDelay) : 1500;
-    if (result.preparationStatus !== 'pending' || attempt >= 7 || Date.now() + delay + 22_000 > deadline) return requirePreparedReplay(result);
+    if (result.preparationStatus !== 'pending' || attempt >= 30 || Date.now() + delay + 8000 > deadline) return requirePreparedReplay(result);
     selected = result.data;
     options.onWait?.(Date.now() + delay);
     await new Promise<void>((resolve, reject) => {

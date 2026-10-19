@@ -57,6 +57,7 @@ export async function ensureIntelligenceSchema(pool: Pool) {
       block_number bigint, block_hash text, checked_at timestamptz,
       liquidity_usd numeric, liquidity_baseline_usd numeric, liquidity_baseline_at timestamptz, liquidity_at timestamptz
     );
+    ALTER TABLE token_launches ADD COLUMN IF NOT EXISTS liquidity_reason text;
     CREATE TABLE IF NOT EXISTS launch_events (
       id text PRIMARY KEY, token_address text NOT NULL REFERENCES tokens(address), platform text NOT NULL,
       kind text NOT NULL, block_number bigint NOT NULL, block_hash text NOT NULL,

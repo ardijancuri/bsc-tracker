@@ -109,6 +109,26 @@ try {
     assert.equal(await f.count('telegram_notification_outbox', "kind='trades' AND status='sent'"), 2);
   });
 
+  await scenario('same-token smart-account operations in one transaction alert once per execution and survive reorg correction', async f => {
+    await f.favorite(); await f.activate();
+    const first = await f.trade({ side: 'buy' }), second = await f.trade({ side: 'sell' });
+    const transactionHash = `0x${'e'.repeat(64)}`;
+    await pool.query(`UPDATE trades SET tx_hash=$1,execution_id=CASE WHEN id=$2 THEN 'operation-one' ELSE 'operation-two' END,
+      block_number=$4,block_hash=$5 WHERE id IN($2,$3)`, [transactionHash, first.id, second.id, first.number, first.hash]);
+    const collected = await Promise.all([f.service.collect(), f.makeService().collect()]);
+    assert.equal(collected.reduce((sum,item) => sum+item.recipients,0), 2);
+    assert.equal(await f.count('telegram_trade_events'), 2);
+    assert.equal(await f.count('telegram_notification_items'), 2);
+    await f.drain();
+    assert.equal(await f.count('telegram_notification_outbox', "kind='trades' AND status='sent'"), 1);
+    assert.equal((await f.service.collect()).events, 0);
+    const client = await pool.connect();
+    try { await client.query('BEGIN'); await rollbackTelegramNotifications(client, first.number); await client.query('DELETE FROM trades WHERE block_number>=$1',[first.number]); await client.query('COMMIT'); }
+    catch(error) { await client.query('ROLLBACK');throw error; } finally { client.release(); }
+    assert.equal(await f.count('telegram_trade_events','orphaned'), 2);
+    assert.equal(await f.count('telegram_notification_items'), 2, 'Delivery evidence survives deleted execution projections');
+  });
+
   await scenario('first alert is immediate and subsequent ten-second burst retains buys and sells separately', async f => {
     await f.favorite(); await f.activate(); await f.trade(); await f.service.collect();
     await f.service.deliverOne(); assert.equal(f.tradeMessages().length, 1);

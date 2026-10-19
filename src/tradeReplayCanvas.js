@@ -334,6 +334,7 @@ export class ReplayCanvas {
     this.inventoryEvents = [];
     this.accountingEvents = [];
     this.eventProgresses = [];
+    this.pacingEvents = [];
     this.supply = null;
     this.fillOnly = false;
     this.storyWindow = 0.5;
@@ -350,6 +351,9 @@ export class ReplayCanvas {
   async setData(data) {
     if (!data || !data.kol || !data.token) throw new TypeError('Replay data needs kol and token');
     this.data = data;
+    this.pacingEvents = [];
+    const modern = data.replayAccounting?.version === 2;
+    const movementTimes = modern ? (data.inventory?.events ?? []).map(event => Date.parse(event.timestamp)).filter(Number.isFinite) : [];
     this.trades = (Array.isArray(data.trades) ? data.trades : [])
       .map((trade, index) => ({
         ...trade,
@@ -401,8 +405,8 @@ export class ReplayCanvas {
     // A pool quote just before the first on-chain fill can be from a different
     // route and create a false opening spike through the first B/S marker.
     // Begin the recap curve at the first exact execution instead.
-    const firstFillTs = this.trades[0]?.ts ?? -Infinity;
-    const lastFillTs = this.trades.at(-1)?.ts;
+    const firstFillTs = movementTimes.length ? Math.min(...movementTimes) : this.trades[0]?.ts ?? -Infinity;
+    const lastFillTs = movementTimes.length ? Math.max(...movementTimes) : this.trades.at(-1)?.ts;
     const current = data.currentQuote;
     const currentTs = Date.parse(current?.timestamp);
     const currentPrice = positive(current?.priceUsd);
@@ -435,17 +439,19 @@ export class ReplayCanvas {
     const lastTrade = this.trades.at(-1)?.ts;
     const firstPoint = this.points[0]?.ts;
     const lastPoint = this.points.at(-1)?.ts;
-    this.timelineStart = firstTrade ?? firstPoint ?? Infinity;
+    this.timelineStart = movementTimes.length ? Math.min(...movementTimes) : firstTrade ?? firstPoint ?? Infinity;
     if (!Number.isFinite(this.timelineStart)) this.timelineStart = Date.now();
 
-    this.tradeEnd = lastTrade ?? this.timelineStart;
+    this.tradeEnd = movementTimes.length ? Math.max(...movementTimes) : lastTrade ?? this.timelineStart;
     // An open replay continues to its separately checked current quote. It is
     // a market endpoint, never another execution or an invented final sale.
     const inventoryEnd = replayEndTimestamp(data);
     this.timelineEnd = this.currentQuote?.ts ?? (this.trades.length ? Math.max(this.tradeEnd, inventoryEnd) : lastPoint ?? this.tradeEnd);
+    if (modern) this.timelineEnd = this.currentQuote?.ts ?? Math.max(this.tradeEnd, inventoryEnd);
     const lastMovement = data.inventory?.events?.at(-1);
     this.hasTail = Boolean(this.currentQuote) || this.timelineEnd > this.tradeEnd
       || Boolean(lastMovement && String(lastMovement.kind).startsWith('transfer_') && Date.parse(lastMovement.timestamp) >= this.tradeEnd);
+    if (modern) this.hasTail = Boolean(this.currentQuote) || this.timelineEnd > this.tradeEnd;
     if (!this.trades.length && this.timelineEnd <= this.timelineStart) this.timelineEnd = this.timelineStart + MINUTE;
 
     // Trade recaps need enough screen time for consecutive fills even when the
@@ -474,6 +480,20 @@ export class ReplayCanvas {
       this.eventPhase = this.trades.length ? 0 : 1;
       this.eventProgresses = this.trades.length ? [0] : [];
     }
+    if (modern && movementTimes.length) {
+      // One timestamp is one atomic ledger group. Its transfers and swaps
+      // appear together, without inventing an order inside that second.
+      const times = [...new Set(movementTimes)].sort((a, b) => a - b);
+      const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd), totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
+      this.eventPhase = times.length > 1 ? this.hasTail ? this.currentEndPhase - clamp(.26 * Math.sqrt(tailMs / totalMs), .04, .26) : .84 : 0;
+      const weights = times.slice(1).map((time, i) => Math.log1p((time - times[i]) / 1000) + .5), total = weights.reduce((sum, weight) => sum + weight, 0);
+      let q = 0; this.pacingEvents = times.map((ts, index) => {
+        if (index) q += this.eventPhase * weights[index - 1] / total;
+        return { ts, q: index === times.length - 1 ? this.eventPhase : q };
+      });
+      const byTime = new Map(this.pacingEvents.map(event => [event.ts, event.q]));
+      this.eventProgresses = this.trades.map(trade => byTime.get(trade.ts) ?? 0);
+    }
 
     // Account for the canonical movement prefix without adding executions or
     // price vertices. Same-second transfers fit between their neighboring
@@ -483,7 +503,7 @@ export class ReplayCanvas {
     this.inventoryEvents = inventory.map((event, index) => {
       const tradeIndex = tradeIndices.get(event.tradeId);
       let q = tradeIndex === undefined ? this.progressAtTime(Date.parse(event.timestamp)) : this.eventProgress(tradeIndex);
-      if (tradeIndex === undefined) {
+      if (!modern && tradeIndex === undefined) {
         let before = index - 1, after = index + 1;
         while (before >= 0 && !tradeIndices.has(inventory[before].tradeId)) before -= 1;
         while (after < inventory.length && !tradeIndices.has(inventory[after].tradeId)) after += 1;
@@ -624,6 +644,15 @@ export class ReplayCanvas {
   }
 
   progressAtTime(ts) {
+    if (this.pacingEvents.length) {
+      const first = this.pacingEvents[0], last = this.pacingEvents.at(-1);
+      if (ts <= first.ts) return 0;
+      if (ts >= last.ts) return this.timelineEnd > last.ts ? last.q + (ts - last.ts) / (this.timelineEnd - last.ts) * (this.currentEndPhase - last.q) : last.q;
+      for (let i = 1; i < this.pacingEvents.length; i++) {
+        const a = this.pacingEvents[i - 1], b = this.pacingEvents[i];
+        if (ts <= b.ts) return a.q + (ts - a.ts) / (b.ts - a.ts) * (b.q - a.q);
+      }
+    }
     if (!this.trades.length) {
       return (ts - this.timelineStart) / (this.timelineEnd - this.timelineStart);
     }
@@ -821,6 +850,15 @@ export class ReplayCanvas {
 
   timeAt(progress) {
     const p = this.chartProgress(progress);
+    if (this.pacingEvents.length) {
+      const first = this.pacingEvents[0], last = this.pacingEvents.at(-1);
+      if (p <= first.q) return first.ts;
+      for (let i = 1; i < this.pacingEvents.length; i++) {
+        const a = this.pacingEvents[i - 1], b = this.pacingEvents[i];
+        if (p <= b.q) return a.ts + (p - a.q) / Math.max(1e-12, b.q - a.q) * (b.ts - a.ts);
+      }
+      return this.timelineEnd > last.ts ? last.ts + clamp((p - last.q) / Math.max(1e-12, this.currentEndPhase - last.q), 0, 1) * (this.timelineEnd - last.ts) : last.ts;
+    }
     if (this.trades.length && p >= this.eventPhase && !this.hasTail) return this.tradeEnd;
     if (!this.trades.length) return this.timelineStart + p * (this.timelineEnd - this.timelineStart);
     if (p <= this.eventPhase && this.trades.length > 1) {
@@ -995,10 +1033,10 @@ export class ReplayCanvas {
       avgEntryCap, currentCap, currentPrice, currentEventIndex, status, recordedStatus, realizedPnl, realizedRoi,
       remainingCostBasis, unrealizedPnl, totalPnl, totalRoi,
     };
-    return this.data.replayAccounting ? this.gmgnSnapshot(p, state, ending, boughtTokens) : state;
+    return this.data.replayAccounting ? this.ledgerSnapshot(p, state, ending, boughtTokens) : state;
   }
 
-  gmgnSnapshot(progress, state, ending, boughtTokens) {
+  ledgerSnapshot(progress, state, ending, boughtTokens) {
     const accounting = this.data.replayAccounting;
     const valid = ['ready', 'estimated'].includes(accounting.status)
       && accounting.coverage.transactionsComplete && accounting.coverage.balanceMatched
@@ -1025,7 +1063,7 @@ export class ReplayCanvas {
     const fees = finite(snapshot.feesUsd, null);
     const value = holdings === 0 ? 0 : holdings !== null && state.currentPrice > 0 ? holdings * state.currentPrice : null;
     const unrealized = value !== null && basis !== null ? value - basis : null;
-    let total = replayAccountingTotal(snapshot, state.currentPrice);
+    let total = replayAccountingTotal(snapshot, state.currentPrice, accounting.version === 2);
     let roi = total !== null && cost > 0 ? total / cost : null;
     // Exact provider totals belong only to the ending. A different selected
     // price reprices the remaining quantity, without changing disposal gains.
@@ -1036,7 +1074,7 @@ export class ReplayCanvas {
       const sameQuote = holdings === 0 || Math.abs(state.currentPrice - referencePrice) <= referencePrice * 1e-10;
       roi = sameQuote ? finite(final.reportedRoi, cost > 0 ? total / cost : null) : cost > 0 ? total / cost : null;
     }
-    return { ...state, invested, proceeds, holdings, remainingCostBasis: basis,
+    return { ...state, invested, proceeds, holdings, remainingCostBasis: basis, accountingFinal: final !== null,
       realizedPnl: realized, realizedRoi: realized !== null && cost > 0 ? realized / cost : null,
       unrealizedPnl: unrealized, pnl: total, roi, totalPnl: total, totalRoi: roi,
       avgEntryCap: invested !== null && boughtTokens > 0 && this.supply ? invested / boughtTokens * this.supply : null };
@@ -1338,6 +1376,16 @@ export class ReplayCanvas {
       ctx.stroke();
       ctx.restore();
     }
+    if (this.data.replayAccounting?.version === 2) for (const event of this.inventoryEvents) {
+      if (!String(event.kind).startsWith('transfer_') || event.q > progress + 1e-9 || event.q < windowStart || event.q > windowEnd) continue;
+      const value = this.valueAtStory(event.q), cap = this.capMode ? value.marketCapUsd : value.priceUsd;
+      if (!(cap > 0)) continue;
+      const x = xAtProgress(event.q), y = this.markerCenterY(cap, cameraRange), incoming = event.kind === 'transfer_in';
+      if (x - this.markerRadius < 42 || x + this.markerRadius > 814) continue;
+      ctx.beginPath(); ctx.arc(x, y, this.markerRadius, 0, Math.PI * 2); ctx.fillStyle = incoming ? COLOR.green : COLOR.red; ctx.fill();
+      ctx.strokeStyle = COLOR.dark; ctx.lineWidth = 3; ctx.stroke();
+      text(ctx, incoming ? 'IN' : 'OUT', x, y + 1, `750 ${Math.max(10, this.markerRadius * .68)}px ${FONT}`, '#fff', 'center', 'middle');
+    }
     for (const marker of markers) {
       ctx.save();
       ctx.globalAlpha = marker.alpha;
@@ -1432,7 +1480,7 @@ export class ReplayCanvas {
     const { pnl: shownPnl, roi: shownRoi } = displayedProfit(state);
     const unavailable = shownPnl === null;
     const positive = !unavailable && shownPnl >= 0;
-    const result = unavailable ? '—' : state.currentEventIndex < 0 ? '$0.00' : resultMoney(shownPnl);
+    const result = unavailable ? '—' : state.currentEventIndex < 0 && this.data.replayAccounting?.version !== 2 ? '$0.00' : resultMoney(shownPnl);
     const pnlColor = unavailable ? COLOR.white : positive ? COLOR.green : COLOR.red;
     const resultFont = fitFont(ctx, result, 620, 78, 50, 720);
     const resultWidth = this.measure(ctx, result, resultFont);
@@ -1459,6 +1507,9 @@ export class ReplayCanvas {
       text(ctx, part.text, roiX, 907 + (part.bounds.ascent - part.bounds.descent) / 2, part.font, part.color);
       roiX += part.width + part.paddingAfter;
     }
+    if (this.data.replayAccounting?.version === 2) text(ctx,
+      `${state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
+      540, 958, `500 16px ${FONT}`, COLOR.dim, 'center');
 
     ctx.beginPath();
     ctx.moveTo(x + 1, 978);

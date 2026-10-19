@@ -146,6 +146,56 @@ try {
   assert.equal(providerFetches, 0, 'Hidden assets must not start inventory, P&L or chart provider work');
   assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM trades')).rows[0].count, storedTrades,
     'Display filtering preserves indexed transaction evidence');
+  // Verified historical imports can contain a token whose trades predate the
+  // canonical index. It must appear without fabricating a public trade row.
+  const recovered=address(20000),recoveredAt=new Date().toISOString(),recoveredEvent={id:'import-only',walletAddress:wallet,tokenAddress:recovered,kind:'buy',
+    tokenAmount:'10',amountUsd:'100',txHash:hash(20000),timestamp:recoveredAt,blockNumber:null,transactionIndex:null,logIndex:null};
+  await pool.query("INSERT INTO tokens(address,symbol,name,price_usd) VALUES($1,'RECOVERED','Recovered historical token',999)",[recovered]);
+  await pool.query(`INSERT INTO node_import_movements(wallet_address,token_address,id,event,raw,payload_hash) VALUES($1,$2,'import-only',$3::jsonb,'{}',$4)`,[wallet,recovered,JSON.stringify(recoveredEvent),'a'.repeat(64)]);
+  await pool.query(`INSERT INTO node_accounting_baselines(wallet_address,token_address,checkpoint_block,checkpoint_hash,checkpoint_timestamp,balance,history_fingerprint,ledger,events)
+    VALUES($1,$2,125,$3,$4,10,$5,'{}',$6::jsonb)`,[wallet,recovered,hash(125),recoveredAt,'b'.repeat(64),JSON.stringify([recoveredEvent])]);
+  await pool.query(`INSERT INTO node_evidence_blocks(block_number,block_hash,parent_hash,timestamp,header) VALUES(125,$1,$2,$3,'{}')`,[hash(125),hash(124),recoveredAt]);
+  await pool.query(`INSERT INTO node_market_observations(id,token_address,kind,source,timestamp,block_number,block_hash,price_usd,supply)
+    VALUES('profile-market',$1,'state','node',$2,125,$3,0.25,1000000)`,[recovered,recoveredAt,hash(125)]);
+  const recoveredProfile=await get(`/api/kols/${wallet}`),recoveredCard=recoveredProfile.tokens.find((item:Asset)=>item.address===recovered);
+  assert.ok(recoveredCard,'A provider-only token appears in the actual six-card HTTP response');
+  assert.equal(Number(recoveredCard.priceUsd),0.25,'Current UI values use the genuine market observation, never old provider metadata');
+  assert.equal(Number(recoveredCard.marketCapUsd),250000);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM trades')).rows[0].count,storedTrades,'Historical recovery does not insert canonical trades');
+  const detail=await get(`/api/tokens/${recovered}`);
+  assert.equal(detail.token.address,recovered,'Provider-only public token has a usable token page');
+  assert.deepEqual([detail.token.kolCount24h,detail.token.buys24h,detail.token.sells24h],[0,0,0],'Imported eligibility does not fabricate canonical activity counts');
+  assert.deepEqual(detail.trades,[]);assert.ok(detail.kols.some((kol:Asset)=>kol.address===wallet));
+  const minute=Math.floor((Date.now()-120000)/60000)*60000;
+  for(let index=0;index<2;index++)await pool.query(`INSERT INTO node_market_observations(id,token_address,kind,source,timestamp,price_usd,interval_seconds,open,high,low,close,import_id)
+    VALUES($1,$2,'imported','imported',$3,0.2,60,0.1,0.3,0.1,0.2,'profile-import')`,[`profile-import-${index}`,recovered,new Date(minute+index*60000)]);
+  const importedChart=await get(`/api/tokens/${recovered}/chart?interval=1m&priority=chart`);
+  assert.equal(importedChart.source,'imported');assert.ok(importedChart.candles.length>0);assert.equal(importedChart.pending,false);
+  assert.equal((await get(`/api/tokens/${recovered}/market`)).token.address,recovered);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM node_market_refresh_jobs WHERE token_address=$1',[recovered])).rows[0].n,1,'Selected token chart creates one durable refresh request without HTTP/RPC');
+  const follow=await fetch(`${base}/api/watchlist/items/token/${recovered}`,{method:'PUT',headers:{origin:new URL(base).origin}});
+  assert.equal(follow.status,200,'A recovered public token can be favorited');
+  const followCookie=follow.headers.get('set-cookie')!.split(';')[0];
+  const privateWallet=address(30000),privateToken=address(30001);
+  await pool.query('INSERT INTO kols(address,is_tracked) VALUES($1,false)',[privateWallet]);
+  await pool.query("INSERT INTO tokens(address,symbol,name) VALUES($1,'PRIVATE','Private-only token')",[privateToken]);
+  await pool.query(`INSERT INTO node_accounting_baselines(wallet_address,token_address,checkpoint_block,checkpoint_hash,checkpoint_timestamp,balance,history_fingerprint,ledger,events)
+    VALUES($1,$2,125,$3,$4,10,$5,'{}',$6::jsonb)`,[privateWallet,privateToken,hash(125),recoveredAt,'c'.repeat(64),JSON.stringify([{...recoveredEvent,walletAddress:privateWallet,tokenAddress:privateToken}])]);
+  for(const asset of [recovered,privateToken])await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,amount_usd,block_number,block_hash,timestamp,source)
+    VALUES($1,$2,$3,$4,'buy',10,99999,125,$5,$6,'node')`,[`private-${asset}`,hash(30001),privateWallet,asset,hash(125),recoveredAt]);
+  assert.equal((await get(`/api/tokens/${recovered}`)).token.kolCount24h,0,'Private executions do not inflate recovered public token counts');
+  assert.equal((await get(`/api/tokens/${privateToken}`)).token,null);
+  assert.equal((await get(`/api/tokens/${privateToken}/market`)).token,null);
+  await get(`/api/tokens/${privateToken}/chart?interval=1m`,404);
+  const privateFollow=await fetch(`${base}/api/watchlist/items/token/${privateToken}`,{method:'PUT',headers:{origin:new URL(base).origin}});
+  assert.equal(privateFollow.status,400,'Private-only evidence does not grant public favorite eligibility');
+  await pool.query('UPDATE node_accounting_baselines SET invalidated_at=now() WHERE wallet_address=$1 AND token_address=$2',[wallet,recovered]);
+  assert.ok(!(await get(`/api/kols/${wallet}`)).tokens.some((item:Asset)=>item.address===recovered),'An invalidated historical baseline cannot stay in the card list');
+  assert.equal((await get(`/api/tokens/${recovered}`)).token,null,'Invalidated imported evidence no longer grants a public token page');
+  await get(`/api/tokens/${recovered}/chart?interval=1m`,404);
+  const hiddenFavorites=await fetch(`${base}/api/watchlist`,{headers:{cookie:followCookie}});
+  assert.deepEqual((await hiddenFavorites.json()).items,[],'Existing favorites cannot reveal a token after its public proof is invalidated');
+  assert.equal(providerFetches,0,'Cold imported token summaries are queued without calling external providers or RPC in HTTP requests');
   console.log('KOL profile integration passed: pagination, counts, last trade, provider guards, and retained history.');
 } finally {
   if (child.exitCode === null) child.kill();

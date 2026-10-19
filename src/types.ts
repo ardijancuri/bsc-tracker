@@ -33,6 +33,7 @@ export interface Trade {
 }
 
 export interface Token {
+  accountingSummary?: import('../shared/nodeAccounting').NodeAccountingSummary;
   address: string;
   symbol: string | null;
   name: string | null;
@@ -48,6 +49,8 @@ export interface Token {
 }
 
 export interface LeaderboardRow extends Kol {
+  accounting?: import('../shared/nodeLeaderboard').NodeLeaderboardSnapshot | null;
+  knownRealizedProfitUsd?: string | null;
   realizedProfitUsd: string | null;
   unrealizedProfitUsd: string | null;
   updatedAt: string | null;
@@ -71,5 +74,5 @@ export interface Overview {
   bnbPriceUsd: number | null;
   bnbPriceAt: string | null;
   lastLeaderboardAt: string | null;
-  leaderboardSource: 'gmgn' | 'onchain_estimate' | 'window_trades';
+  leaderboardSource: 'node_fifo';
 }

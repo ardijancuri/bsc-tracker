@@ -20,7 +20,7 @@ describe('journal server replay accounting', () => {
     expect(value.realizedAccounting?.position?.estimatedProfitUsd).toBe('98.9');
     expect(value.replayAccounting?.final?.reportedProfitUsd).toBe(value.realizedAccounting?.position?.estimatedProfitUsd);
     expect(value.replayAccounting?.final?.reportedRoi).toBe(value.realizedAccounting?.position?.estimatedRoi);
-    expect(value.replayAccounting?.final?.feeInclusiveCostUsd).toBe('101.1');
+    expect(value.replayAccounting?.final?.feeInclusiveCostUsd).toBe('101');
     expect(value.realizedAccounting?.position?.feeInclusiveCostUsd).toBe('101');
     expect(value.replayAccounting?.history?.events.map(row => row.blockNumber)).toEqual([null, null]);
     expect(value.trades).toHaveLength(1); expect(value.trades[0].blockNumber).toBeNull();
@@ -30,6 +30,8 @@ describe('journal server replay accounting', () => {
     const value = applyJournalReplay({ ...activity, coverage: { ...activity.coverage, indexedTradeCount: 127, returnedTradeCount: 127 } },
       { events: [event('1', 'buy', '60', '60', '1', 60_000)], proof, quote: { priceUsd: '2', timestamp: new Date(now).toISOString() }, coverageComplete: true, source: 'node', now });
     expect(value.coverage.indexedTradeCount).toBe(1); expect(value.coverage.returnedTradeCount).toBe(1);
+    expect(value.replayAccounting).toMatchObject({ version: 2, source: 'node', policy: 'kollens_fifo_v1', coverage: { verification: 'node_history' } });
+    expect(value.realizedAccounting).toMatchObject({ version: 2, source: 'node', policy: 'kollens_fifo_v1' });
   });
   it('does not invent zero costs or verified totals from an unknown acquisition', () => {
     const value = applyJournalReplay(activity, { events: [event('1', 'buy', '60', null, '1', 60_000)], proof,
@@ -49,5 +51,18 @@ describe('journal server replay accounting', () => {
       proof: { ...proof, balance: '0.000000000000000001' }, quote: { priceUsd: '2', timestamp: new Date(now).toISOString() }, coverageComplete: true, source: 'gmgn', now });
     expect(value.replayAccounting?.history?.events.at(-1)?.remainingTokenAmount).toBe('0.000000000000000001');
     expect(value.replayAccounting?.final?.remainingTokenAmount).toBe('0.000000000000000001');
+  });
+  it('exports a complete cash-flow ending while historical fee allocation remains unavailable', () => {
+    const value = applyJournalReplay(activity, { events: [],
+      historicalEvents: [event('1', 'buy', '100', '100', null, 60_000), event('2', 'sell', '40', '40', null, 30_000)],
+      baselines: [{ walletAddress: wallet, tokenAddress: token, investedUsd: '100', soldUsd: '40', incomingTransferCostUsd: '0', transferOutIncomeUsd: '0',
+        realizedProfitUsd: null, feesUsd: '2', feeInclusiveCapitalUsd: '101', lots: [{ tokenAmount: '60', costBasisUsd: null }] }],
+      proof, quote: { priceUsd: '2', timestamp: new Date(now).toISOString() }, coverageComplete: true, source: 'imported', now });
+    expect(value.realizedAccounting?.position?.estimatedProfitUsd).toBe('58');
+    expect(value.realizedAccounting?.realizedProfitUsd).toBeNull();
+    expect(value.replayAccounting?.status).toBe('estimated');
+    expect(value.replayAccounting?.final).toMatchObject({ reportedProfitUsd: '58', feesUsd: '2', remainingCostBasisUsd: null, cumulativeRealizedProfitUsd: null });
+    expect(value.replayAccounting?.final?.reportedRoi).toBe(value.realizedAccounting?.position?.estimatedRoi);
+    expect(value.replayAccounting?.history?.events.map(row => row.feesUsd), 'Aggregate fee differences never enter earlier frames').toEqual(['0', '0']);
   });
 });

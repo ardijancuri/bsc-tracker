@@ -3,13 +3,28 @@ import { candleIntervals, type CandleInterval, type ChartRange, type MarketCandl
 type ChartStorage = Pick<Storage, 'getItem' | 'setItem'>;
 export type TokenChartPriority = 'chart' | 'prefetch' | 'sparkline';
 const priorityOrder: Record<TokenChartPriority, number> = { chart: 0, prefetch: 1, sparkline: 2 };
-const storageKey = 'kollens:market-charts:v1';
+// Provider-era charts must not appear as the initial node-owned read after cutover.
+const storageKey = 'kollens:market-charts:node-v2';
 const supplyLifetime = 2 * 86400_000;
 const chartWindows: Record<ChartRange, number> = { '24h': 86400, '7d': 604800, '30d': 2592000, '1m': 86400, '5m': 86400, '1h': 2592000, '4h': 7776000, '1d': 15552000 };
 const equivalentRanges: Partial<Record<ChartRange, ChartRange[]>> = { '5m': ['24h'], '24h': ['5m'], '1h': ['30d'], '30d': ['1h'], '7d': ['30d', '1h'] };
 const fullChartScope = (range: ChartRange, fullHistory: boolean) => fullHistory && candleIntervals.includes(range as CandleInterval);
 const chartKey = (address: string, range: ChartRange, fullHistory = false) => `${address.toLowerCase()}-${range}${fullChartScope(range, fullHistory) ? '-full' : ''}`;
 const candlePoints = (candles: MarketCandle[]) => candles.map(candle => ({ timestamp: new Date(candle.time * 1000).toISOString(), priceUsd: String(candle.close) }));
+const nodeOwnedSource=(source:TokenChart['source'])=>['node','imported','mixed'].includes(source);
+function pointsForCandles(chart:TokenChart,candles:MarketCandle[],previous?:TokenChart){
+  if(!nodeOwnedSource(chart.source))return candlePoints(candles);
+  if(!candles.length)return [];
+  const seconds:Record<string,number>={'1m':60,'5m':300,'1h':3600,'4h':14400,'1d':86400};
+  const first=candles[0].time*1000,last=(candles.at(-1)!.time+(seconds[chart.resolution??'']??60))*1000;
+  const points=new Map<string,TokenChart['points'][number]>();
+  for(const point of [...(previous?.points??[]),...(chart.points??[])]){
+    const time=Date.parse(point?.timestamp),price=Number(point?.priceUsd);
+    if(!Number.isFinite(time)||time<first||time>last||!Number.isFinite(price)||price<=0)continue;
+    points.set(point.timestamp,point);
+  }
+  return [...points.values()].sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
+}
 function mergeCandles(previous: MarketCandle[], incoming: MarketCandle[], before?: number) {
   const merged = new Map(previous.map(candle => [candle.time, candle]));
   for (const candle of incoming) {
@@ -50,7 +65,7 @@ export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) 
 }
 
 export function tokenChartHistoryRefreshDelay(chart: TokenChart | null) {
-  if (!chart?.fullHistory || !chart.candles.length || !['gmgn', 'geckoterminal'].includes(chart.source) ||
+  if (!chart?.fullHistory || !chart.candles.length || !['gmgn', 'geckoterminal','node','imported','mixed'].includes(chart.source) ||
     chart.historyComplete || chart.historyLoadStatus === 'limited') return null;
   return chart.historyRetryAfterMs ? Math.max(1000, Math.min(chart.historyRetryAfterMs, 600_000)) : 1500;
 }
@@ -86,7 +101,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     const entries = raw && raw.length <= 3_000_000 ? JSON.parse(raw) : [];
     if (Array.isArray(entries)) for (const chart of entries.slice(-12) as TokenChart[]) {
       if (!/^0x[0-9a-f]{40}$/.test(chart?.address || '') || !['24h', '7d', '30d', ...candleIntervals].includes(chart.period) ||
-        !['geckoterminal', 'gmgn', 'coinmarketcap'].includes(chart.source) || !hasFreshChartSupply(chart, now()) ||
+        !nodeOwnedSource(chart.source) || !hasFreshChartSupply(chart, now()) ||
         !Array.isArray(chart.candles) || !chart.candles.length || chart.candles.length > (fullChartScope(chart.period, !!chart.fullHistory) ? 2000 : 1000) ||
         !Number.isFinite(Date.parse(chart.updatedAt || '')) || Date.parse(chart.updatedAt!) > now()) continue;
       const fullHistory = fullChartScope(chart.period, !!chart.fullHistory);
@@ -94,8 +109,8 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       const candles = chart.candles.filter(c => Number.isInteger(c.time) && c.time > 0 && c.time <= now() / 1000 && c.time >= now() / 1000 - windowSeconds &&
         [c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) && Number.isFinite(c.volume) && c.volume >= 0);
       if (!candles.length) continue;
-      const volumeCurrency = chart.source === 'gmgn' && chart.volumeCurrency !== 'usd' ? 'unknown' : chart.volumeCurrency;
-      saved.set(chartKey(chart.address, chart.period, fullHistory), { chart: { ...chart, candles, points: candlePoints(candles), volumeCurrency, stale: true }, checked: now() - 10_001, historyChecked: now(), latestRevision: ++nextLatestRevision });
+      const points=pointsForCandles(chart,candles).filter(point=>Date.parse(point.timestamp)<=now());
+      saved.set(chartKey(chart.address, chart.period, fullHistory), { chart: { ...chart, candles, points, stale: true }, checked: now() - 10_001, historyChecked: now(), latestRevision: ++nextLatestRevision });
     }
   } catch { /* A restricted browser or invalid cache must not prevent chart loading. */ }
   const persist = () => {
@@ -103,7 +118,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       const entries = [...saved.values()].map(item => item.chart).filter(chart => chart.candles.length && hasFreshChartSupply(chart, now())).slice(-12).map(chart => {
         if (!chart.fullHistory || chart.candles.length <= 2000) return chart;
         const candles = chart.candles.slice(-2000);
-        return { ...chart, candles, points: candlePoints(candles), historyComplete: false, historyPending: true,
+        return { ...chart, candles, points: pointsForCandles(chart,candles), historyComplete: false, historyPending: true,
           historyLoadStatus: 'queued' as const, historyRetryAfterMs: 1500, historyBefore: candles[0].time };
       });
       let encoded = JSON.stringify(entries);
@@ -133,7 +148,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     const until = Math.floor(now() / 1000);
     const candles = source.candles.filter(candle => candle.time >= until - chartWindows[range] && candle.time <= until);
     if (!candles.length) return exact ?? null;
-    const chart = { ...source, period: range, candles, points: candlePoints(candles) };
+    const chart = { ...source, period: range, candles, points: pointsForCandles(source,candles) };
     if (derived.size >= 500 && !derived.has(key)) derived.delete(derived.keys().next().value!);
     derived.set(key, { source, chart });
     return chart;
@@ -187,7 +202,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
           const response = await fetcher(`/api/tokens/${encodeURIComponent(normalized)}/chart?${parameter}=${range}&priority=${jobState.priority}${fullHistory ? '&history=full' : ''}${historical ? `&before=${before}` : ''}`, {
-            headers: { Accept: 'application/json' }, signal: controller.signal,
+            cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller.signal,
           });
           if (!response.ok) throw new Error(`Market chart request failed: ${response.status}`);
           value = await response.json() as TokenChart;
@@ -204,23 +219,29 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       let chart: TokenChart = value.source === 'gmgn' && !value.volumeCurrency ? { ...value, volumeCurrency: 'unknown' } : value;
       if (fullHistory) {
         const candles = mergeCandles([], chart.candles, before);
-        chart = { ...chart, candles, points: candlePoints(candles) };
+        chart = { ...chart, candles, points: pointsForCandles(chart,candles) };
       }
       const current = saved.get(key), retained = current?.chart ?? cachedChart;
       if (historical && retained) {
-        const compatible = value.source === retained.source && value.resolution === retained.resolution;
+        const compatible = (value.source === retained.source || nodeOwnedSource(value.source)&&nodeOwnedSource(retained.source)) && value.resolution === retained.resolution;
         const incoming = mergeCandles([], compatible ? chart.candles : [], before);
         const candles = mergeCandles(retained.candles, incoming);
         const cursorProgress = Number.isSafeInteger(value.historyBefore) && value.historyBefore! > 0 && value.historyBefore! < before!;
         const retryable = value.historyLoadStatus === 'queued' || value.historyLoadStatus === 'rate_limited' || value.historyLoadStatus === 'provider_error';
         const limited = (!compatible && !!value.candles.length) || (!value.historyComplete && !incoming.length && !cursorProgress && !retryable);
-        chart = { ...retained, candles, points: candlePoints(candles), fullHistory: true,
-          volumeCurrency: mergedVolumeCurrency(retained, chart, incoming), historyComplete: limited ? false : value.historyComplete,
+        chart = { ...retained, candles, points: pointsForCandles(chart,candles,retained), fullHistory: true,
+          source:compatible&&retained.source!==value.source?'mixed':retained.source,
+          partialHistory:!!retained.partialHistory||!!value.partialHistory,
+          volumeCurrency: mergedVolumeCurrency(retained, chart, incoming), historyComplete: limited || nodeOwnedSource(value.source)&&retained.partialHistory ? false : value.historyComplete,
           historyPending: limited ? false : value.historyPending, historyLoadStatus: limited ? 'limited' : value.historyLoadStatus,
           historyRetryAfterMs: limited ? undefined : value.historyRetryAfterMs, historyBefore: value.historyBefore };
-      } else if (fullHistory && retained?.fullHistory && retained.source === chart.source && retained.resolution === chart.resolution) {
+      } else if (fullHistory && retained?.fullHistory && (retained.source === chart.source || nodeOwnedSource(retained.source)&&nodeOwnedSource(chart.source)) && retained.resolution === chart.resolution) {
         const incoming = mergeCandles([], chart.candles), candles = mergeCandles(retained.candles, incoming);
-        chart = { ...chart, candles, points: candlePoints(candles), volumeCurrency: mergedVolumeCurrency(retained, chart, incoming) };
+        const keepProgress=nodeOwnedSource(chart.source)&&Number.isSafeInteger(retained.historyBefore)&&Number.isSafeInteger(chart.historyBefore)&&retained.historyBefore!<chart.historyBefore!;
+        chart = { ...chart, candles, points: pointsForCandles(chart,candles,retained), volumeCurrency: mergedVolumeCurrency(retained, chart, incoming),
+          source:retained.source===chart.source?chart.source:'mixed',
+          ...(keepProgress?{historyBefore:retained.historyBefore,historyPending:retained.historyPending,historyLoadStatus:retained.historyLoadStatus,
+            historyComplete:!!retained.historyComplete&&!value.partialHistory,partialHistory:!!retained.partialHistory||!!value.partialHistory}:{}), };
       }
       if (!historical && !value.candles.length && retained?.candles.length && value.loadStatus !== 'no_history' && (value.pending || value.loadStatus)) {
         chart = { ...retained, ...value, candles: retained.candles, points: retained.points,

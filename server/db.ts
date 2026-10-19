@@ -7,11 +7,21 @@ import { ensureAccountWatchlistSchema } from './accountWatchlist.js';
 import { ensureTelegramNotificationsSchema } from './telegramNotificationsSchema.js';
 import { ensureTelegramBotLoginSchema } from './telegramBotLogin.js';
 import { ensureTelegramAvatarSchema } from './telegramBotAvatar.js';
+import { ensureNodeEvidenceSchema } from './nodeEvidence.js';
+import { ensureNodeMarketSchema } from './nodeMarketSchema.js';
+import { ensureNodeAccountingSchema } from './nodeAccountingSchema.js';
+import { ensureNodeHistoricalImportSchema } from './nodeHistoricalImportSchema.js';
+import { ensureNodeLeaderboardSchema } from './nodeLeaderboard.js';
+import { runSchemaStartup } from './schemaStartup.js';
 
 const { Pool } = pg;
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12 });
 
 export async function ensureSchema() {
+  await runSchemaStartup(pool, applySchema);
+}
+
+async function applySchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kols (
       address text PRIMARY KEY,
@@ -125,6 +135,11 @@ export async function ensureSchema() {
   await ensureJournalSchema(pool);
   await ensureAccountWatchlistSchema(pool);
   await ensureTelegramNotificationsSchema(pool);
+  await ensureNodeEvidenceSchema(pool);
+  await ensureNodeMarketSchema(pool);
+  await ensureNodeAccountingSchema(pool);
+  await ensureNodeHistoricalImportSchema(pool);
+  await ensureNodeLeaderboardSchema(pool);
 }
 
 export async function setState(key: string, value: unknown) {

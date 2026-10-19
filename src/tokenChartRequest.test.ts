@@ -9,6 +9,15 @@ const response = (chart: TokenChart) => new Response(JSON.stringify(chart), { he
 afterEach(() => vi.useRealTimers());
 
 describe('browser chart requests', () => {
+  it('bypasses HTTP redirect caches while keeping partial node history in its requested scope',async()=>{
+    const partial:TokenChart={...history,source:'node',fullHistory:true,historyComplete:false,partialHistory:true};
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValue(response(partial));
+    const charts=createTokenChartRequests({fetcher});
+    const loaded=await charts.request(address,'5m','chart',false,true);
+    expect(loaded).toMatchObject({fullHistory:true,historyComplete:false,partialHistory:true,candles:history.candles});
+    expect(fetcher.mock.calls[0][1]).toMatchObject({cache:'no-store',headers:{Accept:'application/json'}});
+    expect(fetcher.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+  });
   it('displays watchlist history synchronously when opening the equivalent full chart', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response({ ...history, period: '24h' }))
       .mockResolvedValueOnce(response({ ...history, candles: [], points: [], source: 'unavailable', pending: true, loadStatus: 'queued' }));
@@ -55,7 +64,7 @@ describe('browser chart requests', () => {
   });
   it('requests and restores minute history separately without borrowing five-minute bars', async () => {
     const clock = Date.parse('2026-10-12T12:00:00Z');
-    const minute: TokenChart = { ...history, period: '1m', resolution: '1m', updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString(), candles: [{ ...history.candles[0], time: clock / 1000 - 60 }] };
+    const minute: TokenChart = { ...history, source:'node',period: '1m', resolution: '1m', updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString(), candles: [{ ...history.candles[0], time: clock / 1000 - 60 }] };
     const values = new Map<string, string>();
     const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(history)).mockResolvedValueOnce(response(minute));
@@ -229,12 +238,12 @@ describe('browser chart requests', () => {
     await charts.request(address, '5m'); clock = 15000;
     expect(await charts.request(address, '5m')).toMatchObject({ source: 'coinmarketcap', candles: history.candles, volumeCurrency: 'unknown', stale: true });
   });
-  it('keeps old GMGN prices visible while hiding unverified volume until a correctly labelled refresh arrives', async () => {
+  it('rejects provider-era cache entries under the node-owned namespace', async () => {
     const clock = Date.parse('2026-10-12T12:00:00Z');
     const legacy: TokenChart = { ...history, source: 'gmgn', updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString(), candles: [{ ...history.candles[0], time: clock / 1000 - 300 }] };
     const fresh: TokenChart = { ...legacy, volumeCurrency: 'usd', candles: [{ ...legacy.candles[0], volume: 1234 }] };
     const charts = createTokenChartRequests({ now: () => clock, storage: { getItem: () => JSON.stringify([legacy]), setItem: vi.fn() }, fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(fresh)) });
-    expect(charts.peek(address, '5m')).toMatchObject({ candles: legacy.candles, volumeCurrency: 'unknown' });
+    expect(charts.peek(address, '5m')).toBeNull();
     expect(await charts.request(address, '5m')).toMatchObject({ candles: fresh.candles, volumeCurrency: 'usd' });
   });
   it('does not label volume from an older GMGN API response as dollars without a denomination', async () => {
@@ -260,7 +269,7 @@ describe('browser chart requests', () => {
   });
   it('restores a verified chart synchronously on reload and refreshes its data in the background', async () => {
     const clock = Date.parse('2026-10-12T12:00:00Z');
-    const current = { ...history, updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString(), candles: [{ ...history.candles[0], time: clock / 1000 - 300 }] };
+    const current:TokenChart = { ...history,source:'node', updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString(), candles: [{ ...history.candles[0], time: clock / 1000 - 300 }] };
     const values = new Map<string, string>();
     const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
     const first = createTokenChartRequests({ fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(current)), now: () => clock, storage });
@@ -271,9 +280,27 @@ describe('browser chart requests', () => {
     expect(fetcher).not.toHaveBeenCalled();
     await reloaded.request(address, '5m'); expect(fetcher).toHaveBeenCalledOnce();
   });
+  it.each(['node','imported','mixed'] as const)('restores %s history with original point times, scope and coverage flags',async source=>{
+    const clock=Date.parse('2026-10-12T12:00:00Z'),observed=new Date(clock-45_000).toISOString(),asOf=new Date(clock-5000).toISOString();
+    const current:TokenChart={...history,source,period:'1m',resolution:'1m',fullHistory:true,partialHistory:true,historyComplete:false,
+      updatedAt:asOf,supplyCheckedAt:asOf,candles:[{...history.candles[0],time:clock/1000-60}],points:[{timestamp:observed,priceUsd:'2'}]};
+    const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);}};
+    const first=createTokenChartRequests({now:()=>clock,storage,fetcher:vi.fn<typeof fetch>().mockResolvedValue(response(current))});
+    expect((await first.request(address,'1m','chart',false,true)).points).toEqual(current.points);
+    const restored=createTokenChartRequests({now:()=>clock+1000,storage});
+    expect(restored.peek(address,'1m',true)).toMatchObject({source,points:current.points,updatedAt:asOf,supplyCheckedAt:asOf,
+      fullHistory:true,partialHistory:true,historyComplete:false,stale:true});
+    expect(restored.peek(address,'1m')).toBeNull();
+  });
+  it.each(['gmgn','geckoterminal','coinmarketcap'] as const)('does not restore legacy %s financial state',source=>{
+    const clock=Date.parse('2026-10-12T12:00:00Z'),current={...history,source,updatedAt:new Date(clock).toISOString(),
+      supplyCheckedAt:new Date(clock).toISOString(),candles:[{...history.candles[0],time:clock/1000-60}]};
+    const charts=createTokenChartRequests({now:()=>clock,storage:{getItem:()=>JSON.stringify([current]),setItem:vi.fn()}});
+    expect(charts.peek(address,'5m')).toBeNull();
+  });
   it('ignores invalid or expired session history and keeps working if browser storage is blocked', async () => {
     const clock = Date.parse('2026-10-12T12:00:00Z');
-    const expiredStorage = { getItem: () => JSON.stringify([{ ...history, supplyCheckedAt: new Date(clock - 2 * 86400_000).toISOString() }]), setItem: vi.fn() };
+    const expiredStorage = { getItem: () => JSON.stringify([{ ...history,source:'node',updatedAt:new Date(clock).toISOString(),candles:[{...history.candles[0],time:clock/1000-60}], supplyCheckedAt: new Date(clock - 2 * 86400_000).toISOString() }]), setItem: vi.fn() };
     const expired = createTokenChartRequests({ now: () => clock, storage: expiredStorage });
     expect(expired.peek(address, '5m')).toBeNull();
     const storage = { getItem: () => { throw new Error('Blocked'); }, setItem: () => { throw new Error('Blocked'); } };
@@ -399,6 +426,22 @@ describe('progressive full browser chart history', () => {
     expect(tokenChartHistoryRefreshDelay(full({ historyLoadStatus: 'rate_limited', historyRetryAfterMs: 120_000 }))).toBe(120_000);
   });
 
+  it('pages persisted node/imported history and preserves cursor progress across latest refreshes',async()=>{
+    const latest=full({source:'node',historyBefore:1000,historyPending:true,historyComplete:false,partialHistory:true});
+    const older=full({source:'imported',candles:[{...history.candles[0],time:100}],historyBefore:100,historyPending:false,historyLoadStatus:'limited',historyComplete:false,partialHistory:true});
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(latest)).mockResolvedValueOnce(response(older)).mockResolvedValueOnce(response(latest));
+    const charts=createTokenChartRequests({fetcher,now:()=>0});
+    await charts.request(address,'1m','chart',false,true);
+    expect(charts.historyDelay(address,'1m')).toBe(1500);
+    const merged=await charts.requestOlder(address,'1m',1000);
+    expect(merged).toMatchObject({source:'mixed',historyBefore:100,historyComplete:false,historyLoadStatus:'limited',partialHistory:true});
+    expect(merged.candles.map(c=>c.time)).toEqual([100,1000]);
+    expect(charts.historyDelay(address,'1m')).toBeNull();
+    const refreshed=await charts.request(address,'1m','chart',true,true);
+    expect(refreshed).toMatchObject({source:'mixed',historyBefore:100,historyLoadStatus:'limited',historyPending:false});
+    expect(charts.historyDelay(address,'1m')).toBeNull();
+  });
+
   it('keeps mixed full-history volume unlabelled until every retained old bar is verified', async () => {
     const older = { ...history.candles[0], time: 100 }, latest = full().candles[0];
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response(full({ candles: [older, latest], volumeCurrency: 'unknown' })))
@@ -425,7 +468,7 @@ describe('progressive full browser chart history', () => {
   it('persists a bounded full-history tail beyond one day without claiming truncated history is complete', async () => {
     const clock = Date.parse('2026-10-12T12:00:00Z');
     const candles = Array.from({ length: 2500 }, (_, index) => ({ ...history.candles[0], time: clock / 1000 - (2500 - index) * 60 }));
-    const completeHistory = full({ candles, historyComplete: true, updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString() });
+    const completeHistory = full({ source:'node',candles, historyComplete: true, updatedAt: new Date(clock).toISOString(), supplyCheckedAt: new Date(clock).toISOString() });
     const values = new Map<string, string>();
     const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
     const first = createTokenChartRequests({ now: () => clock, storage, fetcher: vi.fn<typeof fetch>().mockResolvedValue(response(completeHistory)) });

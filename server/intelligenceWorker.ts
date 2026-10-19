@@ -3,10 +3,11 @@ import { pool, notifyUpdate, setState } from './db.js';
 import type { SignalEvidence } from '../shared/intelligence.js';
 import { classifyPosition, compareTrades, cooldownAllows, defaultSignalSettings, detectSignals, profileKey, signalId, type ObservedTrade, type PositionMovement } from './intelligenceLogic.js';
 import { blockHex, chainRpc } from './rpc.js';
-import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
-import { transferTopic } from './swap.js';
+import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
+import { hasRecognizedSwap, transferTopic } from './swap.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
+import type { NodeExecution } from './nodeExecution.js';
 
 type ChainLog = { address: string; topics: string[]; data: string; transactionHash: string; logIndex?: string; blockNumber?: string; blockHash?: string; removed?: boolean };
 type Block = { number: string; hash: string; timestamp: string };
@@ -15,7 +16,7 @@ const normalized = (value: string) => value.toLowerCase();
 const evidence = (trade: ObservedTrade): SignalEvidence => ({ id: trade.id, txHash: trade.txHash, walletAddress: trade.walletAddress,
   kolName: trade.kolName, side: trade.side, timestamp: trade.timestamp, blockNumber: trade.blockNumber, blockHash: trade.blockHash });
 
-export async function recordWalletTransfers(tx: { hash: string; from: string; to?: string | null; value?: string }, receipt: { status: string; logs: ChainLog[] }, block: Block, wallets: Set<string>, database: Pick<PoolClient, 'query'> = pool) {
+export async function recordWalletTransfers(tx: { hash: string; from: string; to?: string | null; value?: string }, receipt: { status: string; logs: ChainLog[] }, block: Block, wallets: Set<string>, database: Pick<PoolClient, 'query'> = pool, executions?: NodeExecution[]) {
   if (receipt.status !== '0x1') return;
   const logs = receipt.logs.filter(log => !log.removed && log.topics[0]?.toLowerCase() === transferTopic && log.topics.length === 3
     && /^0x0{24}[0-9a-f]{40}$/i.test(log.topics[1]) && /^0x0{24}[0-9a-f]{40}$/i.test(log.topics[2]) && /^0x[0-9a-f]{64}$/i.test(log.data));
@@ -39,8 +40,11 @@ export async function recordWalletTransfers(tx: { hash: string; from: string; to
     for (const [wallet, sign] of [[from, -1n], [to, 1n]] as const) {
       if (!wallets.has(wallet)) continue;
       const token = normalized(log.address);
-      const side = sides.get(`${wallet}:${token}`);
-      const kind = initiated.get(wallet)?.has(log) && ['buy', 'sell'].includes(side) ? side : 'transfer';
+      const execution = executions?.find(item => item.walletAddress === wallet && item.status === 'success' && item.kind !== 'transfer'
+        && (hasRecognizedSwap(item.logs) || BigInt(item.nativeValueRaw) > 0n) && item.logs.includes(log));
+      const flow = execution?.flows.find(item => item.tokenAddress === token);
+      const side = flow ? BigInt(flow.deltaRaw) > 0n ? 'buy' : 'sell' : sides.get(`${wallet}:${token}`);
+      const kind = (execution || initiated.get(wallet)?.has(log)) && ['buy', 'sell'].includes(side) ? side : 'transfer';
       const logIndex = log.logIndex ? Number(BigInt(log.logIndex)) : index;
       await database.query(`INSERT INTO wallet_transfers(id,tx_hash,log_index,wallet_address,token_address,delta_raw,kind,block_number,block_hash,timestamp,counterparty_address)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,to_timestamp($10),$11) ON CONFLICT(id) DO UPDATE SET kind=EXCLUDED.kind,counterparty_address=EXCLUDED.counterparty_address
@@ -319,21 +323,12 @@ export async function collectLaunches() {
         ON CONFLICT(id) DO NOTHING`,
       [signalId(transition, token, `${sourceHeight}:${sourceHash}`, 'launch'), transition, token, participants.rows.map(row => row.wallet_address), JSON.stringify([source]), timestamp, sourceHeight, sourceHash, live, height, block.hash]);
     }
-    const identifier = graduationPool(poolAddress, poolId, migrator);
-    if (stage === 'graduated' && identifier && (!previous.liquidity_at || Date.now() - new Date(previous.liquidity_at).getTime() >= 120_000)) {
-      try {
-        const response = await fetch(`https://api.dexscreener.com/latest/dex/pairs/bsc/${identifier}`, { signal: AbortSignal.timeout(5000) });
-        if (!response.ok) throw new Error('Liquidity provider unavailable');
-        const body = await response.json() as { pairs?: { chainId: string; pairAddress: string; baseToken: { address: string }; quoteToken: { address: string }; liquidity?: { usd?: number } }[] };
-        const pair = body.pairs?.find(row => row.chainId === 'bsc' && row.pairAddress.toLowerCase() === identifier.toLowerCase() && [row.baseToken.address.toLowerCase(), row.quoteToken.address.toLowerCase()].includes(token));
-        const liquidity = pair?.liquidity?.usd;
-        if (typeof liquidity === 'number' && Number.isFinite(liquidity) && liquidity >= 0) {
-          await client.query('INSERT INTO liquidity_observations(token_address,liquidity_usd,pool_identifier,block_number,block_hash) VALUES($1,$2,$3,$4,$5)', [token, liquidity, identifier, height, block.hash]);
-          await client.query(`UPDATE token_launches SET liquidity_usd=$2,liquidity_at=now(),liquidity_baseline_usd=COALESCE(liquidity_baseline_usd,$2),
-            liquidity_baseline_at=COALESCE(liquidity_baseline_at,now()) WHERE token_address=$1 AND block_number=$3 AND block_hash=$4`, [token, liquidity, height, block.hash]);
-        }
-      } catch { /* Keep the timestamped prior observation while the provider is unavailable. */ }
-    }
+    // Pool-state liquidity requires authenticated reserves and independent USD
+    // valuation. Keep the original observation date while that node decoder is
+    // unavailable; a fresh check must not turn a saved provider value into a
+    // supposedly current on-chain result.
+    if (stage === 'graduated') await client.query(`UPDATE token_launches SET liquidity_reason='node_liquidity_unavailable'
+      WHERE token_address=$1 AND block_number=$2 AND block_hash=$3`, [token, height, block.hash]);
     await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }

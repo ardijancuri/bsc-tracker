@@ -4,7 +4,7 @@ import { journalReplayFixture } from './journalReplay.fixture';
 import { journalTokenProfit, prepareJournalReplay } from './journalReplay';
 import { prepareTradeReplayData, replayInventoryIsFresh, validReplayAccountingFinal } from './tradeReplayData';
 import { tradeActivityBase, tradeRequestHeaders } from './tradeRequestContext';
-import { replayMarketData } from './tradeReplayMarketRequest';
+
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -79,57 +79,5 @@ describe('authorized private journal replay preparation', () => {
     // Encoding can render out of order and must reproduce the same frozen ending.
     renderer.snapshot(.5); expect(renderer.snapshot(1)).toEqual(ending);
     activity.token.priceUsd = '100'; expect(renderer.snapshot(1)).toEqual(ending);
-  });
-  it('prepares through account-authorized frozen routes and ignores newer unselected quotes', async () => {
-    const { activity, context, now, chartPoints } = journalReplayFixture(), data = prepareTradeReplayData(activity, null, null, now, context)!;
-    const calls: { url: string; owner: string | null }[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string, options: RequestInit) => {
-      calls.push({ url, owner: new Headers(options.headers).get('X-Watchlist-Owner') });
-      if (url.includes('/activity?')) return Response.json(activity);
-      return Response.json({ address: activity.token.address, period: 'replay', source: 'gmgn', resolution: '30s', marketCapSupply: '10000', candles: [],
-        points: chartPoints.map(point => ({ timestamp: point.timestamp, priceUsd: String(point.priceUsd) })), pending: false, stale: false, updatedAt: new Date(now).toISOString(),
-        currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '999' } });
-    }));
-    const prepared = await replayMarketData(data, new AbortController().signal);
-    expect(prepared.preparationStatus).toBe('ready');
-    expect(prepared.data.currentQuote?.priceUsd).toBe(4);
-    expect(prepared.data.replayAccounting?.coverage.exactFinal).toBe(false);
-    expect(prepared.data.replayAccounting?.coverage.journalFinal).toBe(true);
-    expect(validReplayAccountingFinal(prepared.data)?.reportedRoi).toBe(Number(activity.realizedAccounting!.position!.estimatedRoi));
-    expect(calls).toHaveLength(2);
-    for (const call of calls) {
-      expect(call.url).toContain('/api/journal/wallets/'); expect(call.url).toContain(`snapshot=${context.snapshotId}`);
-      expect(call.owner).toBe(context.accountId);
-    }
-  });
-  it('withholds an export after membership revocation without retrying through public routes', async () => {
-    const { activity, context, now } = journalReplayFixture(), data = prepareTradeReplayData(activity, null, null, now, context)!;
-    const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => { calls.push(url); return Response.json({ error: 'Wallet membership removed' }, { status: 403 }); }));
-    const prepared = await replayMarketData(data, new AbortController().signal);
-    expect(prepared.preparationStatus).toBe('unavailable');
-    expect(validReplayAccountingFinal(prepared.data)).toBeNull();
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every(url => url.startsWith('/api/journal/wallets/'))).toBe(true);
-  });
-  it('waits for an approved private snapshot before requesting its expanded history window', async () => {
-    const { activity, context, now, chartPoints } = journalReplayFixture();
-    const unpreparedContext = { ...context, snapshotId: undefined };
-    const pendingActivity = structuredClone(activity); delete pendingActivity.journal.snapshotId;
-    const data = prepareTradeReplayData(pendingActivity, null, null, now, unpreparedContext)!;
-    const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      calls.push(url);
-      if (url.includes('/activity?')) return Response.json(activity);
-      expect(calls[0]).toContain('/activity?');
-      expect(url).toContain(`snapshot=${context.snapshotId}`);
-      return Response.json({ address: activity.token.address, period: 'replay', source: 'gmgn', resolution: '30s', marketCapSupply: '10000', candles: [],
-        points: chartPoints.map(point => ({ timestamp: point.timestamp, priceUsd: String(point.priceUsd) })), pending: false, stale: false,
-        currentQuote: { timestamp: new Date(now).toISOString(), priceUsd: '4' } });
-    }));
-    const prepared = await replayMarketData(data, new AbortController().signal);
-    expect(prepared.preparationStatus).toBe('ready');
-    expect(prepared.data.requestContext?.snapshotId).toBe(context.snapshotId);
-    expect(calls).toHaveLength(2);
   });
 });

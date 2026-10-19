@@ -109,6 +109,17 @@ describe('private journal reconciled exact-decimal ledger', () => {
     expect(result.complete).toBe(false); expect(result.reasons).toContain('purchase_cost_unknown'); expect(result.totals.estimatedProfitUsd).toBeNull();
     expect(calculate([event('1', 'buy', '5', '5')], '4').reasons).toContain('balance_unreconciled');
   });
+  it('keeps incomplete decoding as a repair state instead of contradicting a partially reconstructed balance', () => {
+    const result = calculateJournalLedger({ wallets: [a], events: [], asOf: at(60),
+      coverage: [{ walletAddress: a, tokenAddress: token, complete: false, reason: 'token_decimals_unknown' }],
+      valuations: [{ tokenAddress: token, priceUsd: '2', pricedAt: at(60), balances: [{ walletAddress: a, tokenAmount: '5' }] }] });
+    expect(result.complete).toBe(false); expect(result.reasons).toContain('token_decimals_unknown');
+    expect(result.reasons).not.toContain('balance_unreconciled'); expect(result.totals.estimatedProfitUsd).toBeNull();
+    const knownQuantities = calculateJournalLedger({ wallets: [a], events: [], asOf: at(60),
+      coverage: [{ walletAddress: a, tokenAddress: token, complete: false, quantitiesComplete: true, reason: 'fee_valuation_unavailable' }],
+      valuations: [{ tokenAddress: token, priceUsd: '2', pricedAt: at(60), balances: [{ walletAddress: a, tokenAmount: '5' }] }] });
+    expect(knownQuantities.reasons, 'Unknown USD fees cannot hide a proven quantity contradiction').toContain('balance_unreconciled');
+  });
   it('does not turn absent fees into zero or distribute aggregate fees into history', () => {
     const result = calculate([event('1', 'buy', '5', '5', { feeUsd: null })], '5');
     expect(result.positions[0].estimated).toBe(true); expect(result.reasons).toContain('fees_incomplete');

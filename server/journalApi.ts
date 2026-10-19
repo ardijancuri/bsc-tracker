@@ -3,9 +3,11 @@ import type { Pool } from 'pg';
 import { pool } from './db.js';
 import { resolveAuthUser, telegramAuthConfig, type ResolvedAuthUser } from './telegramAuth.js';
 import { journalService, JournalInputError, type createJournalService } from './journalService.js';
+import { nodeReplayPreparation } from './nodeReplayPreparation.js';
 
 type Service = ReturnType<typeof createJournalService>;
-export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool; service?: Service; resolveUser?: (request: FastifyRequest) => Promise<ResolvedAuthUser | null> } = {}) {
+export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool; service?: Service; resolveUser?: (request: FastifyRequest) => Promise<ResolvedAuthUser | null>;
+  prepareReplay?: typeof nodeReplayPreparation.prepare } = {}) {
   const db = options.db ?? pool, service = options.service ?? journalService;
   const resolve = options.resolveUser ?? ((request: FastifyRequest) => resolveAuthUser(request, db));
   const attempts = new Map<string, { until: number; count: number }>();
@@ -61,9 +63,20 @@ export function registerJournalRoutes(app: FastifyInstance, options: { db?: Pool
       return value;
     });
   });
-  app.get<{ Params: { wallet: string; token: string }; Querystring: { end?: string; snapshot?: string } }>('/api/journal/wallets/:wallet/tokens/:token/replay-chart', settings, async (request, reply) => {
+  app.get<{ Params: { wallet: string; token: string }; Querystring: { snapshot?: string } }>('/api/journal/wallets/:wallet/tokens/:token/replay-preparation', settings, async (request, reply) => {
     const user = await account(request, reply); if (!user) return;
-    if (request.query.end !== undefined && request.query.end !== 'current') return reply.code(400).send({ error: 'Invalid replay ending' });
-    return result(reply, () => service.replayChart(user.id, request.params.wallet.toLowerCase(), request.params.token.toLowerCase(), request.query.end === 'current', request.query.snapshot));
+    return result(reply, async () => {
+      const wallet = request.params.wallet.toLowerCase(), token = request.params.token.toLowerCase();
+      const activity = await service.tokenActivity(user.id, wallet, token, true, request.query.snapshot);
+      if (activity === null) return { version: 2, status: 'pending', snapshotId: null, window: null,
+        stages: { accounting: 'pending', chart: 'pending', valuation: 'pending' }, asOf: new Date().toISOString(),
+        reason: 'accounting_pending', retryAfterMs: 2000 };
+      if (!activity) return reply.code(404).send({ error: 'Portfolio token activity not found' });
+      const prepared = await (options.prepareReplay ?? nodeReplayPreparation.prepare)(activity);
+      const journal = (activity as import('../shared/journal.js').JournalTokenActivity).journal;
+      if (prepared.status === 'ready' && journal.snapshotId) await service.tokenActivity(user.id, wallet, token, true, journal.snapshotId);
+      await service.authorize(user.id, wallet, journal.membershipRevision);
+      return prepared;
+    });
   });
 }

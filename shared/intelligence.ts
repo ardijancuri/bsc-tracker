@@ -4,13 +4,16 @@ export const signalLabels: Record<SignalKind, string> = {
   clustered_buys: 'KOLs buying', repeat_buy: 'Buying again', buyer_selling: 'Buyer selling',
   near_graduation: 'Near graduation', graduated: 'Graduated',
 };
-export interface WatchPricePoint { timestamp: string; priceUsd: string }
+export interface WatchPricePoint { timestamp: string; priceUsd: string; marketCapUsd?: string }
 export interface MarketCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface TokenChart {
   address: string; period: ChartRange; candles: MarketCandle[]; points: WatchPricePoint[];
-  source: 'gmgn' | 'coinmarketcap' | 'geckoterminal' | 'recorded' | 'quote' | 'unavailable';
+  source: 'gmgn' | 'coinmarketcap' | 'geckoterminal' | 'recorded' | 'quote' | 'unavailable' | 'node' | 'mixed' | 'imported';
   updatedAt: string | null; resolution: string; poolAddress?: string; pending: boolean; stale: boolean;
   marketCapSupply?: string | null;
+  marketCapEstimated?: boolean;
+  /** A separate confirmed state mark is an observation, never candle volume. */
+  currentQuote?: { timestamp: string; priceUsd: string };
   supplyCheckedAt?: string | null;
   supplyPending?: boolean;
   volumeCurrency?: 'usd' | 'unknown';
@@ -61,7 +64,7 @@ export interface LaunchState {
   progress: number | null; launchedAt: string | null; firstKolAt: string | null;
   graduatedAt: string | null; graduationTxHash: string | null;
   quoteAddress: string | null; poolAddress: string | null; poolId: string | null;
-  liquidityUsd: string | null; liquidityBaselineUsd: string | null;
+  liquidityUsd: string | null; liquidityBaselineUsd: string | null; liquidityReason?: 'node_liquidity_unavailable' | null;
   liquidityBaselineAt: string | null; liquidityAt: string | null; checkedAt: string | null;
 }
 export interface LaunchItem extends LaunchState { symbol: string | null; name: string | null; logoUrl: string | null }

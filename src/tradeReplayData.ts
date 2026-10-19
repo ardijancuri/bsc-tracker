@@ -7,6 +7,8 @@ import type { Kol, Token } from './types';
 import type { ReplayMarketChart } from '../shared/replayChart';
 import type { ReplayAccountingEvent, ReplayAccountingFinal, ReplayAccountingSnapshot, TradeReplayAccounting } from '../shared/tradeReplayAccounting';
 import { prepareGmgnReplayHistory } from './tradeReplayHistory';
+import { prepareNodeReplay } from './nodeReplay';
+import type { NodeAccountingSnapshotIdentity } from '../shared/nodeAccounting';
 
 export interface ReplayTrade {
   id: string;
@@ -36,6 +38,7 @@ export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final' | 
 };
 
 export interface TradeReplayData {
+  accountingSnapshot?: NodeAccountingSnapshotIdentity;
   requestContext?: TradeRequestContext;
   kol: Pick<Kol, 'address' | 'name' | 'avatarUrl' | 'twitter'>;
   token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> & { priceUsd: number | null; marketCapUsd: number | null };
@@ -50,11 +53,12 @@ export interface TradeReplayData {
   chart: {
     points: { timestamp: string; priceUsd: number; marketCapUsd: number | null }[];
     marketCapSupply: number | null;
+    marketCapEstimated?: boolean;
     resolution: string;
     source: string;
     sparseHistory?: boolean;
     recentResolution?: '1m';
-    recentSource?: 'gmgn' | 'geckoterminal' | 'coinmarketcap';
+    recentSource?: 'gmgn' | 'geckoterminal' | 'coinmarketcap' | 'node' | 'mixed' | 'imported';
   };
   source: { chart: string; tradesComplete: boolean };
   realizedAccounting?: { available: boolean };
@@ -95,7 +99,13 @@ export function replayAccountingCashFlowKnown(snapshot: AccountingNumbers | null
   return cost! + tolerance >= invested! + fees!;
 }
 
-export function replayAccountingTotal(snapshot: AccountingNumbers | null | undefined, priceUsd: number | null | undefined): number | null {
+export function replayAccountingTotal(snapshot: AccountingNumbers | null | undefined, priceUsd: number | null | undefined, nodePolicy = false): number | null {
+  if (nodePolicy) {
+    if (!snapshot || snapshot.remainingTokenAmount === null || snapshot.remainingCostBasisUsd === null || snapshot.cumulativeRealizedProfitUsd === null) return null;
+    if (snapshot.remainingTokenAmount > 0 && (priceUsd == null || !Number.isFinite(priceUsd) || priceUsd <= 0)) return null;
+    const total = snapshot.cumulativeRealizedProfitUsd + snapshot.remainingTokenAmount * (priceUsd ?? 0) - snapshot.remainingCostBasisUsd;
+    return Number.isFinite(total) ? total : null;
+  }
   if (!snapshot || !replayAccountingCashFlowKnown(snapshot)) return null;
   const { remainingTokenAmount: quantity, soldUsd: sold, transferOutIncomeUsd: transferred, feeInclusiveCostUsd: cost } = snapshot;
   if (quantity! > 0 && (priceUsd == null || !Number.isFinite(priceUsd) || priceUsd <= 0)) return null;
@@ -106,6 +116,8 @@ export function replayAccountingTotal(snapshot: AccountingNumbers | null | undef
 
 export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now()) {
   const accounting = data.replayAccounting, final = accounting?.final;
+  if (accounting?.version === 2 && data.accountingSnapshot?.complete && final && accounting.coverage.exactFinal
+    && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)) return final;
   if (data.requestContext?.kind === 'journal' && accounting?.coverage.journalFinal && final
     && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)
     && Number.isFinite(Date.parse(final.timestamp)) && Date.parse(final.timestamp) >= replayEndTimestamp(data)
@@ -332,7 +344,7 @@ function sparseQuoteTail(chart: TradeReplayData['chart'], currentQuote: TradeRep
 /** Observed history covering the selected window can replace the preview;
  * it never changes the selected wallet, executions, or accounting snapshot. */
 export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarketChart, now = Date.now()): TradeReplayData {
-  if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || !data.trades.length) return data;
+  if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || !data.trades.length && !data.inventory?.events.length) return data;
   const open = replayIsOpen(data);
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
   const accountingFinal = validReplayAccountingFinal(data, now);
@@ -346,15 +358,16 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
       .map(point => ({ ...point, marketCapUsd: scaledPrice(point.priceUsd, supply) })) } } : data;
   if (currentQuote && sparseQuoteTail(selected.chart, currentQuote)) selected.chart.sparseHistory = true;
   if (!currentQuote && data.currentQuote) { selected = { ...data }; delete selected.currentQuote; }
-  if (chart.source === 'unavailable' || chart.partialHistory || !['30s', '1m', '5m', '15m', '1h'].includes(chart.resolution)) return selected;
+  if (chart.source === 'unavailable' || chart.partialHistory || !['30s', '1m', '5m', '15m', '1h', '4h', '1d'].includes(chart.resolution)) return selected;
   const observationEnd = currentQuote ? Date.parse(currentQuote.timestamp) : now;
   const byTime = new Map<number, TradeReplayData['chart']['points'][number]>();
   for (const point of chart.points) {
     const time = Date.parse(point.timestamp), price = replayNumber(point.priceUsd);
-    if (Number.isFinite(time) && time <= now && (!open || time <= observationEnd) && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
+    if (Number.isFinite(time) && time <= now && (!open || time <= observationEnd) && price) byTime.set(time, { timestamp: new Date(time).toISOString(), priceUsd: price,
+      marketCapUsd: replayNumber(point.marketCapUsd) ?? scaledPrice(price, supply) });
   }
   const points = [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point);
-  const first = Date.parse(data.trades[0].timestamp), last = replayEndTimestamp(data);
+  const first = Math.min(...[...data.trades, ...(data.inventory?.events ?? [])].map(event => Date.parse(event.timestamp))), last = replayEndTimestamp(data);
   if (!points.length || Date.parse(points[0].timestamp) > first || Date.parse(points.at(-1)!.timestamp) < last) return selected;
   for (const time of [first, last]) {
     const after = points.findIndex(point => Date.parse(point.timestamp) >= time);
@@ -362,15 +375,16 @@ export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarke
       const before = points[after - 1], next = points[after];
       const fraction = (time - Date.parse(before.timestamp)) / (Date.parse(next.timestamp) - Date.parse(before.timestamp));
       const price = before.priceUsd + (next.priceUsd - before.priceUsd) * fraction;
-      points.splice(after, 0, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: scaledPrice(price, supply) });
+      const cap = before.marketCapUsd !== null && next.marketCapUsd !== null ? before.marketCapUsd + (next.marketCapUsd - before.marketCapUsd) * fraction : scaledPrice(price, supply);
+      points.splice(after, 0, { timestamp: new Date(time).toISOString(), priceUsd: price, marketCapUsd: cap });
     }
   }
   const start = points.findIndex(point => Date.parse(point.timestamp) === first);
   const end = points.findIndex(point => Date.parse(point.timestamp) === last);
   if (start < 0 || end < start) return selected;
-  const source = chart.source === 'gmgn' ? 'GMGN historical samples'
+  const source = ['node', 'mixed', 'imported'].includes(chart.source) ? `${chart.source} market observations` : chart.source === 'gmgn' ? 'GMGN historical samples'
     : chart.source === 'coinmarketcap' ? 'CoinMarketCap historical samples' : 'GeckoTerminal historical samples';
-  const selectedChart = { points: points.slice(Math.max(0, start - 1), open ? undefined : end + 1), marketCapSupply: supply,
+  const selectedChart = { points: points.slice(Math.max(0, start - 1), open ? undefined : end + 1), marketCapSupply: supply, marketCapEstimated: chart.marketCapEstimated,
     resolution: chart.resolution, source, sparseHistory: chart.sparseHistory || data.chart.sparseHistory,
     ...(chart.recentResolution === '1m' ? { recentResolution: chart.recentResolution, recentSource: chart.recentSource } : {}) };
   if (sparseQuoteTail(selectedChart, currentQuote)) selectedChart.sparseHistory = true;
@@ -457,7 +471,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   });
 
   const complete = activity.coverage.complete && trades.length === activity.trades.length;
-  const history = prepareJournalReplay(activity, now, context) ?? prepareGmgnReplayHistory(activity, complete, now);
+  const history = prepareNodeReplay(activity, now, context) ?? (activity.accountingSnapshot ? undefined : prepareJournalReplay(activity, now, context) ?? prepareGmgnReplayHistory(activity, complete, now));
   const inventory = history?.inventory ?? prepareReplayInventory(activity, trades, complete, now);
   const replayAccounting = history?.accounting ?? prepareReplayAccounting(activity, trades, inventory, now);
   const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
@@ -526,6 +540,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   }
   const chartSource = points.length ? (selectedChart?.source === 'recorded' ? 'Recorded observations' : 'Historical market samples') : 'Recorded fills';
   const prepared: TradeReplayData = {
+    ...(activity.accountingSnapshot ? { accountingSnapshot: activity.accountingSnapshot } : {}),
     ...(context ? { requestContext: context } : {}),
     kol, token: { ...token, priceUsd: replayNumber(token.priceUsd), marketCapUsd: replayNumber(token.marketCapUsd) }, trades,
     position: replayPosition,

@@ -4,28 +4,35 @@ import { ensureSchema, notifyUpdate, pool, setState } from './db.js';
 import { flapLogoFromHtml, flapMetadataUri, geniusLogoFromHtml } from './tokenLogo.js';
 import { downloadTokenImage, downloadTokenMetadataImage, onchainTokenImage, type TokenImage } from './tokenImage.js';
 import { ensureSeeds } from './seeds.js';
-import { hasRecognizedSwap, nativeSellProceeds, transferTopic, walletSwapFlows } from './swap.js';
-import { calculateLeaderboard, calculate24hLeaderboard } from './pnl.js';
-import { fetchGmgnProfits, legacyGmgnProfitKey, type GmgnProfit } from './gmgnPnl.js';
-import { readBlockRange } from './blockRange.js';
-import { last24hStart } from './dayWindow.js';
+import { transferTopic, walletSwapFlows } from './swap.js';
+import { createNodeLeaderboardService } from './nodeLeaderboard.js';
+import { loadPublicNodeLeaderboardAccounting } from './nodeLeaderboardAccounting.js';
 import { isMemeToken } from './memeToken.js';
-import { nonStockTokenSql } from './stockToken.js';
-import { intelligenceLoop, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
+import { intelligenceLoop, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
 import { telegramNotifications, rollbackTelegramNotifications } from './telegramNotifications.js';
-import { reorgStart } from './chainReorg.js';
-import { selectTokenMarkets } from './tokenMarkets.js';
 import { geckoFetch } from './geckoApi.js';
 import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
 import { claimKolTokenTradeRepairs, finishKolTokenTradeRepair, type KolTokenTradeRepairJob } from './kolTokenTradeRepair.js';
 import { verifiedTradeRepair } from './verifiedTradeRepair.js';
-import { initializeJournalCollectionBoundary, monitoredWallets, nextJournalCollectionRepair, recordJournalCollectionRange, rollbackJournalCollection, validateCollectedReceipt } from './journalCollection.js';
+import { initializeJournalCollectionBoundary, recordJournalCollectionRange, rollbackJournalCollection } from './journalCollection.js';
+import { captureNodeTraceBatch, type NodeCallTrace } from './nodeTrace.js';
+import { nodeMarketService } from './nodeMarket.js';
+import { TRUSTED_QUOTE_FEEDS } from './nodeMarketProtocols.js';
+import { nodeMarketDiscoverySql, nodeMarketReceiptHintsSql } from './nodeMarketDiscovery.js';
+import { nodeAccountingService } from './nodeAccounting.js';
+import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
+import { nodeHistoricalImporter } from './nodeHistoricalImport.js';
+import { writeNodeTradeProjection, type PreparedNodeTradeProjection } from './nodeTradeProjection.js';
+import { decodeNodeExecutions, type NodeExecution } from './nodeExecution.js';
+import { createNodeProjectionMetadata, type NodeProjectionTokenMetadata } from './nodeProjectionMetadata.js';
+import { createNodeTokenIdentityService } from './nodeTokenIdentity.js';
+import { nodeCaptureHasPriority, nodeCaptureRepairAllowed, nodeMetadataShouldDrain } from './nodeCaptureScheduling.js';
+import { nodeOperationalReadiness } from './nodeReadiness.js';
+import { bootstrapNodeCapture, nodeCaptureStart, nodeCaptureRangeEnd, collectNodeEvidenceRange, drainNodeEvidenceDecode, drainNodeEvidenceMetadata, drainNodeEvidenceProjection, findNodeEvidenceReorgStart, nextNodeCollectionRepair, rollbackNodeEvidence, syncNodeMonitoredWallets, type CollectedNodeEvidence } from './nodeEvidence.js';
 
 const rpcUrl = process.env.BSC_RPC_HTTP || 'http://127.0.0.1:8545';
-const historicalRpcUrl = process.env.BSC_HISTORICAL_RPC_HTTP || 'https://bsc-dataseed.bnbchain.org';
 const wsUrl = process.env.BSC_RPC_WS || 'ws://127.0.0.1:8546';
 const bnbUsdFeed = '0x0567f2323251f0aab15c8dfb1967e4e8a7d42aee';
-const stableSymbols = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI', 'USD1']);
 const addressRe = /^0x[a-fA-F0-9]{40}$/;
 const hashRe = /^0x[a-fA-F0-9]{64}$/;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -114,100 +121,55 @@ async function bnbPrice(block: number | 'latest', blockTime?: number): Promise<{
   } catch (error) { console.warn('BNB price feed:', error); return null; }
 }
 
-type TokenMeta = { symbol: string | null; decimals: number };
-const metadataCache = new Map<string, TokenMeta>();
-function decodeSymbol(raw: string): string | null {
-  try {
-    const bytes = Buffer.from(raw.slice(2), 'hex');
-    if (bytes.length >= 96 && bytes.readUInt32BE(28) === 32) {
-      const length = bytes.readUInt32BE(60);
-      if (length > 0 && length <= 64) return bytes.subarray(64, 64 + length).toString('utf8').replace(/\0/g, '') || null;
-    }
-    return bytes.subarray(0, 32).toString('utf8').replace(/\0/g, '').trim() || null;
-  } catch { return null; }
-}
-async function tokenMeta(address: string): Promise<TokenMeta> {
-  const cached = metadataCache.get(address);
-  if (cached) return cached;
-  const existing = await pool.query('SELECT symbol,decimals FROM tokens WHERE address=$1', [address]);
-  if (existing.rows[0]?.decimals != null) {
-    const result = { symbol: existing.rows[0].symbol as string | null, decimals: Number(existing.rows[0].decimals) };
-    metadataCache.set(address, result);
-    return result;
-  }
-  const [symbolResult, decimalsResult] = await Promise.allSettled([
-    rpc<string>('eth_call', [{ to: address, data: '0x95d89b41' }, 'latest']),
-    rpc<string>('eth_call', [{ to: address, data: '0x313ce567' }, 'latest']),
-  ]);
-  const symbol = symbolResult.status === 'fulfilled' ? decodeSymbol(symbolResult.value) : null;
-  let decimals = 18;
-  if (decimalsResult.status === 'fulfilled') {
-    try { decimals = Number(BigInt(decimalsResult.value)); } catch { /* Non-standard token. */ }
-  }
-  const result = { symbol, decimals: Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : 18 };
-  metadataCache.set(address, result);
-  await pool.query(`INSERT INTO tokens(address,symbol,decimals,is_meme) VALUES($1,$2,$3,$4) ON CONFLICT(address) DO UPDATE SET symbol=COALESCE(tokens.symbol,EXCLUDED.symbol),decimals=COALESCE(tokens.decimals,EXCLUDED.decimals),is_meme=COALESCE(tokens.is_meme,EXCLUDED.is_meme)`, [address, result.symbol, result.decimals, isMemeToken({ address, symbol: result.symbol })]);
-  return result;
-}
+type TokenMeta = NodeProjectionTokenMetadata;
+const projectionMetadata = createNodeProjectionMetadata({ database: pool, rpc });
+const tokenIdentity = createNodeTokenIdentityService({ database: pool, rpc });
+const tokenMeta = (address: string, block: RpcBlock) => projectionMetadata.load(address, block);
 
-type Flow = { address: string; raw: bigint; amount: string; symbol: string | null };
-async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string, live = false, onlyToken?: string, database: Pick<PoolClient, 'query'> = pool) {
-  const context = walletTransactionContext(tx, receipt, wallet);
-  if (!context) return;
-  const { logs, nativeValue, router } = context;
-  const net = walletSwapFlows(wallet, nativeValue, logs);
-  const entries = [...net.entries()];
-  if (!entries.length) return;
-  const nativeIn = nativeValue > 0n;
-  const oracle = await bnbPrice(Number(BigInt(block.number)), Number(BigInt(block.timestamp)));
-  const flows: Flow[] = await Promise.all(entries.map(async ([address, raw]) => {
-    const meta = await tokenMeta(address);
-    return { address, raw, amount: units(raw < 0n ? -raw : raw, meta.decimals), symbol: meta.symbol };
-  }));
-  const quote = (direction: bigint) => flows.find(flow => flow.raw * direction > 0n && (stableSymbols.has(flow.symbol?.toUpperCase() || '') || flow.symbol?.toUpperCase() === 'WBNB'));
-  const directional = hasRecognizedSwap(logs) || nativeIn;
-  for (const flow of flows) {
-    if (onlyToken && flow.address !== onlyToken) continue;
-    const opposing = quote(flow.raw > 0n ? -1n : 1n) || flows.find(other => other.address !== flow.address && other.raw * flow.raw < 0n);
-    const isQuote = stableSymbols.has(flow.symbol?.toUpperCase() || '') || flow.symbol?.toUpperCase() === 'WBNB';
-    if (isQuote && flows.some(other => other.address !== flow.address && other.raw * flow.raw < 0n)) continue;
-    const nativeSale = !opposing && flow.raw < 0n ? nativeSellProceeds(wallet, -flow.raw, logs,
-      flows.filter(other => other.raw < 0n).length === 1 ? router : null, flow.address) : null;
-    const quoteSymbol = opposing?.symbol || (nativeIn && flow.raw > 0n ? 'BNB' : nativeSale ? 'BNB' : null);
-    const quoteAmount = opposing?.amount || (nativeIn && flow.raw > 0n ? units(nativeValue, 18) : nativeSale ? units(nativeSale, 18) : null);
-    const amountUsd = quoteAmount && stableSymbols.has(quoteSymbol?.toUpperCase() || '') ? quoteAmount :
-      quoteAmount && (quoteSymbol?.toUpperCase() === 'WBNB' || quoteSymbol?.toUpperCase() === 'BNB') && oracle ? String(Number(quoteAmount) * oracle.price) : null;
-    const priceUsd = amountUsd && Number(flow.amount) > 0 ? String(Number(amountUsd) / Number(flow.amount)) : null;
-    const side = directional ? (flow.raw > 0n ? 'buy' : 'sell') : 'unknown';
-    await database.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,quote_token_address,quote_symbol,quote_amount,amount_usd,price_usd,block_number,block_hash,timestamp,source,verification_attempted_at,transaction_index)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($14),'node',now(),$15)
-      ON CONFLICT(tx_hash,wallet_address,token_address) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,transaction_index=EXCLUDED.transaction_index,side=CASE WHEN EXCLUDED.side='unknown' THEN trades.side ELSE EXCLUDED.side END,token_amount=EXCLUDED.token_amount,quote_token_address=COALESCE(trades.quote_token_address,EXCLUDED.quote_token_address),quote_symbol=COALESCE(trades.quote_symbol,EXCLUDED.quote_symbol),quote_amount=COALESCE(EXCLUDED.quote_amount,trades.quote_amount),amount_usd=COALESCE(EXCLUDED.amount_usd,trades.amount_usd),price_usd=COALESCE(EXCLUDED.price_usd,trades.price_usd),source=CASE WHEN trades.source='gmgn' THEN 'node+gmgn' ELSE trades.source END,verification_attempted_at=now()`,
-      [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`, tx.hash.toLowerCase(), wallet, flow.address, side, flow.amount, opposing?.address || null, quoteSymbol, quoteAmount, amountUsd, priceUsd, Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), tx.transactionIndex == null ? null : Number(BigInt(tx.transactionIndex))]);
-    if (live) await database.query('UPDATE trades SET observed_live=true WHERE id=$1', [`${tx.hash.toLowerCase()}:${wallet}:${flow.address}`]);
-    if (priceUsd && Number.isFinite(Number(priceUsd))) await database.query(`UPDATE tokens SET price_usd=$2,price_source='onchain',metadata_updated_at=to_timestamp($3) WHERE address=$1 AND (price_source IS DISTINCT FROM 'onchain' OR metadata_updated_at IS NULL OR metadata_updated_at < to_timestamp($3))`, [flow.address, priceUsd, Number(BigInt(block.timestamp))]);
+type PreparedTradeProjection = PreparedNodeTradeProjection;
+async function persistNodeTrade(tx: RpcTx, receipt: RpcReceipt, block: RpcBlock, wallet: string, live = false, onlyToken?: string, database: Pick<PoolClient, 'query'> = pool, execution?: NodeExecution, prepared?: PreparedTradeProjection) {
+  if (database !== pool && !prepared) throw new Error('node_projection_dependencies_not_prepared');
+  if (!prepared) {
+    const context = execution ? { logs: execution.logs, nativeValue: BigInt(execution.nativeValueRaw) } : walletTransactionContext(tx, receipt, wallet);
+    if (!context) return;
+    const addresses = [...walletSwapFlows(wallet, context.nativeValue, context.logs).keys()];
+    const timestamp = new Date(Number(BigInt(block.timestamp)) * 1000).toISOString();
+    const [metadata, oracle, conversions, traceRows] = await Promise.all([
+      Promise.all(addresses.map(async address => [address, await tokenMeta(address, block)] as const)),
+      bnbPrice(Number(BigInt(block.number)), Number(BigInt(block.timestamp))),
+      Promise.all(addresses.filter(address => Object.hasOwn(TRUSTED_QUOTE_FEEDS, address)).map(async address => [address,
+        await nodeMarketService.priceAt(address, { timestamp, blockNumber: String(Number(BigInt(block.number))), maxAgeMs: 300_000 })] as const)),
+      pool.query('SELECT trace FROM node_trace_evidence WHERE tx_hash=$1 AND block_hash=$2', [tx.hash.toLowerCase(), block.hash.toLowerCase()]),
+    ]);
+    prepared = { metadata: new Map(metadata), oracle, conversions: new Map(conversions), trace: traceRows.rows[0]?.trace };
   }
-  await database.query('UPDATE kols SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE address=$1', [wallet, Number(BigInt(block.timestamp))]);
+  await writeNodeTradeProjection(database, { transaction: tx, receipt, block, wallet, live, onlyToken, execution }, prepared);
 }
 
 async function rollbackIfReorg() {
-  const last = await pool.query('SELECT block_number,block_hash FROM processed_blocks ORDER BY block_number DESC LIMIT 1');
+  const last = await pool.query("SELECT (value->>'blockNumber')::bigint AS block_number,value->>'blockHash' AS block_hash FROM worker_state WHERE key='node_collection'");
   if (!last.rows.length) return;
   const height = Number(last.rows[0].block_number);
   const canonical = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(height), false]);
+  if (canonical && Number(BigInt(canonical.number)) !== height) throw new Error('Node returned the wrong reorg checkpoint');
   if (canonical?.hash.toLowerCase() === last.rows[0].block_hash.toLowerCase()) return;
-  const checkpoints = await pool.query(`SELECT block_number,block_hash FROM processed_blocks
-    UNION ALL SELECT block_number,block_hash FROM (SELECT DISTINCT ON(block_number) block_number,block_hash FROM trades
-      WHERE block_number<(SELECT MIN(block_number) FROM processed_blocks) AND block_hash IS NOT NULL ORDER BY block_number DESC LIMIT 128) older
-    ORDER BY block_number DESC`);
-  const rollbackFrom = await reorgStart(checkpoints.rows.map(row => ({ height: Number(row.block_number), hash: row.block_hash })), async number => {
-    const candidate = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(number), false]); return candidate?.hash ?? null;
+  const rollbackFrom = await findNodeEvidenceReorgStart(pool, async number => {
+    const candidate = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(number), false]);
+    if (candidate && Number(BigInt(candidate.number)) !== number) throw new Error('Canonical block number mismatch during reorg');
+    return candidate?.hash ?? null;
   });
+  if (rollbackFrom == null) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782319)');
     await rollbackTelegramNotifications(client, rollbackFrom);
     await rollbackJournalCollection(client, rollbackFrom);
+    await rollbackNodeEvidence(client, rollbackFrom);
+    await nodeMarketService.rollback(client, rollbackFrom);
+    await rollbackNodeAccounting(client, String(rollbackFrom));
+    await client.query(`UPDATE node_import_jobs SET stage=CASE WHEN stage IN ('chart','done') THEN 'reconcile' ELSE stage END,completed_at=NULL,next_attempt_at=now()
+      WHERE EXISTS(SELECT 1 FROM node_accounting_baselines b WHERE b.wallet_address=node_import_jobs.wallet_address AND b.token_address=node_import_jobs.token_address AND b.invalidated_at IS NOT NULL)`);
     await client.query('DELETE FROM trades WHERE block_number >= $1', [rollbackFrom]);
     await rollbackIntelligence(client, rollbackFrom);
     await client.query('DELETE FROM processed_blocks WHERE block_number >= $1', [rollbackFrom]);
@@ -215,85 +177,140 @@ async function rollbackIfReorg() {
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
+  bnbPrices.clear(); oracleRounds.clear(); projectionMetadata.clear();
   await notifyUpdate();
   console.warn(`Reorganization at ${height}; rescanning from ${rollbackFrom}`);
 }
 
 async function scanRange(from: number, to: number, head: number, repairWallet?: string) {
-  const wallets = repairWallet ? new Set([repairWallet]) : await monitoredWallets(pool);
-  const coverageRows = await pool.query(`SELECT wallet_address,generation::text FROM journal_wallet_coverage WHERE wallet_address=ANY($1::text[])`, [[...wallets]]);
+  const generations = await syncNodeMonitoredWallets(pool);
+  const coverageRows = await pool.query(`SELECT wallet_address,generation::text FROM journal_wallet_coverage WHERE wallet_address=ANY($1::text[])`, [[...generations.keys()]]);
   const coverageGenerations = new Map<string, string>(coverageRows.rows.map(row => [row.wallet_address, row.generation]));
-  if (!repairWallet) {
-    const pending = await pool.query(`SELECT 1 FROM journal_wallet_coverage WHERE wallet_address=ANY($1::text[]) AND registration_block IS NULL LIMIT 1`, [[...wallets]]);
-    if (pending.rowCount) {
-      const boundary = await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Math.max(0, from - 1)), false]);
-      if (!boundary || Number(BigInt(boundary.number)) !== Math.max(0, from - 1) || !hashRe.test(boundary.hash)) throw new Error('Journal registration block unavailable');
-      await initializeJournalCollectionBoundary(pool, wallets, { number: Number(BigInt(boundary.number)), hash: boundary.hash.toLowerCase() }, coverageGenerations);
-    }
-  }
-  const topics = [...wallets].map(topicAddress);
-  const matched = new Set<string>();
-  for (let offset = 0; offset < topics.length; offset += 300) {
-    const slice = topics.slice(offset, offset + 300);
-    const filters = [
-      [transferTopic, slice],
-      [transferTopic, null, slice],
-    ];
-    for (const filter of filters) {
-      const logs = await rpc<RpcLog[]>('eth_getLogs', [{ fromBlock: hex(from), toBlock: hex(to), topics: filter }]);
-      for (const log of logs) if (!log.removed) matched.add(log.transactionHash.toLowerCase());
-    }
-  }
-  const byBlock = new Map<number, { tx: RpcTx; receipt: RpcReceipt }[]>();
-  for (const hash of matched) {
-    const [tx, receipt] = await Promise.all([rpc<RpcTx | null>('eth_getTransactionByHash', [hash]), rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash])]);
-    const height = validateCollectedReceipt(hash, tx, receipt, from, to);
-    if (!normalized(tx!.from)) throw new Error(`Invalid transaction sender at ${height}`);
-    if (receipt!.status !== '0x1') continue;
-    const list = byBlock.get(height) || [];
-    list.push({ tx: tx!, receipt: receipt! });
-    byBlock.set(height, list);
-  }
-  const previous = await pool.query('SELECT block_hash FROM processed_blocks WHERE block_number=$1', [from - 1]);
-  const blocks = await readBlockRange(from, to, height => rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(height), false]), previous.rows[0]?.block_hash);
-  for (const block of blocks) {
-    const height = Number(BigInt(block.number));
-    for (const entry of byBlock.get(height) || []) {
-      if (entry.receipt.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`Receipt block hash mismatch at ${height}`);
-      const timestamp = Number(BigInt(block.timestamp)) * 1000;
-      for (const wallet of transactionWallets(entry.tx, entry.receipt)) {
-        if (wallets.has(wallet)) await persistNodeTrade(entry.tx, entry.receipt, block, wallet, timestamp >= featuresLiveSince && Date.now() - timestamp <= 300_000);
+  const collected = await collectNodeEvidenceRange({ database: pool, rpc, from, to, head, generations, repairWallet, liveSince: featuresLiveSince,
+    commitCompatibility: async (database, blocks, wallets) => {
+      await initializeJournalCollectionBoundary(database, wallets, { number: from - 1, hash: blocks[0].parentHash.toLowerCase() }, coverageGenerations);
+      await recordJournalCollectionRange(database, wallets, from, to, Boolean(repairWallet), coverageGenerations);
+      if (!repairWallet) {
+        await database.query(`INSERT INTO processed_blocks(block_number,block_hash) SELECT * FROM unnest($1::bigint[],$2::text[])
+          ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`, [blocks.map(block => Number(BigInt(block.number))), blocks.map(block => block.hash)]);
+        await database.query('DELETE FROM processed_blocks WHERE block_number < $1', [to - 128]);
       }
-      await recordWalletTransfers(entry.tx, entry.receipt, block, wallets);
-      const feePrice = await bnbPrice(height, timestamp / 1000);
-      await pool.query(`INSERT INTO journal_node_evidence(tx_hash,block_number,block_hash,timestamp,transaction,receipt,bnb_price_usd,bnb_priced_at)
-        VALUES($1,$2,$3,to_timestamp($4),$5::jsonb,$6::jsonb,$7,to_timestamp($8))
-        ON CONFLICT(tx_hash) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,
-          timestamp=EXCLUDED.timestamp,transaction=EXCLUDED.transaction,receipt=EXCLUDED.receipt,
-          bnb_price_usd=COALESCE(EXCLUDED.bnb_price_usd,journal_node_evidence.bnb_price_usd),bnb_priced_at=COALESCE(EXCLUDED.bnb_priced_at,journal_node_evidence.bnb_priced_at)`,
-      [entry.tx.hash.toLowerCase(), height, block.hash, timestamp / 1000, JSON.stringify(entry.tx), JSON.stringify(entry.receipt), feePrice?.price ?? null, feePrice?.updatedAt ?? null]);
-    }
+    } });
+  await setState('node_collection_metrics', { ...collected, blocks: collected.blocks.length, from, to, repair: Boolean(repairWallet) });
+}
+
+async function projectNodeEvidence(entry: CollectedNodeEvidence) {
+  const tx = entry.transaction as RpcTx, receipt = entry.receipt as RpcReceipt, block = entry.block as RpcBlock;
+  const executions = decodeNodeExecutions(entry.transaction, entry.receipt, entry.block, entry.wallets), ordinary = transactionWallets(tx, receipt);
+  const addresses = new Set(executions.flatMap(item => item.flows.map(flow => flow.tokenAddress)));
+  for (const wallet of ordinary) if (entry.wallets.has(wallet)) {
+    const context = walletTransactionContext(tx, receipt, wallet)!;
+    for (const address of walletSwapFlows(wallet, context.nativeValue, context.logs).keys()) addresses.add(address);
   }
-  if (!repairWallet) await recordLaunchRange(from, to, blocks);
-  // Save the checkpoint only after every trade in this range has been persisted. Replays are idempotent.
-  const checkpoint = await pool.connect();
+  // Resolve optional metadata before rollback's lock, then write every legacy
+  // projection against the still-present canonical saved receipt atomically.
+  const metadata = new Map(await Promise.all([...addresses].map(async address => [address, await projectionMetadata.load(address, block, { allowRpc: false })] as const)));
+  const persistedPrice = await nodeMarketService.priceAt('0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', {
+    timestamp: new Date(Number(BigInt(block.timestamp)) * 1000).toISOString(), blockNumber: String(Number(BigInt(block.number))), maxAgeMs: 300_000 });
+  const feePrice = persistedPrice.priceUsd && !persistedPrice.stale && persistedPrice.timestamp
+    ? { price: persistedPrice.priceUsd, updatedAt: Date.parse(persistedPrice.timestamp) / 1000 } : null;
+  const trace = (await pool.query('SELECT trace FROM node_trace_evidence WHERE tx_hash=$1 AND block_hash=$2',
+    [tx.hash.toLowerCase(), block.hash.toLowerCase()])).rows[0]?.trace as NodeCallTrace | undefined;
+  const conversions = new Map(await Promise.all([...addresses].filter(address => Object.hasOwn(TRUSTED_QUOTE_FEEDS, address)).map(async address =>
+    [address, await nodeMarketService.priceAt(address, { timestamp: new Date(Number(BigInt(block.timestamp)) * 1000).toISOString(),
+      blockNumber: String(Number(BigInt(block.number))), maxAgeMs: 300_000 })] as const)));
+  const prepared = { metadata, oracle: feePrice, trace, conversions }, client = await pool.connect();
   try {
-    await checkpoint.query('BEGIN');
-    await checkpoint.query('SELECT pg_advisory_xact_lock_shared(782319)');
-    if (!repairWallet) {
-      await checkpoint.query(`INSERT INTO processed_blocks(block_number,block_hash)
-        SELECT * FROM unnest($1::bigint[],$2::text[])
-        ON CONFLICT(block_number) DO UPDATE SET block_hash=EXCLUDED.block_hash,processed_at=now()`,
-      [blocks.map(block => Number(BigInt(block.number))), blocks.map(block => block.hash)]);
-      await checkpoint.query(`INSERT INTO worker_state(key,value,updated_at) VALUES('node',$1::jsonb,now())
-        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({ blockNumber: to, headBlock: head, blockHash: blocks.at(-1)!.hash })]);
-      await checkpoint.query('DELETE FROM processed_blocks WHERE block_number < $1', [to - 128]);
+    await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock_shared(782319)');
+    const canonical = await client.query('SELECT tx_hash FROM node_evidence_transactions WHERE tx_hash=$1 AND block_hash=$2', [tx.hash.toLowerCase(), block.hash.toLowerCase()]);
+    if (!canonical.rows.length) throw new Error('node_projection_orphaned');
+    for (const wallet of ordinary) if (entry.wallets.has(wallet)) await persistNodeTrade(tx, receipt, block, wallet, entry.observedLive, undefined, client, undefined, prepared);
+    for (const execution of executions) if (execution.kind === 'user_operation' && execution.status === 'success' && !ordinary.includes(execution.walletAddress))
+      await persistNodeTrade(tx, receipt, block, execution.walletAddress, entry.observedLive, undefined, client, execution, prepared);
+    await recordWalletTransfers(tx, receipt, block, entry.wallets, client, executions);
+    await client.query(`INSERT INTO journal_node_evidence(tx_hash,block_number,block_hash,timestamp,transaction,receipt,bnb_price_usd,bnb_priced_at)
+      VALUES($1,$2,$3,to_timestamp($4),$5::jsonb,$6::jsonb,$7,to_timestamp($8)) ON CONFLICT(tx_hash) DO UPDATE SET block_number=EXCLUDED.block_number,
+      block_hash=EXCLUDED.block_hash,timestamp=EXCLUDED.timestamp,transaction=EXCLUDED.transaction,receipt=EXCLUDED.receipt,
+      bnb_price_usd=COALESCE(EXCLUDED.bnb_price_usd,journal_node_evidence.bnb_price_usd),bnb_priced_at=COALESCE(EXCLUDED.bnb_priced_at,journal_node_evidence.bnb_priced_at)`,
+    [tx.hash.toLowerCase(), Number(BigInt(block.number)), block.hash, Number(BigInt(block.timestamp)), JSON.stringify(tx), JSON.stringify(receipt), feePrice?.price ?? null, feePrice?.updatedAt ?? null]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  if ([...metadata.values()].some(value => value.decimals === null)) return { pendingReason: 'node_projection_token_decimals_unavailable' };
+}
+
+async function nodeDecodeLoop() {
+  for (;;) {
+    try {
+      const result = await drainNodeEvidenceDecode({ database: pool });
+      if (result.decoded || result.projected) { await setState('node_decoding', { ...result, at: new Date().toISOString() }); await notifyUpdate(); }
+      if (!result.decoded && !result.projected) await sleep(1000);
+    } catch (error) { console.warn('Node evidence decode:', error); await sleep(2000); }
+  }
+}
+
+async function nodeProjectionLoop() {
+  for (;;) {
+    try { const started = performance.now();
+      const result = await drainNodeEvidenceProjection({ database: pool, project: projectNodeEvidence });
+      if (result.projected) {
+        await setState('node_projection_metrics', { ...result, durationMs: Math.round(performance.now() - started), at: new Date().toISOString() });
+        await notifyUpdate();
+      } else await sleep(1000); }
+    catch (error) { console.warn('Node legacy projection:', error); await sleep(2000); }
+  }
+}
+
+const nodeMetadataConcurrency = 8;
+async function nodeMetadataLoop(workerIndex: number) {
+  const stage = workerIndex < 3 ? 'precision' : workerIndex < 5 ? 'pins' : workerIndex < 7 ? 'feed' : 'all';
+  const history = workerIndex < 7 ? 'fresh' : 'historical';
+  for (;;) {
+    try {
+      const checkpoint = (await pool.query("SELECT value FROM worker_state WHERE key='node_collection'")).rows[0]?.value;
+      if (nodeCaptureHasPriority(checkpoint)) {
+        if (history === 'historical') { await sleep(2000); continue; }
+        const pins = stage === 'pins';
+        const usableFreshWork = (await pool.query(`SELECT EXISTS(SELECT 1 FROM node_evidence_metadata_jobs WHERE completed_at IS NULL
+          AND block_number>=$1::bigint-128 AND timestamp>=now()-interval '60 seconds'
+          AND ${pins ? 'pinned_next_attempt_at' : 'next_attempt_at'}<=now()
+          AND (${pins ? 'pinned_lease_until' : 'lease_until'} IS NULL OR ${pins ? 'pinned_lease_until' : 'lease_until'}<clock_timestamp())
+          AND ($2::text='pins' AND NOT pinned_feed_complete OR $2='precision' AND NOT tokens<@completed_tokens
+            OR $2='feed' AND NOT feed_complete AND pinned_feed_complete AND tokens<@completed_tokens)) AS available`, [checkpoint.headBlock,stage])).rows[0]?.available === true;
+        if (!nodeMetadataShouldDrain(checkpoint, usableFreshWork)) { await sleep(2000); continue; }
+      }
+      const selected = await pool.query(`SELECT token_address FROM node_market_refresh_jobs WHERE expires_at>now()
+        ORDER BY priority DESC,requested_at LIMIT 32`);
+      const began = performance.now();
+      const result = await drainNodeEvidenceMetadata({ database: pool,
+        captureMetadata: (tokens, checkpoint) => nodeMarketService.captureMetadata(tokens, checkpoint),
+        captureFeedEvidence: (checkpoint, tokens, options) => nodeMarketService.captureFeedEvidence(checkpoint, tokens, options),
+        priorityTokens: selected.rows.map(row => row.token_address), limit: 1, stage, history,
+        headBlock: Number.isSafeInteger(checkpoint?.headBlock) ? checkpoint.headBlock : undefined });
+      if (result.claimed) {
+        const metrics = { ...result, stage, history, workerIndex, durationMs: performance.now() - began,
+          concurrency: nodeMetadataConcurrency, at: new Date().toISOString() };
+        await setState(`node_metadata_metrics:${stage}:${history}`, metrics);
+        await setState('node_metadata_metrics', metrics);
+      }
+      await sleep(result.claimed ? 250 : 1000);
+    } catch (error) { console.warn('Node evidence metadata:', error); await sleep(2000); }
+  }
+}
+
+// Process-local verification deliberately resets on restart. Another helper's
+// stored trace or an environment path alone cannot verify this worker's IPC.
+let privateTraceVerifiedAt: string | null = null;
+async function nodeTraceLoop() {
+  for (;;) {
+    try {
+      const result = await captureNodeTraceBatch(pool);
+      const observedAt = new Date().toISOString();
+      if (result.captured > 0) privateTraceVerifiedAt = observedAt;
+      if (result.captured || result.unavailable) await setState('node_tracing', { ...result, at: observedAt, privateTraceVerifiedAt });
     }
-    await recordJournalCollectionRange(checkpoint, wallets, from, to, Boolean(repairWallet), coverageGenerations);
-    await checkpoint.query('COMMIT');
-  } catch (error) { await checkpoint.query('ROLLBACK'); throw error; }
-  finally { checkpoint.release(); }
-  if (matched.size) await notifyUpdate();
+    catch (error) { console.warn('Private node tracing:', error); }
+    await sleep(5000);
+  }
 }
 
 async function nodeLoop() {
@@ -312,15 +329,14 @@ async function nodeLoop() {
       await rollbackIfReorg();
       const head = Number(BigInt(await rpc<string>('eth_blockNumber', [])));
       const target = Math.max(0, head - 6);
-      const latest = await pool.query('SELECT MAX(block_number) AS height FROM processed_blocks');
-      const configured = Number(process.env.BSC_START_BLOCK);
-      const start = latest.rows[0].height == null ? (Number.isInteger(configured) && configured > 0 ? configured : Math.max(0, target - 12)) : Number(latest.rows[0].height) + 1;
-      const repair = latest.rows[0].height == null ? null : await nextJournalCollectionRepair(pool, Number(latest.rows[0].height));
-      if (start <= target) await scanRange(start, Math.min(target, start + 511), head);
+      const start = await nodeCaptureStart(pool, { target, configuredStart: Number(process.env.BSC_START_BLOCK) });
+      await syncNodeMonitoredWallets(pool);
+      const repair = start > 0 && nodeCaptureRepairAllowed(start, target) ? await nextNodeCollectionRepair(pool, Math.min(target, start - 1)) : null;
+      if (start <= target) await scanRange(start, nodeCaptureRangeEnd(start, target), head);
       if (repair) {
         try { await scanRange(repair.from, repair.to, head, repair.wallet); }
         catch (error) {
-          await pool.query(`UPDATE journal_wallet_coverage SET last_error=$2,updated_at=now() WHERE wallet_address=$1`, [repair.wallet,
+          await pool.query(`UPDATE node_monitored_wallets SET last_error=$2,updated_at=now() WHERE wallet_address=$1`, [repair.wallet,
             /prun|header not found|block not found|missing trie|historical|not supported/i.test(String(error)) ? 'node_history_unavailable' : 'collection_retry']);
           console.warn('Journal collection repair pending:', String(error));
         }
@@ -334,95 +350,43 @@ async function nodeLoop() {
   }
 }
 
-async function verifyImportedTrade(hash: string, expectedWallets: string[]): Promise<'verified' | 'unmatched'> {
-  const [tx, receipt] = await Promise.all([
-    rpc<RpcTx | null>('eth_getTransactionByHash', [hash], historicalRpcUrl),
-    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash], historicalRpcUrl),
-  ]);
-  if (!tx || !receipt || receipt.status !== '0x1') return 'unmatched';
-  const wallets = transactionWallets(tx, receipt).filter(wallet => expectedWallets.includes(wallet));
-  if (!wallets.length) return 'unmatched';
-  const block = await rpc<RpcBlock | null>('eth_getBlockByNumber', [tx.blockNumber, false], historicalRpcUrl);
-  if (!block || block.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) return 'unmatched';
-  for (const wallet of wallets) await persistNodeTrade(tx, receipt, block, wallet);
-  const result = await pool.query(`SELECT COUNT(*)::int AS count FROM trades
-    WHERE tx_hash=$1 AND wallet_address=ANY($2::text[]) AND source='node+gmgn' AND block_number IS NOT NULL`, [hash, wallets]);
-  return result.rows[0].count > 0 ? 'verified' : 'unmatched';
-}
-
-async function historicalVerificationLoop() {
-  for (;;) {
-    try {
-      const pending = await pool.query(`SELECT t.tx_hash AS hash,array_agg(DISTINCT t.wallet_address) AS wallets
-        FROM trades t JOIN kols k ON k.address=t.wallet_address
-        WHERE k.is_tracked AND (
-          (t.source='gmgn' AND t.block_number IS NULL
-            AND (t.verification_attempted_at IS NULL OR t.verification_attempted_at < now() - interval '1 day'))
-          OR (t.source='node+gmgn' AND t.verification_attempted_at IS NULL)
-        )
-        GROUP BY t.tx_hash ORDER BY MAX(t.timestamp) DESC LIMIT 6`);
-      if (!pending.rows.length) {
-        await sleep(60_000);
-        continue;
-      }
-      const outcomes = await Promise.all(pending.rows.map(async row => {
-        let outcome: 'verified' | 'unmatched' | 'error';
-        try { outcome = await verifyImportedTrade(row.hash, row.wallets); }
-        catch (error) { console.warn(`Historical verification ${row.hash}:`, error); outcome = 'error'; }
-        await pool.query(`UPDATE trades SET verification_attempted_at=now()
-          WHERE tx_hash=$1 AND source IN ('gmgn','node+gmgn')`, [row.hash]);
-        return outcome;
-      }));
-      const remaining = await pool.query(`SELECT COUNT(DISTINCT t.tx_hash)::int AS count FROM trades t
-        JOIN kols k ON k.address=t.wallet_address
-        WHERE k.is_tracked AND t.source IN ('gmgn','node+gmgn') AND t.verification_attempted_at IS NULL`);
-      await setState('historical_verification', {
-        at: new Date().toISOString(),
-        remaining: remaining.rows[0].count,
-        verified: outcomes.filter(outcome => outcome === 'verified').length,
-        unmatched: outcomes.filter(outcome => outcome === 'unmatched').length,
-        errors: outcomes.filter(outcome => outcome === 'error').length,
-      });
-      if (outcomes.includes('verified')) await notifyUpdate();
-      await sleep(250);
-    } catch (error) {
-      console.error('Historical verification worker:', error);
-      await sleep(10_000);
-    }
-  }
-}
-
 async function repairQueuedTrade(job: KolTokenTradeRepairJob) {
   const tracked = await pool.query(`SELECT 1 FROM kols k WHERE k.address=$1 AND (k.is_tracked
     OR EXISTS(SELECT 1 FROM journal_wallets m WHERE m.wallet_address=k.address))`, [job.walletAddress]);
   if (!tracked.rows.length) return false;
-  const [tx, receipt, block, head] = await Promise.all([
-    rpc<RpcTx | null>('eth_getTransactionByHash', [job.txHash]),
-    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [job.txHash]),
-    rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]),
-    rpc<string>('eth_blockNumber', []),
+  const saved = (await pool.query(`SELECT e.transaction,e.receipt,b.header FROM node_evidence_transactions e
+    JOIN node_evidence_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash WHERE e.tx_hash=$1`, [job.txHash])).rows[0];
+  const [tx, receipt, block, head] = saved ? [saved.transaction as RpcTx,saved.receipt as RpcReceipt,saved.header as RpcBlock,await rpc<string>('eth_blockNumber', [])] : await Promise.all([
+    rpc<RpcTx | null>('eth_getTransactionByHash', [job.txHash]),rpc<RpcReceipt | null>('eth_getTransactionReceipt', [job.txHash]),
+    rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]),rpc<string>('eth_blockNumber', []),
   ]);
   if (!verifiedTradeRepair(job, tx, receipt, block, Number(BigInt(head)))) return false;
   // Resolve metadata and historical pricing before taking rollback's lock. This
   // cache warming only writes ancillary token metadata, never repaired trades.
   const context = walletTransactionContext(tx!, receipt!, job.walletAddress)!;
-  await Promise.all([
+  const addresses = [...walletSwapFlows(job.walletAddress, context.nativeValue, context.logs).keys()];
+  const [oracle, metadataEntries, conversionEntries, traceRows] = await Promise.all([
     bnbPrice(Number(BigInt(block!.number)), Number(BigInt(block!.timestamp))),
-    ...[...walletSwapFlows(job.walletAddress, context.nativeValue, context.logs).keys()].map(tokenMeta),
+    Promise.all(addresses.map(async address => [address, await tokenMeta(address, block!)] as const)),
+    Promise.all(addresses.filter(address => Object.hasOwn(TRUSTED_QUOTE_FEEDS, address)).map(async address => [address,
+      await nodeMarketService.priceAt(address, { timestamp: new Date(Number(BigInt(block!.timestamp)) * 1000).toISOString(),
+        blockNumber: String(job.blockNumber), maxAgeMs: 300_000 })] as const)),
+    pool.query('SELECT trace FROM node_trace_evidence WHERE tx_hash=$1 AND block_hash=$2', [job.txHash, job.blockHash]),
   ]);
+  const prepared: PreparedTradeProjection = { oracle, metadata: new Map(metadataEntries), conversions: new Map(conversionEntries), trace: traceRows.rows[0]?.trace };
   const client = await pool.connect();
   try {
     // Share rollback's lock: a repair must not recreate an orphaned trade after
     // the reorg worker already removed it. Re-read canonical proof after locking.
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782319)');
-    const [canonical, confirmedHead] = await Promise.all([
-      rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]), rpc<string>('eth_blockNumber', []),
-    ]);
+    const canonical: RpcBlock | null = saved ? (await client.query('SELECT header FROM node_evidence_blocks WHERE block_number=$1 AND block_hash=$2', [job.blockNumber, job.blockHash])).rows[0]?.header ?? null
+      : await rpc<RpcBlock | null>('eth_getBlockByNumber', [hex(Number(job.blockNumber)), false]);
+    const confirmedHead = head;
     if (!verifiedTradeRepair(job, tx, receipt, canonical, Number(BigInt(confirmedHead)))) {
       await client.query('ROLLBACK'); return false;
     }
-    await persistNodeTrade(tx!, receipt!, canonical!, job.walletAddress, false, job.tokenAddress, client);
+    await persistNodeTrade(tx!, receipt!, canonical!, job.walletAddress, false, job.tokenAddress, client, undefined, prepared);
     const stored = await client.query(`SELECT 1 FROM trades WHERE tx_hash=$1 AND wallet_address=$2 AND token_address=$3
       AND block_number=$4 AND block_hash=$5 AND side IN ('buy','sell') AND source IN ('node','node+gmgn')`,
     [job.txHash, job.walletAddress, job.tokenAddress, job.blockNumber, job.blockHash]);
@@ -433,6 +397,7 @@ async function repairQueuedTrade(job: KolTokenTradeRepairJob) {
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 }
+
 
 async function tradeRepairLoop() {
   for (;;) {
@@ -676,47 +641,14 @@ async function supplyLoop() {
   }
 }
 
-async function refreshMarketCaps(): Promise<boolean> {
-  const result = await pool.query(`SELECT t.address FROM tokens t
-    WHERE (t.market_cap_checked_at IS NULL OR t.market_cap_checked_at < now() - interval '30 minutes')
-      AND EXISTS (SELECT 1 FROM trades x JOIN kols k ON k.address=x.wallet_address
-        WHERE x.token_address=t.address AND k.is_tracked AND x.block_number IS NOT NULL)
-    ORDER BY EXISTS(SELECT 1 FROM active_watch_entries w WHERE w.kind='token' AND w.address=t.address) DESC,
-      (SELECT MAX(timestamp) FROM trades WHERE token_address=t.address) DESC NULLS LAST LIMIT 30`);
-  const addresses = result.rows.map(row => row.address as string);
-  if (!addresses.length) return false;
-  try {
-    const response = await fetch(`https://api.dexscreener.com/tokens/v1/bsc/${addresses.join(',')}`, { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const pairs = await response.json() as Parameters<typeof selectTokenMarkets>[0];
-    if (!Array.isArray(pairs)) throw new Error('Invalid token pairs response');
-    const caps = selectTokenMarkets(pairs, addresses);
-    for (const address of addresses) {
-      await pool.query('UPDATE tokens SET market_cap_usd=$2,change_24h=$3,market_cap_checked_at=now() WHERE address=$1', [address, caps.get(address)?.cap ?? null, caps.get(address)?.change24h ?? null]);
-    }
-    await notifyUpdate();
-  } catch (error) {
-    await pool.query(`UPDATE tokens SET market_cap_checked_at=now()-interval '25 minutes' WHERE address=ANY($1::text[])`, [addresses]);
-    console.warn('Market cap worker:', error);
-  }
-  return true;
-}
-
-async function marketCapLoop() {
-  for (;;) {
-    let checked = false;
-    try { checked = await refreshMarketCaps(); } catch (error) { console.warn('Market cap worker:', error); }
-    await sleep(checked ? 1000 : 60_000);
-  }
-}
-
 async function repairTradeValue(hash: string, wallet: string) {
-  const [tx, receipt] = await Promise.all([
-    rpc<RpcTx | null>('eth_getTransactionByHash', [hash]),
-    rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash]),
+  const saved = (await pool.query(`SELECT e.transaction,e.receipt,b.header FROM node_evidence_transactions e
+    JOIN node_evidence_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash WHERE e.tx_hash=$1`, [hash])).rows[0];
+  const [tx, receipt] = saved ? [saved.transaction as RpcTx,saved.receipt as RpcReceipt] : await Promise.all([
+    rpc<RpcTx | null>('eth_getTransactionByHash', [hash]),rpc<RpcReceipt | null>('eth_getTransactionReceipt', [hash]),
   ]);
   if (!tx || !receipt) throw new Error(`Transaction receipt unavailable: ${hash}`);
-  const block = await rpc<RpcBlock>('eth_getBlockByNumber', [tx.blockNumber, false]);
+  const block = saved?.header as RpcBlock | undefined ?? await rpc<RpcBlock>('eth_getBlockByNumber', [tx.blockNumber, false]);
   if (!block) throw new Error(`Transaction block unavailable: ${hash}`);
   await persistNodeTrade(tx, receipt, block, wallet);
   await pool.query('UPDATE trades SET value_checked_at=now() WHERE tx_hash=$1 AND wallet_address=$2', [hash, wallet]);
@@ -779,66 +711,23 @@ async function priceLoop() {
   }
 }
 
+const nodeLeaderboard = createNodeLeaderboardService({ database: pool, calculate: loadPublicNodeLeaderboardAccounting });
 async function leaderboardLoop() {
+  let consecutiveChanges = 0;
   for (;;) {
+    let waitMs = 30_000;
     try {
-      const roster = await pool.query('SELECT address FROM kols WHERE is_tracked ORDER BY address');
-      const wallets = roster.rows.map(row => row.address as string);
-      const windowEnd = Date.now();
-      const windowStart = last24hStart(windowEnd);
-      const missingOrder = await pool.query(`SELECT DISTINCT t.tx_hash FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND t.block_number IS NOT NULL AND t.transaction_index IS NULL AND t.timestamp >= $1::timestamptz`, [windowStart]);
-      for (let offset = 0; offset < missingOrder.rows.length; offset += 32) {
-        await Promise.all(missingOrder.rows.slice(offset, offset + 32).map(async row => {
-          try {
-            const tx = await rpc<RpcTx | null>('eth_getTransactionByHash', [row.tx_hash]);
-            if (tx?.transactionIndex != null) await pool.query('UPDATE trades SET transaction_index=$2 WHERE tx_hash=$1', [row.tx_hash, Number(BigInt(tx.transactionIndex))]);
-          } catch (error) { console.warn(`Trade order ${row.tx_hash}:`, error); }
-        }));
-      }
-      const windowTrades = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp,t.block_number AS "blockNumber",t.transaction_index AS "transactionIndex",
-          t.tx_hash AS "txHash",t.quote_symbol AS "quoteSymbol",t.quote_amount AS "quoteAmount",v.symbol AS "tokenSymbol"
-        FROM trades t JOIN kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
-        WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.side IN ('buy','sell') AND t.timestamp >= $1::timestamptz AND t.timestamp <= $2::timestamptz
-        ORDER BY t.block_number ASC,t.transaction_index ASC NULLS LAST,t.id ASC`, [windowStart, new Date(windowEnd).toISOString()]);
-      const windowStats = calculate24hLeaderboard(windowTrades.rows, wallets, windowEnd);
-      await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,window_start,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,valued_sell_count,excluded_sell_count,updated_at)
-        SELECT "walletAddress",'1d',"windowStart","realizedProfitUsd",NULL,"buyCount","sellCount","valuedSellCount","excludedSellCount",now()
-        FROM jsonb_to_recordset($1::jsonb) AS x("walletAddress" text,"windowStart" timestamptz,"realizedProfitUsd" numeric,"buyCount" integer,"sellCount" integer,"valuedSellCount" integer,"excludedSellCount" integer)
-        ON CONFLICT(wallet_address,period) DO UPDATE SET window_start=EXCLUDED.window_start,realized_profit_usd=EXCLUDED.realized_profit_usd,
-          unrealized_profit_usd=NULL,buy_count=EXCLUDED.buy_count,sell_count=EXCLUDED.sell_count,
-          valued_sell_count=EXCLUDED.valued_sell_count,excluded_sell_count=EXCLUDED.excluded_sell_count,updated_at=now()`, [JSON.stringify(windowStats)]);
-      await setState('leaderboard_24h', { windowStart, windowEnd: new Date(windowEnd).toISOString(), source: 'window_trades', wallets: wallets.length });
-      await notifyUpdate();
-      const apiKey = legacyGmgnProfitKey();
-      let stats: Array<{ walletAddress: string; period: string; realizedProfitUsd: string | number | null; unrealizedProfitUsd: string | null }>;
-      if (apiKey) {
-        const gmgnStats: GmgnProfit[] = [];
-        for (const period of ['7d', '30d'] as const) {
-          for (let index = 0; index < wallets.length; index += 100) {
-            gmgnStats.push(...await fetchGmgnProfits(wallets.slice(index, index + 100), period, apiKey));
-            await sleep(750);
-          }
-        }
-        stats = gmgnStats;
-      } else {
-        const tradeRows = await pool.query(`SELECT t.wallet_address AS "walletAddress",t.token_address AS "tokenAddress",t.side,t.token_amount AS "tokenAmount",t.amount_usd AS "amountUsd",t.timestamp
-          FROM trades t JOIN kols k ON k.address=t.wallet_address
-          WHERE k.is_tracked AND ${nonStockTokenSql('t.token_address')} AND t.block_number IS NOT NULL AND t.side IN ('buy','sell')
-          ORDER BY t.timestamp ASC,t.id ASC`);
-        stats = calculateLeaderboard(tradeRows.rows, wallets).filter(row => row.period !== '1d').map(row => ({ ...row, unrealizedProfitUsd: null }));
-      }
-      if (stats.length) {
-        await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,realized_profit_usd,unrealized_profit_usd,buy_count,sell_count,win_rate,updated_at)
-          SELECT "walletAddress",period,"realizedProfitUsd","unrealizedProfitUsd",NULL,NULL,NULL,now()
-          FROM jsonb_to_recordset($1::jsonb) AS x("walletAddress" text,period text,"realizedProfitUsd" numeric,"unrealizedProfitUsd" numeric)
-          ON CONFLICT(wallet_address,period) DO UPDATE SET realized_profit_usd=EXCLUDED.realized_profit_usd,
-          unrealized_profit_usd=EXCLUDED.unrealized_profit_usd,buy_count=NULL,sell_count=NULL,
-          win_rate=NULL,updated_at=now()`, [JSON.stringify(stats)]);
-        await setState('leaderboard', { at: new Date().toISOString(), source: apiKey ? 'gmgn' : 'onchain_estimate', wallets: wallets.length });
-        await notifyUpdate();
-      }
-    } catch (error) { console.error('Leaderboard worker:', error); }
-    await sleep(120_000);
+      const result = await nodeLeaderboard.refresh();
+      consecutiveChanges = 0;
+      if (result.updatedWallets) await notifyUpdate();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'leaderboard_unavailable';
+      if (/^node_leaderboard_(monitoring|accounting_evidence|fee_evidence|canonical_evidence)_changed$/.test(reason)) {
+        if (++consecutiveChanges <= 3) waitMs = 5_000;
+        console.warn('Leaderboard evidence changed:', { reason, retryAfterMs: waitMs });
+      } else { consecutiveChanges = 0; console.error('Leaderboard worker:', error); }
+    }
+    await sleep(waitMs);
   }
 }
 
@@ -860,9 +749,198 @@ async function verifyTransactionHash(hash: string) {
   console.log(JSON.stringify({ hash, wallets, block: Number(BigInt(tx.blockNumber)), before: before.rows, after: after.rows }));
 }
 
+/** Market and accounting work never hold up permanent raw collection. */
+async function nodeMarketDiscoveryLoop() {
+  for (;;) {
+    try {
+      // Selected accounting jobs go first. Then rotate the remaining discovered tokens.
+      const selected = await pool.query(nodeMarketDiscoverySql());
+      for (const row of selected.rows) {
+        try {
+          // Historical state can be pruned while other token discoveries run.
+          // Authenticate each market against a new confirmed checkpoint.
+          const discoveryHead = Number(BigInt(await rpc<string>('eth_blockNumber', []))), discoveryBlock = Math.max(0, discoveryHead - 6);
+          const header = await rpc<RpcBlock>('eth_getBlockByNumber', [hex(discoveryBlock), false]);
+          if (!header || Number(BigInt(header.number)) !== discoveryBlock) throw new Error('market_checkpoint_changed');
+          const logs = (await pool.query(nodeMarketReceiptHintsSql(), [row.address, discoveryBlock])).rows.map(row => row.log);
+          await nodeMarketService.discover(row.address, { blockNumber: discoveryBlock, blockHash: header.hash,
+            timestamp: new Date(Number(BigInt(header.timestamp)) * 1000).toISOString(), logs });
+          await pool.query(`INSERT INTO node_market_discoveries(token_address) VALUES($1) ON CONFLICT(token_address) DO UPDATE SET last_attempt_at=now(),last_error=NULL`, [row.address]);
+        } catch {
+          await pool.query(`INSERT INTO node_market_discoveries(token_address,last_error) VALUES($1,'discovery_retry') ON CONFLICT(token_address) DO UPDATE SET last_attempt_at=now(),last_error='discovery_retry'`, [row.address]);
+        }
+      }
+    } catch (error) { console.warn('Node market discovery waiting:', error instanceof Error ? error.message : 'market_unavailable'); }
+    await sleep(3000);
+  }
+}
+async function nodeTokenIdentityLoop() {
+  let recentTokens: string[] = [], recentCheckedAt = 0;
+  for (;;) {
+    try {
+      const checkpoint = (await pool.query("SELECT value FROM worker_state WHERE key='node_collection'")).rows[0]?.value;
+      if (nodeCaptureHasPriority(checkpoint)) { await sleep(2000); continue; }
+      const selected = await pool.query(`SELECT token_address FROM (
+        SELECT token_address,priority,requested_at FROM node_market_refresh_jobs WHERE expires_at>now()
+        UNION ALL SELECT token_address,priority,requested_at FROM node_accounting_jobs WHERE priority>0
+      ) waiting GROUP BY token_address ORDER BY max(priority) DESC,min(requested_at) LIMIT 32`);
+      if (Date.now() - recentCheckedAt > 30_000) {
+        const recent = await pool.query(`SELECT t.token_address FROM trades t JOIN published_kols k ON k.address=t.wallet_address AND k.is_tracked
+          WHERE t.timestamp>now()-interval '24 hours' AND t.block_number IS NOT NULL ORDER BY t.timestamp DESC LIMIT 512`);
+        recentTokens = [...new Set<string>(recent.rows.map(row => row.token_address))].slice(0, 256);
+        recentCheckedAt = Date.now();
+      }
+      const queued = await tokenIdentity.queueMissing({ limit: 32, priorityTokens: selected.rows.map(row => row.token_address), recentTokens });
+      const result = await tokenIdentity.drain({ limit: 4 });
+      await setState('node_token_identity_metrics', { queued, ...result, at: new Date().toISOString() });
+      if (result.complete) await notifyUpdate();
+    } catch { console.warn('Node token identity work waiting; financial capture continues'); }
+    await sleep(1000);
+  }
+}
+
+async function nodeMarketLoop() {
+  for (;;) {
+    try {
+      const state = (await pool.query(`SELECT (value->>'blockNumber')::bigint::text AS height FROM worker_state WHERE key='node_collection'`)).rows[0];
+      if (!state) { await sleep(1000); continue; }
+      // Slow discovery and historical collection have independent checkpoints.
+      // Current marks must not wait for either batch to finish.
+      const head = Number(BigInt(await rpc<string>('eth_blockNumber', []))), confirmed = Math.max(0, head - 6);
+      const collectionBehind = confirmed - Number(state.height) > 128;
+      const priorities = await pool.query(`SELECT token_address FROM (
+        SELECT token_address,0 AS tier,min(requested_at) AS observed_at FROM node_market_refresh_jobs WHERE expires_at>now() GROUP BY token_address
+        UNION ALL SELECT token_address,1 AS tier,min(requested_at) AS observed_at FROM node_accounting_jobs WHERE priority>0 GROUP BY token_address
+        UNION ALL SELECT s.token_address,2 AS tier,min(COALESCE(v.observed_at,'epoch'::timestamptz)) AS observed_at
+          FROM node_accounting_snapshots s JOIN node_monitored_wallets w ON w.wallet_address=s.wallet_address AND w.active
+          LEFT JOIN node_token_market_values v ON v.address=s.token_address
+          WHERE s.invalidated_at IS NULL AND s.payload->'realizedAccounting'->'position'->>'status'='open'
+          GROUP BY s.token_address
+      ) selected ORDER BY tier,observed_at,token_address LIMIT 100`);
+      await setState('node_market_metrics', await nodeMarketService.tick({ confirmedBlock: confirmed, maxMarkets: 12, retainedBlocks: 600_000,
+        priorityTokens: [...new Set<string>(priorities.rows.map(row => row.token_address))], deferHistoricalBackfill: collectionBehind, refreshStateHead: true, skipDecoding: true }));
+    } catch (error) { console.warn('Node market work waiting:', error instanceof Error ? error.message : 'market_unavailable'); }
+    await sleep(3000);
+  }
+}
+
+async function nodeMarketDecodeLoop() {
+  for (;;) {
+    try {
+      const checkpoint = (await pool.query("SELECT value FROM worker_state WHERE key='node_collection'")).rows[0]?.value;
+      if (!checkpoint || nodeCaptureHasPriority(checkpoint)) { await sleep(2000); continue; }
+      // Decoding saved evidence must not wait for pool-state network reads or
+      // historical backfill. The service coalesces this bounded stage across workers.
+      const observedHead = Math.max(Number(checkpoint.headBlock) || 0, Number(checkpoint.blockNumber));
+      const result = await nodeMarketService.decodePending(300, { minimumBlock: Math.max(0, observedHead - 128),
+        allowCapturedOlder: true, databaseOnly: true, maxDurationMs: 1500 });
+      await setState('node_market_decode_metrics', { ...result, at: new Date().toISOString() });
+      if (result.decoded) await notifyUpdate();
+      await sleep(result.examined ? 250 : 1000);
+    } catch (error) {
+      console.warn('Node market decoding waiting:', error instanceof Error ? error.message : 'market_decode_unavailable');
+      await sleep(2000);
+    }
+  }
+}
+async function nodeMarketCollectionLoop() {
+  for (;;) {
+    try {
+      const rows = await pool.query(`SELECT key,(value->>'blockNumber')::bigint::text AS height FROM worker_state WHERE key IN ('node_collection','node_market_collection')`);
+      const current = rows.rows.find(row => row.key === 'node_collection'), saved = rows.rows.find(row => row.key === 'node_market_collection');
+      if (current) {
+        const confirmed = Number(current.height), from = saved ? Number(saved.height) + 1 : Math.max(0, confirmed - 127);
+        if (from <= confirmed) {
+          const to = Math.min(from + 499, confirmed);
+          await nodeMarketService.collectRange(from, to, { liveCheckpoint: true });
+        }
+      }
+    } catch { console.warn('Live market collection waiting; checkpoint retained'); }
+    await sleep(1000);
+  }
+}
+async function nodeAccountingLoop() {
+  for (;;) {
+    try {
+      const began = performance.now(), result = await nodeAccountingService.tick(4);
+      await setState('node_accounting_metrics', { ...result, durationMs: performance.now() - began, at: new Date().toISOString() });
+    }
+    catch { console.warn('Node accounting work waiting'); }
+    await sleep(1000);
+  }
+}
+async function nodeDataHealthLoop() {
+  for (;;) {
+    try {
+      const [counts, coverage, currentHead] = await Promise.all([
+        pool.query(`SELECT COALESCE(sum(n_live_tup),0)::text AS approximate_rows,
+          COALESCE(sum(pg_total_relation_size(relid)),0)::text AS stored_bytes FROM pg_stat_user_tables WHERE relname LIKE 'node_%'`),
+        pool.query(`WITH trace_status AS(
+          SELECT count(*) FILTER(WHERE j.state='pending')::int AS trace_pending,
+            count(*) FILTER(WHERE j.state='pending' AND e.observed_live)::int AS live_trace_pending,
+            count(*) FILTER(WHERE j.state='unavailable' AND e.observed_live)::int AS live_trace_unavailable,
+            min(e.block_number) FILTER(WHERE j.state='pending' AND e.observed_live)::text AS live_trace_oldest_block
+          FROM node_trace_jobs j JOIN node_evidence_transactions e ON e.tx_hash=j.tx_hash AND e.block_hash=j.block_hash
+          JOIN node_evidence_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash)
+          SELECT (SELECT count(*)::int FROM node_evidence_transactions WHERE decoded_version IS NULL) AS decode_pending,
+          (SELECT count(*)::int FROM node_evidence_transactions WHERE projection_at IS NULL) AS projection_pending,
+          (SELECT count(*)::int FROM node_accounting_jobs) AS accounting_pending,
+          (SELECT count(*)::int FROM node_import_jobs WHERE stage<>'done') AS imports_pending,
+          (SELECT count(*)::int FROM node_evidence_metadata_jobs WHERE completed_at IS NULL) AS metadata_pending,
+          (SELECT count(*)::int FROM node_evidence_metadata_jobs WHERE completed_at IS NULL AND observed_live
+            AND (NOT tokens<@completed_tokens OR NOT pinned_feed_complete)) AS live_metadata_pending,
+          (SELECT max(EXTRACT(epoch FROM now()-timestamp))::float8 FROM node_evidence_metadata_jobs WHERE completed_at IS NULL AND observed_live
+            AND (NOT tokens<@completed_tokens OR NOT pinned_feed_complete)) AS live_metadata_oldest_age_seconds,
+          (SELECT min(block_number)::text FROM node_evidence_metadata_jobs WHERE completed_at IS NULL AND observed_live
+            AND (NOT tokens<@completed_tokens OR NOT pinned_feed_complete)) AS live_metadata_oldest_block,
+          (SELECT count(*)::int FROM node_evidence_metadata_jobs WHERE completed_at IS NULL AND NOT feed_complete) AS metadata_conversion_pending,
+          (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node_collection') AS collected_block,
+          (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node') AS decoded_block,
+          (SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node_market_collection') AS market_collected_block,
+          (SELECT value FROM worker_state WHERE key='node_tracing_local') AS local_trace_helper,
+          (SELECT min(repair_from_block) FROM node_monitored_wallets WHERE active) AS oldest_repair_block,
+          (SELECT count(*)::int FROM node_monitored_wallets WHERE active AND last_error IS NOT NULL) AS collection_errors,
+          trace_status.* FROM trace_status`),
+        rpc<string>('eth_blockNumber', []),
+      ]);
+      const row = coverage.rows[0], head = Number(BigInt(currentHead)), observedAt = new Date().toISOString();
+      const height = (value: unknown) => value == null ? null : Number(value);
+      const helper = row?.local_trace_helper;
+      const readiness = nodeOperationalReadiness({ headBlock: head, collectedBlock: height(row?.collected_block),
+        decodedBlock: height(row?.decoded_block), marketCollectedBlock: height(row?.market_collected_block),
+        repairFromBlock: height(row?.oldest_repair_block), oldestPendingMetadataBlock: height(row?.live_metadata_oldest_block),
+        pendingMetadataJobs: row?.live_metadata_pending, oldestPendingTraceBlock: height(row?.live_trace_oldest_block),
+        pendingTraceJobs: row?.live_trace_pending, unavailableTraceJobs: row?.live_trace_unavailable,
+        traceIpcConfigured: Boolean(process.env.BSC_TRACE_IPC), privateTraceVerifiedAt,
+        temporaryTraceHelper: helper && typeof helper.at === 'string' ? { checkedAt: helper.at,
+          ...(typeof helper.expiresAt === 'string' ? { expiresAt: helper.expiresAt } : {}) } : null, observedAt });
+      await setState('node_data_health', { ...counts.rows[0], ...row, headBlock: head,
+        collectionLag: readiness.collection.lagBlocks, pruningMarginBlocks: readiness.collection.pruningMarginBlocks,
+        readiness, at: observedAt });
+    } catch { console.warn('Node data health metrics unavailable'); }
+    await sleep(60_000);
+  }
+}
+async function historicalImportLoop() {
+  let discoveredAt = 0;
+  for (;;) {
+    try {
+      // Explicitly disable all import provider traffic during offline validation.
+      if (process.env.NODE_HISTORICAL_IMPORTS !== '0') {
+        if (Date.now() - discoveredAt > 300_000) { await nodeHistoricalImporter.queuePublicKols(); discoveredAt = Date.now(); }
+        await setState('node_import_metrics', { ...await nodeHistoricalImporter.tick(), at: new Date().toISOString() });
+      }
+    } catch { console.warn('Historical migration work waiting'); }
+    await sleep(3000);
+  }
+}
+
 await ensureSchema();
 await ensureSeeds();
-if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
+if (process.env.NODE_CAPTURE_BOOTSTRAP === '1') {
+  console.log(JSON.stringify({ event: 'node_capture_bootstrap', ...await bootstrapNodeCapture({ database: pool, rpc, enabled: true }) }));
+  await pool.end();
+} else if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await repairTokenLogos(process.env.BSCAN_REPAIR_LOGOS_SINCE);
   await pool.end();
 } else if (process.env.BSCAN_REPAIR_VALUES_SINCE) {
@@ -875,5 +953,5 @@ if (process.env.BSCAN_REPAIR_LOGOS_SINCE) {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), intelligenceLoop(), telegramNotifications.run(), historicalVerificationLoop(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop(), marketCapLoop()]);
+  await Promise.all([nodeLoop(), nodeDecodeLoop(), ...Array.from({ length: nodeMetadataConcurrency }, (_, index) => nodeMetadataLoop(index)), nodeTokenIdentityLoop(), nodeProjectionLoop(), nodeTraceLoop(), nodeMarketCollectionLoop(), nodeMarketDiscoveryLoop(), nodeMarketLoop(), nodeMarketDecodeLoop(), nodeAccountingLoop(), nodeDataHealthLoop(), historicalImportLoop(), intelligenceLoop(), telegramNotifications.run(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop()]);
 }

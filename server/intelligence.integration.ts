@@ -25,6 +25,7 @@ const hash = (height: number) => `0x${height.toString(16).padStart(64, '0')}`;
 let height = 108, curve = 40, fourGraduated = false, balanceFails = false, staleBlock = false, liquidity = 1000;
 const balances = new Map<string, bigint>();
 let translationCalls = 0;
+let externalFinancialCalls=0;
 const nativeFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input));
@@ -34,7 +35,9 @@ globalThis.fetch = async (input, init) => {
     if (source === '失败名称') return new Response('', { status: 503 });
     return Response.json({ responseStatus: 200, responseData: { translatedText: source === '毛毯小象' ? 'Blanket elephant' : 'Panda' } });
   }
-  if (url.hostname === 'api.dexscreener.com') return Response.json({ pairs: [{ chainId: 'bsc', pairAddress: poolId, baseToken: { address: flapToken }, quoteToken: { address: outsider }, liquidity: { usd: liquidity } }] });
+  if(['api.dexscreener.com','api.geckoterminal.com','openapi.gmgn.ai','api.coinmarketcap.com'].includes(url.hostname)){
+    externalFinancialCalls++;throw new Error('External financial providers are disabled in intelligence integration');
+  }
   return nativeFetch(input, init);
 };
 const block = (number: number) => ({ number: `0x${number.toString(16)}`, hash: hash(number), timestamp: `0x${Math.floor(Date.now() / 1000 - (staleBlock ? 601 : 2)).toString(16)}` });
@@ -93,6 +96,20 @@ try {
   const insertTrade = async (id: number, wallet: string, side: string, number: number, minutesAgo = 0, live = true, asset = token) => {
     await pool.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,block_number,block_hash,transaction_index,timestamp,source,observed_live,token_amount,quote_symbol,quote_amount,amount_usd) VALUES($1,$2,$3,$4,$5,$6,$7,0,$8,'node',$9,25,'BNB',0.1,50)`, [String(id), hash(1000 + id), wallet, asset, side, number, hash(number), new Date(Date.now() - minutesAgo * 60_000).toISOString(), live]);
   };
+  // Independent all-participant market fixtures. These are explicitly seeded
+  // instead of promoting tracked-wallet fill prices into market observations.
+  const marketSamples=async(samples:{minutesAgo:number;price:string;volume:string}[])=>{
+    const marketId=`${pair}:${token}`;
+    await pool.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,authenticated_at_block,authenticated_block_hash,authentication,status)
+      VALUES($1,$2,'0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c','pcs_v2',$3,$2,'0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',36,18,100,$4,'{}','active') ON CONFLICT DO NOTHING`,[marketId,token,pair,hash(100)]);
+    await pool.query('DELETE FROM node_market_observations WHERE token_address=$1',[token]);await pool.query('DELETE FROM node_market_candles WHERE token_address=$1',[token]);
+    for(let i=0;i<samples.length;i++){const sample=samples[i],at=new Date(Date.now()-sample.minutesAgo*60000);
+      await pool.query(`INSERT INTO node_market_observations(id,token_address,market_id,kind,source,timestamp,block_number,block_hash,price_usd,volume_usd,supply)
+        VALUES($1,$2,$3,'swap','node',$4,$5,$6,$7,$8,1000000000)`,[`independent-market-${i}`,token,marketId,at,100+i,hash(100+i),sample.price,sample.volume]);
+      await pool.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)
+        VALUES($1,$2,date_trunc('minute',$3::timestamptz),$4,$4,$4,$4,$5,1,$3,$3)`,[token,marketId,at,sample.price,sample.volume]);
+    }
+  };
   await node(108);
   const stock = '0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1';
   await pool.query(`INSERT INTO tokens(address,symbol,decimals,is_meme,logo_url) VALUES($1,'SPCXB',18,true,'https://genius.fun/api/image?src=stock')`, [stock]);
@@ -144,8 +161,8 @@ try {
   assert.equal((await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0].address, token);
   assert.equal((await app.inject({ url: '/api/watchlist', headers: { cookie: cookieB } })).json().items[0].address, flapToken);
   const market = (await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0];
-  assert.equal(Number(market.priceUsd), 0.001);
-  assert.equal(Number(market.volume24hUsd), 250);
+  assert.equal(market.priceUsd, null,'Legacy token metadata is not a current-price financial fallback');
+  assert.equal(market.volume24hUsd, null,'Tracked-wallet volume cannot stand in for complete token market volume');
   assert.equal(market.kolCount24h, 3);
   assert.deepEqual(market.priceHistory, []);
   assert.ok(market.lastTradeAt);
@@ -154,6 +171,24 @@ try {
   await pool.query(`UPDATE trades SET price_usd=CASE WHEN id=$1 THEN 0.001 ELSE 0.002 END,
     timestamp=CASE WHEN id=$1 THEN now()-interval '70 minutes' ELSE now()-interval '1 minute' END
     WHERE id IN ($1,$2)`, ['1', '5']);
+  await marketSamples([{minutesAgo:70,price:'0.001',volume:'250'},{minutesAgo:1,price:'0.002',volume:'0'}]);
+  const partialChartResponse=await app.inject(`/api/tokens/${token}/chart?interval=1m&priority=chart&history=full`);
+  const partialChart=partialChartResponse.json();
+  assert.equal(partialChartResponse.statusCode,200);assert.equal(partialChart.fullHistory,true,'Requested full chart scope is independent of incomplete market coverage');
+  assert.equal(partialChart.historyComplete,false);assert.equal(partialChart.partialHistory,true);assert.ok(partialChart.candles.length>0,'Genuine partial node candles remain displayable');
+  assert.equal((await app.inject(`/api/tokens/${token}/chart?interval=1m`)).json().fullHistory,false,'Ordinary interval responses do not acquire a full-history scope');
+  await pool.query(`INSERT INTO node_market_observations(id,token_address,kind,source,timestamp,price_usd,open,high,low,close,volume_usd,interval_seconds,import_id)
+    SELECT 'chart-page-'||n,$1,'imported','imported',date_trunc('minute',now())-interval '2 days'-n*interval '1 minute',1,1,1,1,1,0,60,'chart-page'
+    FROM generate_series(0,1501)n`,[token]);
+  const latestPage=(await app.inject(`/api/tokens/${token}/chart?interval=1m&history=full`)).json();
+  assert.equal(latestPage.candles.length,1500,'Full-history reads have a bounded actual-bucket page');
+  assert.equal(latestPage.historyPending,true);assert.equal(latestPage.historyLoadStatus,'queued');
+  assert.ok(latestPage.candles[0].time<Date.now()/1000-86400,'Full scope includes available persisted history beyond the ordinary one-day span');
+  const olderPage=(await app.inject(`/api/tokens/${token}/chart?interval=1m&history=full&before=${latestPage.historyBefore}`)).json();
+  assert.ok(olderPage.candles.length>0&&olderPage.candles.length<1500);assert.ok(olderPage.historyBefore<latestPage.historyBefore);
+  assert.ok(olderPage.candles.every((c:{time:number})=>c.time<latestPage.historyBefore),'Pages never repeat the cursor bucket');
+  assert.equal(olderPage.historyPending,false);assert.equal(olderPage.historyLoadStatus,'limited');assert.equal(olderPage.historyComplete,false,'Stored sparse history does not manufacture complete coverage');
+  await pool.query("DELETE FROM node_market_observations WHERE import_id='chart-page'");
   const pricedMarket = (await app.inject({ url: '/api/watchlist', headers: { cookie: cookieA } })).json().items[0];
   assert.equal(Number(pricedMarket.priceUsd), 0.002);
   assert.equal(Number(pricedMarket.change1h), 100);
@@ -168,13 +203,15 @@ try {
     await insertTrade(id, wallets[0], 'buy', 100, days * 1440, false);
     await pool.query('UPDATE trades SET price_usd=$2 WHERE id=$1', [String(id), price]);
   }
+  await marketSamples([{minutesAgo:3*1440,price:'0.0008',volume:'50'},{minutesAgo:7*1440+60,price:'0.0005',volume:'50'},
+    {minutesAgo:30*1440+60,price:'0.00025',volume:'50'},{minutesAgo:5,price:'0.001',volume:'250'},{minutesAgo:1,price:'0.001',volume:'50'}]);
   const range = async (period: string) => (await app.inject({ url: `/api/watchlist?period=${period}`, headers: { cookie: cookieA } })).json();
   const daily = await range('24h'), weekly = await range('7d'), monthly = await range('30d');
   assert.equal(daily.period, '24h'); assert.equal(Number(daily.items[0].periodVolumeUsd), 300);
   assert.equal(weekly.period, '7d'); assert.equal(Number(weekly.items[0].periodVolumeUsd), 350);
-  assert.equal(Number(weekly.items[0].periodChange), 100); assert.equal(weekly.items[0].priceHistory.length, 2);
+  assert.equal(Number(weekly.items[0].periodChange), 100); assert.equal(weekly.items[0].priceHistory.length, 3);
   assert.equal(monthly.period, '30d'); assert.equal(Number(monthly.items[0].periodVolumeUsd), 400);
-  assert.equal(Number(monthly.items[0].periodChange), 300); assert.equal(monthly.items[0].priceHistory.length, 3);
+  assert.equal(Number(monthly.items[0].periodChange), 300); assert.equal(monthly.items[0].priceHistory.length, 4);
   assert.equal((await app.inject('/api/watchlist?period=1y')).statusCode, 400);
   for (const watched of [daily, weekly, monthly]) {
     const publicMarket = (await app.inject(`/api/tokens/${token}/market?period=${watched.period}`)).json();
@@ -223,7 +260,8 @@ try {
   const launch = async (address: string) => (await app.inject(`/api/tokens/${address}/launch`)).json().launch;
   assert.equal((await launch(token)).stage, 'bonding'); assert.equal((await launch(flapToken)).stage, 'graduated'); assert.equal((await launch(flapToken)).poolId, poolId); assert.equal((await launch(flapToken)).poolAddress, null); assert.equal((await launch(flapToken)).launchedAt, null);
   assert.equal((await launch(unsupported)).stage, 'unavailable'); assert.equal((await pool.query(`SELECT * FROM radar_signals WHERE kind='graduated'`)).rowCount, 0);
-  const baseline = (await launch(flapToken)).liquidityBaselineAt; assert.equal(Number((await launch(flapToken)).liquidityUsd), 1000);
+  const baseline = (await launch(flapToken)).liquidityBaselineAt; assert.equal((await launch(flapToken)).liquidityUsd,null);
+  assert.equal((await launch(flapToken)).liquidityReason,'node_liquidity_unavailable','Unsupported reserve valuation stays explicit instead of using a financial provider');
   // A cold historical catalog must not starve an active, unfollowed bonding curve.
   const followers = (await pool.query(`DELETE FROM watch_entries WHERE kind='token' AND address=$1 RETURNING session_id`, [token])).rows;
   const coldTokens: string[] = [];
@@ -233,7 +271,7 @@ try {
     await insertTrade(4000 + index, wallets[0], 'buy', 101, 60, false, address);
   }
   await pool.query(`UPDATE token_launches SET checked_at=now()-interval '61 seconds',liquidity_at=now()-interval '121 seconds'`); liquidity = 1500; curve = 90; await node(115); await collectLaunches();
-  assert.equal((await launch(token)).stage, 'near_graduation'); assert.equal((await launch(flapToken)).liquidityBaselineAt, baseline); assert.equal(Number((await launch(flapToken)).liquidityBaselineUsd), 1000); assert.equal(Number((await launch(flapToken)).liquidityUsd), 1500);
+  assert.equal((await launch(token)).stage, 'near_graduation'); assert.equal((await launch(flapToken)).liquidityBaselineAt, baseline); assert.equal((await launch(flapToken)).liquidityBaselineUsd,null); assert.equal((await launch(flapToken)).liquidityUsd,null);
   for (const follower of followers) await pool.query(`INSERT INTO watch_entries(session_id,kind,address) VALUES($1,'token',$2)`, [follower.session_id, token]);
   await pool.query('DELETE FROM trades WHERE token_address=ANY($1::text[])', [coldTokens]);
   await pool.query('DELETE FROM launch_observations WHERE token_address=ANY($1::text[])', [coldTokens]);
@@ -265,5 +303,6 @@ try {
     for (const wallet of wallets) await pool.query(`INSERT INTO position_snapshots(wallet_address,token_address,block_number,block_hash,balance_raw,status,checked_at,block_timestamp) VALUES($1,$2,125,$3,$4,'Added',now(),now())`, [wallet, token, hash(125), (125n * unit + 1n).toString()]);
     console.log(`Preview fixtures: /token/${token}, /kol/${wallets[0]}`);
   }
+  assert.equal(externalFinancialCalls,0,'Normal market, watchlist and launch processing never needs an external financial provider');
   console.log('Intelligence integration checks passed: migrations, legacy-route isolation, signals, sessions, positions, launches and reorgs.');
 } finally { globalThis.fetch = nativeFetch; await app.close(); await new Promise<void>(resolve => rpc.close(() => resolve())); await pool.end(); }

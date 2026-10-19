@@ -8,6 +8,7 @@ import { TokenName } from './TokenName';
 import { WatchTokenDetails } from './WatchTokenVisuals';
 import { tokenChartIntent } from './tokenChartIntent';
 import { subscribeToUpdates } from './updateStream';
+import { createCoalescedRefresh } from './coalescedRefresh';
 import { accountCheckEvent, notifyWatchlistTabs, useAccount, watchlistSyncKey } from './Account';
 import { loadWatchlist, mutateWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import './tokenWatchlist.css';
@@ -89,11 +90,13 @@ function useFeatureData<T>(url: string | null, initial: T) {
   const [result, setResult] = useState({ url, data: initial, error: false, loading: true });
   useEffect(() => {
     if (!url) { setResult({ url, data: initial, loading: false, error: false }); return; }
-    let active = true;
-    const refresh = () => void api<T>(url).then(data => { if (active) setResult({ url, data, loading: false, error: false }); }).catch(() => { if (active) setResult(current => ({ ...current, url, loading: false, error: true })); });
-    setResult({ url, data: initial, error: false, loading: true }); refresh();
-    const timer = window.setInterval(refresh, 30000), unsubscribe = subscribeToUpdates(refresh);
-    return () => { active = false; window.clearInterval(timer); unsubscribe(); };
+    const refresh = createCoalescedRefresh(async signal => {
+      try { const data = await api<T>(url, { signal }); if (!signal.aborted) setResult({ url, data, loading: false, error: false }); }
+      catch { if (!signal.aborted) setResult(current => ({ ...current, url, loading: false, error: true })); }
+    });
+    setResult({ url, data: initial, error: false, loading: true }); void refresh.refresh();
+    const timer = window.setInterval(() => void refresh.refresh(), 30000), unsubscribe = subscribeToUpdates(() => void refresh.refresh());
+    return () => { refresh.dispose(); window.clearInterval(timer); unsubscribe(); };
   }, [url]);
   return result.url === url ? result : { url, data: initial, error: false, loading: true };
 }

@@ -124,7 +124,7 @@ export default class TokenReplayCanvas implements ReplayRecordingCanvas {
     ctx.beginPath(); ctx.arc(activeX, activeY, 7, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
     this.text(date(first.time), plot.left, 875, 23, colors.muted, 500);
     this.text(date(state.inGap ? data.points[state.index].time : state.time), plot.right, 875, 23, colors.muted, 500, 'right');
-    this.text(`${data.partialHistory ? 'AVAILABLE HISTORY' : data.period.toUpperCase()}${data.sparseHistory ? ' · GAPS IN HISTORY' : ''} · UTC`, 53, 920, 19, colors.muted, 500);
+    this.text(`${data.partialHistory ? 'AVAILABLE HISTORY' : data.period.toUpperCase()}${data.sparseHistory ? ' · GAPS IN HISTORY' : ''}${data.marketCapEstimated ? ' · EST. MCAP' : ''} · UTC`, 53, 920, 19, colors.muted, 500);
 
     this.panel(28, 962, 1024, 184, 30, '#151513', '#35332b');
     const cells = [{ label: 'Start MCAP', value: first.marketCap }, { label: 'Peak MCAP', value: state.peak }, { label: 'End MCAP', value: state.marketCap }];

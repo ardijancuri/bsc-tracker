@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { KolTokenRealizedPnlValue, tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
-import { verifiedTokenRealizedPnl } from './kolTokenPnlRequest';
+import { KolTokenRealizedPnl, KolTokenRealizedPnlValue, tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
+import type { NodeAccountingSummary } from '../shared/nodeAccounting';
+import { historicalAccountingMismatchNotice, tokenPositionPnlUnavailableNotice, verifiedTokenRealizedPnl } from './kolTokenPnlRequest';
 
 const date = '2026-10-14T12:00:00Z', wallet = '0x' + '1'.repeat(40), token = '0x' + '2'.repeat(40);
 const activity = (value: string | null, lastTradeAt = date): KolTokenActivity => ({
@@ -19,6 +20,30 @@ const activity = (value: string | null, lastTradeAt = date): KolTokenActivity =>
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 describe('KOL token realized profit display', () => {
+  const pendingSummary = (reason: string): NodeAccountingSummary => ({ tokenAddress: token, snapshot: null, status: 'pending', position: 'unknown',
+    realizedProfitUsd: null, estimatedProfitUsd: null, roi: null, remainingTokenAmount: null, valueUsd: null, reason });
+  it('explains a pending indexer response instead of leaving an endless spinner or claiming realized profit', () => {
+    const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={date} initialSummary={pendingSummary('node_indexer_lag')} />);
+    expect(html).toContain('Pending'); expect(html).toContain('indexer is catching up');
+    expect(html).not.toContain('Realized P&amp;L'); expect(html).not.toContain('$0');
+  });
+  it('does not claim older history is actively importing when recovery is unavailable or paused', () => {
+    const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={date} initialSummary={pendingSummary('historical_baseline_required')} />);
+    expect(html).toContain('Older transaction history needs recovery'); expect(html).toContain('Pending');
+    expect(html).not.toContain('being imported');
+  });
+  it('explains conflicting historical totals on cards and details without blaming a reconciled balance', () => {
+    const identity = { version: 2 as const, snapshotId: 'a'.repeat(64), source: 'node' as const, scope: 'public' as const, asOf: date,
+      historyFingerprint: 'b'.repeat(64), historyFrom: null, coveredThroughBlock: null, valuationBlock: null, valuationHash: null,
+      complete: false, reasons: ['historical_baseline_required', 'historical_accounting_mismatch'] };
+    const summary = { ...pendingSummary('historical_baseline_required'), snapshot: identity };
+    const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={date} initialSummary={summary} />);
+    expect(html).toContain(historicalAccountingMismatchNotice); expect(html).not.toContain('Older transaction history needs recovery');
+    expect(html).toContain('Unverified'); expect(html).not.toContain('Pending'); expect(html).toContain('aria-busy="false"');
+    const body = activity(null); body.accountingSnapshot = identity;
+    body.realizedAccounting = { ...body.realizedAccounting!, version: 2, source: 'node', policy: 'kollens_fifo_v1', status: 'pending' };
+    expect(tokenPositionPnlUnavailableNotice(body)).toBe(historicalAccountingMismatchNotice);
+  });
   it('ends the initial spinner after the bounded pass and keeps delayed retries explicit until a value is ready', () => {
     const body = activity(null); body.realizedAccounting!.status = 'pending';
     const waiting = tokenPnlStateAfterLoad(null, 'pair', { activity: body, status: 'pending' }, true);

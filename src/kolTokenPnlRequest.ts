@@ -1,6 +1,7 @@
 import { tradeActivityBase, tradeRequestHeaders, type TradeRequestContext } from './tradeRequestContext';
 import { journalTokenProfit } from './journalReplay';
 import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
+import { t } from './i18n';
 
 export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null; requestContext?: TradeRequestContext }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
@@ -14,7 +15,21 @@ export const gmgnRealizedPnlNote = 'GMGN realized P&L includes marked transfer-o
 export const gmgnHistoryPnlNote = 'Estimated from GMGN history; current wallet balance checked. Historical movements are not chain-verified.';
 export const gmgnReportedPnlNote = 'GMGN reported profit; current wallet balance checked.';
 export const trackedPnlNote = 'Estimate from verified tracked trades; gas fees and earlier untracked trades are excluded.';
+export const historicalAccountingMismatchNotice = 'Historical accounting totals conflict. Profit cannot be verified.';
+function isNodeAccounting(activity: KolTokenActivity | null) {
+  const accounting = activity?.realizedAccounting;
+  return accounting?.version === 2 && ['node', 'mixed', 'imported'].includes(accounting.source) && accounting.policy === 'kollens_fifo_v1';
+}
+function nodePnlDescription(activity: KolTokenActivity) {
+  const identity = activity.accountingSnapshot;
+  if (identity?.refreshStatus === 'pending' && Number.isFinite(Date.parse(identity.asOf))) return t('Saved profit as of {time} UTC. Updating data…', { time: new Date(identity.asOf).toISOString().replace('T', ' ').slice(0, 19) });
+  return identity?.source === 'mixed' ? 'Node accounting with imported older history. Includes transfers and wallet-paid fees.'
+    : identity?.source === 'imported' ? 'Imported historical accounting continued from a verified wallet checkpoint.'
+      : 'Calculated from captured node transactions, transfers and wallet-paid fees.';
+}
 export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
+  if (!activity) return 'Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.';
+  if (isNodeAccounting(activity)) return nodePnlDescription(activity!);
   if (isTrackedAccounting(activity)) return trackedPnlNote;
   if (isGmgnReportedAggregate(activity)) return gmgnReportedPnlNote;
   if (isGmgnHistoryFallback(activity)) return gmgnHistoryPnlNote;
@@ -31,6 +46,7 @@ export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
   return estimated ? 'Est. profit' : isGmgnHistoryFallback(activity) && !isGmgnReportedAggregate(activity) ? 'Est. realized P&L' : 'Realized P&L';
 }
 export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
+  if (isNodeAccounting(activity)) return nodePnlDescription(activity!);
   if (isTrackedAccounting(activity)) return trackedPnlNote;
   if (isGmgnReportedAggregate(activity)) return gmgnReportedPnlNote;
   if (isGmgnHistoryFallback(activity)) return gmgnHistoryPnlNote;
@@ -39,11 +55,14 @@ export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {
     : gmgnRealizedPnlDescription(activity);
 }
 export function tokenPositionPnlLoadingNotice(activity: KolTokenActivity | null) {
+  if (!activity || isNodeAccounting(activity)) return tokenPositionIsOpen(activity) ? 'Updating estimated profit…' : 'Preparing realized P&L…';
   return tokenPositionIsOpen(activity) ? 'Updating estimated profit…' : 'Loading GMGN realized P&L…';
 }
 export const tokenPositionPnlDelayedNotice = 'Profit data is taking longer to verify. Retrying automatically.';
 
 export function tokenPnlRefreshDelay(result: KolTokenPnlResult, consecutivePending: number) {
+  if (isNodeAccounting(result.activity)) return result.activity?.accountingSnapshot?.refreshStatus === 'pending' || result.status === 'pending'
+    ? Math.max(1500, Math.min(30_000, result.retryAfterMs ?? 2000)) : 20_000;
   if (result.status !== 'pending') {
     if (result.status === 'ready' && result.activity?.realizedAccounting?.source === 'onchain') {
       const accounting = result.activity.realizedAccounting;
@@ -83,6 +102,10 @@ export function tokenPositionPnlPriceTime(activity: KolTokenActivity | null) {
 export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now = Date.now()) {
   const accounting = verifiedTokenAccounting(activity, now);
   if (!accounting) return null;
+  if (isNodeAccounting(activity)) {
+    const raw = accounting.position?.status === 'open' ? accounting.position.estimatedProfitUsd : accounting.realizedProfitUsd;
+    return typeof raw === 'string' && decimal.test(raw) && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }
   const realized = verifiedTokenRealizedPnl(activity, now), position = accounting.position;
   if (!position) return realized;
   const proofBalance = Number(usesProviderHistory(activity)
@@ -124,6 +147,10 @@ export function displayedTokenPnl(activity: KolTokenActivity | null, now = Date.
  * render, never a fresh verification or network request. */
 export function tokenPnlExpiresAt(activity: KolTokenActivity | null, now = Date.now()) {
   if (displayedTokenPnl(activity, now) === null) return null;
+  if (isNodeAccounting(activity)) {
+    if (activity?.accountingSnapshot?.refreshStatus === 'pending') return null;
+    return Date.parse(activity!.accountingSnapshot!.asOf) + 180_001;
+  }
   const accounting = activity!.realizedAccounting!, coverage = accounting.coverage;
   const deadlines = usesProviderHistory(activity)
     ? [Date.parse(accounting.checkedAt) + providerHistoryMaxAgeMs + 1,
@@ -151,6 +178,7 @@ function openPositionWithoutRealizedProceeds(activity: KolTokenActivity | null, 
 const retryableInventoryReasons = new Set(['inventory_rpc_unavailable', 'canonical_block_unavailable',
   'canonical_receipt_unavailable', 'canonical_transaction_unavailable', 'movement_scan_unavailable', 'confirmed_endpoint_stale']);
 export function terminalTokenInventoryFailure(activity: KolTokenActivity | null) {
+  if (isNodeAccounting(activity)) return activity!.realizedAccounting!.status === 'unavailable';
   const proof = activity?.inventory?.coverage;
   if (isGmgnHistoryFallback(activity) || isTrackedHistoryFallback(activity)) {
     return activity!.realizedAccounting!.status !== 'pending' && verifiedTokenAccounting(activity) === null;
@@ -171,6 +199,20 @@ export function tokenPositionPnlUnavailableNotice(activity: KolTokenActivity | n
 /** Explain the failed check without suggesting that already verified balances
  * or movements are still loading. Both cards and the modal use these notices. */
 function tokenPnlVerificationFailureNotice(activity: KolTokenActivity | null) {
+  if (isNodeAccounting(activity)) {
+    const reasons = activity!.accountingSnapshot?.reasons ?? [activity!.realizedAccounting?.coverage.reason ?? ''];
+    if (reasons.includes('historical_accounting_mismatch')) return historicalAccountingMismatchNotice;
+    if (reasons.includes('native_trace_required')) return 'Waiting for the node to verify native BNB spent or received.';
+    if (reasons.includes('historical_import_cooldown')) return 'Historical data import is waiting for the provider cooldown.';
+    if (reasons.some(reason => /(?:unreconciled|mismatch|contradictory)/.test(reason))) return 'Transaction amounts do not match the confirmed wallet balance.';
+    if (reasons.some(reason => /(?:cost_unknown|cost_invalid|capital_unknown)/.test(reason))) return 'Purchase or incoming-transfer costs are unavailable for this position.';
+    if (reasons.some(reason => /(?:historical_baseline_required|historical_gap)/.test(reason))) return 'Older accounting history needs recovery.';
+    if (reasons.some(reason => /(?:decod|attribution|allocation|operation_|receipt)/.test(reason))) return 'Captured transactions need additional decoding before profit is available.';
+    if (reasons.some(reason => /(?:fee)/.test(reason))) return 'Wallet-paid fees are still being valued.';
+    if (reasons.some(reason => /(?:quote|valuation)/.test(reason))) return 'Waiting for a fresh confirmed market price.';
+    if (reasons.some(reason => /(?:collection|indexing|indexer|balance_unavailable)/.test(reason))) return 'Captured wallet transactions are still being prepared.';
+    return 'Position accounting is being prepared.';
+  }
   const reasons = [activity?.realizedAccounting?.coverage.reason, activity?.realizedAccounting?.position?.reason,
     activity?.inventory?.coverage.reason];
   if (reasons.some(reason => ['inventory_balance_mismatch', 'balance_mismatch', 'gmgn_history_balance_mismatch'].includes(reason ?? ''))) {
@@ -187,6 +229,7 @@ function tokenPnlVerificationFailureNotice(activity: KolTokenActivity | null) {
 }
 
 export function tokenPnlNeedsRetry(activity: KolTokenActivity) {
+  if (isNodeAccounting(activity)) return activity.realizedAccounting?.status === 'pending' || activity.accountingSnapshot?.refreshStatus === 'pending';
   if (terminalTokenInventoryFailure(activity)) return false;
   const proof = activity.inventory?.coverage, accounting = activity.realizedAccounting, position = accounting?.position;
   const retryAfter = Math.max(accounting?.retryAfterMs ?? 0, position?.retryAfterMs ?? 0);
@@ -202,6 +245,7 @@ export function kolTokenPnlKey(selection: KolTokenPnlSelection) {
 }
 
 function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.now()) {
+  if (isNodeAccounting(activity)) return verifiedNodeAccounting(activity!, now);
   const proof = activity?.inventory?.coverage, accounting = activity?.realizedAccounting;
   if (!activity || typeof activity.kol?.address !== 'string' || typeof activity.token?.address !== 'string'
     || !address.test(activity.kol.address) || !address.test(activity.token.address)
@@ -248,6 +292,33 @@ function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.n
     || typeof proof.blockHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(proof.blockHash)
     || !freshProofTime(accounting.checkedAt, now) || !trackedCashFlowMatches(accounting, balance))) return null;
   return accounting;
+}
+
+/** The server decides financial eligibility. The browser validates the version,
+ * selected identity, immutable snapshot agreement and dated evidence only. */
+function verifiedNodeAccounting(activity: KolTokenActivity, now: number) {
+  const raw = activity.realizedAccounting!, snapshot = activity.accountingSnapshot, proof = raw.coverage?.balanceProof;
+  const fingerprint = /^[a-f0-9]{64}$/i, hash = /^0x[a-f0-9]{64}$/i;
+  const dated = snapshot?.refreshStatus === 'pending';
+  const time = (value: unknown, current = false) => typeof value === 'string' && Number.isFinite(Date.parse(value))
+    && Date.parse(value) <= now + 1000 && (!current || dated || now - Date.parse(value) <= 180_000);
+  const quantity = (value: unknown) => typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value)
+    ? value.replace(/^0+(?=\d)/, '').replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') : null;
+  if (!snapshot || snapshot.version !== 2 || !snapshot.complete || !fingerprint.test(snapshot.snapshotId) || !fingerprint.test(snapshot.historyFingerprint)
+    || snapshot.source !== raw.source || raw.status !== 'ready' || !raw.coverage.transactionsComplete || !raw.coverage.balanceMatched
+    || raw.walletAddress?.toLowerCase() !== activity.kol.address.toLowerCase() || raw.tokenAddress?.toLowerCase() !== activity.token.address.toLowerCase()
+    || !address.test(activity.kol.address) || !address.test(activity.token.address) || !time(snapshot.asOf, true) || !time(raw.checkedAt, true)
+    || raw.coverage.historyFingerprint !== snapshot.historyFingerprint || !proof || proof.chain !== 'bsc'
+    || proof.walletAddress?.toLowerCase() !== raw.walletAddress.toLowerCase() || proof.tokenAddress?.toLowerCase() !== raw.tokenAddress.toLowerCase()
+    || !/^\d+$/.test(proof.blockNumber) || !hash.test(proof.blockHash) || snapshot.coveredThroughBlock !== proof.blockNumber
+    || !time(proof.checkedAt, true) || !time(proof.blockTimestamp, true) || Date.parse(proof.blockTimestamp) > Date.parse(proof.checkedAt)
+    || !/^\d+$/.test(snapshot.valuationBlock ?? '') || !hash.test(snapshot.valuationHash ?? '')) return null;
+  const position = raw.position, actual = quantity(proof.balance), remaining = quantity(position?.remainingTokenAmount);
+  if (!position || actual === null || remaining !== actual || position.status === 'closed' && actual !== '0'
+    || position.status === 'open' && (actual === '0' || !time(position.pricedAt, true) || !position.priceUsd || !decimal.test(position.priceUsd)
+      || !Number.isFinite(Number(position.priceUsd)) || Number(position.priceUsd) <= 0)) return null;
+  if (snapshot.scope === 'portfolio' && !('journal' in activity)) return null;
+  return raw;
 }
 
 /** This policy includes only verified buy/sell cash flows, never fabricated
@@ -353,6 +424,7 @@ export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now 
 }
 
 export function tokenRealizedPnlUnavailableNotice(activity: KolTokenActivity | null) {
+  if (!activity) return 'Position accounting is being prepared.';
   const detail = tokenPnlVerificationFailureNotice(activity);
   if (detail) return detail;
   const accounting = activity?.realizedAccounting, reason = accounting?.coverage?.reason;
@@ -380,6 +452,10 @@ function tokenPnlIndexedInputsMatch(left: KolTokenActivity, right: KolTokenActiv
 }
 
 export function tokenPnlMovementsMatch(left: KolTokenActivity, right: KolTokenActivity) {
+  if (isNodeAccounting(left) || isNodeAccounting(right)) return isNodeAccounting(left) && isNodeAccounting(right)
+    && left.kol.address === right.kol.address && left.token.address === right.token.address
+    && left.accountingSnapshot?.snapshotId === right.accountingSnapshot?.snapshotId
+    && left.accountingSnapshot?.historyFingerprint === right.accountingSnapshot?.historyFingerprint;
   if (!tokenPnlIndexedInputsMatch(left, right)) return false;
   const oldAccounting = left.realizedAccounting, incoming = right.realizedAccounting;
   if (!oldAccounting || !incoming || incoming.version !== 1 || !supportedAccountingPolicy(incoming)
@@ -534,11 +610,20 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
               || body.kol.address.toLowerCase() !== walletAddress.toLowerCase() || body.token.address.toLowerCase() !== tokenAddress.toLowerCase()
               || !body.coverage || !body.summary || !Array.isArray(body.trades)) return { activity: null, status: 'unavailable' };
             const expectedTime = Date.parse(job.selection.lastTradeAt ?? ''), returnedTime = Date.parse(body.summary.lastTradeAt ?? '');
-            if (Number.isFinite(expectedTime) && (!Number.isFinite(returnedTime) || returnedTime < expectedTime)) pending = true;
+            const datedNode = isNodeAccounting(body) && body.accountingSnapshot?.refreshStatus === 'pending';
+            if (Number.isFinite(expectedTime) && (!Number.isFinite(returnedTime) || returnedTime < expectedTime) && !datedNode) pending = true;
             else {
+              if (isNodeAccounting(body) && job.selection.requestContext) {
+                const membership = 'journal' in body ? body.journal as { accountId?: string; walletAddress?: string; membershipRevision?: string; snapshotId?: string; private?: boolean } : null;
+                if (body.accountingSnapshot?.scope !== 'portfolio' || membership?.accountId !== job.selection.requestContext.accountId
+                  || membership.private !== true || membership.walletAddress !== walletAddress.toLowerCase()
+                  || !/^[a-f0-9-]{36}$/i.test(membership.membershipRevision ?? '')
+                  || job.selection.requestContext.snapshotId && membership.snapshotId !== job.selection.requestContext.snapshotId)
+                  return { activity: null, status: 'unavailable' };
+              }
               activity = body;
               for (const client of job.clients) client.onActivity?.(body);
-              if (job.selection.requestContext && journalTokenProfit(body, job.selection.requestContext, now()) !== null)
+              if (!isNodeAccounting(body) && job.selection.requestContext && journalTokenProfit(body, job.selection.requestContext, now()) !== null)
                 return { activity: body, status: 'ready' };
               const accounting = body.realizedAccounting;
               // A terminal canonical-history failure cannot be fixed by polling

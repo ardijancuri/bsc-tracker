@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "source": "sanitized-gmgn-import",
+  "quantityRepresentation": "gmgn_float_display",
+  "description": "Persisted raw quantity representations from the historical adapter. Canonical overlap quantities stay exact and replace only matched display quantities.",
+  "decimals": 18,
+  "cases": [
+    { "rawQuantity": "72324262.84865604", "canonicalQuantity": "72324262.848656050073215941", "matches": true },
+    { "rawQuantity": 72324262.84865604, "canonicalQuantity": "72324262.848656050073215941", "matches": true },
+    { "rawQuantity": "842131.9065757474", "canonicalQuantity": "842131.906575747474492866", "matches": true },
+    { "rawQuantity": "72324262.848656050073215940", "canonicalQuantity": "72324262.848656050073215941", "matches": false },
+    { "rawQuantity": "72324262.84865604", "canonicalQuantity": "72324262.8486561", "matches": false },
+    { "rawQuantity": "0", "canonicalQuantity": "0.000000000000000001", "matches": false }
+  ]
+}

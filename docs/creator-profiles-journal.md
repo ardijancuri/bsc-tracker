@@ -1,8 +1,9 @@
 # Creator profiles and private portfolio
 
-These features use the existing Telegram account/session, PostgreSQL database,
-BSC RPC and GMGN credentials. They introduce no new provider keys or archive
-subscription. No production activation is part of local implementation.
+These features use the existing Telegram account/session, PostgreSQL database
+and BSC node. GMGN credentials are confined to public historical import jobs.
+They introduce no new provider keys or archive subscription. No production
+activation is part of local implementation.
 
 ## Creator ownership
 
@@ -64,12 +65,13 @@ Complete raw transfers plus the confirmed ending balance establish opening
 holdings at that exact boundary. Pre-existing holdings retain an unknown
 original acquisition cost; they never become free tokens or fabricated profit.
 Portfolio requests do not invoke GMGN account-history recovery. Current quotes
-and genuine market chart observations retain the existing market queue and
-caches; public KOL accounting continues to use its existing historical policy.
+and genuine market charts use the shared node market database. Public KOL
+lifetime history can use a reconciled imported baseline. See
+[node-owned-data.md](node-owned-data.md) for the shared services and provenance.
 
 ## Accounting and replays
 
-`journalLedger.ts` evaluates a selected wallet set as one exact-decimal FIFO
+`nodeAccountingLedger.ts` evaluates a selected wallet set as one exact-decimal FIFO
 ledger. Matched internal transfers move the original lots and acquisition
 cost; they add no income, profit or investment. Fees are attributed once to
 their wallet/execution. External transfers retain the existing receipt/marked

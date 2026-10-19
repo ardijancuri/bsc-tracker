@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ReplayMarketRequestResult } from './tradeReplayMarketRequest';
+import type { ReplayMarketRequestResult } from './replayPreparationRequest';
 import type { TradeReplayData } from './tradeReplayData';
 import { ReplayPreparationError, prepareReplayForShare, requirePreparedReplay } from './tradeReplayPreparation';
 import { startReplaySession } from './tradeReplaySession';
@@ -49,16 +49,16 @@ describe('automatic replay preparation continuation', () => {
     const prepare = vi.fn().mockResolvedValue(result('pending', 1000));
     const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare });
     const rejected = expect(promise).rejects.toBeInstanceOf(ReplayPreparationError);
-    await vi.advanceTimersByTimeAsync(8000); await rejected;
-    expect(prepare).toHaveBeenCalledTimes(8); expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30_000); await rejected;
+    expect(prepare).toHaveBeenCalledTimes(31); expect(vi.getTimerCount()).toBe(0);
   });
 });
 
 describe('complete replay export gate', () => {
   it.each([
-    ['accounting_pending','history is still being verified'],['accounting_mismatch','balance do not reconcile'],
-    ['unknown_costs','costs or transaction fees are missing'],['chart_coverage','full replay window'],
-    ['stale_quote','recent token price is unavailable'],['provider_cooldown','GMGN is rate limited'],
+    ['accounting_pending','transactions are still being processed'],['accounting_mismatch','confirmed wallet balance'],
+    ['unknown_costs','wallet-paid fees are unavailable'],['chart_coverage','full replay window'],
+    ['stale_quote','confirmed market price is unavailable'],['provider_cooldown','historical import'],
   ] as const)('explains the %s preparation stage',(blockingReason,message)=>{
     const error=new ReplayPreparationError({...result('pending',60_000),blockingReason});
     expect(error.message).toContain(message);expect(error.retryAfterMs).toBe(60_000);

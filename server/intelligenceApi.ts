@@ -3,13 +3,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from './db.js';
 import { watchlistMarket } from './watchlistMarket.js';
-import { chartSettings, currentMarketChart } from './tokenChart.js';
-import { currentFullMarketChart } from './tokenFullHistory.js';
+import { nodeMarketService } from './nodeMarket.js';
+import { databaseChart } from './nodeReplayPreparation.js';
+import { nodeTokenMarketSql, publicTokenEvidenceSql } from './nodeMarketReadSql.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { candleIntervals, watchPeriods, type ChartRange, type WatchPeriod, type PositionStatus } from '../shared/intelligence.js';
 import { decimalUnits, defaultSignalSettings, positionIsFresh } from './intelligenceLogic.js';
 import { registerKolTokenTradesRoutes } from './kolTokenTradesApi.js';
-import { tokenSupplyRequests } from './tokenSupply.js';
 import { resolveAuthUser, authSessionSecret } from './telegramAuth.js';
 import { hashSecret, sessionSecret, watchCookieName } from './watchSessionSecrets.js';
 export { hashSecret, sessionSecret } from './watchSessionSecrets.js';
@@ -65,44 +65,42 @@ async function watchlist(session: Session | null, period: WatchPeriod = '24h', t
   const seconds = { '24h': 86400, '7d': 604800, '30d': 2592000 }[period];
   const bucketSeconds = { '24h': 1800, '7d': 10800, '30d': 43200 }[period];
   const items = session || tokenAddress ? (await pool.query(`WITH entries AS (
-    ${tokenAddress ? `SELECT 'token'::text AS kind,v.address FROM tokens v WHERE v.address=$1 AND EXISTS (
-      SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)` : `SELECT kind,address FROM ${entryTable(session!)} WHERE ${ownerColumn(session!)}=$1`}
+    ${tokenAddress ? `SELECT 'token'::text AS kind,v.address FROM tokens v WHERE v.address=$1 AND ${publicTokenEvidenceSql()}` : `SELECT kind,address FROM ${entryTable(session!)} WHERE ${ownerColumn(session!)}=$1`}
     ) SELECT e.kind,e.address,CASE WHEN e.kind='kol' THEN k.display_name ELSE v.name END AS name,
-    COALESCE(stats.latest_price,CASE WHEN v.price_source='onchain' THEN v.price_usd END) AS "priceUsd",
-    stats.price_1h AS "price1hAgo",stats.price_24h AS "price24hAgo",
-    stats.price_period AS "pricePeriodAgo",stats.period_volume AS "periodVolumeUsd",COALESCE(stats.period_kols,0)::int AS "periodKolCount",
-    stats.volume AS "volume24hUsd",COALESCE(stats.kols,0)::int AS "kolCount24h",stats.last_trade AS "lastTradeAt",
+    ${nodeTokenMarketSql('price_usd')} AS "priceUsd",
+    market.price_1h AS "price1hAgo",market.price_24h AS "price24hAgo",
+    market.price_period AS "pricePeriodAgo",market.period_volume AS "periodVolumeUsd",COALESCE(stats.period_kols,0)::int AS "periodKolCount",
+    market.volume AS "volume24hUsd",COALESCE(stats.kols,0)::int AS "kolCount24h",stats.last_trade AS "lastTradeAt",
     COALESCE(history.points,'[]'::json) AS "priceHistory",
     v.symbol,k.avatar_url AS "avatarUrl",CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl",
-    CASE WHEN v.market_cap_usd > 0 AND v.market_cap_checked_at > now()-interval '2 hours' THEN v.market_cap_usd
-      WHEN v.price_source='onchain' AND v.price_usd > 0 AND v.total_supply_raw > 0 AND v.decimals BETWEEN 0 AND 36 AND v.supply_checked_at > now()-interval '2 days'
-      THEN v.price_usd*v.total_supply_raw/power(10::numeric,v.decimals) END AS "marketCapUsd",
-    CASE WHEN v.market_cap_checked_at > now()-interval '2 hours' THEN v.change_24h END AS "change24h"
+    ${nodeTokenMarketSql('market_cap_usd')} AS "marketCapUsd",NULL AS "change24h"
     FROM entries e LEFT JOIN published_kols k ON e.kind='kol' AND k.address=e.address LEFT JOIN tokens v ON e.kind='token' AND v.address=e.address
     LEFT JOIN LATERAL (
-      SELECT (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp>now()-interval '48 hours'))[1] AS latest_price,
-        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-interval '1 hour' AND t.timestamp>now()-interval '48 hours'))[1] AS price_1h,
-        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-interval '24 hours' AND t.timestamp>now()-interval '48 hours'))[1] AS price_24h,
-        (array_agg(t.price_usd ORDER BY t.timestamp DESC,t.id DESC) FILTER(WHERE t.price_usd>0 AND t.timestamp<=now()-$2*interval '1 second'))[1] AS price_period,
-        SUM(t.amount_usd) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_volume,
-        COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_kols,
-        SUM(t.amount_usd) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS volume,
+      SELECT COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-$2*interval '1 second') AS period_kols,
         COUNT(DISTINCT t.wallet_address) FILTER(WHERE t.timestamp>now()-interval '24 hours') AS kols,MAX(t.timestamp) AS last_trade
       FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
       WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL
         AND t.timestamp>now()-($2+86400)*interval '1 second' AND t.timestamp<=now()
     ) stats ON true
     LEFT JOIN LATERAL (
+      SELECT (array_agg(c.close ORDER BY c.minute DESC) FILTER(WHERE c.minute<=now()-interval '1 hour'))[1] AS price_1h,
+        (array_agg(c.close ORDER BY c.minute DESC) FILTER(WHERE c.minute<=now()-interval '24 hours'))[1] AS price_24h,
+        (array_agg(c.close ORDER BY c.minute DESC) FILTER(WHERE c.minute<=now()-$2*interval '1 second'))[1] AS price_period,
+        SUM(c.volume_usd) FILTER(WHERE c.minute>now()-$2*interval '1 second') AS period_volume,
+        SUM(c.volume_usd) FILTER(WHERE c.minute>now()-interval '24 hours') AS volume
+      FROM node_market_candles c WHERE e.kind='token' AND c.token_address=e.address AND c.minute>now()-($2+86400)*interval '1 second'
+    ) market ON true
+    LEFT JOIN LATERAL (
       SELECT json_agg(json_build_object('timestamp',p.timestamp,'priceUsd',p.price_usd::text) ORDER BY p.timestamp) AS points
-      FROM (SELECT samples.timestamp,samples.price_usd FROM (SELECT t.timestamp,t.price_usd,
-        row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp,t.id) AS first_in_bucket,
-        row_number() OVER(PARTITION BY floor(extract(epoch FROM t.timestamp)/$3) ORDER BY t.timestamp DESC,t.id DESC) AS last_in_bucket
-        FROM trades t JOIN published_kols tracked ON tracked.address=t.wallet_address AND tracked.is_tracked
-        WHERE e.kind='token' AND t.token_address=e.address AND t.block_number IS NOT NULL AND t.price_usd>0
-          AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()) samples
+      FROM (SELECT samples.timestamp,samples.price_usd FROM (SELECT c.minute AS timestamp,c.close AS price_usd,
+        row_number() OVER(PARTITION BY floor(extract(epoch FROM c.minute)/$3) ORDER BY c.minute,c.market_id) AS first_in_bucket,
+        row_number() OVER(PARTITION BY floor(extract(epoch FROM c.minute)/$3) ORDER BY c.minute DESC,c.market_id DESC) AS last_in_bucket
+        FROM node_market_candles c
+        WHERE e.kind='token' AND c.token_address=e.address
+          AND c.minute>now()-$2*interval '1 second' AND c.minute<=now()) samples
         WHERE samples.first_in_bucket=1 OR samples.last_in_bucket=1) p
     ) history ON true
-    WHERE (e.kind='kol' OR ${nonStockTokenSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [tokenAddress || session!.id, seconds, bucketSeconds])).rows : [];
+    WHERE (e.kind='kol' OR ${nonStockTokenSql()} AND ${publicTokenEvidenceSql()}) ORDER BY e.kind,name NULLS LAST,e.address`, [tokenAddress || session!.id, seconds, bucketSeconds])).rows : [];
   return { items: items.map(item => watchlistMarket(item, period)), period };
 }
 function pageCursor(value: unknown) {
@@ -115,7 +113,7 @@ function pageCursor(value: unknown) {
 function limit(value: unknown) { const number = Number(value); return Number.isInteger(number) && number > 0 ? Math.min(number, 100) : 20; }
 export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.stage,l.progress,l.launched_at AS "launchedAt",l.first_kol_at AS "firstKolAt",l.graduated_at AS "graduatedAt",
   l.graduation_tx_hash AS "graduationTxHash",l.quote_address AS "quoteAddress",l.pool_address AS "poolAddress",l.pool_id AS "poolId",
-  l.liquidity_usd AS "liquidityUsd",l.liquidity_baseline_usd AS "liquidityBaselineUsd",l.liquidity_baseline_at AS "liquidityBaselineAt",l.liquidity_at AS "liquidityAt",l.checked_at AS "checkedAt"`;
+  l.liquidity_usd AS "liquidityUsd",l.liquidity_baseline_usd AS "liquidityBaselineUsd",l.liquidity_baseline_at AS "liquidityBaselineAt",l.liquidity_at AS "liquidityAt",l.liquidity_reason AS "liquidityReason",l.checked_at AS "checkedAt"`;
 
 export function registerIntelligenceRoutes(app: FastifyInstance) {
   registerKolTokenTradesRoutes(app);
@@ -132,35 +130,32 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       request.query.history !== undefined && !fullHistory || fullHistory && interval === undefined ||
       before !== undefined && (!fullHistory || !Number.isSafeInteger(before) || before < 1 || before > Math.floor(Date.now() / 1000))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
     const address = parsed.data, selected = period as ChartRange;
-    const known = await pool.query(`SELECT v.price_usd::text AS price,COALESCE(v.market_cap_checked_at,v.metadata_updated_at) AS updated,
-      v.total_supply_raw::text AS "rawSupply",v.decimals,v.supply_checked_at AS "supplyCheckedAt"
-      FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND EXISTS (
-        SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [address]);
+    const known = await pool.query(`SELECT 1 FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND ${publicTokenEvidenceSql()}`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
-    const supplyRequest = tokenSupplyRequests.start(address, known.rows[0]);
-    const chartRequest = fullHistory ? currentFullMarketChart(address, selected as typeof candleIntervals[number], priority ?? 'chart', before)
-      : priority ? currentMarketChart(address, selected, priority) : currentMarketChart(address, selected);
-    const [result] = await Promise.all([chartRequest, supplyRequest.settle()]);
-    const supply = supplyRequest.snapshot();
-    const pending = result.pending || supply.pending;
-    reply.header('Cache-Control', fullHistory || pending || result.loadStatus || !supply.supply ? 'no-store' : 'public, max-age=15');
-    const loading = { loadStatus: result.loadStatus ?? (supply.pending ? 'queued' : !supply.supply ? 'provider_error' : undefined),
-      retryAfterMs: supply.supply ? result.retryAfterMs : Math.min(result.retryAfterMs ?? Infinity, supply.retryAfterMs ?? 3000) };
-    const marketCapSupply = supply.supply;
-    const supplyDetails = { marketCapSupply, supplyCheckedAt: supply.checkedAt, supplyPending: supply.pending };
-    if (result.chart) return { ...result.chart, period: selected, ...supplyDetails, pending, ...loading };
-    if (interval !== undefined) return { address, period: selected, candles: [], points: [], source: 'unavailable',
-      updatedAt: null, resolution: chartSettings(selected).resolution, ...supplyDetails, pending, stale: false, ...loading };
-    const history = await pool.query(`SELECT t.timestamp,t.price_usd::text AS "priceUsd" FROM trades t
-      JOIN published_kols k ON k.address=t.wallet_address AND k.is_tracked
-      WHERE t.token_address=$1 AND t.block_number IS NOT NULL AND t.price_usd>0
-        AND t.timestamp>now()-$2*interval '1 second' AND t.timestamp<=now()
-      ORDER BY t.timestamp DESC,t.id DESC LIMIT 1000`, [address, chartSettings(selected).seconds]);
-    const points = history.rows.reverse();
-    const quote = known.rows[0];
-    if (!points.length && Number(quote.price) > 0) points.push({ timestamp: quote.updated || new Date().toISOString(), priceUsd: quote.price });
-    return { address, period: selected, candles: [], points, source: points.length > 1 ? 'recorded' : points.length ? 'quote' : 'unavailable',
-      updatedAt: points.at(-1)?.timestamp ?? null, resolution: chartSettings(selected).resolution, ...supplyDetails, pending, stale: false, ...loading };
+    const settings: Record<string, [number, number]> = { '24h': [86400, 300], '7d': [604800, 3600], '30d': [2592000, 3600],
+      '1m': [86400, 60], '5m': [432000, 300], '1h': [2592000, 3600], '4h': [7776000, 14400], '1d': [15552000, 86400] };
+    const [span, seconds] = settings[selected], to = before ? before * 1000-1 : Date.now();
+    // Page real persisted buckets, rather than walking empty wall-clock spans.
+    // This reads existing data only; requesting an old page never starts RPC/import work.
+    const page = fullHistory ? (await pool.query(`SELECT bucket FROM (
+      (SELECT DISTINCT floor(extract(epoch FROM minute)/$3)*$3 AS bucket FROM node_market_candles
+        WHERE token_address=$1 AND minute<$2::timestamptz ORDER BY bucket DESC LIMIT 1501)
+      UNION (SELECT DISTINCT floor(extract(epoch FROM timestamp)/$3)*$3 AS bucket FROM node_market_observations
+        WHERE token_address=$1 AND kind='imported' AND interval_seconds<=$3 AND timestamp<$2::timestamptz
+        ORDER BY bucket DESC LIMIT 1501)
+      ) available ORDER BY bucket DESC LIMIT 1501`,[address,new Date(to).toISOString(),seconds])).rows : [];
+    const more = page.length>1500, oldest = page[Math.min(page.length,1500)-1]?.bucket;
+    const from = oldest === undefined ? to-span*1000 : Number(oldest)*1000;
+    const [history, quote] = await Promise.all([nodeMarketService.chart(address, { from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(), intervalSeconds: seconds, limit: 2000 }), nodeMarketService.quote(address)]);
+    if(!before&&(quote.stale||quote.priceUsd===null||priority==='chart'))await nodeMarketService.requestRefresh(address,{priority:priority==='chart'?10:1});
+    // Scope identifies the requested chart, independently of whether all its
+    // market coverage is available. Genuine partial candles remain displayable.
+    const displayedHistory=fullHistory?{...history,bars:history.bars.filter(bar=>Date.parse(bar.timestamp)>=from)}:history;
+    return reply.header('Cache-Control', 'no-store').send({...databaseChart(displayedHistory, quote, selected),fullHistory,
+      ...(fullHistory?{historyComplete:!more&&history.complete,partialHistory:!history.complete,
+        historyPending:more,historyLoadStatus:more?'queued':history.complete?undefined:'limited',
+        ...(oldest===undefined?{}:{historyBefore:Number(oldest)})}:{}),});
   });
   app.get<{ Params: { address: string }; Querystring: { period?: string } }>('/api/tokens/:address/market', async (request, reply) => {
     const parsed = addressSchema.safeParse(request.params.address);
@@ -191,7 +186,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (unique && ['kol', 'token'].some(kind => unique.filter(item => item.kind === kind).length > 100)) return reply.code(400).send({ error: 'Watch up to 100 KOLs and 100 tokens' });
     if (unique?.length) {
       const known = await pool.query(`SELECT 'kol' AS kind,address FROM published_kols WHERE is_tracked AND address=ANY($1::text[])
-        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND ${nonStockTokenSql()} AND EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`,
+        UNION ALL SELECT 'token',v.address FROM tokens v WHERE address=ANY($2::text[]) AND ${nonStockTokenSql()} AND ${publicTokenEvidenceSql()}`,
       [unique.filter(item => item.kind === 'kol').map(item => item.address), unique.filter(item => item.kind === 'token').map(item => item.address)]);
       const valid = new Set(known.rows.map(row => `${row.kind}:${row.address}`));
       if (unique.some(item => !valid.has(`${item.kind}:${item.address}`))) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
@@ -238,7 +233,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         const known = kind === 'kol'
           ? await pool.query('SELECT address FROM published_kols WHERE address=$1 AND is_tracked', [key])
           : await pool.query(`SELECT v.address FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()}
-            AND EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=v.address AND k.is_tracked AND t.block_number IS NOT NULL)`, [key]);
+            AND ${publicTokenEvidenceSql()}`, [key]);
         if (!known.rows.length) return reply.code(400).send({ error: 'Only tracked KOLs and traded tokens can be followed' });
       }
       const client = await pool.connect();

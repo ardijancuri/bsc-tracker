@@ -1,4 +1,5 @@
 import type { TradeReplayAccounting } from './tradeReplayAccounting.js';
+import type { NodeAccountingSnapshotIdentity } from './nodeAccounting.js';
 
 /** One KOL's indexed activity for one exact token contract, without a 24h cutoff. */
 export interface KolTokenActivity {
@@ -14,6 +15,7 @@ export interface KolTokenActivity {
   replayAccounting?: TradeReplayAccounting;
   /** Requested by profile P&L, with GMGN transfer/fee policy kept separate from FIFO. */
   realizedAccounting?: KolTokenRealizedAccounting;
+  accountingSnapshot?: NodeAccountingSnapshotIdentity;
   coverage: {
     source: 'indexed'; indexedTradeCount: number; returnedTradeCount: number;
     /** Complete indexed history, not a claim that every on-chain movement is indexed. */
@@ -23,9 +25,9 @@ export interface KolTokenActivity {
 }
 
 export interface KolTokenRealizedAccounting {
-  version: 1;
-  source: 'gmgn' | 'onchain';
-  policy: 'gmgn_realized_profit_v1' | 'onchain_net_trade_profit_v1';
+  version: 1 | 2;
+  source: 'gmgn' | 'onchain' | 'node' | 'mixed' | 'imported';
+  policy: 'gmgn_realized_profit_v1' | 'onchain_net_trade_profit_v1' | 'kollens_fifo_v1';
   walletAddress: string;
   tokenAddress: string;
   status: 'ready' | 'pending' | 'unavailable';
@@ -38,7 +40,7 @@ export interface KolTokenRealizedAccounting {
     /** Completeness of the history source identified by verification. */
     transactionsComplete: boolean; balanceMatched: boolean; reason?: string;
     /** Omitted for the original canonical receipt-backed accounting. */
-    verification?: 'gmgn_history' | 'tracked_history';
+    verification?: 'gmgn_history' | 'tracked_history' | 'node_history' | 'mixed_history' | 'imported_history';
     historyFingerprint?: string;
     historyCheckedAt?: string;
     /** Latest movement in the complete provider history, independent of its read time. */
@@ -83,7 +85,7 @@ export interface KolTokenProfitPosition {
   cashFlow?: { investedUsd: string; soldUsd: string; transferOutIncomeUsd: string; feesUsd: string };
   priceUsd: string | null;
   pricedAt: string | null;
-  valuationSource: 'gmgn' | 'market' | null;
+  valuationSource: 'gmgn' | 'market' | 'node' | 'mixed' | 'imported' | null;
   reason?: string;
   retryAfterMs?: number;
 }
