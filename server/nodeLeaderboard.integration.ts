@@ -16,6 +16,8 @@ const target = new URL(configured); target.pathname = `/${name}`;
 const database = new pg.Pool({ connectionString: target.href, max: 4 });
 const first = '0xbf004bff64725914ee36d03b87d6965b0ced4903', second = '0x3391a39a1b508e54a361924a26056c01c1c2c07d';
 const feeOnly = '0x609f2c912175f8cd4438c1882f291fa6a4b4c735';
+const partialHigh = `0x${'5'.repeat(40)}`, partialLow = `0x${'6'.repeat(40)}`, unavailable = `0x${'7'.repeat(40)}`;
+const partialWallets = [second, partialHigh, partialLow, unavailable];
 const privateWallet = `0x${'9'.repeat(40)}`, token = `0x${'a'.repeat(40)}`, blockHash = `0x${'b'.repeat(64)}`;
 const periodNow = Date.now()-10_000;
 const bootstrap = `
@@ -40,10 +42,13 @@ const ready=new Promise<string>((resolve,reject)=>{
 });
 try {
   const base=await ready;
+  for (const wallet of [partialHigh, partialLow, unavailable]) await database.query('INSERT INTO kols(address,is_tracked)VALUES($1,true)',[wallet]);
   await database.query('INSERT INTO kols(address,is_tracked)VALUES($1,false)',[privateWallet]);
   await database.query(`INSERT INTO tokens(address,symbol,name,decimals,is_meme)VALUES($1,'PUBLIC','Public fixture',18,true)`,[token]);
   for(const [index,wallet]of[first,second,privateWallet].entries())await database.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,amount_usd,block_number,block_hash,transaction_index,timestamp,source)
     VALUES($1,$2,$3,$4,'buy',100,100,100,$5,$6,now()-interval '1 minute','node')`,[`period-trade-${index}`,`0x${String(index+1).repeat(64)}`,wallet,token,blockHash,index]);
+  for (const [index,wallet] of [partialHigh, partialLow, partialLow, unavailable, unavailable, unavailable].entries()) await database.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,amount_usd,block_number,timestamp,source)
+    VALUES($1,$2,$3,$4,'buy',100,100,100,now()-interval '1 minute','node')`,[`extra-trade-${index}`,`0x${String(index+3).repeat(64)}`,wallet,token]);
   await database.query(`INSERT INTO node_evidence_blocks(block_number,block_hash,parent_hash,timestamp,header)VALUES(100,$1,$2,now(),'{}')`,[blockHash,`0x${'c'.repeat(64)}`]);
   await database.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,window_start,realized_profit_usd)VALUES($1,'1d',now()-interval '24 hours',888),($1,'7d',NULL,999)`,[first]);
   async function get(path:string){const response=await fetch(base+path,{signal:AbortSignal.timeout(15_000)});assert.ok(response.ok,`${path}: ${response.status} ${await response.clone().text()}`);const result=await response.json();assert.ok(!JSON.stringify(result).includes(privateWallet),`${path} leaked a private wallet`);return result;}
@@ -57,9 +62,9 @@ try {
     calls++;calculationStarted();await gate;
     return wallets.map((wallet:string)=>({version:1,policy:'kollens_fifo_v1',walletAddress:wallet,windowStart,windowEnd,asOf:windowEnd,
       snapshotId:createHash('sha256').update(wallet+windowStart+windowEnd).digest('hex'),source:'node',coveredThroughBlock:'100',coveredThroughHash:blockHash,
-      complete:wallet!==second,reasons:wallet===second?['purchase_cost_unknown']:[],realizedProfitUsd:wallet===second?null:wallet===first?'25.12345678901234567890123456789':wallet===feeOnly?'-0.1':'0',
-      knownRealizedProfitUsd:wallet===second?'1000000':wallet===first?'25.12345678901234567890123456789':wallet===feeOnly?'-0.1':'0',
-      valuedSellCount:wallet===first||wallet===second?1:0,excludedSellCount:wallet===second?1:0,valuedTransferOutCount:0,excludedTransferOutCount:0,
+      complete:!partialWallets.includes(wallet),reasons:partialWallets.includes(wallet)?['purchase_cost_unknown']:[],realizedProfitUsd:partialWallets.includes(wallet)?null:wallet===first?'25.12345678901234567890123456789':wallet===feeOnly?'-0.1':'0',
+      knownRealizedProfitUsd:wallet===second?'1000000':wallet===partialHigh?'100.00000000000000000002':wallet===partialLow?'100.00000000000000000001':wallet===first?'25.12345678901234567890123456789':wallet===feeOnly?'-0.1':'0',
+      valuedSellCount:[first,second,partialHigh,partialLow].includes(wallet)?1:0,excludedSellCount:partialWallets.includes(wallet)?1:0,valuedTransferOutCount:0,excludedTransferOutCount:0,
       feeOnlyFeesUsd:wallet===feeOnly?'0.1':'0',valuedFeeCount:wallet===feeOnly?1:0,excludedFeeCount:0}));
   };
   const service=createNodeLeaderboardService({database,calculate,now:()=>periodNow});
@@ -68,7 +73,7 @@ try {
   const otherService=createNodeLeaderboardService({database,calculate,now:()=>periodNow});
   assert.equal((await otherService.refresh()).skipped,true,'A second worker does not duplicate in-flight accounting');
   releaseCalculation();const refreshed=await refreshing;
-  assert.equal(calls,1);assert.equal(refreshed.partialWallets,1);assert.equal(refreshed.updatedWallets,legacy.items.length);
+  assert.equal(calls,1);assert.equal(refreshed.partialWallets,3);assert.equal(refreshed.updatedWallets,legacy.items.length);
   const board=await get('/api/leaderboard');
   assert.equal(board.items[0].address,first,'A large partial subtotal never outranks a complete active wallet');
   assert.equal(board.items[1].address,feeOnly,'A complete wallet-paid fee realization is ranked even without token trades');
@@ -77,12 +82,16 @@ try {
   assert.equal(firstRow.realizedProfitUsd,'25.12345678901234567890123456789','PostgreSQL preserves exact decimal text');
   assert.equal(firstRow.updatedAt,new Date(periodNow).toISOString(),'Cached reads retain the original as-of time');
   assert.equal(secondRow.realizedProfitUsd,null);assert.equal(secondRow.knownRealizedProfitUsd,'1000000');
+  assert.deepEqual(board.items.slice(2,5).map((row:any)=>row.address),[second,partialHigh,partialLow],
+    'Partial P&L sorts numerically with exact decimals, ahead of unknowns, even when lower-profit wallets have more trades');
   await database.query(`UPDATE leaderboard_snapshots SET realized_profit_usd=NULL,
     node_accounting=jsonb_set(jsonb_set(jsonb_set(node_accounting,'{complete}','false'),'{realizedProfitUsd}','null'),'{reasons}','["period_collection_incomplete"]')
     WHERE wallet_address=$1 AND period='1d'`,[feeOnly]);
   const partiallyKnown=await get('/api/leaderboard');
   assert.ok(partiallyKnown.items.findIndex((row:any)=>row.address===second)<partiallyKnown.items.findIndex((row:any)=>row.address===feeOnly),
     'An unranked fee-only wallet with no token trades follows active partial wallets instead of benefiting from NULLS FIRST');
+  assert.ok(partiallyKnown.items.findIndex((row:any)=>row.address===feeOnly)<partiallyKnown.items.findIndex((row:any)=>row.address===unavailable),
+    'Known negative partial profit precedes unknown profit; unknown is never converted to zero');
   const profile=await get(`/api/kols/${first}`);
   assert.equal(profile.stats.accounting.snapshotId,firstRow.accounting.snapshotId);
   assert.equal(profile.stats.realizedProfitUsd,firstRow.realizedProfitUsd,'Profile and leaderboard consume the identical committed rollup');

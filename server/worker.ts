@@ -22,6 +22,7 @@ import { nodeMarketDiscoverySql, nodeMarketReceiptHintsSql } from './nodeMarketD
 import { nodeAccountingService } from './nodeAccounting.js';
 import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
 import { nodeHistoricalImporter } from './nodeHistoricalImport.js';
+import { tokenChartRecovery } from './nodeTokenChartRecovery.js';
 import { writeNodeTradeProjection, type PreparedNodeTradeProjection } from './nodeTradeProjection.js';
 import { decodeNodeExecutions, type NodeExecution } from './nodeExecution.js';
 import { createNodeProjectionMetadata, type NodeProjectionTokenMetadata } from './nodeProjectionMetadata.js';
@@ -935,6 +936,16 @@ async function historicalImportLoop() {
   }
 }
 
+async function tokenChartRecoveryLoop() {
+  for (;;) {
+    try {
+      if(process.env.NODE_HISTORICAL_IMPORTS!=='0')await setState('node_chart_import_metrics',
+        {...await tokenChartRecovery.tick(),at:new Date().toISOString()});
+    } catch { console.warn('Historical token chart work waiting'); }
+    await sleep(1500);
+  }
+}
+
 await ensureSchema();
 await ensureSeeds();
 if (process.env.NODE_CAPTURE_BOOTSTRAP === '1') {
@@ -953,5 +964,5 @@ if (process.env.NODE_CAPTURE_BOOTSTRAP === '1') {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), nodeDecodeLoop(), ...Array.from({ length: nodeMetadataConcurrency }, (_, index) => nodeMetadataLoop(index)), nodeTokenIdentityLoop(), nodeProjectionLoop(), nodeTraceLoop(), nodeMarketCollectionLoop(), nodeMarketDiscoveryLoop(), nodeMarketLoop(), nodeMarketDecodeLoop(), nodeAccountingLoop(), nodeDataHealthLoop(), historicalImportLoop(), intelligenceLoop(), telegramNotifications.run(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop()]);
+  await Promise.all([nodeLoop(), nodeDecodeLoop(), ...Array.from({ length: nodeMetadataConcurrency }, (_, index) => nodeMetadataLoop(index)), nodeTokenIdentityLoop(), nodeProjectionLoop(), nodeTraceLoop(), nodeMarketCollectionLoop(), nodeMarketDiscoveryLoop(), nodeMarketLoop(), nodeMarketDecodeLoop(), nodeAccountingLoop(), nodeDataHealthLoop(), historicalImportLoop(), tokenChartRecoveryLoop(), intelligenceLoop(), telegramNotifications.run(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop()]);
 }

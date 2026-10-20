@@ -57,6 +57,7 @@ export function tokenChartNeedsForeground(chart: TokenChart, now = Date.now()) {
 
 export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) {
   const loadingDelay = interactive ? 1000 : 3000;
+  if(chart.historyRecoveryPending)return Math.max(1500,Math.min(chart.historyRetryAfterMs??1500,600_000));
   if (chart.retryAfterMs) {
     const delay = Math.max(1000, Math.min(chart.retryAfterMs, 600_000));
     return interactive && chart.pending && (!chart.loadStatus || chart.loadStatus === 'queued') ? Math.min(delay, loadingDelay) : delay;

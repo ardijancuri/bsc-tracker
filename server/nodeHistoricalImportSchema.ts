@@ -39,6 +39,20 @@ export async function ensureNodeHistoricalImportSchema(db: Pick<Pool, 'query'>) 
       payload_hash text NOT NULL,payload jsonb NOT NULL,observed_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY(token_address,resolution,from_at,to_at,payload_hash)
     );
+    CREATE TABLE IF NOT EXISTS node_import_chart_jobs (
+      token_address text NOT NULL,resolution integer NOT NULL,from_at timestamptz NOT NULL,to_at timestamptz NOT NULL,
+      cursor_at timestamptz NOT NULL,selected_at timestamptz NOT NULL DEFAULT now(),expires_at timestamptz NOT NULL,
+      next_attempt_at timestamptz NOT NULL DEFAULT now(),attempts integer NOT NULL DEFAULT 0,last_error text,
+      lease_id uuid,lease_until timestamptz,completed_at timestamptz,
+      PRIMARY KEY(token_address,resolution,from_at,to_at),CHECK(to_at>from_at)
+    );
+    CREATE INDEX IF NOT EXISTS node_import_chart_pending ON node_import_chart_jobs(next_attempt_at,selected_at DESC)
+      WHERE completed_at IS NULL;
+    CREATE TABLE IF NOT EXISTS node_legacy_chart_imports (
+      content_hash text PRIMARY KEY,source_path text NOT NULL,token_address text NOT NULL,resolution integer NOT NULL,
+      provider text NOT NULL,observed_at timestamptz NOT NULL,bar_count integer NOT NULL,
+      completed_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS node_import_wallet_jobs (
       wallet_address text PRIMARY KEY,stage text NOT NULL DEFAULT 'history',cursor text,
       pagination_cursors text[] NOT NULL DEFAULT '{}',requested_at timestamptz NOT NULL DEFAULT now(),

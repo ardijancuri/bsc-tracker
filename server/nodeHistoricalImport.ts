@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { pool } from './db.js';
-import { gmgnRequest, GmgnHttpError } from './gmgnApi.js';
-import { MarketProviderDeferred } from './geckoApi.js';
+import { gmgnRequest } from './gmgnApi.js';
+import { historicalImportRetry, importHistoricalChartPage } from './nodeChartImport.js';
+export { historicalImportRetry, normalizeImportedChart } from './nodeChartImport.js';
 import { currentKolTokenBalance } from './kolTokenBalance.js';
 import { saveNodeAccountingBaseline } from './nodeAccounting.js';
 import { nodeMarketCoverageComplete, nodeMarketService } from './nodeMarket.js';
@@ -24,18 +25,6 @@ const signedDecimal = (value: unknown) => {const text=typeof value==='number'&&N
   return typeof text==='string'&&text.startsWith('-')?(()=>{const amount=decimal(text.slice(1));return amount===null?null:amount==='0'?'0':`-${amount}`;})():decimal(text);};
 type Db = Pick<Pool, 'query' | 'connect'>;
 export { ensureNodeHistoricalImportSchema } from './nodeHistoricalImportSchema.js';
-
-/** Preserve shared provider pacing/cooldowns without discarding completed work. */
-export function historicalImportRetry(error: unknown, attempts: number) {
-  const fallback = Math.min(600_000, 5000 * 2 ** Math.min(Math.max(0, attempts), 6));
-  if(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name))return {reason:'import_provider_timeout',retryAfterMs:15000};
-  const provider = error instanceof MarketProviderDeferred || error instanceof GmgnHttpError;
-  const retryAfterMs = provider && Number.isFinite(error.retryAfterMs) ? error.retryAfterMs! : fallback;
-  const reason = error instanceof MarketProviderDeferred ? error.reason === 'busy' ? 'import_provider_busy' : 'import_provider_cooldown'
-    : error instanceof GmgnHttpError ? [401, 403].includes(error.status) ? 'import_provider_auth_blocked' : 'import_provider_unavailable'
-    : error instanceof Error && /^[a-z_]+$/.test(error.message) ? error.message : 'import_unavailable';
-  return { reason, retryAfterMs: Math.min(600_000, Math.max(1000, Math.ceil(retryAfterMs))) };
-}
 
 export function normalizeImportedWalletDiscovery(rows:unknown,wallet:string,now:number) {
   if(!addr.test(wallet)||!Array.isArray(rows)||rows.length>100)throw new Error('import_discovery_response_invalid');
@@ -144,35 +133,6 @@ function importedMoneyMatches(left:string,right:string) {
   const relative=(absA.compare(absB)>0?absA:absB).mul(MarketDecimal.parse('0.000001'));
   const bounded=relative.compare(oneCent)<0?relative:oneCent,minimum=MarketDecimal.parse('0.00000001');
   return difference.compare(bounded.compare(minimum)>0?bounded:minimum)<=0;
-}
-
-export function normalizeImportedChart(response:unknown,from:number,to:number,intervalSeconds:number,now:number,options:{requestLimit?:number}={}) {
-  const envelope=response as any,body=envelope?.data??envelope;
-  const raw=Array.isArray(body)?body:body?.list??body?.candles;
-  if(!Array.isArray(raw)||raw.length>1000) throw new Error('import_chart_response_invalid');
-  const bars=new Map<number,{timestamp:string;priceUsd:string;open:string;high:string;low:string;close:string;volumeUsd:string|null;intervalSeconds:number}>();
-  for(const candidate of raw) {
-    const row=Array.isArray(candidate)?{time:candidate[0],open:candidate[1],high:candidate[2],low:candidate[3],close:candidate[4],volume:candidate[5]}:candidate;
-    const input=Number(row?.time??row?.timestamp),time=input>=1e12?input:input*1000;
-    const open=decimal(row?.open),high=decimal(row?.high),low=decimal(row?.low),close=decimal(row?.close),volume=decimal(row?.volume);
-    if(!Number.isSafeInteger(time)||time<from||time>to) throw new Error('import_chart_timestamp_invalid');
-    // A forming close has no authenticated historical observation time. Do not
-    // freeze it as a completed candle or use access time as a fresh quote.
-    if(time+intervalSeconds*1000>now) continue;
-    if(!open||!high||!low||!close||[open,high,low,close].includes('0')) throw new Error('import_chart_candle_invalid');
-    const [o,h,l,c]=[open,high,low,close].map(MarketDecimal.parse);
-    if(h.compare(o)<0||h.compare(c)<0||l.compare(o)>0||l.compare(c)>0||l.compare(h)>0) throw new Error('import_chart_candle_invalid');
-    const result={timestamp:new Date(time).toISOString(),priceUsd:close,open,high,low,close,volumeUsd:volume,intervalSeconds};
-    const prior=bars.get(time);if(prior&&digest(prior)!==digest(result)) throw new Error('import_chart_conflict');bars.set(time,result);
-  }
-  const observations=[...bars.values()].sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
-  const first=observations[0],last=observations.at(-1);
-  const coverageFrom=first?Date.parse(first.timestamp):null,coverageTo=last?Date.parse(last.timestamp)+intervalSeconds*1000:null;
-  const complete=coverageFrom!==null&&coverageTo!==null&&coverageFrom<=from&&coverageTo>=Math.min(to,now-intervalSeconds*1000);
-  // Exhaustive retrieval coverage is distinct from having prices at both
-  // boundaries. An empty/sparse queried interval never manufactures a candle.
-  const retrievalComplete=options.requestLimit===1000&&raw.length<1000&&to+intervalSeconds*1000<=now;
-  return {observations,coverageFrom,coverageTo,complete,retrievalComplete};
 }
 
 /** Provider aggregate validation is independent from FIFO reconstruction.
@@ -485,25 +445,11 @@ export function createNodeHistoricalImporter({ db = pool, request = gmgnRequest,
     const from = tail?Math.max(historyFrom,ending-6*3600_000):historyFrom, cursor = Date.parse(job.chart_cursor), duration = ending - from;
     if(!Number.isFinite(from)||!Number.isFinite(cursor)||!Number.isFinite(duration)||duration<0)throw new Error('import_chart_window_invalid');
     const seconds = tail?60:[60, 300, 3600, 14400, 86400].find(step => duration / (step * 1000) <= 3000) ?? 86400;
-    const names: Record<number, string> = { 60: '1m', 300: '5m', 3600: '1h', 14400: '4h', 86400: '1d' };
     const step=seconds*1000,latest=Math.min(Math.floor((cursor-1)/step)*step,Math.floor(now()/step)*step-step);
     const pageFrom=Math.max(Math.floor(from/step)*step,latest-999*step);
     if(latest<pageFrom) {await db.query("UPDATE node_import_jobs SET stage='done',chart_gaps=true,completed_at=now() WHERE wallet_address=$1 AND token_address=$2",[job.wallet_address,job.token_address]);return;}
-    let response:any=(await db.query(`SELECT payload FROM node_import_chart_pages WHERE token_address=$1 AND resolution=$2 AND from_at=$3 AND to_at=$4
-      AND payload->>'requestLimit'='1000' ORDER BY observed_at DESC LIMIT 1`,
-      [job.token_address,seconds,new Date(pageFrom),new Date(latest)])).rows[0]?.payload;
-    if(!response) {
-      const url=urlFor('market/token_kline',{address:job.token_address,resolution:names[seconds],from:String(pageFrom),to:String(latest),limit:'1000'});
-      response=await request(url,{workload:'market',priority:'prefetch',weight:2,timeoutMs:8000});
-    }
-    const normalized=normalizeImportedChart(response,pageFrom,latest,seconds,now(),{requestLimit:1000});
-    const body=response.data??response,raw=Array.isArray(body)?body:body.list??body.candles;
-    const payload={data:raw,requestLimit:1000};
-    await db.query(`INSERT INTO node_import_chart_pages(token_address,resolution,from_at,to_at,payload_hash,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`,
-      [job.token_address,seconds,new Date(pageFrom),new Date(latest),digest(payload),JSON.stringify(payload)]);
-    if(normalized.observations.length||normalized.retrievalComplete)await market.importObservations({token:job.token_address,importId:`${job.wallet_address}:${job.token_address}`,observations:normalized.observations,
-      from:new Date(normalized.retrievalComplete?pageFrom:normalized.coverageFrom!).toISOString(),
-      to:new Date(normalized.retrievalComplete?latest+step:normalized.coverageTo!).toISOString(),complete:true});
+    const normalized=await importHistoricalChartPage({db,market,request,token:job.token_address,seconds,from:pageFrom,to:latest,
+      importId:`${job.wallet_address}:${job.token_address}`,now:now(),foreground:job.priority>=100});
     // Providers may return fewer rows than the requested window (the live
     // endpoint can default to 100). Advance only past observed candles, never
     // past an unreturned left-hand interval. Completed sparse bars remain real.

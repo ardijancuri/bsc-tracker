@@ -152,12 +152,13 @@ describe('market cap candle chart', () => {
     expect(html).not.toContain('>Line<');
     expect(html).not.toContain('>Reset<');
   });
-  it('explains unavailable supply and offers the live chart', () => {
+  it('shows real prices immediately when supply is unavailable instead of blocking older candles', () => {
     state.chart = { address, period: '5m', source: 'geckoterminal', candles: [{ time: 1791586800, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m', marketCapSupply: null };
     const html = render();
-    expect(html).toContain('Market cap data unavailable');
-    expect(html).toContain(`https://gmgn.ai/bsc/token/${address}`);
-    expect(html).not.toContain('$1.50');
+    expect(html).toContain('Market cap unavailable; showing token price');
+    expect(html).toContain('Price <b>$1.5</b>');
+    expect(html).toContain('1 candles');
+    expect(html).not.toContain('class="price-chart-status"');
   });
   it('retains cached candles and offers recovery when refreshing fails', () => {
     state.chart = { address, period: '5m', source: 'gmgn', candles: [{ time: 1791586800, open: .001, high: .002, low: .0005, close: .0015, volume: 10 }], points: [], pending: false, stale: true, updatedAt: null, resolution: '5m', marketCapSupply: '1000000000' };
@@ -195,6 +196,14 @@ describe('market cap candle chart', () => {
     state.chart = { ...state.chart, historyComplete: true, historyPending: false };
     expect(render(true)).not.toContain('Limited history');
     expect(render(true)).not.toContain('Loading earlier candles…');
+  });
+  it('keeps genuine candles visible during independent token-history recovery', () => {
+    state.chart={address,period:'5m',source:'imported',candles:[{time:1791586800,open:1,high:2,low:.5,close:1.5,volume:0}],points:[],pending:false,stale:true,
+      updatedAt:'2026-10-10T00:00:00Z',resolution:'5m',marketCapSupply:null,volumeCurrency:'unknown',partialHistory:true,historyLoadStatus:'limited',historyRecoveryPending:true};
+    const html=render(true);
+    expect(html).toContain('Recovering historical candles…');expect(html).toContain('1 candles');
+    expect(html).toContain('Price <b>$1.5</b>');expect(html).not.toContain('Volume <b>');
+    expect(html).not.toContain('Earlier history unavailable');
   });
   it.each([
     ['rate_limited', 'Earlier history cooling down. Retrying automatically…', true],

@@ -161,7 +161,8 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
     db.query(`SELECT timestamp,open::text,high::text,low::text,COALESCE(close,price_usd)::text AS close,price_usd::text,volume_usd::text,supply::text,interval_seconds
       FROM node_market_observations WHERE token_address=$1 AND kind='imported' AND timestamp>=$2::timestamptz-$4*interval '1 second' AND timestamp<=$3::timestamptz
       AND timestamp+interval_seconds*interval '1 second'>=$2::timestamptz
-      AND interval_seconds<=$4 ORDER BY timestamp,interval_seconds`, [token, from, to, intervalSeconds]),
+      AND interval_seconds<=$4 ORDER BY timestamp,interval_seconds DESC,
+        CASE WHEN import_id LIKE 'legacy-cache:%' THEN 1 ELSE 0 END,created_at DESC,id`, [token, from, to, intervalSeconds]),
     db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
       WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT from_at,to_at,'imported' FROM node_market_import_ranges WHERE token_address=$1 AND complete
@@ -195,7 +196,16 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
       ...(row.first_observation_at?{firstObservationAt:dateText(row.first_observation_at)}:{}),...(row.last_observation_at?{lastObservationAt:dateText(row.last_observation_at)}:{}),
       volumeUsd: String(row.volume_usd), intervalSeconds, source: 'node', supply: null, supplyEstimated: true });
   }
-  const bars = aggregateNodeMarketBars([...minutes.values()], intervalSeconds).slice(-limit);
+  // Restored caches can contain the same interval at several resolutions.
+  // Use the coarsest genuine bars inside each output bucket, never add a
+  // completed 5m/hour candle to its constituent minute candles and volume.
+  const bucketResolution=new Map<number,number>();
+  for(const bar of minutes.values()) {
+    const bucket=Math.floor(Date.parse(bar.timestamp)/(intervalSeconds*1000));
+    bucketResolution.set(bucket,Math.max(bucketResolution.get(bucket)??0,bar.intervalSeconds));
+  }
+  const selectedBars=[...minutes.values()].filter(bar=>bar.intervalSeconds===bucketResolution.get(Math.floor(Date.parse(bar.timestamp)/(intervalSeconds*1000))));
+  const bars = aggregateNodeMarketBars(selectedBars, intervalSeconds).slice(-limit);
   const complete = nodeMarketCoverageComplete(from, to, coverage) && bars.length > 0 && (!nodePending||importedFallback);
   const sparse = bars.some((bar,index) => index > 0 && Date.parse(bar.timestamp) - Date.parse(bars[index - 1].timestamp) > intervalSeconds * 1000);
   return { tokenAddress: token, from, to, intervalSeconds, bars, source: provenance(bars), coverage, complete, sparse,
@@ -1009,7 +1019,9 @@ export function createNodeMarketService(options: { db: NodeMarketDatabase; rpc: 
   }
   async function importObservations(input:NodeMarketImport) {
     const token=address(input.token), from=iso(input.from),to=iso(input.to);
+    const observedAt=input.observedAt?iso(input.observedAt):new Date(now()).toISOString();
     if(!input.importId || input.importId.length>200 || Date.parse(to)<Date.parse(from) || input.observations.length>5000) throw new Error('invalid_market_import');
+    if(Date.parse(observedAt)>now()+1000)throw new Error('invalid_market_import_observed_at');
     const rows=input.observations.map((row,index)=> {
       const timestamp=iso(row.timestamp), values=[row.open??row.priceUsd,row.high??row.priceUsd,row.low??row.priceUsd,row.close??row.priceUsd];
       if(Date.parse(timestamp)<Date.parse(from) || Date.parse(timestamp)>Date.parse(to) || !positiveDecimal(row.priceUsd) || !values.every(positiveDecimal)) throw new Error('invalid_market_import_observation');
@@ -1021,9 +1033,13 @@ export function createNodeMarketService(options: { db: NodeMarketDatabase; rpc: 
     });
     const client=await db.connect();
     try { await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(908335)');
-      for(const row of rows) await client.query(`INSERT INTO node_market_observations(id,token_address,kind,source,timestamp,price_usd,volume_usd,supply,supply_estimated,interval_seconds,open,high,low,close,import_id)
-        VALUES($1,$2,'imported','imported',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`,
-      [`import:${input.importId}:${token}:${row.timestamp}:${row.intervalSeconds??0}`,token,row.timestamp,row.priceUsd,row.volumeUsd??null,row.supply??null,row.supply==null,row.intervalSeconds??0,...row.values,input.importId]);
+      if(rows.length)await client.query(`INSERT INTO node_market_observations(id,token_address,kind,source,timestamp,price_usd,volume_usd,supply,supply_estimated,interval_seconds,open,high,low,close,import_id,created_at)
+        SELECT r.id,$1,'imported','imported',r.timestamp,r.price_usd,r.volume_usd,r.supply,r.supply IS NULL,r.interval_seconds,r.open,r.high,r.low,r.close,$3,$4
+        FROM jsonb_to_recordset($2::jsonb) r(id text,timestamp timestamptz,price_usd numeric,volume_usd numeric,supply numeric,interval_seconds integer,
+          open numeric,high numeric,low numeric,close numeric) ON CONFLICT(id) DO NOTHING`,
+      [token,JSON.stringify(rows.map(row=>({id:`import:${input.importId}:${token}:${row.timestamp}:${row.intervalSeconds??0}`,timestamp:row.timestamp,
+        price_usd:row.priceUsd,volume_usd:row.volumeUsd??null,supply:row.supply??null,interval_seconds:row.intervalSeconds??0,
+        open:row.values[0],high:row.values[1],low:row.values[2],close:row.values[3]}))),input.importId,observedAt]);
       await client.query(`INSERT INTO node_market_import_ranges(token_address,import_id,from_at,to_at,complete) VALUES($1,$2,$3,$4,$5)
         ON CONFLICT(token_address,import_id,from_at,to_at) DO UPDATE SET complete=node_market_import_ranges.complete OR EXCLUDED.complete`,[token,input.importId,from,to,input.complete]);
       await client.query('COMMIT');

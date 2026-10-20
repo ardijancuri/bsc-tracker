@@ -189,6 +189,10 @@ app.get('/api/leaderboard', async () => {
   const windowStart = last24hStart();
   const periodActivity = `(a.wallet_address IS NOT NULL OR COALESCE((s.node_accounting->>'valuedTransferOutCount')::integer,0)>0 OR COALESCE((s.node_accounting->>'valuedFeeCount')::integer,0)>0)`;
   const rankEligible = `(s.realized_profit_usd IS NOT NULL AND ${periodActivity})`;
+  // A partial subtotal is not a complete rank, but its displayed P&L still
+  // determines its order. Activity is only a tie-breaker, never a profit proxy.
+  const partialProfit = `(s.realized_profit_usd IS NULL AND COALESCE((s.node_accounting->>'valuedSellCount')::integer,0)
+    +COALESCE((s.node_accounting->>'valuedTransferOutCount')::integer,0)+COALESCE((s.node_accounting->>'valuedFeeCount')::integer,0)>0)`;
   const result = await pool.query(`WITH activity AS (
       SELECT t.wallet_address,COUNT(*)::int AS "tradeCount24h",
         COUNT(*) FILTER (WHERE t.side='buy')::int AS "buyCount24h",
@@ -212,6 +216,8 @@ app.get('/api/leaderboard', async () => {
     WHERE k.is_tracked
     ORDER BY ${rankEligible} DESC,
       CASE WHEN ${rankEligible} THEN s.realized_profit_usd END DESC NULLS LAST,
+      ${partialProfit} DESC,
+      CASE WHEN ${partialProfit} THEN (s.node_accounting->>'knownRealizedProfitUsd')::numeric END DESC NULLS LAST,
       ${periodActivity} DESC,
       COALESCE(a."tradeCount24h",0) DESC,a."lastTrade24h" DESC NULLS LAST,k.display_name,k.address`, [windowStart]);
   return { items: result.rows, windowStart, period: '24h', accountingPolicy: 'kollens_fifo_v1' };

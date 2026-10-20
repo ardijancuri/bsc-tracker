@@ -21,6 +21,7 @@ try {
     ['bscan_node_market_conversion_test_','server/nodeMarketConversion.integration.ts'],
     ['bscan_node_market_migration_test_','server/nodeMarketMigration.integration.ts'],
     ['bscan_node_import_test_','server/nodeHistoricalImport.integration.ts'],
+    ['bscan_chart_recovery_test_','server/nodeTokenChartRecovery.integration.ts'],
     ['bscan_node_trace_test_','server/nodeTrace.integration.ts'],
     ['bscan_node_projection_test_','server/nodeTradeProjection.integration.ts'],
     ['bscan_node_accounting_test_','server/nodeAccounting.integration.ts'],
@@ -38,5 +39,5 @@ try {
       if(result.status!==0)throw Error(file+' failed');
     }finally{await admin.query('DROP DATABASE "'+name+'" WITH (FORCE)');}
   }
-  console.log('All twenty-one node-owned PostgreSQL integration suites passed; transports fake/disabled.');
+  console.log('All twenty-two node-owned PostgreSQL integration suites passed; transports fake/disabled.');
 }finally{await admin.end();}

@@ -21,6 +21,9 @@ export interface TokenChart {
   fullHistory?: boolean;
   historyComplete?: boolean;
   historyPending?: boolean;
+  /** Independent historical-market repair, separate from stored-page pagination. */
+  historyRecoveryPending?: boolean;
+  historyRecoveryReason?: string;
   historyLoadStatus?: 'queued' | 'rate_limited' | 'provider_error' | 'limited';
   historyRetryAfterMs?: number;
   historyBefore?: number;

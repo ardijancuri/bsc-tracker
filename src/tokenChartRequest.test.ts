@@ -7,6 +7,12 @@ const history: TokenChart = { address, period: '5m', source: 'geckoterminal', up
   candles: [{ time: 100, open: 1, high: 2, low: 1, close: 2, volume: 50 }], points: [{ timestamp: '1970-01-01T00:01:40Z', priceUsd: '2' }] };
 const response = (chart: TokenChart) => new Response(JSON.stringify(chart), { headers: { 'Content-Type': 'application/json' } });
 afterEach(() => vi.useRealTimers());
+it('polls independent history recovery without confusing it with older stored-page pagination',()=>{
+  const chart:TokenChart={...history,source:'imported',historyRecoveryPending:true,historyLoadStatus:'limited',fullHistory:true};
+  expect(tokenChartRefreshDelay(chart,true)).toBe(1500);
+  expect(tokenChartHistoryRefreshDelay(chart)).toBeNull();
+  expect(tokenChartRefreshDelay({...chart,historyRetryAfterMs:60000},true)).toBe(60000);
+});
 
 describe('browser chart requests', () => {
   it('bypasses HTTP redirect caches while keeping partial node history in its requested scope',async()=>{

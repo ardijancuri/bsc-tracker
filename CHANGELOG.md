@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.0 — 2026-10-20
+
+- Sort partial leaderboard results by their known realized P&L using exact decimal values, with trade activity only breaking ties. Keep complete rankings separate and unknown results below available partial totals.
+- Restore genuine saved chart history into PostgreSQL with original source/timestamps, resumable import checkpoints and conservative coverage claims.
+- Recover selected public token charts independently of P&L, sharing completed provider pages and preserving cooldowns without blocking node capture.
+- Display genuine token-price candles when verified supply is unavailable, including very small token prices. Preserve real gaps and unknown volume.
+
+
 ## v1.3 updates — 2026-10-18
 
 - Start Telegram login in the Kollens bot, with an expiring private return link, explicit account confirmation, source-browser favorite merging and legacy account recovery.

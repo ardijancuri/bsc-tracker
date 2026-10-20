@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { pool } from './db.js';
 import { watchlistMarket } from './watchlistMarket.js';
 import { nodeMarketService } from './nodeMarket.js';
+import { tokenChartRecovery } from './nodeTokenChartRecovery.js';
 import { databaseChart } from './nodeReplayPreparation.js';
 import { nodeTokenMarketSql, publicTokenEvidenceSql } from './nodeMarketReadSql.js';
 import { nonStockTokenSql } from './stockToken.js';
@@ -130,7 +131,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       request.query.history !== undefined && !fullHistory || fullHistory && interval === undefined ||
       before !== undefined && (!fullHistory || !Number.isSafeInteger(before) || before < 1 || before > Math.floor(Date.now() / 1000))) return reply.code(400).send({ error: 'Invalid token or chart interval' });
     const address = parsed.data, selected = period as ChartRange;
-    const known = await pool.query(`SELECT 1 FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND ${publicTokenEvidenceSql()}`, [address]);
+    const known = await pool.query(`SELECT (SELECT t.timestamp FROM trades t JOIN published_kols k ON k.address=t.wallet_address AND k.is_tracked
+      WHERE t.token_address=v.address AND t.block_number IS NOT NULL ORDER BY t.timestamp DESC LIMIT 1) AS last_trade_at
+      FROM tokens v WHERE v.address=$1 AND ${nonStockTokenSql()} AND ${publicTokenEvidenceSql()}`, [address]);
     if (!known.rows.length) return reply.code(404).send({ error: 'Token not found' });
     const settings: Record<string, [number, number]> = { '24h': [86400, 300], '7d': [604800, 3600], '30d': [2592000, 3600],
       '1m': [86400, 60], '5m': [432000, 300], '1h': [2592000, 3600], '4h': [7776000, 14400], '1d': [15552000, 86400] };
@@ -149,10 +152,16 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const [history, quote] = await Promise.all([nodeMarketService.chart(address, { from: new Date(from).toISOString(),
       to: new Date(to).toISOString(), intervalSeconds: seconds, limit: 2000 }), nodeMarketService.quote(address)]);
     if(!before&&(quote.stale||quote.priceUsd===null||priority==='chart'))await nodeMarketService.requestRefresh(address,{priority:priority==='chart'?10:1});
+    const recovery=!before&&priority==='chart'&&!history.complete
+      ?await tokenChartRecovery.requestWindow(address,{from:to-span*1000,to,seconds,
+        ...(!history.bars.length&&known.rows[0].last_trade_at?{lastKnownTradeAt:Date.parse(known.rows[0].last_trade_at)}:{})}):null;
     // Scope identifies the requested chart, independently of whether all its
     // market coverage is available. Genuine partial candles remain displayable.
     const displayedHistory=fullHistory?{...history,bars:history.bars.filter(bar=>Date.parse(bar.timestamp)>=from)}:history;
     return reply.header('Cache-Control', 'no-store').send({...databaseChart(displayedHistory, quote, selected),fullHistory,
+      ...(recovery?.pending?{historyRecoveryPending:true,historyRetryAfterMs:recovery.retryAfterMs??1500,
+        ...(recovery.reason?{historyRecoveryReason:recovery.reason}:{}),
+        ...(!history.bars.length?{pending:true,loadStatus:recovery.coolingDown?'rate_limited':'queued',retryAfterMs:recovery.retryAfterMs??1500}:{})}:{}),
       ...(fullHistory?{historyComplete:!more&&history.complete,partialHistory:!history.complete,
         historyPending:more,historyLoadStatus:more?'queued':history.complete?undefined:'limited',
         ...(oldest===undefined?{}:{historyBefore:Number(oldest)})}:{}),});

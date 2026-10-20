@@ -98,7 +98,7 @@ export function databaseChart(chart: NodeMarketChart, quote: NodeMarketQuote, pe
   return { address: chart.tokenAddress, period, candles, points: [...observations.entries()].sort(([a], [b]) => a - b).map(([, point]) => point),
     source: chart.bars.length ? chart.source : 'unavailable', updatedAt: quote.timestamp ?? chart.bars.at(-1)?.timestamp ?? null,
     resolution: intervalName(chart.intervalSeconds), pending: false, stale: quote.stale,
-    marketCapSupply: quote.supply, supplyCheckedAt: quote.timestamp, supplyPending: false, volumeCurrency: 'usd',
+    marketCapSupply: quote.supply, supplyCheckedAt: quote.timestamp, supplyPending: false, volumeCurrency: chart.bars.some(bar=>bar.volumeUsd===null)?'unknown':'usd',
     marketCapEstimated: quote.supplyEstimated || chart.bars.some(bar => bar.supplyEstimated || !bar.supply),
     partialHistory: !chart.complete, historyComplete: chart.complete, fullHistory: chart.complete,
     ...(quote.priceUsd && quote.timestamp ? { currentQuote: { timestamp: quote.timestamp, priceUsd: quote.priceUsd } } : {}) };

@@ -30,6 +30,8 @@ export interface NodeMarketReplaySamples {
 }
 export interface NodeMarketImport {
   token: string; importId: string; from: string; to: string; complete: boolean;
+  /** Original provider/cache observation time; reading it again never renews it. */
+  observedAt?: string;
   observations: { timestamp: string; priceUsd: string; intervalSeconds?: number;
     open?: string; high?: string; low?: string; close?: string; volumeUsd?: string | null;
     supply?: string | null }[];
