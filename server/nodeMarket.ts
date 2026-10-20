@@ -17,6 +17,26 @@ import { authenticatedPoolKey, binPrice, decodeNodeMarketLog, erc20MarketAbi, IN
 export { ensureNodeMarketSchema } from './nodeMarketSchema.js';
 export type NodeMarketDatabase = Pick<Pool, 'query' | 'connect'>;
 type DB = Pick<Pool | PoolClient, 'query'>;
+const chartLaunchCapabilities=new WeakMap<DB,Promise<boolean>>();
+async function chartGraduations(db:DB,token:string,to:string):Promise<{market_id:string;retired_at:string}[]> {
+  let capability=chartLaunchCapabilities.get(db);
+  if(!capability){
+    capability=db.query("SELECT to_regclass('public.launch_events') IS NOT NULL AND to_regclass('public.node_evidence_blocks') IS NOT NULL AS chart_launches")
+      .then(result=>result.rows[0]?.chart_launches===true);
+    chartLaunchCapabilities.set(db,capability);
+    capability.catch(()=>{if(chartLaunchCapabilities.get(db)===capability)chartLaunchCapabilities.delete(db);});
+  }
+  if(!await capability)return[];
+  // Only the launch collector's authenticated, canonical dated event can end
+  // a launchpad market. A present-day status alone supplies no historical time.
+  const rows=await db.query(`SELECT DISTINCT ON(m.id) m.id AS market_id,e.timestamp AS retired_at
+    FROM node_markets m JOIN launch_events e ON e.token_address=m.token_address AND e.platform=m.protocol AND e.kind='graduated'
+    JOIN node_evidence_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash AND b.timestamp=e.timestamp
+    WHERE m.token_address=$1 AND e.timestamp<=$2::timestamptz
+      AND (m.protocol='fourmeme' AND m.contract_address=ANY($3::text[]) OR m.protocol='flap' AND m.contract_address=$4)
+    ORDER BY m.id,e.timestamp,e.block_number LIMIT 16`,[token,to,FOUR_MANAGERS,FLAP_PORTAL]);
+  return rows.rows.map(row=>({market_id:row.market_id,retired_at:dateText(row.retired_at)}));
+}
 export interface NodeMarketBlock { blockNumber: number; blockHash: string; timestamp: string; parentHash?: string }
 const address = (value: string) => { if (!/^0x[0-9a-f]{40}$/i.test(value)) throw new Error('invalid_market_address'); return value.toLowerCase(); };
 const hash = (value: string) => { if (!/^0x[0-9a-f]{64}$/i.test(value)) throw new Error('invalid_market_hash'); return value.toLowerCase(); };
@@ -175,9 +195,13 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
   if (!intervals.includes(intervalSeconds)) throw new Error('invalid_chart_interval');
   // One-minute candles contain swaps from every participant. State refreshes
   // are intentionally absent: a quote observation never invents candle volume.
+  // Select from each market's then-known activity, including quiet minutes:
+  // a divergent pool's isolated dust swap cannot substitute for an idle main
+  // market. Later swaps and a market's current status cannot rewrite history.
+  const graduations=await chartGraduations(db,token,to);
   const results = await Promise.all([
     db.query(`WITH chosen AS (
-      SELECT DISTINCT ON(c.minute) c.* FROM (
+      WITH native AS (
         SELECT * FROM node_market_candles WHERE token_address=$1 AND minute>date_trunc('minute',$2::timestamptz) AND minute<date_trunc('minute',$3::timestamptz)
         UNION ALL
         SELECT token_address,market_id,date_trunc('minute',timestamp) AS minute,
@@ -187,8 +211,33 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
           FROM node_market_observations WHERE token_address=$1 AND kind='swap' AND timestamp BETWEEN $2::timestamptz AND $3::timestamptz
             AND (timestamp<date_trunc('minute',$2::timestamptz)+interval '1 minute' OR timestamp>=date_trunc('minute',$3::timestamptz))
           GROUP BY token_address,market_id,date_trunc('minute',timestamp)
-      ) c JOIN node_markets m ON m.id=c.market_id
-        ORDER BY c.minute,c.volume_usd DESC,c.observations DESC,c.market_id
+      ), activity_base AS (
+        SELECT market_id,minute,volume_usd,observations,last_observation_at FROM node_market_candles
+        WHERE token_address=$1 AND minute>=date_trunc('minute',$2::timestamptz)-interval '24 hours'
+          AND minute<date_trunc('minute',$3::timestamptz)
+        UNION ALL
+        SELECT market_id,date_trunc('minute',timestamp),sum(COALESCE(volume_usd,0)),count(*)::integer,max(timestamp)
+          FROM node_market_observations WHERE token_address=$1 AND kind='swap'
+            AND timestamp>=date_trunc('minute',$3::timestamptz) AND timestamp<=$3::timestamptz
+          GROUP BY market_id,date_trunc('minute',timestamp)
+      ), activity AS (
+        SELECT * FROM activity_base UNION ALL
+        SELECT n.market_id,n.minute,n.volume_usd,n.observations,n.last_observation_at FROM native n
+        WHERE NOT EXISTS(SELECT 1 FROM activity_base a WHERE a.market_id=n.market_id AND a.minute=n.minute)
+      ), clocks AS (SELECT DISTINCT minute FROM activity), markets AS (
+        SELECT id FROM node_markets m WHERE token_address=$1 AND EXISTS(SELECT 1 FROM activity a WHERE a.market_id=m.id)
+      ), scored AS (
+        SELECT clock.minute,m.id AS market_id,
+          sum(COALESCE(a.volume_usd,0)) OVER recent AS recent_volume,
+          sum(COALESCE(a.observations,0)) OVER recent AS recent_swaps,max(a.last_observation_at) OVER recent AS last_swap
+        FROM clocks clock CROSS JOIN markets m LEFT JOIN activity a ON a.market_id=m.id AND a.minute=clock.minute
+        WINDOW recent AS(PARTITION BY m.id ORDER BY clock.minute RANGE BETWEEN interval '24 hours' PRECEDING AND CURRENT ROW)
+      ), preferred AS (
+        SELECT DISTINCT ON(minute) minute,market_id FROM scored s WHERE recent_swaps>0
+          AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset($6::jsonb) retired(market_id text,retired_at timestamptz)
+            WHERE retired.market_id=s.market_id AND retired.retired_at<=s.minute)
+          ORDER BY minute,recent_volume DESC,recent_swaps DESC,last_swap DESC,market_id
+      ) SELECT n.* FROM native n JOIN preferred p ON p.minute=n.minute AND p.market_id=n.market_id
       ), imported_candidates AS (
         SELECT DISTINCT ON(timestamp) timestamp AS minute,open,high,low,COALESCE(close,price_usd) AS close,volume_usd,supply,supply_estimated,
           GREATEST(interval_seconds,60) AS interval_seconds FROM node_market_observations
@@ -223,7 +272,7 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
         min(first_observation_at) AS first_observation_at,max(last_observation_at) AS last_observation_at,
         CASE WHEN count(DISTINCT source)>1 THEN 'mixed' ELSE min(source) END AS source,
         (array_agg(supply ORDER BY minute DESC))[1]::text AS supply,bool_or(supply_estimated) OR count(DISTINCT supply)>1 AS supply_estimated
-        FROM bucketed GROUP BY bucket ORDER BY bucket DESC LIMIT $5`, [token, from, to,intervalSeconds,limit]),
+        FROM bucketed GROUP BY bucket ORDER BY bucket DESC LIMIT $5`, [token, from, to,intervalSeconds,limit,JSON.stringify(graduations)]),
     db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
       WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT r.from_at,r.to_at,'imported' FROM node_market_import_ranges r WHERE r.token_address=$1 AND r.complete

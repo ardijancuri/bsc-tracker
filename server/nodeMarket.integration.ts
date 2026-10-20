@@ -4,7 +4,7 @@ import pg from 'pg';
 import { createNodeMarketService, ensureNodeMarketSchema, rollbackNodeMarket,readNodeMarketQuote } from './nodeMarket.js';
 import {ensureNodeEvidenceMetadataSchema} from './nodeEvidenceMetadata.js';
 import { erc20MarketAbi, oracleMarketAbi, poolMarketAbi,v3MarketAbi,flapMarketAbi, TRUSTED_QUOTE_FEEDS, type NodeMarketLog } from './nodeMarketProtocols.js';
-import { FLAP_PORTAL, FOUR_HELPER, PCS_V2_FACTORY, PCS_V3_FACTORY, WBNB, flapInterface, fourInterface } from './launchpad.js';
+import { FLAP_PORTAL, FOUR_HELPER, FOUR_MANAGERS, PCS_V2_FACTORY, PCS_V3_FACTORY, WBNB, flapInterface, fourInterface } from './launchpad.js';
 import type { Rpc } from './rpc.js';
 const connection=new URL(process.env.DATABASE_URL||'');
 if(!['localhost','127.0.0.1'].includes(connection.hostname)||connection.port!=='5435'||!/^\/bscan_node_market_test_\d+$/.test(connection.pathname)) throw new Error('Use an explicitly disposable local bscan_node_market_test_<timestamp> database');
@@ -58,6 +58,9 @@ const rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>{
 };
 try{
   await ensureNodeMarketSchema(db);await ensureNodeMarketSchema(db);
+  await db.query(`CREATE TABLE node_evidence_blocks(block_number bigint PRIMARY KEY,block_hash text UNIQUE NOT NULL,parent_hash text NOT NULL,timestamp timestamptz NOT NULL);
+    CREATE TABLE launch_events(id text PRIMARY KEY,token_address text NOT NULL,platform text NOT NULL,kind text NOT NULL,block_number bigint NOT NULL,block_hash text NOT NULL,timestamp timestamptz NOT NULL);
+    CREATE INDEX launch_events_token_idx ON launch_events(token_address,kind,block_number)`);
   await db.query('CREATE TABLE worker_state(key text PRIMARY KEY,value jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now())');
   const service=createNodeMarketService({db,rpc,now:()=>now});
   const discovered=await service.discover(token,{blockNumber:100,blockHash:hash(100),timestamp:timestamp(100),logs});
@@ -199,8 +202,7 @@ try{
     if(proofTimer)clearTimeout(proofTimer);await marketLocker.query('ROLLBACK');marketLocker.release();
     await Promise.allSettled([urgentProofs,...(lockedMarketWrite?[lockedMarketWrite]:[])]);
   }
-  await db.query(`CREATE TABLE node_evidence_blocks(block_number bigint PRIMARY KEY,block_hash text UNIQUE NOT NULL,parent_hash text NOT NULL,timestamp timestamptz NOT NULL);
-    CREATE TABLE tokens(address text PRIMARY KEY,symbol text,name text)`);
+  await db.query('CREATE TABLE tokens(address text PRIMARY KEY,symbol text,name text)');
   await db.query('INSERT INTO node_evidence_blocks VALUES(90,$1,$2,$3)',[hash(90),hash(89),timestamp(90)]);
   const oldRaw={address:v3Pool,...realV3,blockNumber:'0x5a',blockHash:hash(90),transactionHash:hash(10090),transactionIndex:'0x0',logIndex:'0x0'};
   await db.query(`INSERT INTO node_market_raw_logs(market_id,block_number,block_hash,tx_hash,transaction_index,log_index,timestamp,log,decode_status)
@@ -451,5 +453,79 @@ try{
   const fineWindow=await service.chart(quotedToken,{from:'2026-10-20T07:15:00Z',to:'2026-10-20T07:20:00Z',intervalSeconds:60});
   assert.equal(fineWindow.coverage.some(range=>range.source==='imported'&&range.from==='2026-10-20T07:15:00.000Z'),false,
     'A completed five-minute import cannot prove missing one-minute market history');
+  // Live GM regression: a 5.65e-13 USD swap in a separate pool briefly won a
+  // per-minute comparison against the main pool's 7.63e-15 USD swap, although
+  // that main market had over $35k of genuine trailing activity. Keep raw
+  // observations; select the historically active market without price caps.
+  const gm='0x13920fe6467e9e3c852b8d365a036c995f0f7777',gmMain='gm-main',gmOther='gm-other';
+  for(const id of [gmMain,gmOther])await db.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
+    authenticated_at_block,authenticated_block_hash,authentication,status)VALUES($1,$2,$3,'pcs_v2',$4,$2,$3,18,18,100,$5,'{}','active')`,[id,gm,WBNB,pool,hash(100)]);
+  const gmCandle=async(id:string,at:string,price:string,volume:string,count=1)=>db.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)
+    VALUES($1,$2,$3,$4,$4,$4,$4,$5,$6,$3::timestamptz+interval '10 seconds',$3::timestamptz+interval '10 seconds')`,[gm,id,at,price,volume,count]);
+  await gmCandle(gmMain,'2026-10-20T08:00Z','0.00075','35681.884712167019',346);
+  await gmCandle(gmMain,'2026-10-20T08:11Z','0.000749297461018908','0.000000000000007629934946601422672681');
+  await gmCandle(gmOther,'2026-10-20T08:11Z','0.05552783568858814','0.00000000000056542801233222');
+  await gmCandle(gmOther,'2026-10-20T08:12Z','0.06','0.000000000001');
+  await gmCandle(gmMain,'2026-10-20T08:13Z','0.00075','20');
+  await db.query("UPDATE node_markets SET status='graduated' WHERE id=$1",[gmMain]);
+  let gmChart=await service.chart(gm,{from:'2026-10-20T08:09Z',to:'2026-10-20T08:14Z',intervalSeconds:60});
+  assert.equal(gmChart.bars.find(bar=>bar.timestamp==='2026-10-20T08:11:00.000Z')?.high,'0.000749297461018908',
+    'Historical activity selects the main market even when its current status is graduated and the divergent pool is active');
+  assert.equal(gmChart.bars.some(bar=>bar.timestamp==='2026-10-20T08:12:00.000Z'),false,
+    'An idle-market-only minute cannot replace the dominant market or create a flat filler candle');
+  await gmCandle(gmMain,'2026-10-20T09:00Z','0.00074','1');
+  await gmCandle(gmOther,'2026-10-20T09:00Z','0.001','50000',10);
+  for(const [id,at,price,volume,log]of [[gmMain,'2026-10-20T09:00:10Z','0.00074','1',1],[gmOther,'2026-10-20T09:00:50Z','0.001','50000',2]] as const)
+    await db.query(`INSERT INTO node_market_observations(id,token_address,market_id,kind,source,timestamp,block_number,block_hash,tx_hash,transaction_index,log_index,price_usd,volume_usd)
+      VALUES($1,$2,$3,'swap','node',$4,9000,$5,$6,0,$7,$8,$9)`,['gm-migration-'+log,gm,id,at,hash(9000),hash(9100+log),log,price,volume]);
+  gmChart=await service.chart(gm,{from:'2026-10-20T08:09Z',to:'2026-10-20T09:02Z',intervalSeconds:60});
+  assert.equal(gmChart.bars.find(bar=>bar.timestamp==='2026-10-20T09:00:00.000Z')?.close,'0.001','Real later market dominance permits a genuine pool transition');
+  assert.equal(gmChart.bars.find(bar=>bar.timestamp==='2026-10-20T08:11:00.000Z')?.close,'0.000749297461018908',
+    'Later dominance never changes an earlier minute into the future selected pool');
+  const beforeMigration=await service.chart(gm,{from:'2026-10-20T08:09Z',to:'2026-10-20T09:00:20Z',intervalSeconds:60});
+  assert.equal(beforeMigration.bars.find(bar=>bar.timestamp==='2026-10-20T09:00:00.000Z')?.close,'0.00074',
+    'A persisted whole-minute candle cannot introduce swaps after the approved intraminute ending into its market score');
+  const singleToken='0x9191919191919191919191919191919191919191',singleMarket='single-genuine-spike';
+  await db.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
+    authenticated_at_block,authenticated_block_hash,authentication,status)VALUES($1,$2,$3,'pcs_v2',$4,$2,$3,18,18,100,$5,'{}','active')`,[singleMarket,singleToken,WBNB,pool,hash(100)]);
+  await db.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)
+    VALUES($1,$2,'2026-10-20T08:11Z',0.05552783568858814,0.05552783568858814,0.05552783568858814,0.05552783568858814,0.00000000000056542801233222,1,'2026-10-20T08:11:33Z','2026-10-20T08:11:33Z')`,[singleToken,singleMarket]);
+  assert.equal((await service.chart(singleToken,{from:'2026-10-20T08:10Z',to:'2026-10-20T08:12Z',intervalSeconds:60})).bars[0].high,'0.05552783568858814',
+    'A genuine single-market price move remains visible regardless of its amount or magnitude');
+  assert.equal((await db.query('SELECT high::text FROM node_market_candles WHERE token_address=$1 AND market_id=$2 AND minute=\'2026-10-20T08:11Z\'',[gm,gmOther])).rows[0].high,'0.05552783568858814',
+    'Market selection preserves the original isolated-pool evidence');
+  const migrationToken='0x9292929292929292929292929292929292929292',launchMarket='canonical-launch-market',destination='canonical-destination';
+  for(const [id,protocol,contract,status]of [[launchMarket,'fourmeme',FOUR_MANAGERS[0],'graduated'],[destination,'pcs_v2',pool,'active']])
+    await db.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
+      authenticated_at_block,authenticated_block_hash,authentication,status)VALUES($1,$2,$3,$4,$5,$2,$3,18,18,100,$6,'{}',$7)`,[id,migrationToken,WBNB,protocol,contract,hash(100),status]);
+  for(const [id,at,price,volume]of [[launchMarket,'2026-10-20T08:00Z','1','10000'],[launchMarket,'2026-10-20T08:59Z','1','10'],
+    [destination,'2026-10-20T08:59Z','2','1'],[launchMarket,'2026-10-20T09:00Z','1','5'],[destination,'2026-10-20T09:01Z','2','2']])
+    await db.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)
+      VALUES($1,$2,$3,$4,$4,$4,$4,$5,1,$3::timestamptz+interval '10 seconds',$3::timestamptz+interval '10 seconds')`,[migrationToken,id,at,price,volume]);
+  await db.query(`INSERT INTO node_market_observations(id,token_address,market_id,kind,source,timestamp,block_number,block_hash,tx_hash,transaction_index,log_index,price_usd,volume_usd)
+    VALUES('launch-pre-graduation',$1,$2,'swap','node','2026-10-20T09:00:10Z',9199,$3,$4,0,0,1,5)`,[migrationToken,launchMarket,hash(9199),hash(19199)]);
+  await db.query("INSERT INTO node_evidence_blocks VALUES(9200,$1,$2,'2026-10-20T09:00:40Z')",[hash(9200),hash(9199)]);
+  await db.query("INSERT INTO launch_events VALUES('canonical-graduation',$1,'fourmeme','graduated',9200,$2,'2026-10-20T09:00:40Z')",[migrationToken,hash(9200)]);
+  const migrationWindow={from:'2026-10-20T08:58Z',to:'2026-10-20T09:02Z',intervalSeconds:60};
+  let migrationChart=await service.chart(migrationToken,migrationWindow);
+  assert.equal(migrationChart.bars.find(bar=>bar.timestamp==='2026-10-20T08:59:00.000Z')?.close,'1',
+    'A canonical later graduation leaves earlier launchpad market activity intact');
+  assert.equal(migrationChart.bars.find(bar=>bar.timestamp==='2026-10-20T09:00:00.000Z')?.close,'1',
+    'A midminute graduation preserves the genuine earlier launchpad candle without splitting or erasing its OHLC');
+  assert.equal((await service.chart(migrationToken,{...migrationWindow,to:'2026-10-20T09:00:20Z'})).bars.find(bar=>bar.timestamp==='2026-10-20T09:00:00.000Z')?.close,'1',
+    'A future graduation within the approved ending minute cannot retire earlier observations');
+  assert.equal(migrationChart.bars.find(bar=>bar.timestamp==='2026-10-20T09:01:00.000Z')?.close,'2',
+    'A canonical dated graduation permits the real destination candle before its volume exceeds the former launchpad');
+  await db.query("UPDATE launch_events SET block_hash=$1 WHERE id='canonical-graduation'",[hash(9299)]);
+  migrationChart=await service.chart(migrationToken,migrationWindow);
+  assert.equal(migrationChart.bars.some(bar=>bar.timestamp==='2026-10-20T09:01:00.000Z'),false,
+    'An orphaned graduation cannot override the otherwise selected historical activity market');
+  await db.query("UPDATE launch_events SET block_hash=$1,platform='flap' WHERE id='canonical-graduation'",[hash(9200)]);
+  assert.equal((await service.chart(migrationToken,migrationWindow)).bars.some(bar=>bar.timestamp==='2026-10-20T09:01:00.000Z'),false,
+    'An unrelated platform event cannot retire an authenticated launchpad market');
+  await db.query("UPDATE launch_events SET platform='fourmeme' WHERE id='canonical-graduation'");
+  await db.query('UPDATE node_markets SET contract_address=$1 WHERE id=$2',[pool,launchMarket]);
+  assert.equal((await service.chart(migrationToken,migrationWindow)).bars.some(bar=>bar.timestamp==='2026-10-20T09:01:00.000Z'),false,
+    'An unknown controller cannot acquire a graduation cutoff from a known platform name');
   console.log('Node market integration passed: authentic discovery, all-participant swaps, durable raw capture, feed precedence, deterministic activity-based markets, exact decimals, no request RPC, idempotency, supply, wrong blocks, reorgs, pruning recovery and sparse daily history.');
 }finally{await db.end();}

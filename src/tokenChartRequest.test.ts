@@ -286,6 +286,17 @@ describe('browser chart requests', () => {
     expect(fetcher).not.toHaveBeenCalled();
     await reloaded.request(address, '5m'); expect(fetcher).toHaveBeenCalledOnce();
   });
+  it('does not restore secondary-pool candles saved under the previous market-selection policy',async()=>{
+    const clock=Date.parse('2026-10-12T12:00:00Z'),current:TokenChart={...history,source:'node',updatedAt:new Date(clock).toISOString(),
+      supplyCheckedAt:new Date(clock).toISOString(),candles:[{...history.candles[0],time:clock/1000-300}]};
+    const previous={...current,candles:[{...current.candles[0],open:55,high:55,low:55,close:55}]};
+    const values=new Map([['kollens:market-charts:node-v2',JSON.stringify([previous])]]);
+    const storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);}};
+    const charts=createTokenChartRequests({now:()=>clock,storage,fetcher:vi.fn<typeof fetch>().mockResolvedValue(response(current))});
+    expect(charts.peek(address,'5m')).toBeNull();
+    expect((await charts.request(address,'5m')).candles).toEqual(current.candles);
+    expect(createTokenChartRequests({now:()=>clock,storage}).peek(address,'5m')?.candles).toEqual(current.candles);
+  });
   it.each(['node','imported','mixed'] as const)('restores %s history with original point times, scope and coverage flags',async source=>{
     const clock=Date.parse('2026-10-12T12:00:00Z'),observed=new Date(clock-45_000).toISOString(),asOf=new Date(clock-5000).toISOString();
     const current:TokenChart={...history,source,period:'1m',resolution:'1m',fullHistory:true,partialHistory:true,historyComplete:false,

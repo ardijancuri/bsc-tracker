@@ -128,4 +128,14 @@ describe('durable market chart boundaries',()=>{
     const chart=await readNodeMarketChart({query} as never,token,{from:'2026-10-18T10:00:00Z',to:'2026-10-18T11:00:00Z'});
     expect(chart.complete).toBe(false);expect(chart.reason).toBe('incomplete_chart_coverage');expect(chart.bars).toHaveLength(1);
   });
+  it('coalesces optional launch-schema discovery without sharing dated graduation evidence',async()=>{
+    const query=vi.fn().mockImplementation((sql:string)=>Promise.resolve({rows:sql.includes('AS chart_launches')?[{chart_launches:true}]
+      :sql.includes('AS retired_at')?[{market_id:'launch',retired_at:'2026-10-18T10:30Z'}]:[]}));
+    const db={query},window={from:'2026-10-18T10:00Z',to:'2026-10-18T11:00Z'};
+    await Promise.all([readNodeMarketChart(db as never,token,window),readNodeMarketChart(db as never,token,window)]);
+    expect(query.mock.calls.filter(call=>call[0].includes('AS chart_launches'))).toHaveLength(1);
+    expect(query.mock.calls.filter(call=>call[0].includes('AS retired_at'))).toHaveLength(2);
+    const projection=query.mock.calls.find(call=>call[0].includes('WITH chosen'))!;
+    expect(projection[1][5]).toBe('[{"market_id":"launch","retired_at":"2026-10-18T10:30:00.000Z"}]');
+  });
 });

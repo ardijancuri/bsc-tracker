@@ -5,8 +5,9 @@ type HistoryCache = { latestPartial: boolean; partialPages: number[]; recoveryBe
 type StoredChart = TokenChart & { localHistoryCache?: HistoryCache };
 export type TokenChartPriority = 'chart' | 'prefetch' | 'sparkline';
 const priorityOrder: Record<TokenChartPriority, number> = { chart: 0, prefetch: 1, sparkline: 2 };
-// Provider-era charts must not appear as the initial node-owned read after cutover.
-const storageKey = 'kollens:market-charts:node-v2';
+// Earlier caches used minute-only pool selection. Do not merge those old
+// secondary-pool candles into the as-of active-market series after this release.
+const storageKey = 'kollens:market-charts:node-v3';
 const supplyLifetime = 2 * 86400_000;
 const chartWindows: Record<ChartRange, number> = { '24h': 86400, '7d': 604800, '30d': 2592000, '1m': 86400, '5m': 86400, '1h': 2592000, '4h': 7776000, '1d': 15552000 };
 const equivalentRanges: Partial<Record<ChartRange, ChartRange[]>> = { '5m': ['24h'], '24h': ['5m'], '1h': ['30d'], '30d': ['1h'], '7d': ['30d', '1h'] };
