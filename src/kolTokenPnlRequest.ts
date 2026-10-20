@@ -2,6 +2,7 @@ import { tradeActivityBase, tradeRequestHeaders, type TradeRequestContext } from
 import { journalTokenProfit } from './journalReplay';
 import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
 import { t } from './i18n';
+import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
 
 export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null; requestContext?: TradeRequestContext }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
@@ -22,7 +23,9 @@ function isNodeAccounting(activity: KolTokenActivity | null) {
 }
 function nodePnlDescription(activity: KolTokenActivity) {
   const identity = activity.accountingSnapshot;
-  if (identity?.refreshStatus === 'pending' && Number.isFinite(Date.parse(identity.asOf))) return t('Saved profit as of {time} UTC. Updating data…', { time: new Date(identity.asOf).toISOString().replace('T', ' ').slice(0, 19) });
+  const scope = capturedPositionDescription(identity);
+  if (identity?.refreshStatus === 'pending' && Number.isFinite(Date.parse(identity.asOf))) return [t('Saved profit as of {time} UTC. Updating data…', { time: new Date(identity.asOf).toISOString().replace('T', ' ').slice(0, 19) }), scope].filter(Boolean).join(' ');
+  if (scope) return scope;
   return identity?.source === 'mixed' ? 'Node accounting with imported older history. Includes transfers and wallet-paid fees.'
     : identity?.source === 'imported' ? 'Imported historical accounting continued from a verified wallet checkpoint.'
       : 'Calculated from captured node transactions, transfers and wallet-paid fees.';
@@ -42,7 +45,7 @@ export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
   const estimated = tokenPositionIsOpen(activity)
     && (activity?.realizedAccounting?.position?.status === 'open' && verifiedTokenPositionPnl(activity) !== null
       || verifiedTokenRealizedPnl(activity) === null || openPositionWithoutRealizedProceeds(activity));
-  if (isTrackedAccounting(activity)) return estimated ? 'Tracked est. profit' : 'Tracked realized P&L';
+  if (isTrackedAccounting(activity) || isCapturedPosition(activity?.accountingSnapshot)) return estimated ? 'Tracked est. profit' : 'Tracked realized P&L';
   return estimated ? 'Est. profit' : isGmgnHistoryFallback(activity) && !isGmgnReportedAggregate(activity) ? 'Est. realized P&L' : 'Realized P&L';
 }
 export function tokenPositionPnlDescription(activity: KolTokenActivity | null) {

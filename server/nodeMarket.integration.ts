@@ -1,7 +1,7 @@
 /** Never contacts Telegram, external financial providers or the real node. */
 import assert from 'node:assert/strict';
 import pg from 'pg';
-import { createNodeMarketService, ensureNodeMarketSchema, rollbackNodeMarket } from './nodeMarket.js';
+import { createNodeMarketService, ensureNodeMarketSchema, rollbackNodeMarket,readNodeMarketQuote } from './nodeMarket.js';
 import {ensureNodeEvidenceMetadataSchema} from './nodeEvidenceMetadata.js';
 import { erc20MarketAbi, oracleMarketAbi, poolMarketAbi,v3MarketAbi,flapMarketAbi, TRUSTED_QUOTE_FEEDS, type NodeMarketLog } from './nodeMarketProtocols.js';
 import { FLAP_PORTAL, FOUR_HELPER, PCS_V2_FACTORY, PCS_V3_FACTORY, WBNB, flapInterface, fourInterface } from './launchpad.js';
@@ -385,5 +385,71 @@ try{
   await eventLoopTick;assert.equal(yielded,true,'A large controller page yields to other worker loops');
   assert.equal(scale.markets,700);assert.equal(scale.decodeCandidates,2354,'Decoder work is linear in actual token matches instead of700times every controller log');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_raw_logs WHERE block_number BETWEEN 111 AND 610')).rows[0].n,2354,'Unknown controller event versions remain durable raw evidence');
-  console.log('Node market integration passed: authentic discovery, all-participant swaps, durable raw capture, retriable feed gaps, exact decimals, no request RPC, idempotency, quote-only state refresh, supply, wrong blocks, reorgs, pruning recovery and sparse daily history.');
+  // Production regression: restored WBNB candles predated a purchase, although
+  // the genuine BNB/USD feed had already been captured at its exact block.
+  const feeAt='2026-10-20T07:19:32.000Z',trusted=TRUSTED_QUOTE_FEEDS[WBNB];
+  await service.importObservations({token:WBNB,importId:'old-fee-asset-chart',from:'2026-10-12T00:00:00Z',to:'2026-10-12T00:01:00Z',complete:false,
+    observations:[{timestamp:'2026-10-12T00:00:00Z',priceUsd:'749.95',intervalSeconds:60}]});
+  for(const [height,price,feed] of [[9000,'729.54765955',trusted.feed],[9001,'999',trusted.feed],[9002,'3000',pool]] as const)await db.query(`
+    INSERT INTO node_market_feed_evidence(quote_address,feed_address,feed_description,block_number,block_hash,timestamp,
+      round_id,answered_in_round,answer_raw,feed_decimals,price_usd,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,100,100,72954765955,8,$7,$6)`,[WBNB,feed,trusted.description,height,hash(height),feeAt,price]);
+  const feeQuote=await readNodeMarketQuote(db,WBNB,{timestamp:feeAt,blockNumber:'9000'});
+  assert.equal(feeQuote.priceUsd,'729.54765955','Authenticated exact-block feed takes priority over saved chart observations');
+  assert.equal(feeQuote.blockNumber,'9000');assert.equal(feeQuote.timestamp,feeAt);assert.equal(feeQuote.stale,false);
+  assert.equal((await readNodeMarketQuote(db,WBNB,{timestamp:feeAt,blockNumber:'9001'})).priceUsd,'999','Later blocks at the same second are admitted only at their own checkpoint');
+  assert.equal((await readNodeMarketQuote(db,WBNB,{timestamp:feeAt,blockNumber:'9002'})).priceUsd,'999','An unrelated feed cannot impersonate the configured oracle');
+
+  // Same-block state refreshes in several pools used to select an arbitrary
+  // pool. SAFU's idle V3 state was 2.4x its actively traded V2 market.
+  const quotedToken='0x9090909090909090909090909090909090909090',activePool='activity-v2',idlePool='idle-v3',oldPool='graduated-launchpad';
+  for(const [id,protocol,status] of [[activePool,'pcs_v2','active'],[idlePool,'pcs_v3','active'],[oldPool,'flap','graduated']])await db.query(`
+    INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
+      authenticated_at_block,authenticated_block_hash,authentication,status)VALUES($1,$2,$3,$4,$2,$2,$3,18,18,9000,$5,'{}',$6)`,
+  [id,quotedToken,WBNB,protocol,hash(9000),status]);
+  const quoteObservation=async(id:string,marketId:string,kind:'state'|'swap',at:string,price:string,volume:string|null,height=9000,logIndex=0)=>db.query(`
+    INSERT INTO node_market_observations(id,token_address,market_id,kind,source,timestamp,block_number,block_hash,transaction_index,log_index,
+      price_usd,volume_usd,supply,supply_estimated)VALUES($1,$2,$3,$4,'node',$5,$6,$7,0,$8,$9,$10,1000000000,false)`,
+  [id,quotedToken,marketId,kind,at,height,hash(height),logIndex,price,volume]);
+  await quoteObservation('main-swap',activePool,'swap',feeAt,'0.000497','131000',9000,0);
+  await quoteObservation('main-state',activePool,'state',feeAt,'0.000498',null,9000,1);
+  await quoteObservation('idle-state',idlePool,'state',feeAt,'0.001186',null,9000,2);
+  await quoteObservation('old-swap',oldPool,'swap','2026-10-20T06:00:00Z','0.00001','1000000',8990);
+  let preferred=await readNodeMarketQuote(db,quotedToken,{timestamp:feeAt,blockNumber:'9000'});
+  assert.equal(preferred.marketId,activePool);assert.equal(preferred.priceUsd,'0.000498','An idle divergent state cannot override the genuinely traded market');
+  assert.equal((await readNodeMarketQuote(db,quotedToken,{timestamp:'2026-10-20T06:00:00Z',blockNumber:'8990'})).marketId,oldPool,
+    'Present-day pool activity never overwrites historical pre-migration price evidence');
+  const activitySamples=await service.replaySamples(quotedToken,{from:'2026-10-20T06:00:00Z',to:feeAt});
+  assert.equal(activitySamples.observations.at(-1)?.marketId,activePool);
+  assert.equal(activitySamples.observations.at(-1)?.priceUsd,'0.000498','Replay samples use actual pool activity for competing same-second state marks too');
+  assert.equal(activitySamples.observations[0]?.marketId,oldPool,'Later swaps cannot change earlier replay sample market selection');
+  await quoteObservation('idle-only-refresh',idlePool,'state','2026-10-20T07:19:42Z','0.001186',null,9000,2);
+  assert.equal((await service.replaySamples(quotedToken,{from:'2026-10-20T06:00:00Z',to:'2026-10-20T07:19:42Z'})).observations.at(-1)?.timestamp,feeAt,
+    'A separate refresh in an idle pool cannot enter the replay merely because the active pool has no observation at that second');
+  assert.equal((await service.replaySamples(quotedToken,{from:'2026-10-20T06:00:00Z',to:'2026-10-20T07:19:42Z',limit:2})).truncated,true,
+    'Filtering an idle market does not hide a bounded raw-sample truncation');
+  await quoteObservation('idle-later-swap',idlePool,'swap',feeAt,'0.0012','9999999',9001,3);
+  assert.equal((await readNodeMarketQuote(db,quotedToken,{timestamp:feeAt,blockNumber:'9000'})).marketId,activePool,
+    'A later-block swap at the same timestamp cannot influence earlier market selection');
+  assert.equal((await readNodeMarketQuote(db,quotedToken,{timestamp:feeAt,blockNumber:'9001'})).marketId,idlePool);
+  preferred=await readNodeMarketQuote(db,quotedToken,{timestamp:'2026-10-20T07:30:00Z',blockNumber:'9000'});
+  assert.equal(preferred.stale,true);assert.equal(preferred.timestamp,feeAt,'Activity scores never freshen an old mark');
+  // Genuine per-minute trading volume, rather than dust-swap count, chooses a
+  // market candle. Prices and volume from divergent pools are never blended.
+  await db.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)
+    VALUES($1,$2,'2026-10-20T07:19:00Z',0.00049,0.0005,0.00048,0.000498,131000,1,$4,$4),
+      ($1,$3,'2026-10-20T07:19:00Z',0.0011,0.0013,0.001,0.001186,1,100,$4,$4)`,[quotedToken,activePool,idlePool,feeAt]);
+  const selectedCandle=await service.chart(quotedToken,{from:'2026-10-20T07:18:00Z',to:'2026-10-20T07:21:00Z',intervalSeconds:60});
+  assert.equal(selectedCandle.bars.length,1);assert.equal(selectedCandle.bars[0].close,'0.000498');
+  assert.equal(selectedCandle.bars[0].volumeUsd,'131000','No duplicated side-pool arbitrage volume enters the selected candle');
+  await service.importObservations({token:quotedToken,importId:'covered-coarse-history',from:'2026-10-20T07:15:00Z',to:'2026-10-20T07:20:00Z',complete:true,
+    observations:[{timestamp:'2026-10-20T07:15:00Z',intervalSeconds:300,priceUsd:'0.00051',open:'0.0006',high:'0.0007',low:'0.0004',close:'0.00051',volumeUsd:'150000'}]});
+  const partialWindow=await service.chart(quotedToken,{from:'2026-10-20T07:15:00Z',to:'2026-10-20T07:25:00Z',intervalSeconds:300});
+  assert.equal(partialWindow.complete,false,'One covered bucket cannot authorize the rest of an incomplete window');
+  assert.equal(partialWindow.bars[0].source,'imported');assert.equal(partialWindow.bars[0].open,'0.0006');
+  assert.equal(partialWindow.bars[0].volumeUsd,'150000','Incomplete node projection cannot overwrite or double-count a separately complete imported bucket');
+  const fineWindow=await service.chart(quotedToken,{from:'2026-10-20T07:15:00Z',to:'2026-10-20T07:20:00Z',intervalSeconds:60});
+  assert.equal(fineWindow.coverage.some(range=>range.source==='imported'&&range.from==='2026-10-20T07:15:00.000Z'),false,
+    'A completed five-minute import cannot prove missing one-minute market history');
+  console.log('Node market integration passed: authentic discovery, all-participant swaps, durable raw capture, feed precedence, deterministic activity-based markets, exact decimals, no request RPC, idempotency, supply, wrong blocks, reorgs, pruning recovery and sparse daily history.');
 }finally{await db.end();}

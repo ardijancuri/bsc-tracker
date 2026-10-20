@@ -7,6 +7,7 @@ import { authenticNodeTokenCreation, createNodeAccountingService, nodeAccounting
 import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
 import { FOUR_MANAGERS, fourInterface, PCS_V2_FACTORY } from './launchpad.js';
 import { poolMarketAbi, type NodeMarketIdentity } from './nodeMarketProtocols.js';
+import newNodePosition from './fixtures/new-node-position.json' with { type: 'json' };
 const wallet = `0x${'a'.repeat(40)}`, token = `0x${'b'.repeat(40)}`, wbnb = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c';
 const blockHash = `0x${'f'.repeat(64)}`, stamp = '2026-10-19T00:00:00.000Z';
 const event = (id: string, kind: 'buy' | 'sell', amount: string, quantity: string): JournalLedgerEvent => ({ id, walletAddress: wallet, tokenAddress: token,
@@ -84,6 +85,19 @@ describe('shared exact accounting baseline handoff', () => {
   });
 });
 describe('node execution normalization', () => {
+  it('values the reported new position and its actual wallet fee from captured native feed evidence', async () => {
+    const row = newNodePosition.flow as unknown as NodeExecutionFlow;
+    const market = { priceAt: vi.fn(async (asset: string) => ({ ...quote, tokenAddress: asset,
+      priceUsd: newNodePosition.nativeUsd, timestamp: newNodePosition.observedAt, blockNumber: row.block_number })) };
+    const normalized = await normalizeNodeExecutionFlows([row], newNodePosition.token, market);
+    expect(normalized.reasons).toEqual([]);
+    expect(normalized.events).toHaveLength(1);
+    expect(normalized.events[0]).toMatchObject({ kind: 'buy', tokenAmount: '4988647.381261664394921484',
+      amountUsd: newNodePosition.expectedInvestedUsd,
+      feeUsd: '0.021434868967144932' });
+    expect(market.priceAt).toHaveBeenCalledOnce();
+    expect(market.priceAt).toHaveBeenCalledWith(wbnb,{timestamp:newNodePosition.observedAt,blockNumber:'128705010',maxAgeMs:300000});
+  });
   it('uses exact raw quantities and persisted quote conversion without a provider', async () => {
     const market = { priceAt: vi.fn(async (asset: string) => ({ ...quote, tokenAddress: asset, priceUsd: '600' })) };
     const normalized = await normalizeNodeExecutionFlows([flow()], token, market);

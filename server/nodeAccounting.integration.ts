@@ -106,6 +106,16 @@ try {
     'A pruned registration RPC cannot force a provider dependency after complete raw transfer capture');
   assert.equal((await pool.query('SELECT balance_raw::text FROM journal_opening_balances WHERE wallet_address=$1', [wallet])).rows[0].balance_raw, '0');
   assert.equal(historicalValuationCalls, 1, 'Completed historical accounting is reused when only balance/head/quote refreshes');
+  const beforeNormalizationUpgrade=historicalValuationCalls;
+  await pool.query(`UPDATE node_accounting_history SET payload=jsonb_set(payload-'normalizationRevision','{events,0,amountUsd}','"1"')
+    WHERE scope_key='public' AND wallet_address=$1 AND token_address=$2`,[wallet,token]);
+  const upgradedNormalization=await service.refresh({wallet,token});
+  assert.equal(upgradedNormalization?.summary.investedUsd,'10',
+    'An unversioned complete historical cache cannot retain an old conversion despite matching raw evidence and cache identity');
+  assert.equal(upgradedNormalization.realizedAccounting?.position?.estimatedProfitUsd,'9');
+  assert.equal(historicalValuationCalls,beforeNormalizationUpgrade+1,'A pre-revision complete history is re-valued from original captured proofs once');
+  await service.refresh({wallet,token});
+  assert.equal(historicalValuationCalls,beforeNormalizationUpgrade+1,'The unchanged upgraded history reuses its completed normalization');
   await pool.query('DELETE FROM node_trace_evidence WHERE tx_hash=$1',[tx]);
   const awaitingNative=await service.refresh({wallet,token,foreground:true});
   assert.ok(awaitingNative?.accountingSnapshot?.reasons.includes('native_trace_required'));
@@ -138,9 +148,40 @@ try {
   assert.equal((await pool.query('SELECT count(*)::int AS count FROM node_import_jobs WHERE wallet_address=$1 AND token_address=$2', [wallet, token])).rows[0].count, 0,
     'A temporary unavailable balance and opening proof cannot be mistaken for missing lifetime history');
   const unknownPriorCycles = await service.refresh({ wallet, token, foreground: true });
-  assert.equal(unknownPriorCycles?.accountingSnapshot?.complete, false,
-    'A zero opening and no indexed pre-registration trades cannot prove absent older closed cycles');
-  assert.ok(unknownPriorCycles.accountingSnapshot?.reasons.includes('historical_baseline_required'));
+  assert.equal(unknownPriorCycles?.accountingSnapshot?.complete, true,
+    'A confirmed zero opening and complete captured costs provide an explicitly bounded position while older cycles remain unknown');
+  assert.equal(unknownPriorCycles.accountingSnapshot?.historyBoundary, 'verified_zero_position');
+  assert.equal(unknownPriorCycles.accountingSnapshot?.historyFrom, start);
+  assert.equal(unknownPriorCycles.accountingSnapshot?.lifetimeComplete, false);
+  assert.equal(unknownPriorCycles.accountingSnapshot?.lifetimeReason, 'historical_baseline_required');
+  assert.equal(unknownPriorCycles.realizedAccounting?.position?.estimatedProfitUsd, '9');
+  assert.equal(unknownPriorCycles.replayAccounting?.final?.reportedProfitUsd, '9');
+  const capturedVersion = await service.savedActivity({wallet,token},unknownPriorCycles.accountingSnapshot!.snapshotId);
+  assert.equal(capturedVersion?.accountingSnapshot?.historyBoundary,'verified_zero_position',
+    'The modal and export retain the same explicit captured boundary in their frozen snapshot');
+  const scopedDelayNow=now+600_000,scopedDelayAt=new Date(scopedDelayNow).toISOString();
+  const scopedLagService=createNodeAccountingService({db:pool,now:()=>scopedDelayNow,
+    balance:async request=>({walletAddress:request.wallet,tokenAddress:request.token,chain:'bsc',blockNumber:'200',blockHash,
+      blockTimestamp:quoted,checkedAt:scopedDelayAt,balance:'10'}),
+    market:{quote:async()=>({...current,timestamp:scopedDelayAt,priceUsd:'4'}),priceAt:async asset=>({...current,tokenAddress:asset,priceUsd:'1000'})}});
+  const scopedLag=await scopedLagService.refresh({wallet,token});
+  assert.equal(scopedLag?.accountingSnapshot?.complete,false,'An explicit captured scope does not make a stale node checkpoint current');
+  assert.equal(scopedLag.accountingSnapshot?.historyBoundary,'verified_zero_position');
+  assert.ok(scopedLag.accountingSnapshot?.reasons.includes('node_indexer_lag'));
+  assert.equal(scopedLag.accountingSnapshot?.historyFingerprint,unknownPriorCycles.accountingSnapshot?.historyFingerprint);
+  const datedScoped=await scopedLagService.activity({wallet,token});
+  assert.equal(datedScoped?.accountingSnapshot?.snapshotId,unknownPriorCycles.accountingSnapshot?.snapshotId);
+  assert.equal(datedScoped.accountingSnapshot?.asOf,unknownPriorCycles.accountingSnapshot?.asOf,'A temporary head delay retains the original dated mark');
+  assert.equal(datedScoped.accountingSnapshot?.refreshStatus,'pending');
+  assert.equal((await scopedLagService.summaries(wallet,[token]))[token].estimatedProfitUsd,'9');
+  await pool.query("UPDATE node_executions SET fee_native_wei=2000000000000000 WHERE id='execution'");
+  await scopedLagService.refresh({wallet,token});
+  const changedScoped=await scopedLagService.activity({wallet,token});
+  assert.notEqual(changedScoped?.accountingSnapshot?.snapshotId,unknownPriorCycles.accountingSnapshot?.snapshotId,
+    'Changed canonical costs cannot reuse a dated scoped snapshot during the same temporary head delay');
+  assert.equal(changedScoped?.accountingSnapshot?.complete,false);
+  await pool.query("UPDATE node_executions SET fee_native_wei=1000000000000000 WHERE id='execution'");
+  await service.refresh({wallet,token});
   const queuedRecovery = (await pool.query('SELECT priority,stage FROM node_import_jobs WHERE wallet_address=$1 AND token_address=$2', [wallet, token])).rows[0];
   assert.equal(queuedRecovery.priority, 100, 'Selected worker preparation creates its missing recovery job without scanning every public wallet');
   assert.equal(queuedRecovery.stage, 'history');
@@ -148,8 +189,9 @@ try {
   assert.deepEqual(capturedOldToken?.openingBalances, [{ walletAddress: wallet, tokenAddress: token, tokenAmount: '0' }],
     'A confirmed zero registration quantity survives independently of unproved lifetime history');
   assert.equal(capturedOldToken?.coverage.quantitiesComplete, true);
-  assert.equal(capturedOldToken?.coverage.complete, false);
-  assert.equal(capturedOldToken?.historyBoundary, undefined);
+  assert.equal(capturedOldToken?.coverage.complete, true);
+  assert.equal(capturedOldToken?.historyBoundary, 'verified_zero_position');
+  assert.equal(capturedOldToken?.historicalRecoveryNeeded, true, 'Usable captured-position P&L does not cancel lifetime recovery');
   assert.equal(capturedOldToken?.source, 'node', 'A proved zero quantity is node evidence, not a provider lifetime absence claim');
   // The token existed before registration and wallet discovery is not done.
   // A future sale still uses the permanently captured node purchase FIFO.
@@ -171,8 +213,10 @@ try {
   currentBalance = '6';
   const futureNodeOnly = await service.refresh({ wallet, token });
   const futureEvidence = await service.evidence({ wallet, token });
-  assert.equal(futureNodeOnly?.accountingSnapshot?.complete, false, 'Dated node readiness must not invent lifetime profit');
-  assert.ok(futureNodeOnly?.accountingSnapshot?.reasons.includes('historical_baseline_required'));
+  assert.equal(futureNodeOnly?.accountingSnapshot?.complete, true, 'A captured sale uses the full captured purchase FIFO');
+  assert.equal(futureNodeOnly.accountingSnapshot?.lifetimeComplete,false,'Captured readiness never claims unknown lifetime profit');
+  assert.equal(futureNodeOnly.accountingSnapshot?.historyBoundary,'verified_zero_position');
+  assert.equal(futureNodeOnly.realizedAccounting?.realizedProfitUsd,'3.1');
   assert.equal(futureEvidence?.coverage.quantitiesComplete, true);
   const periodResult = calculateJournalLedgerPeriod({ wallets: [wallet], events: futureEvidence!.events, openingBalances: futureEvidence!.openingBalances,
     baselines: [], coverage: [{ ...futureEvidence!.coverage, complete: futureEvidence!.coverage.quantitiesComplete === true, reason: undefined }],
@@ -222,6 +266,8 @@ try {
     'Visible card promotion never demotes an already selected historical recovery');
   assert.equal((await pool.query('SELECT priority FROM node_import_jobs WHERE wallet_address=$1 AND token_address=$2',[wallet,visible[2]])).rows[0].priority,0,
     'Summary loading does not prioritize historical chart exports that were never requested');
+  await pool.query('UPDATE journal_opening_balances SET balance_raw=1000000000000000000 WHERE wallet_address=$1 AND token_address=$2',[wallet,token]);
+  await service.refresh({wallet,token});
   await service.activity({wallet,token,foreground:true});
   await pool.query("UPDATE node_accounting_jobs SET requested_at=now()-interval '1 hour' WHERE wallet_address=$1 AND token_address=$2",[wallet,token]);
   assert.equal((await service.tick(1)).claimed,1);
@@ -232,6 +278,7 @@ try {
   await service.tick(1);
   assert.equal((await pool.query('SELECT count(*)::int AS count FROM node_accounting_jobs WHERE wallet_address=$1 AND token_address=ANY($2::text[]) AND attempts=1',[wallet,visible])).rows[0].count,1,
     'A visible card dispatches after the old pending selection, without waiting for it to become ready');
+  await pool.query('UPDATE journal_opening_balances SET balance_raw=0 WHERE wallet_address=$1 AND token_address=$2',[wallet,token]);
   const joining=visible.at(-1)!,cardCooldown=new Date(Date.now()+60000),activeLease=randomUUID();
   await pool.query('UPDATE node_accounting_jobs SET next_attempt_at=$3,lease_id=$4,lease_until=$3 WHERE wallet_address=$1 AND token_address=$2',[wallet,joining,cardCooldown,activeLease]);
   await service.activity({wallet,token:joining,foreground:true});
@@ -254,8 +301,8 @@ try {
   await pool.query(`UPDATE node_import_jobs SET last_error='import_provider_unavailable',next_attempt_at=now()+interval '30 seconds' WHERE wallet_address=$1 AND token_address=$2`, [wallet, token]);
   const cooldown = await service.refresh({ wallet, token });
   assert.ok(cooldown);
-  assert.ok(cooldown?.accountingSnapshot?.reasons.includes('historical_import_cooldown'));
-  assert.ok((cooldown.realizedAccounting?.retryAfterMs ?? 0) >= 20_000);
+  assert.equal(cooldown?.accountingSnapshot?.complete,true,'A provider cooldown cannot block fully captured node position accounting');
+  assert.equal(cooldown?.accountingSnapshot?.lifetimeComplete,false);
   await pool.query("UPDATE node_import_jobs SET last_error='import_aggregate_inconsistent' WHERE wallet_address=$1 AND token_address=$2",[wallet,token]);
   const contradictoryImport=await service.refresh({wallet,token});
   assert.ok(contradictoryImport?.accountingSnapshot?.reasons.includes('historical_accounting_mismatch'));
@@ -283,7 +330,9 @@ try {
   await pool.query(`INSERT INTO node_import_wallet_pages(wallet_address,cursor_key,payload_hash,next_cursor,payload) VALUES($1,'older-observed',$2,NULL,$3::jsonb)`,
   [wallet, 'd'.repeat(64), JSON.stringify({ ...discovered, movements: [{ ...discovered.movements[0], timestamp: new Date(now - 86400_000).toISOString() }] })]);
   const oldCycleObserved = await service.refresh({ wallet, token });
-  assert.equal(oldCycleObserved?.accountingSnapshot?.complete, false, 'A prior observed cycle in retained discovery evidence cannot be erased by a later empty page');
+  assert.equal(oldCycleObserved?.accountingSnapshot?.complete, true, 'Independent captured position accounting survives discovery of an older closed cycle');
+  assert.equal(oldCycleObserved.accountingSnapshot?.historyBoundary,'verified_zero_position');
+  assert.equal(oldCycleObserved.accountingSnapshot?.lifetimeComplete,false, 'A prior observed cycle cannot be erased by a later empty page or presented as complete lifetime history');
   await pool.query('DELETE FROM node_import_wallet_pages WHERE wallet_address=$1', [wallet]);
   await pool.query('DELETE FROM node_import_wallet_head_checks WHERE wallet_address=$1', [wallet]);
   await pool.query('DELETE FROM node_import_wallet_jobs WHERE wallet_address=$1', [wallet]);

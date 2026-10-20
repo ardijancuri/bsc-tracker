@@ -593,3 +593,45 @@ unknown costs and the retained older market backlog remain explicit; incomplete
 wallet subtotals retain explicit partial labels. Local native tracing still uses the bounded
 helper and cannot establish unattended production access. No commit, push,
 deployment, VPS database write or VPS configuration change was performed.
+
+### Captured-position and chart consistency corrections (2026-10-20)
+
+A confirmed zero registration balance plus complete canonical capture can prove
+the captured position without proving that the wallet never closed an earlier
+position in that token. The shared accounting snapshot uses
+`historyBoundary: verified_zero_position`, the authentic registration time and
+`lifetimeComplete: false` in that case. Cards, details and exported frames label
+these figures as tracked position profit. All purchase/transfer costs, wallet
+fees and quantities must still reconcile; contradictory historical totals do
+not qualify. Historical import continues and supersedes this scope when a
+reconciled lifetime baseline becomes available. The leaderboard independently
+requires coverage of its entire requested period. Temporary indexing lag keeps
+a dated saved result only while its canonical financial inputs are unchanged.
+
+Configured fixed-asset feeds precede restored candles when valuing consideration
+and fees. Token marks select markets using genuine swap activity as of the
+requested block/time; an idle divergent pool cannot override an active pool.
+Minute charts prefer actual USD activity rather than the count of dust swaps,
+and replay samples follow the same activity preference. Independently complete
+imported buckets remain usable while another part of the node window decodes.
+No candles, volume or continuity are invented. Token pages initially show
+readable recent candles; trade modals center a recent observed trade group.
+Backfills preserve the viewed timestamps and adaptive axis precision keeps
+nearby labels distinct.
+
+`server/nodeNewPosition.integration.ts` reproduces the reported public
+CryptoCharming/token pair using sanitized receipt, trace, feed and genuine
+market evidence in a disposable local database. External providers are disabled.
+It exercises HTTP summaries, details and preparation, plus browser contract
+normalization, frozen ending equality and a later lifetime-baseline upgrade.
+At its original frozen valuation the position has $364.773829775 in purchases,
+$0.021434868967144932 in wallet gas and $26.0220301778 estimated profit
+(7.1333245521%). A locally encoded MP4 was inspected against that same snapshot.
+These are dated regression values, not a live quote.
+
+Internal normalization revision 2 forces one revaluation of older complete
+accounting caches after the price-selection correction; unchanged histories
+then resume normal cache reuse. Validation passed 2,190 unit tests, both
+TypeScript projects, the production build and 23 PostgreSQL integration suites.
+The local MP4 retained 1080 × 1350 resolution and 15.5-second duration, with the
+decoded ending showing the same $26.02 and 7.13% as the frozen modal snapshot.

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import { createKolTokenPnlLoader, displayedTokenPnl, tokenPnlExpiresAt, tokenPnlRefreshDelay, tokenPositionPnlDescription,
-  tokenPositionPnlLoadingNotice, tokenPositionPnlUnavailableNotice, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
+  tokenPositionPnlLoadingNotice, tokenPositionPnlUnavailableNotice, tokenPositionPnlLabel, verifiedTokenPositionPnl } from './kolTokenPnlRequest';
 const now = Date.parse('2026-10-19T12:00:00Z'), date = new Date(now).toISOString();
 const wallet = `0x${'a'.repeat(40)}`, token = `0x${'b'.repeat(40)}`, blockHash = `0x${'c'.repeat(64)}`;
 function activity(source: 'node' | 'mixed' | 'imported' = 'node'): KolTokenActivity {
@@ -22,6 +22,18 @@ function activity(source: 'node' | 'mixed' | 'imported' = 'node'): KolTokenActiv
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => vi.useRealTimers());
 describe('VPS snapshot P&L contract', () => {
+  it('labels a reconciled captured position without claiming earlier lifetime history or excluding known fees', () => {
+    const body = activity(); Object.assign(body.accountingSnapshot!, {
+      historyBoundary: 'verified_zero_position', lifetimeComplete: false, lifetimeReason: 'historical_baseline_required',
+    });
+    expect(displayedTokenPnl(body)).toBe(9);
+    expect(tokenPositionPnlLabel(body)).toBe('Tracked est. profit');
+    expect(tokenPositionPnlDescription(body)).toContain('verified zero balance on 2026-10-19 12:00:00 UTC');
+    expect(tokenPositionPnlDescription(body)).toContain('wallet-paid fees; earlier closed trades are excluded');
+    body.accountingSnapshot!.refreshStatus = 'pending';
+    expect(tokenPositionPnlDescription(body)).toContain('Saved profit');
+    expect(tokenPositionPnlDescription(body)).toContain('earlier closed trades are excluded');
+  });
   it('explains pending native payment verification before secondary unknown purchase costs', () => {
     const body=activity();body.accountingSnapshot!.complete=false;
     body.accountingSnapshot!.reasons=['purchase_cost_unknown','native_trace_required'];

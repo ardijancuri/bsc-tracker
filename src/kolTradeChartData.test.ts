@@ -55,12 +55,19 @@ describe('KOL chart history selection', () => {
     expect(tradeVisibleRange(candles, trades, '5m', 240)).toEqual({ from: 32.5, to: 72.5 });
     expect(tradeVisibleRange(candles, trades, '5m', 960)).toEqual({ from: 12.5, to: 92.5 });
   });
-  it('includes the full long trade span and equal context on both sides', () => {
+  it('centers the latest trade context when lifetime trades would compress candles', () => {
     const candles = Array.from({ length: 500 }, (_, i) => candle(i * 300));
     const range = tradeVisibleRange(candles, [trade('buy', 10 * 300), trade('sell', 410 * 300, 'sell')], '5m', 480)!;
-    expect((range.from + range.to) / 2).toBe(210);
-    expect(10 - range.from).toBe(range.to - 410);
-    expect(range.from).toBeLessThan(10); expect(range.to).toBeGreaterThan(410);
+    expect((range.from + range.to) / 2).toBe(410);
+    expect(480 / (range.to - range.from)).toBeGreaterThanOrEqual(7);
+    expect(range.from).toBeGreaterThan(10); expect(range.to).toBeGreaterThan(410);
+  });
+  it('includes neighboring recent buys and sells without dragging distant older trades into view', () => {
+    const candles = Array.from({ length: 1500 }, (_, i) => candle(i * 60));
+    const range = tradeVisibleRange(candles, [trade('early', 0), trade('recent-buy', 1400 * 60), trade('recent-sell', 1410 * 60, 'sell')], '1m', 620)!;
+    expect(range.from).toBeLessThan(1400); expect(range.to).toBeGreaterThan(1410);
+    expect(range.to - range.from).toBeLessThanOrEqual(88);
+    expect((range.from + range.to) / 2).toBe(1405);
   });
   it('focuses only observed trade bars when history partially overlaps or contains gaps', () => {
     const candles = [candle(0), candle(60), candle(180)];

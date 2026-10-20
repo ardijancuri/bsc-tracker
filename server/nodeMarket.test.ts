@@ -3,7 +3,7 @@ import { AbiCoder, keccak256 } from 'ethers';
 import { aggregateNodeMarketBars, nodeMarketCoverageComplete, readNodeMarketChart, readNodeMarketQuote } from './nodeMarket.js';
 import { MarketDecimal, ratioPrice, sqrtPrice } from './nodeMarketMath.js';
 import { authenticatedPoolKey, binPrice, decodeNodeMarketLog,
-  flapMarketAbi, fourMarketAbi,indexNodeControllerLogs, INFINITY_BIN, INFINITY_CL, infinityMarketAbi, poolMarketAbi, v3MarketAbi, type NodeMarketIdentity } from './nodeMarketProtocols.js';
+  flapMarketAbi, fourMarketAbi,indexNodeControllerLogs, INFINITY_BIN, INFINITY_CL, infinityMarketAbi, poolMarketAbi, v3MarketAbi,TRUSTED_QUOTE_FEEDS, type NodeMarketIdentity } from './nodeMarketProtocols.js';
 import { FLAP_PORTAL, FOUR_MANAGERS, PCS_V2_FACTORY, PCS_V3_FACTORY, WBNB } from './launchpad.js';
 import type { NodeMarketBar } from '../shared/nodeMarket.js';
 const token='0x1111111111111111111111111111111111111111',pool='0x2222222222222222222222222222222222222222',trader='0x3333333333333333333333333333333333333333';
@@ -111,6 +111,15 @@ describe('durable market chart boundaries',()=>{
     const quote=await readNodeMarketQuote({query} as never,token,{now:Date.parse('2026-10-18T11:00:00Z')});
     expect(quote).toMatchObject({priceUsd:'2',marketCapUsd:'2000',timestamp:'2026-10-18T10:00:00.000Z',stale:true,reason:'stale_quote'});
     expect(query).toHaveBeenCalledTimes(1);
+  });
+  it('values trusted quote assets from their block-bound feed before restored chart observations',async()=>{
+    const timestamp='2026-10-20T07:19:32Z',query=vi.fn().mockResolvedValue({rows:[{price_usd:'729.54765955',timestamp,
+      block_number:'128705010',block_hash:`0x${'a'.repeat(64)}`}]}),config=TRUSTED_QUOTE_FEEDS[WBNB];
+    const quote=await readNodeMarketQuote({query} as never,WBNB,{timestamp,blockNumber:'128705010'});
+    expect(quote).toMatchObject({priceUsd:'729.54765955',timestamp:'2026-10-20T07:19:32.000Z',blockNumber:'128705010',source:'node',stale:false});
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toContain('node_market_feed_evidence');
+    expect(query.mock.calls[0][1]).toEqual([WBNB,'2026-10-20T07:19:32.000Z','128705010',config.feed,config.description]);
   });
   it('cannot report full charts while raw valuation is pending',async()=>{
     const query=vi.fn().mockImplementation((sql:string)=>Promise.resolve({rows:sql.includes('WITH chosen')?[{minute:'2026-10-18T10:00:00Z',open:'1',high:'2',low:'1',close:'2',volume_usd:'20'}]

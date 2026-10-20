@@ -71,7 +71,10 @@ export async function importHistoricalChartPage(input: {
   const payload = { data: raw, requestLimit: 1000 };
   await db.query(`INSERT INTO node_import_chart_pages(token_address,resolution,from_at,to_at,payload_hash,payload,observed_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT DO NOTHING`,
     [token, seconds, new Date(from), new Date(to), chartImportHash(payload), JSON.stringify(payload), observedAt]);
-  if (normalized.observations.length || normalized.retrievalComplete) await input.market.importObservations({ token, importId: input.importId, observations: normalized.observations,
+  // Coverage is resolution-specific, including a completed sparse/empty page.
+  // A wallet import can reuse its logical identity for coarse history and a
+  // fine ending segment; their proofs must not be mixed under the same ID.
+  if (normalized.observations.length || normalized.retrievalComplete) await input.market.importObservations({ token, importId: `${input.importId}:interval:${seconds}`, observations: normalized.observations,
     from: new Date(normalized.retrievalComplete ? from : normalized.coverageFrom!).toISOString(),
     to: new Date(normalized.retrievalComplete ? to + seconds * 1000 : normalized.coverageTo!).toISOString(), complete: true, observedAt });
   return { ...normalized, cacheHit: !!stored };

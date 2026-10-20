@@ -5,13 +5,29 @@ import { applyReplayMarketChart, prepareTradeReplayData, validReplayAccountingFi
 import { replayMarketData } from './replayPreparationRequest';
 import ReplayCanvas from './tradeReplayCanvas';
 
-function canvas(): HTMLCanvasElement {
+function canvas(texts?: string[]): HTMLCanvasElement {
   const context = new Proxy({}, { get: (_target, key) => key === 'measureText' ? (value: string) => ({ width: value.length * 12 })
+    : key === 'fillText' ? (value: string) => texts?.push(value)
     : key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : () => {} });
   return { getContext: () => context } as unknown as HTMLCanvasElement;
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('node-owned replay contract and ending', () => {
+  it('preserves the explicit captured-position scope in exported frames and frozen totals', async () => {
+    const { activity, now, chartPoints } = nodeReplayFixture();
+    Object.assign(activity.accountingSnapshot!, { historyBoundary: 'verified_zero_position', lifetimeComplete: false,
+      lifetimeReason: 'historical_baseline_required' });
+    const data = prepareTradeReplayData(activity, null, undefined, now)!;
+    const prepared = applyReplayMarketChart(data, { address: activity.token.address, period: 'replay', source: 'node', resolution: '1m',
+      points: chartPoints.map(point => ({ timestamp: point.timestamp, priceUsd: String(point.priceUsd) })), candles: [],
+      marketCapSupply: '10000', pending: false, stale: false, updatedAt: activity.generatedAt,
+      currentQuote: { timestamp: activity.generatedAt, priceUsd: '4' } }, now);
+    const texts: string[] = [], renderer = new ReplayCanvas(canvas(texts)); await renderer.setData(prepared);
+    renderer.render(1);
+    expect(texts.some(text => text.includes('FINAL · NODE · TRACKED POSITION'))).toBe(true);
+    expect(renderer.snapshot(1).totalPnl).toBeCloseTo(Number(activity.realizedAccounting!.position!.estimatedProfitUsd));
+    expect(renderer.snapshot(1).totalRoi).toBeCloseTo(Number(activity.realizedAccounting!.position!.estimatedRoi));
+  });
   it.each([false, true])('uses one frozen ending and moving fee-inclusive history, private=%s', async privateScope => {
     const { activity, context, now, chartPoints } = nodeReplayFixture(Date.now(), privateScope);
     const data = prepareTradeReplayData(activity, null, undefined, now, context)!;

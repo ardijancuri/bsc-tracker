@@ -3,6 +3,7 @@ import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import type { NodeAccountingSummary } from '../shared/nodeAccounting';
 import { requestNodePnlSummary } from './nodePnlSummaryRequest';
 import { getLocale, t } from './i18n';
+import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
 import { displayedTokenPnl, historicalAccountingMismatchNotice, terminalTokenInventoryFailure, tokenPnlMayRetainDuringProviderRetry, tokenPnlMovementsMatch, tokenPositionPnlDelayedNotice, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
 interface TokenPnlState { pair: string; activity: KolTokenActivity | null; busy: boolean; delayed?: boolean }
@@ -24,13 +25,13 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
       try {
         const value = await requestNodePnlSummary(walletAddress, tokenAddress, controller.signal);
         if (!controller.signal.aborted) setSummary(value);
-        if (value.status === 'pending') delay = Math.max(3000, value.retryAfterMs ?? 3000);
+        delay = nodeSummaryRefreshDelay(value);
       } catch { delay = 5000; }
       if (!controller.signal.aborted) timer = setTimeout(() => void refresh(), delay);
     };
     setSummary(initialSummary);
     const recent = initialSummary?.snapshot && Date.now() - Date.parse(initialSummary.snapshot.asOf) < 20_000;
-    timer = setTimeout(() => void refresh(), recent ? initialSummary?.status === 'pending' ? 3000 : 20_000 : 0);
+    timer = setTimeout(() => void refresh(), recent ? nodeSummaryRefreshDelay(initialSummary) : 0);
     return () => { controller.abort(); clearTimeout(timer); };
   }, [walletAddress, tokenAddress, lastTradeAt, initialSummary]);
   const raw = summary?.position === 'open' ? summary.estimatedProfitUsd : summary?.realizedProfitUsd;
@@ -39,14 +40,20 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
   const contradictory = [summary?.reason, ...(summary?.snapshot?.reasons ?? [])].includes('historical_accounting_mismatch');
   const asOf = summary?.snapshot?.asOf;
   const retained = summary?.snapshot?.refreshStatus === 'pending';
-  const title = valid ? `${t('Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.')}${asOf ? ` ${t('As of')} ${new Date(asOf).toLocaleString(getLocale())}` : ''}`
+  const title = valid ? `${capturedPositionDescription(summary?.snapshot) ?? t('Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.')}${asOf ? ` ${t('As of')} ${new Date(asOf).toLocaleString(getLocale())}` : ''}`
     : t(nodeSummaryPendingDescription(summary));
+  const tracked = isCapturedPosition(summary?.snapshot);
   return <span className="token-card-profit" title={title} aria-busy={!valid && !contradictory && summary?.status !== 'unavailable'}>
-    <span>{t(summary?.position === 'open' ? 'Est. profit' : summary?.position === 'closed' ? 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
+    <span>{t(summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
     <strong className={valid ? value > 0 ? 'positive' : value < 0 ? 'negative' : '' : ''}>{valid ? new Intl.NumberFormat(getLocale(), {
       style: 'currency', currency: 'USD', notation: Math.abs(value) >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 2, signDisplay: 'exceptZero',
     }).format(value) : contradictory ? t('Unverified') : summary?.status === 'unavailable' ? '—' : summary ? t('Pending') : '…'}</strong>
   </span>;
+}
+
+export function nodeSummaryRefreshDelay(summary: NodeAccountingSummary | undefined) {
+  return summary?.status === 'pending' || summary?.snapshot?.refreshStatus === 'pending'
+    ? Math.max(3000, Math.min(30_000, summary.retryAfterMs ?? 3000)) : 20_000;
 }
 
 function nodeSummaryPendingDescription(summary: NodeAccountingSummary | undefined) {

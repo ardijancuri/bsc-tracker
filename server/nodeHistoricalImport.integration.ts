@@ -155,6 +155,9 @@ try{
   assert.equal(tailStage,true);assert.equal(oldComplete,true,'long imports prepare their fine ending segment before completion');
   const fine=await market.chart(longToken,{from:new Date(Date.parse(oldEnding)-6*3600_000).toISOString(),to:oldEnding,intervalSeconds:60});
   assert.equal(fine.complete,true);assert.ok(fine.bars.length>=350);assert.equal(fine.bars.at(-1)?.intervalSeconds,60);
+  const chartProofs=(await db.query(`SELECT DISTINCT import_id FROM node_market_import_ranges WHERE token_address=$1 AND complete`,[longToken])).rows.map(row=>row.import_id);
+  assert.ok(chartProofs.some(id=>id.endsWith(':interval:60'))&&chartProofs.some(id=>id.endsWith(':interval:14400')),
+    'Coarse lifetime history and its overlapping genuine minute tail retain separate resolution proofs');
   assert.ok(Date.parse(fine.bars.at(-1)!.timestamp)+60000>=Date.parse(oldEnding),'an old closed ending has a genuinely completed bracketing minute bar');
   const cooldown=new Date(now+300000);
   await db.query(`UPDATE node_import_jobs SET chart_gaps=true,next_attempt_at=$3,last_error='import_provider_cooldown'

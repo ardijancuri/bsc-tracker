@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
-import { KolTokenRealizedPnl, KolTokenRealizedPnlValue, tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
+import { KolTokenRealizedPnl, KolTokenRealizedPnlValue, nodeSummaryRefreshDelay, tokenPnlStateAfterLoad } from './KolTokenRealizedPnl';
 import type { NodeAccountingSummary } from '../shared/nodeAccounting';
 import { historicalAccountingMismatchNotice, tokenPositionPnlUnavailableNotice, verifiedTokenRealizedPnl } from './kolTokenPnlRequest';
 
@@ -20,6 +20,19 @@ const activity = (value: string | null, lastTradeAt = date): KolTokenActivity =>
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse(date)); });
 afterEach(() => { vi.useRealTimers(); });
 describe('KOL token realized profit display', () => {
+  it('shows the initial captured-position summary with its actual boundary and fee policy', () => {
+    const summary: NodeAccountingSummary = { tokenAddress: token, status: 'ready', position: 'open', realizedProfitUsd: '0', estimatedProfitUsd: '9',
+      roi: '0.1', remainingTokenAmount: '10', valueUsd: '100', snapshot: { version: 2, snapshotId: 'a'.repeat(64), source: 'node', scope: 'public',
+        asOf: date, historyFingerprint: 'b'.repeat(64), historyFrom: date, coveredThroughBlock: '2', valuationBlock: '2', valuationHash: '0x' + 'c'.repeat(64),
+        complete: true, reasons: [], historyBoundary: 'verified_zero_position', lifetimeComplete: false, lifetimeReason: 'historical_baseline_required' } };
+    const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={date} initialSummary={summary} />);
+    expect(html).toContain('Tracked est. profit'); expect(html).toContain('+$9');
+    expect(html).toContain('2026-10-14 12:00:00 UTC'); expect(html).toContain('wallet-paid fees; earlier closed trades are excluded');
+    expect(html).not.toContain('gas fees and earlier untracked');
+    expect(nodeSummaryRefreshDelay(summary)).toBe(20_000);
+    summary.snapshot!.refreshStatus = 'pending';
+    expect(nodeSummaryRefreshDelay(summary)).toBe(3000);
+  });
   const pendingSummary = (reason: string): NodeAccountingSummary => ({ tokenAddress: token, snapshot: null, status: 'pending', position: 'unknown',
     realizedProfitUsd: null, estimatedProfitUsd: null, roi: null, remainingTokenAmount: null, valueUsd: null, reason });
   it('explains a pending indexer response instead of leaving an endless spinner or claiming realized profit', () => {

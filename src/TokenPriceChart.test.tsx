@@ -9,28 +9,46 @@ vi.mock('./useTokenChart', () => ({ useTokenChart: (...args: unknown[]) => { sta
 const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
 const render = (fullHistory = false) => renderToStaticMarkup(<TokenPriceChart address={address} interval="5m" fullHistory={fullHistory} />);
 
-describe('complete token history viewport', () => {
+describe('readable token history viewport', () => {
   const history = (count: number, start = 1791586800) => Array.from({ length: count }, (_, index) => ({ time: start + index * 60, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }));
   const bounds = (candles: ReturnType<typeof history>) => ({ firstTime: candles[0].time, lastTime: candles.at(-1)!.time, count: candles.length });
-  it('includes the first and last candles even when there are thousands of one-minute bars', () => {
+  it('opens thousands of minute bars at a readable recent window while leaving all history available', () => {
     const candles = history(4000);
     const range = marketHistoryViewport(candles, null)!;
-    expect(range.from).toBeLessThanOrEqual(-.5);
+    expect(range.from).toBeGreaterThan(3800);
     expect(range.to).toBeGreaterThanOrEqual(candles.length - 1);
+    expect(1200 / (range.to - range.from)).toBeGreaterThanOrEqual(7);
   });
-  it('expands the viewport when older candles are loaded', () => {
+  it('does not refit all history when older candles are loaded', () => {
     const latest = history(100);
     const older = history(4000, latest[0].time - 3900 * 60);
-    expect(marketHistoryViewport(older, bounds(latest))).toEqual({ from: -1.75, to: 4000.75 });
+    expect(marketHistoryViewport(older, bounds(latest))).toBeNull();
   });
-  it('expands when backfill fills a gap between retained and latest history', () => {
+  it('does not refit when backfill fills a gap between retained and latest history', () => {
     const candles = history(1000);
     const separatedWindows = [...candles.slice(0, 100), ...candles.slice(800)];
-    expect(marketHistoryViewport(candles, bounds(separatedWindows))).toEqual({ from: -1.75, to: 1000.75 });
+    expect(marketHistoryViewport(candles, bounds(separatedWindows))).toBeNull();
     // A live candle can arrive before the missing history does.
     const withNewLatest = [...separatedWindows, history(1, candles.at(-1)!.time + 60)[0]];
     expect(marketHistoryViewport(withNewLatest, bounds(separatedWindows))).toBeNull();
-    expect(marketHistoryViewport([...candles, withNewLatest.at(-1)!], bounds(withNewLatest))).toEqual({ from: -1.75, to: 1001.75 });
+    expect(marketHistoryViewport([...candles, withNewLatest.at(-1)!], bounds(withNewLatest))).toBeNull();
+  });
+  it('opens the substantial recent segment without pulling older bars across a thirteen-hour gap', () => {
+    const older = history(949), recent = history(109, older.at(-1)!.time + 793 * 60);
+    const candles = [...older, ...recent];
+    const range = marketHistoryViewport(candles, null, 1200, '1m')!;
+    expect(range.from).toBeGreaterThan(948);
+    expect(range.from).toBeLessThan(949);
+    expect(range.to).toBeGreaterThan(1057);
+    expect(1200 / (range.to - range.from)).toBeLessThanOrEqual(12);
+    expect(candles).toHaveLength(1058);
+    expect(marketHistoryViewport(candles, bounds(candles), 1200, '1m')).toBeNull();
+  });
+  it('keeps the ordinary context when fewer than forty recent observations follow a large gap', () => {
+    const older = history(949), recent = history(39, older.at(-1)!.time + 793 * 60);
+    const candles = [...older, ...recent];
+    const range = marketHistoryViewport(candles, null, 1200, '1m')!;
+    expect(range.from).toBeLessThan(949);
   });
   it('preserves pan and zoom on candle refreshes and newly appended candles', () => {
     const candles = history(100), previous = bounds(candles);
@@ -65,7 +83,7 @@ describe('complete token history viewport', () => {
     expect(range.to).toBeGreaterThan(9);
     expect((4.5 - range.from) / (range.to - range.from)).toBeCloseTo(.5, 10);
   });
-  it.each([1, 15, 4000])('centers all %i candles with equal blank time on both sides', count => {
+  it.each([1, 15, 80])('centers short histories of %i candles with equal blank time on both sides', count => {
     const range = marketHistoryViewport(history(count), null)!;
     expect((range.from + range.to) / 2).toBe((count - 1) / 2);
     expect(-range.from).toBeCloseTo(range.to - (count - 1), 10);
@@ -84,8 +102,8 @@ describe('initial trade modal viewport', () => {
   it('centers the recent context when selected trades are outside the available history', () => {
     const candles = history(400);
     const range = tradeChartViewport(candles, [{ id: 'older', side: 'buy', timestamp: new Date((candles[0].time - 60) * 1000).toISOString() }], '1m', 620)!;
-    expect((range.from + range.to) / 2).toBe((250 + 399) / 2);
-    expect(range.from).toBeLessThan(250);
+    expect(range.to - range.from).toBeLessThanOrEqual(89);
+    expect(range.from).toBeGreaterThan(300);
     expect(range.to).toBeGreaterThan(399);
   });
   it('centers the whole short history even when the KOL traded only its early candles', () => {
@@ -204,6 +222,16 @@ describe('market cap candle chart', () => {
     expect(html).toContain('Recovering historical candles…');expect(html).toContain('1 candles');
     expect(html).toContain('Price <b>$1.5</b>');expect(html).not.toContain('Volume <b>');
     expect(html).not.toContain('Earlier history unavailable');
+  });
+  it('discloses major observation gaps with at most five dated windows rather than fabricating bars', () => {
+    const start = 1791586800;
+    state.chart = { address, period: '1m', source: 'mixed', candles: Array.from({ length: 8 }, (_, index) => ({ time: start + index * 3600, open: 1, high: 2, low: .5, close: 1.5, volume: 10 })), points: [], pending: false, stale: false, updatedAt: null, resolution: '1m' };
+    const html = renderToStaticMarkup(<TokenPriceChart address={address} interval="1m" />);
+    expect(html).toContain('8 candles');
+    expect(html).toContain('Gaps in available observations: 7');
+    const title = html.match(/title="Gaps in available observations([^\"]*)"/)?.[1] ?? '';
+    expect(title.match(/ UTC/g)).toHaveLength(5);
+    expect(html).not.toContain('0 volume');
   });
   it.each([
     ['rate_limited', 'Earlier history cooling down. Retrying automatically…', true],

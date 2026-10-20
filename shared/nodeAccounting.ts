@@ -12,7 +12,11 @@ export interface NodeAccountingSnapshotIdentity {
   complete: boolean; reasons: string[]; lastValid?: { snapshotId: string; asOf: string };
   /** Original dated values remain visible while independent refresh work waits. */
   refreshStatus?: 'pending'; refreshReason?: string;
-  historyBoundary?: 'token_creation' | 'wallet_discovery' | 'imported_baseline' | 'membership_added';
+  historyBoundary?: 'token_creation' | 'wallet_discovery' | 'imported_baseline' | 'membership_added' | 'verified_zero_position';
+  /** Complete within the explicit captured boundary, with older lifetime
+   * cycles still being recovered independently. Never label this lifetime P&L. */
+  lifetimeComplete?: false;
+  lifetimeReason?: 'historical_baseline_required';
 }
 export interface NodeAccountingSummary {
   tokenAddress: string; snapshot: NodeAccountingSnapshotIdentity | null;

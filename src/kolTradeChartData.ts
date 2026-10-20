@@ -1,5 +1,6 @@
 import type { CandleInterval, MarketCandle } from '../shared/intelligence';
 import type { Trade } from './types';
+import { readableCandleSlots } from './chartViewport';
 
 export type ChartTrade = Pick<Trade, 'id' | 'timestamp' | 'side'>;
 const seconds: Record<CandleInterval, number> = { '1m': 60, '5m': 300, '1h': 3600, '4h': 14400, '1d': 86400 };
@@ -31,11 +32,11 @@ export function kolTradeMarkers(candles: MarketCandle[], trades: ChartTrade[], i
   }));
 }
 
-/** Symmetric logical space keeps short trade histories compact and centered,
- * including at the first/last loaded candle. Only observed trade bars focus it. */
+/** Center a readable group of the latest observed trades. Older executions stay
+ * available by panning, rather than compressing months into hairline candles. */
 export function tradeVisibleRange(candles: MarketCandle[], trades: ChartTrade[], interval: CandleInterval = '5m', plotWidth = 480) {
   if (!candles.length) return null;
-  let firstIndex = Infinity, lastIndex = -1;
+  const indices: number[] = [];
   for (const trade of trades) {
     if (trade.side !== 'buy' && trade.side !== 'sell') continue;
     const time = Date.parse(trade.timestamp) / 1000;
@@ -44,12 +45,14 @@ export function tradeVisibleRange(candles: MarketCandle[], trades: ChartTrade[],
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (candles[mid].time <= time) { index = mid; lo = mid + 1; } else hi = mid - 1; }
     const candle = candles[index];
     if (!candle || time >= candle.time + seconds[interval]) continue;
-    firstIndex = Math.min(firstIndex, index); lastIndex = Math.max(lastIndex, index);
+    indices.push(index);
   }
-  if (lastIndex < 0) return null;
-  const width = Number.isFinite(plotWidth) && plotWidth > 0 ? plotWidth : 480;
-  const tradeSpan = lastIndex - firstIndex + 1, padding = Math.max(8, Math.ceil(tradeSpan * .15));
-  const visibleSpan = Math.max(40, Math.ceil(width / 12), tradeSpan + padding * 2);
+  if (!indices.length) return null;
+  const slots = readableCandleSlots(plotWidth), lastIndex = Math.max(...indices);
+  const context = 8;
+  const firstIndex = Math.min(...indices.filter(index => lastIndex - index + 1 + context * 2 <= slots.maximum));
+  const tradeSpan = lastIndex - firstIndex + 1, padding = Math.max(context, Math.ceil(tradeSpan * .15));
+  const visibleSpan = Math.min(slots.maximum, Math.max(slots.minimum, tradeSpan + padding * 2));
   const center = (firstIndex + lastIndex) / 2;
   return { from: center - visibleSpan / 2, to: center + visibleSpan / 2 };
 }

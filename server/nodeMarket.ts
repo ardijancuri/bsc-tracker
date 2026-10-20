@@ -36,28 +36,52 @@ const missingQuote = (token: string, reason: NodeMarketQuote['reason']): NodeMar
 /** Bounded database reads only; callers never initiate RPC or external requests. */
 export async function readNodeMarketQuote(db: DB, tokenAddress: string, options: { now?: number; maxAgeMs?: number; timestamp?: string; blockNumber?: string } = {}): Promise<NodeMarketQuote> {
   const token = address(tokenAddress), now = options.now ?? Date.now(), at = options.timestamp ? iso(options.timestamp) : new Date(now).toISOString();
-  const result = await db.query(`SELECT o.price_usd::text,o.timestamp,o.block_number::text,o.block_hash,o.source,o.market_id,
-      o.supply::text,o.supply_estimated, m.status
-    FROM node_market_observations o LEFT JOIN node_markets m ON m.id=o.market_id
-    WHERE o.token_address=$1 AND o.timestamp<=$2::timestamptz
-      AND ($3::bigint IS NULL OR o.block_number IS NULL OR o.block_number<=$3::bigint)
-    ORDER BY o.timestamp DESC, CASE WHEN o.source='node' THEN 0 ELSE 1 END,
-      COALESCE(o.block_number,0) DESC,CASE WHEN o.kind='state' AND o.tx_hash IS NULL THEN 1 ELSE 0 END DESC,
-      COALESCE(o.transaction_index,-1) DESC,CASE WHEN o.kind='state' THEN 1 ELSE 0 END DESC,COALESCE(o.log_index,-1) DESC LIMIT 1`,
+  // Authenticated fixed-feed assets value trade consideration and wallet gas.
+  // An older restored candle must never hide the feed captured at that block.
+  const config=TRUSTED_QUOTE_FEEDS[token];
+  const feed = config ? (await db.query(`SELECT price_usd::text,timestamp,block_number::text,block_hash
+    FROM node_market_feed_evidence WHERE quote_address=$1 AND timestamp<=$2::timestamptz
+    AND ($3::bigint IS NULL OR block_number<=$3::bigint) AND feed_address=$4 AND feed_description=$5 ORDER BY block_number DESC LIMIT 1`,
+  [token, at, options.blockNumber ?? null,config.feed,config.description])).rows[0] : null;
+  if (feed) {
+    const stale = Date.parse(at) - Date.parse(dateText(feed.timestamp)) > (options.maxAgeMs ?? MAX_PRICE_AGE);
+    return { ...missingQuote(token, stale ? 'stale_quote' : null), priceUsd: feed.price_usd, timestamp: dateText(feed.timestamp),
+      blockNumber: feed.block_number, blockHash: feed.block_hash, stale };
+  }
+  // A controller can refresh several pools in the same block. Select a pool
+  // from actual recent swap activity before selecting its latest state mark;
+  // insertion order or an idle pool's divergent spot price is not a policy.
+  // Score only evidence known at the requested timestamp AND block, including
+  // during historical purchase/fee valuation. No present-day pool is imposed
+  // on a pre-migration historical checkpoint.
+  const result = await db.query(`WITH activity AS (
+      SELECT market_id,sum(COALESCE(volume_usd,0)) AS volume,count(*) AS swaps,max(timestamp) AS last_swap
+      FROM node_market_observations WHERE token_address=$1 AND source='node' AND kind='swap'
+        AND timestamp BETWEEN $2::timestamptz-interval '24 hours' AND $2::timestamptz
+        AND ($3::bigint IS NULL OR block_number<=$3::bigint) GROUP BY market_id
+    ), latest AS (
+      SELECT m.id,m.status,o.* FROM node_markets m CROSS JOIN LATERAL (
+        SELECT o.price_usd,o.timestamp,o.block_number,o.block_hash,o.source,o.market_id,o.supply,o.supply_estimated
+        FROM node_market_observations o WHERE o.token_address=$1 AND o.market_id=m.id AND o.source='node'
+          AND o.timestamp<=$2::timestamptz AND ($3::bigint IS NULL OR o.block_number<=$3::bigint)
+        ORDER BY o.timestamp DESC,o.block_number DESC,CASE WHEN o.kind='state' AND o.tx_hash IS NULL THEN 1 ELSE 0 END DESC,
+          COALESCE(o.transaction_index,-1) DESC,CASE WHEN o.kind='state' THEN 1 ELSE 0 END DESC,COALESCE(o.log_index,-1) DESC,o.id LIMIT 1
+      ) o WHERE m.token_address=$1
+    ), preferred AS (
+      SELECT l.* FROM latest l LEFT JOIN activity a ON a.market_id=l.id
+      ORDER BY CASE WHEN a.swaps>0 AND l.status='active' THEN 0 WHEN a.swaps>0 THEN 1 ELSE 2 END,
+        a.volume DESC NULLS LAST,a.swaps DESC NULLS LAST,a.last_swap DESC NULLS LAST,l.timestamp DESC,l.id LIMIT 1
+    ), candidates AS (
+      SELECT price_usd,timestamp,block_number,block_hash,source,market_id,supply,supply_estimated,status FROM preferred
+      UNION ALL (SELECT price_usd,timestamp,block_number,block_hash,source,market_id,supply,supply_estimated,NULL::text AS status
+        FROM node_market_observations WHERE token_address=$1 AND source='imported' AND timestamp<=$2::timestamptz
+          AND ($3::bigint IS NULL OR block_number IS NULL OR block_number<=$3::bigint)
+        ORDER BY timestamp DESC,created_at DESC,id LIMIT 1)
+    ) SELECT price_usd::text,timestamp,block_number::text,block_hash,source,market_id,supply::text,supply_estimated,status
+    FROM candidates ORDER BY timestamp DESC,CASE WHEN source='node' THEN 0 ELSE 1 END,market_id NULLS LAST LIMIT 1`,
   [token, at, options.blockNumber ?? null]);
   const row = result.rows[0];
   if (!row) {
-    // Trusted quote assets may be needed to value fees before any watched
-    // token market is discovered. This is still persisted feed evidence.
-    const config=TRUSTED_QUOTE_FEEDS[token];
-    const feed = config ? (await db.query(`SELECT price_usd::text,timestamp,block_number::text,block_hash
-      FROM node_market_feed_evidence WHERE quote_address=$1 AND timestamp<=$2::timestamptz
-      AND ($3::bigint IS NULL OR block_number<=$3::bigint) AND feed_address=$4 AND feed_description=$5 ORDER BY block_number DESC LIMIT 1`, [token, at, options.blockNumber ?? null,config.feed,config.description])).rows[0] : null;
-    if (feed) {
-      const stale = Date.parse(at) - Date.parse(dateText(feed.timestamp)) > (options.maxAgeMs ?? MAX_PRICE_AGE);
-      return { ...missingQuote(token, stale ? 'stale_quote' : null), priceUsd: feed.price_usd, timestamp: dateText(feed.timestamp),
-        blockNumber: feed.block_number, blockHash: feed.block_hash, stale };
-    }
     const conversion=(await db.query(`SELECT price_usd::text,timestamp,block_number::text,block_hash,pool_address FROM node_market_quote_evidence
       WHERE quote_address=$1 AND schema_version=1 AND timestamp<=$2::timestamptz AND ($3::bigint IS NULL OR block_number<=$3)
       ORDER BY block_number DESC LIMIT 1`,[token,at,options.blockNumber??null])).rows[0];
@@ -114,18 +138,30 @@ export async function readNodeMarketReplaySamples(db:DB,tokenAddress:string,opti
   const token=address(tokenAddress),from=iso(options.from),to=iso(options.to),limit=Math.max(2,Math.min(5000,options.limit??2000));
   if(Date.parse(to)<Date.parse(from))throw new Error('invalid_chart_window');
   const [prices,ranges]=await Promise.all([
-    db.query(`SELECT DISTINCT ON(o.timestamp) o.timestamp,o.price_usd::text,o.supply::text,o.supply_estimated,
-      o.block_number::text,o.block_hash,o.market_id,o.kind FROM node_market_observations o JOIN node_markets m ON m.id=o.market_id
-      WHERE o.token_address=$1 AND o.source='node' AND o.kind IN ('swap','state') AND o.block_number IS NOT NULL
-        AND o.block_hash IS NOT NULL AND o.timestamp BETWEEN $2::timestamptz-interval '180 seconds' AND $3::timestamptz
-      ORDER BY o.timestamp,o.block_number DESC,CASE WHEN o.kind='state' THEN 1 ELSE 0 END DESC,
+    db.query(`WITH times AS (
+      SELECT DISTINCT timestamp FROM node_market_observations WHERE token_address=$1 AND source='node' AND kind IN ('swap','state')
+        AND block_number IS NOT NULL AND block_hash IS NOT NULL AND timestamp BETWEEN $2::timestamptz-interval '180 seconds' AND $3::timestamptz
+        ORDER BY timestamp LIMIT $4
+    ), scored AS (
+      SELECT o.*,sum(COALESCE(volume_usd,0)) FILTER(WHERE kind='swap') OVER recent AS recent_volume,
+        count(*) FILTER(WHERE kind='swap') OVER recent AS recent_swaps,
+        count(*) FILTER(WHERE kind='swap') OVER (ORDER BY timestamp RANGE BETWEEN interval '24 hours' PRECEDING AND CURRENT ROW) AS token_swaps
+      FROM node_market_observations o
+      WHERE token_address=$1 AND source='node' AND kind IN ('swap','state') AND block_number IS NOT NULL AND block_hash IS NOT NULL
+        AND timestamp BETWEEN $2::timestamptz-interval '24 hours 180 seconds' AND (SELECT max(timestamp) FROM times)
+      WINDOW recent AS (PARTITION BY market_id ORDER BY timestamp RANGE BETWEEN interval '24 hours' PRECEDING AND CURRENT ROW)
+    ) SELECT DISTINCT ON(o.timestamp) o.timestamp,o.price_usd::text,o.supply::text,o.supply_estimated,(SELECT count(*) FROM times)>$4-1 AS time_truncated,
+      o.block_number::text,o.block_hash,o.market_id,o.kind FROM scored o JOIN node_markets m ON m.id=o.market_id JOIN times t USING(timestamp)
+      WHERE o.recent_swaps>0 OR o.token_swaps=0
+      ORDER BY o.timestamp,CASE WHEN o.recent_swaps>0 AND m.status='active' THEN 0 WHEN o.recent_swaps>0 THEN 1 ELSE 2 END,
+        o.recent_volume DESC NULLS LAST,o.recent_swaps DESC,o.block_number DESC,CASE WHEN o.kind='state' THEN 1 ELSE 0 END DESC,
         o.transaction_index DESC NULLS LAST,o.log_index DESC NULLS LAST,o.market_id LIMIT $4`,[token,from,to,limit+1]),
     db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
       WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT from_at,to_at,'imported' AS source FROM node_market_import_ranges WHERE token_address=$1
         AND complete AND to_at>=$2::timestamptz AND from_at<=$3::timestamptz ORDER BY from_at,to_at`,[token,from,to]),
   ]);
-  return {tokenAddress:token,from,to,truncated:prices.rows.length>limit,observations:prices.rows.slice(0,limit).map(row=>({
+  return {tokenAddress:token,from,to,truncated:!!prices.rows[0]?.time_truncated||prices.rows.length>limit,observations:prices.rows.slice(0,limit).map(row=>({
     timestamp:dateText(row.timestamp),priceUsd:row.price_usd,supply:row.supply,supplyEstimated:row.supply_estimated,
     blockNumber:row.block_number,blockHash:row.block_hash,marketId:row.market_id,kind:row.kind})),
     coverage:ranges.rows.map(row=>({from:dateText(row.from_at),to:dateText(row.to_at),source:row.source as NodeMarketProvenance}))};
@@ -152,7 +188,7 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
             AND (timestamp<date_trunc('minute',$2::timestamptz)+interval '1 minute' OR timestamp>=date_trunc('minute',$3::timestamptz))
           GROUP BY token_address,market_id,date_trunc('minute',timestamp)
       ) c JOIN node_markets m ON m.id=c.market_id
-        ORDER BY c.minute,c.observations DESC,c.market_id
+        ORDER BY c.minute,c.volume_usd DESC,c.observations DESC,c.market_id
       ), bucketed AS (SELECT *,to_timestamp(floor(extract(epoch FROM minute)/$4)*$4) AS bucket FROM chosen)
       SELECT bucket AS minute,(array_agg(open ORDER BY minute))[1]::text AS open,max(high)::text AS high,min(low)::text AS low,
         (array_agg(close ORDER BY minute DESC))[1]::text AS close,sum(volume_usd)::text AS volume_usd,
@@ -165,8 +201,14 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
         CASE WHEN import_id LIKE 'legacy-cache:%' THEN 1 ELSE 0 END,created_at DESC,id`, [token, from, to, intervalSeconds]),
     db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
       WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
-      UNION ALL SELECT from_at,to_at,'imported' FROM node_market_import_ranges WHERE token_address=$1 AND complete
-        AND to_at>=$2::timestamptz AND from_at<=$3::timestamptz`, [token, from, to]),
+      UNION ALL SELECT r.from_at,r.to_at,'imported' FROM node_market_import_ranges r WHERE r.token_address=$1 AND r.complete
+        AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
+        AND (substring(r.import_id FROM ':interval:(60|300|3600|14400|86400)$')::integer<=$4::integer
+          OR r.import_id LIKE 'token-chart:'||$4::text||':%' OR EXISTS(
+          SELECT 1 FROM node_market_observations o WHERE o.token_address=r.token_address AND o.import_id=r.import_id
+            AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds<=$4::integer)
+          AND NOT EXISTS(SELECT 1 FROM node_market_observations o WHERE o.token_address=r.token_address AND o.import_id=r.import_id
+            AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds>$4::integer))`, [token, from, to,intervalSeconds]),
     db.query(`SELECT m.status,EXISTS(SELECT 1 FROM node_market_raw_logs l WHERE l.market_id=m.id
       AND l.timestamp BETWEEN $2::timestamptz AND $3::timestamptz AND l.decode_status IN ('pending','missing_quote','invalid'))
       OR EXISTS(SELECT 1 FROM node_market_observations p WHERE p.market_id=m.id AND p.kind='swap' AND p.candles_pending
@@ -186,9 +228,17 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
       low: row.low ?? row.price_usd, close: row.close, volumeUsd: row.volume_usd, source: 'imported',
       intervalSeconds: row.interval_seconds || 60, supply: row.supply, supplyEstimated: row.supply == null });
   }
+  const importedBuckets=new Set([...minutes.keys()].map(time=>Math.floor(time/(intervalSeconds*1000))));
+  const importedCoverage=coverage.filter(row=>row.source==='imported');
   for (const row of results[0].rows) {
     if(importedFallback)continue;
     const timestamp = dateText(row.minute), key = Date.parse(timestamp);
+    const bucket=Math.floor(key/(intervalSeconds*1000)),bucketFrom=Math.max(Date.parse(from),bucket*intervalSeconds*1000),
+      bucketTo=Math.min(Date.parse(to),(bucket+1)*intervalSeconds*1000);
+    // Completeness belongs to a recorded interval. Pending decoding in a
+    // different day must not replace an independently complete saved bucket
+    // with a partial node projection or add both sources' trading volume.
+    if(nodePending&&importedBuckets.has(bucket)&&nodeMarketCoverageComplete(new Date(bucketFrom).toISOString(),new Date(bucketTo).toISOString(),importedCoverage))continue;
     // Deterministic highest-activity market per minute, rather than adding
     // duplicated arbitrage volume across all pools for the same token.
     if (minutes.get(key)?.source === 'node') continue;

@@ -108,6 +108,27 @@ try {
   assert.equal(first[0].realizedProfitUsd, '47.3', 'The current period consumes pre-window FIFO costs and their acquisition fees, then values external transfer-out gains');
   assert.equal(first[0].valuedSellCount, 1); assert.equal(first[0].valuedTransferOutCount, 1);
   assert.equal(first[0].coveredThroughBlock, '300'); assert.equal(first[0].asOf, iso(end - 5000));
+  // Captured position readiness cannot imply that the wallet was monitored
+  // throughout a preceding 24-hour leaderboard window.
+  const recentWallet=`0x${'4'.repeat(40)}`,recentGeneration=privateGeneration;
+  await database.query("INSERT INTO kols(address,display_name,is_tracked)VALUES($1,'Recently monitored',true)",[recentWallet]);
+  await database.query(`INSERT INTO node_monitored_wallets(wallet_address,generation,active,registration_block,registration_hash,collected_through_block,decoded_through_block,registered_at)
+    VALUES($1,$2,true,250,$3,300,300,$4)`,[recentWallet,recentGeneration,hash(250),iso(timestamps.get(250)!)]);
+  await database.query(`INSERT INTO node_evidence_ranges(from_block,to_block,head_block,wallets,decoded_at)
+    VALUES(251,300,306,jsonb_build_object($1::text,$2::text),now())`,[recentWallet,recentGeneration]);
+  const recentEvents=[event('recent-buy','buy','10','100',260,'2',token,recentWallet),event('recent-sale','sell','4','70',275,'1',token,recentWallet)];
+  for(const row of recentEvents)await execution(row);
+  await history(token,recentEvents,recentWallet);
+  await database.query(`UPDATE node_accounting_history SET from_block=250,payload=payload||$3::jsonb WHERE wallet_address=$1 AND token_address=$2`,
+    [recentWallet,token,JSON.stringify({fromBlock:'250',historyBoundary:'verified_zero_position',historyFrom:iso(timestamps.get(250)!),coverage:{walletAddress:recentWallet,tokenAddress:token,complete:true,quantitiesComplete:true}})]);
+  const recentPeriod=(await loadPublicNodeLeaderboardAccounting({database,wallets:[recentWallet],windowStart,windowEnd}))[0];
+  assert.equal(recentPeriod.complete,false,'Complete captured-position P&L does not authorize a period before monitoring began');
+  assert.equal(recentPeriod.realizedProfitUsd,null);
+  assert.equal(recentPeriod.knownRealizedProfitUsd,'28.2','The known, fully captured sale remains available as an explicit partial result');
+  assert.ok(recentPeriod.reasons.includes('period_collection_incomplete'));
+  const coveredRecent=(await loadPublicNodeLeaderboardAccounting({database,wallets:[recentWallet],windowStart:iso(timestamps.get(260)!+1000),windowEnd}))[0];
+  assert.equal(coveredRecent.complete,true,'A requested period wholly inside proven monitoring can use the captured purchase history: '+JSON.stringify(coveredRecent));
+  assert.equal(coveredRecent.realizedProfitUsd,'28.2');
   assert.equal((await calculate())[0].snapshotId, first[0].snapshotId, 'Unchanged database evidence and original observation time give an identical snapshot');
   const preciseRegistration=await capturePublicationChecks();
   await assert.doesNotReject(validatePublication(preciseRegistration.checks),

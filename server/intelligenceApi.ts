@@ -153,8 +153,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       to: new Date(to).toISOString(), intervalSeconds: seconds, limit: 2000 }), nodeMarketService.quote(address)]);
     if(!before&&(quote.stale||quote.priceUsd===null||priority==='chart'))await nodeMarketService.requestRefresh(address,{priority:priority==='chart'?10:1});
     const recovery=!before&&priority==='chart'&&!history.complete
-      ?await tokenChartRecovery.requestWindow(address,{from:to-span*1000,to,seconds,
-        ...(!history.bars.length&&known.rows[0].last_trade_at?{lastKnownTradeAt:Date.parse(known.rows[0].last_trade_at)}:{})}):null;
+      ?await tokenChartRecovery.requestChart(address,history,
+        !history.bars.length&&known.rows[0].last_trade_at?{lastKnownTradeAt:Date.parse(known.rows[0].last_trade_at)}:{}):null;
     // Scope identifies the requested chart, independently of whether all its
     // market coverage is available. Genuine partial candles remain displayable.
     const displayedHistory=fullHistory?{...history,bars:history.bars.filter(bar=>Date.parse(bar.timestamp)>=from)}:history;

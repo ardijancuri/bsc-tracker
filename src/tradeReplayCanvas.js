@@ -1508,7 +1508,7 @@ export class ReplayCanvas {
       roiX += part.width + part.paddingAfter;
     }
     if (this.data.replayAccounting?.version === 2) text(ctx,
-      `${state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
+      `${state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.accountingSnapshot?.historyBoundary === 'verified_zero_position' ? ' · TRACKED POSITION' : ''}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
       540, 958, `500 16px ${FONT}`, COLOR.dim, 'center');
 
     ctx.beginPath();

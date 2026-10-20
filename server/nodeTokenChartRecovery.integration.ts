@@ -8,6 +8,7 @@ import { createNodeMarketService, readNodeMarketChart } from './nodeMarket.js';
 import { createTokenChartRecovery } from './nodeTokenChartRecovery.js';
 import { migrateSavedTokenCharts } from './importSavedTokenCharts.js';
 import { MarketProviderDeferred } from './geckoApi.js';
+import { importHistoricalChartPage } from './nodeChartImport.js';
 const connection = new URL(process.env.DATABASE_URL ?? 'postgres://invalid');
 if (!['127.0.0.1', 'localhost'].includes(connection.hostname) || connection.port !== '5435' || !/^\/bscan_chart_recovery_test_\d+$/.test(connection.pathname)) throw new Error('Explicit disposable local chart recovery database required');
 const wallet = `0x${'1'.repeat(40)}`, token = `0x${'2'.repeat(40)}`, other = `0x${'3'.repeat(40)}`, privateToken = `0x${'4'.repeat(40)}`;
@@ -104,6 +105,69 @@ try {
   const dormant = (await db.query('SELECT min(from_at) AS first FROM node_import_chart_jobs')).rows[0].first;
   assert.ok(Date.parse(dormant) < old, 'dormant token recovery uses its historical market window, not an empty recent day');
   console.log('PASS cooldowns survive polls/restarts, cancellation/expiry, private exclusion and dormant older token windows');
+  const gapToken=`0x${'5'.repeat(40)}`,gapMarket='selected-market',marketAt=boundary+3600_000,headAt=boundary+3*3600_000;
+  await db.query('INSERT INTO tokens(address,symbol,name) VALUES($1,\'GAP\',\'Gap\')',[gapToken]);
+  await db.query(`INSERT INTO trades(id,tx_hash,wallet_address,token_address,side,token_amount,timestamp,source,block_number)
+    VALUES($1,$1,$2,$3,'buy',10,$4,'node',201)`,[hash(301),wallet,gapToken,new Date(marketAt)]);
+  await db.query(`INSERT INTO node_evidence_blocks(block_number,block_hash,parent_hash,timestamp,header)
+    VALUES(201,$1,$2,$3,'{}'),(202,$4,$1,$5,'{}')`,[hash(201),hash(200),new Date(marketAt),hash(202),new Date(headAt)]);
+  await db.query(`UPDATE worker_state SET value=$1::jsonb WHERE key='node_collection'`,[JSON.stringify({blockNumber:202,blockHash:hash(202),headBlock:208})]);
+  await db.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
+    authenticated_at_block,authenticated_block_hash,authentication,status,discovered_at,collected_from_block)
+    VALUES($1,$2,$3,'pcs_v2',$4,$2,$3,18,18,201,$5,'{}','active',$6,1)`,
+  [gapMarket,gapToken,token,other,hash(201),new Date(marketAt+600_000)]);
+  const chartFrom=boundary-3600_000,chartTo=headAt+3600_000;
+  const chart={tokenAddress:gapToken,from:new Date(chartFrom).toISOString(),to:new Date(chartTo).toISOString(),intervalSeconds:60,
+    bars:[{timestamp:new Date(chartFrom).toISOString(),open:'1',high:'1',low:'1',close:'1',volumeUsd:'1',source:'imported' as const,intervalSeconds:60,supply:null,supplyEstimated:true}],
+    source:'imported' as const,sparse:true,complete:false,coverage:[],reason:'incomplete_chart_coverage' as const};
+  const gapRecovery=createTokenChartRecovery({db,market,request:request as never,now:()=>headAt+3600_000});
+  assert.equal((await gapRecovery.requestChart(gapToken,chart)).pending,true);
+  let imports=(await db.query('SELECT from_at,to_at FROM node_import_chart_jobs WHERE token_address=$1 ORDER BY to_at',[gapToken])).rows;
+  assert.equal(Date.parse(imports.at(-1)!.to_at),marketAt,
+    'Historical market bootstrap extends past the global wallet boundary to its first authenticated checkpoint');
+  assert.ok(imports.every(row=>Date.parse(row.to_at)<=marketAt),'The immutable market boundary never imports later captured activity');
+  let nodeJobs=(await db.query('SELECT from_at,to_at FROM node_market_history_jobs WHERE token_address=$1',[gapToken])).rows;
+  assert.equal(nodeJobs.length,1);assert.equal(Date.parse(nodeJobs[0].to_at),headAt,'Repair never requests beyond the committed node head');
+  assert.equal(Date.parse(nodeJobs[0].to_at)-Date.parse(nodeJobs[0].from_at),1800_000,'Selected repair is a bounded recent half-hour');
+  await gapRecovery.requestChart(gapToken,chart);
+  assert.equal((await db.query('SELECT count(*)::int n FROM node_market_history_jobs WHERE token_address=$1',[gapToken])).rows[0].n,1,'Repeated visitors join the same repair');
+  await db.query('UPDATE node_markets SET collected_from_block=0 WHERE id=$1',[gapMarket]);
+  await gapRecovery.requestChart(gapToken,chart);
+  imports=(await db.query('SELECT max(to_at) AS ending FROM node_import_chart_jobs WHERE token_address=$1',[gapToken])).rows;
+  assert.equal(Date.parse(imports[0].ending),marketAt,'Backfilled raw logs cannot move the immutable metadata bootstrap boundary');
+  await db.query('DELETE FROM node_market_history_jobs WHERE token_address=$1',[gapToken]);
+  const covered={...chart,coverage:[{from:chart.from,to:new Date(headAt).toISOString(),source:'node' as const}]};
+  assert.equal((await gapRecovery.requestChart(gapToken,covered)).pending,false,'Proven no-swap intervals need neither imports nor node rescans');
+  await db.query(`INSERT INTO node_market_raw_logs(market_id,block_number,block_hash,tx_hash,transaction_index,log_index,timestamp,log,decode_status)
+    VALUES($1,201,$2,$3,0,0,$4,'{}','pending')`,[gapMarket,hash(201),hash(401),new Date(marketAt+60_000)]);
+  assert.equal((await gapRecovery.requestChart(gapToken,covered)).pending,true,'Captured undecoded logs retain selected repair priority');
+  assert.equal((await db.query('SELECT count(*)::int n FROM node_market_history_jobs WHERE token_address=$1',[gapToken])).rows[0].n,1);
+  await db.query('DELETE FROM node_market_history_jobs WHERE token_address=$1',[gapToken]);
+  assert.equal((await gapRecovery.requestChart(gapToken,{...covered,bars:[]})).pending,true);
+  assert.equal((await db.query('SELECT count(*)::int n FROM node_market_history_jobs WHERE token_address=$1',[gapToken])).rows[0].n,1,
+    'A new token with no decoded candles still queues selected node work for its captured raw logs');
+  await db.query('DELETE FROM node_import_chart_jobs WHERE token_address=$1',[gapToken]);
+  await db.query(`UPDATE worker_state SET value=$1::jsonb WHERE key='node_collection'`,[JSON.stringify({blockNumber:200,blockHash:hash(200),headBlock:206})]);
+  await gapRecovery.requestWindow(gapToken,{from:chartFrom,to:chartTo,seconds:60});
+  const clamped=(await db.query('SELECT max(to_at) AS ending FROM node_import_chart_jobs WHERE token_address=$1',[gapToken])).rows[0].ending;
+  assert.equal(Date.parse(clamped),boundary,'Missing or later authentication evidence cannot import beyond the committed node head');
+  assert.equal((await gapRecovery.requestChart(privateToken,{...chart,tokenAddress:privateToken})).pending,false,'Internal-gap recovery enforces public token access too');
+  console.log('PASS internal gaps, immutable per-market bootstrap, bounded post-boundary repairs, no-swap coverage and decoder priority');
+  const emptyFrom=marketAt-600_000,firstFrom=emptyFrom-60_000,logicalId='shared-coarse-fine-identity';
+  const qualifiedMarket=createNodeMarketService({db,rpc:async()=>{throw Error('unexpected_node_request');},now:()=>headAt+3600_000});
+  const load=async(seconds:number,from:number,to:number,data:unknown[])=>importHistoricalChartPage({db,market:qualifiedMarket,token:gapToken,seconds,from,to,importId:logicalId,
+    now:headAt+3600_000,request:(async()=>({data})) as never});
+  await load(60,firstFrom,firstFrom,[candle(firstFrom,4)]);
+  await load(300,emptyFrom,emptyFrom,[candle(emptyFrom,99)]);
+  const empty=await load(60,emptyFrom,emptyFrom+240_000,[]);
+  assert.equal(empty.retrievalComplete,true);assert.equal(empty.observations.length,0);
+  const completeSparse=await qualifiedMarket.chart(gapToken,{from:new Date(firstFrom).toISOString(),to:new Date(emptyFrom+300_000).toISOString(),intervalSeconds:60});
+  assert.equal(completeSparse.complete,true,'An empty completed minute retrieval proves inactivity without borrowing overlapping coarse candles');
+  assert.equal(completeSparse.bars.length,1);assert.equal(completeSparse.bars[0].close,'4');
+  assert.ok(completeSparse.coverage.some(range=>Date.parse(range.from)===emptyFrom&&Date.parse(range.to)===emptyFrom+300_000),
+    'Resolution-qualified empty pages retain their actual retrieved coverage even without an observation row');
+  assert.equal((await load(60,emptyFrom,emptyFrom+240_000,[])).cacheHit,true,'Qualified market identities preserve the shared raw-page cache');
+  console.log('PASS separate coarse/fine import proofs, completed empty minute pages and raw-page reuse');
   console.log('Token chart recovery PostgreSQL integration passed; fake market requests only.');
 } finally {
   await db.end();

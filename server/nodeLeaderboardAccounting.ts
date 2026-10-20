@@ -20,7 +20,8 @@ const asIso=(value:string|Date)=>new Date(value).toISOString();
 const validBlock=(value:unknown):value is string=>typeof value==='string'&&/^\d+$/.test(value);
 const negative=(value:string)=>value==='0'?'0':value.startsWith('-')?value.slice(1):'-'+value;
 const financialEvidenceSql=`encode(sha256(convert_to(jsonb_build_array(h.payload->'events',h.payload->'historicalEvents',
-  h.payload->'baselines',h.payload->'openingBalances',h.payload->'source',h.payload->'monitoringGeneration')::text,'UTF8')),'hex')`;
+  h.payload->'baselines',h.payload->'openingBalances',h.payload->'source',h.payload->'monitoringGeneration',
+  h.payload->'historyBoundary',h.payload->'historyFrom',h.payload->'fromBlock')::text,'UTF8')),'hex')`;
 
 /** A period can start after a reconciled baseline, or be reconstructed from
  * its retained genuine movements. Aggregate fee differences never become
@@ -34,6 +35,11 @@ export function publicLeaderboardPeriodInput(pair:Pair,windowStart:string,window
     ||[...prepared.baselines,...prepared.openingBalances].some(row=>row.walletAddress!==pair.wallet_address||row.tokenAddress!==pair.token_address)
     ||[...prepared.historicalEvents,...prepared.events].some(event=>event.walletAddress!==pair.wallet_address||event.tokenAddress!==pair.token_address
       ||!Number.isFinite(Date.parse(event.timestamp))))return unavailable('accounting_evidence_invalid');
+  if(prepared.historyBoundary==='verified_zero_position'&&(!validBlock(prepared.fromBlock)
+    ||!Number.isFinite(Date.parse(prepared.historyFrom??''))||prepared.baselines.length!==0||prepared.historicalEvents.length!==0
+    ||prepared.openingBalances.length!==1||prepared.openingBalances[0].tokenAmount!=='0'
+    ||prepared.events.some(event=>!validBlock(event.blockNumber)||BigInt(event.blockNumber)<=BigInt(prepared.fromBlock!)
+      ||Date.parse(event.timestamp)<Date.parse(prepared.historyFrom!))))return unavailable('accounting_evidence_invalid');
   const usesBaseline=prepared.baselines.length>0||prepared.historyBoundary==='imported_baseline';
   const baselineInside=usesBaseline&&pair.baseline_at!=null&&Date.parse(pair.baseline_at)>=Date.parse(windowStart);
   const approvedTime=Math.min(Date.parse(windowEnd),Date.parse(asIso(pair.approved_at??windowEnd)));

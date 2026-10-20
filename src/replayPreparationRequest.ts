@@ -2,6 +2,8 @@ import type { ReplayPreparation, ReplayPreparationReason } from '../shared/repla
 import { replayPreparationMessages } from '../shared/replayPreparation';
 import { tradeActivityBase, tradeRequestHeaders } from './tradeRequestContext';
 import { applyReplayMarketChart, prepareTradeReplayData, type TradeReplayData } from './tradeReplayData';
+import { capturedPositionDescription } from './nodeAccountingScope';
+import { t } from './i18n';
 
 export interface ReplayMarketRequestResult {
   data: TradeReplayData; notice: string | null; currentPriceNotice?: string; inventoryNotice?: string; accountingNotice?: string;
@@ -49,5 +51,5 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   const prepared = applyReplayMarketChart(selected, chart);
   if (!prepared.chart.points.length || !prepared.replayAccounting?.final) throw new Error('Replay snapshot could not be rendered');
   return { data: prepared, notice: chart.sparseHistory ? 'Market observations are sparse. Prices and profit between observations are estimates.' : null,
-    accountingNotice: `${identity.source === 'node' ? 'Node' : identity.source === 'mixed' ? 'Node and imported' : 'Imported'} accounting. Historical frames are estimates; the ending uses the frozen position valuation.`, preparationStatus: 'ready' };
+    accountingNotice: `${capturedPositionDescription(identity) ?? `${identity.source === 'node' ? 'Node' : identity.source === 'mixed' ? 'Node and imported' : 'Imported'} accounting.`} ${t('Historical frames are estimates; the ending uses the frozen position valuation.')}`, preparationStatus: 'ready' };
 }

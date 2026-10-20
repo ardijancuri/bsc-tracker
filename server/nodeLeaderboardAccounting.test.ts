@@ -84,6 +84,22 @@ describe('public leaderboard full-history evidence adapter',()=>{
     const row=pair({baseline_at:'2026-10-19T14:00:00Z',baseline_ledger:{feesUsd:'500'}});
     row.payload!.historyBoundary='token_creation';expect(calculate(row).totals.realizedProfitUsd).toBe('28.2');
   });
+  it('uses captured zero-opening FIFO only within its explicit proven boundary',()=>{
+    const row=pair();
+    row.payload!.historyBoundary='verified_zero_position';row.payload!.historyFrom='2026-10-10T00:00:00Z';
+    row.payload!.openingBalances=[{walletAddress:wallet,tokenAddress:token,tokenAmount:'0'}];
+    row.payload!.events.forEach((event,index)=>event.blockNumber=index?'250':'100');
+    expect(calculate(row).totals.realizedProfitUsd).toBe('28.2');
+    for(const corrupt of ['missing_boundary','nonzero_opening','earlier_block','earlier_time','retained_provider_events']){
+      const changed=structuredClone(row);
+      if(corrupt==='missing_boundary')delete changed.payload!.historyFrom;
+      if(corrupt==='nonzero_opening')changed.payload!.openingBalances[0].tokenAmount='1';
+      if(corrupt==='earlier_block')changed.payload!.events[0].blockNumber='1';
+      if(corrupt==='earlier_time')changed.payload!.events[0].timestamp='2026-10-09T00:00:00Z';
+      if(corrupt==='retained_provider_events')changed.payload!.historicalEvents=[changed.payload!.events[0]];
+      expect(publicLeaderboardPeriodInput(changed,start,end).reasons).toEqual(['accounting_evidence_invalid']);
+    }
+  });
   it('returns a repair state for missing or corrupt stored evidence rather than blocking every other KOL',()=>{
     expect(publicLeaderboardPeriodInput(pair({payload:null}),start,end).reasons).toEqual(['accounting_pending']);
     const row=pair();row.payload!.events[0].walletAddress=`0x${'d'.repeat(40)}`;

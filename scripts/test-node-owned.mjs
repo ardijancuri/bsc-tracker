@@ -25,6 +25,7 @@ try {
     ['bscan_node_trace_test_','server/nodeTrace.integration.ts'],
     ['bscan_node_projection_test_','server/nodeTradeProjection.integration.ts'],
     ['bscan_node_accounting_test_','server/nodeAccounting.integration.ts'],
+    ['bscan_node_position_test_','server/nodeNewPosition.integration.ts'],
     ['bscan_journal_test_','server/journal.integration.ts'],
     ['bscan_intelligence_test_','server/kolProfile.integration.ts'],
     ['bscan_intelligence_test_','server/intelligence.integration.ts'],
@@ -39,5 +40,5 @@ try {
       if(result.status!==0)throw Error(file+' failed');
     }finally{await admin.query('DROP DATABASE "'+name+'" WITH (FORCE)');}
   }
-  console.log('All twenty-two node-owned PostgreSQL integration suites passed; transports fake/disabled.');
+  console.log('All twenty-three node-owned PostgreSQL integration suites passed; transports fake/disabled.');
 }finally{await admin.end();}

@@ -37,9 +37,13 @@ export interface NodeAccountingEvidence {
   coverage: JournalLedgerCoverage; quote: NodeMarketQuote | null; source: NodeAccountingSource;
   historyFingerprint: string; fromBlock: string | null; throughBlock: string | null;
   inputFingerprint?: string;
+  /** Internal valuation/cache revision; independent of the public FIFO policy. */
+  normalizationRevision?: number;
   monitoringGeneration?: string;
   historicalRecoveryNeeded?: boolean;
-  historyBoundary?: 'token_creation' | 'wallet_discovery' | 'imported_baseline' | 'membership_added';
+  historyBoundary?: NodeAccountingSnapshotIdentity['historyBoundary'];
+  /** Canonical registration-block time, not a guessed first-purchase date. */
+  historyFrom?: string;
   retryAfterMs?: number;
   reasons?: string[];
   reason?: string;
@@ -52,6 +56,10 @@ const units = (value: string | bigint, decimals: number) => journalDecimalDivide
 export const nodeAccountingScopeKey = (scope: NodeAccountingScope = { kind: 'public' }) => scope.kind === 'public' ? 'public'
   : hash([scope.kind, scope.accountId, scope.membershipRevision, scope.fromAt, scope.fromBlock]);
 const requestKey = (request: NodeAccountingRequest) => `${nodeAccountingScopeKey(request.scope)}:${request.wallet}:${request.token}`;
+// Trusted-feed precedence and deterministic market selection changed which
+// persisted dated proof values a movement. Re-evaluate pre-revision histories
+// once; unchanged histories then keep their completed exact normalization.
+const normalizationRevision = 2;
 const asBaseline = (wallet: string, token: string, row: any): JournalLedgerBaseline => ({ walletAddress: wallet, tokenAddress: token, ...row.ledger });
 const temporaryReasons = new Set(['collection_pending', 'indexing_lag', 'node_indexer_lag', 'balance_unavailable', 'quote_unavailable', 'execution_valuation_unavailable',
   'fee_valuation_unavailable', 'snapshot_preparation_failed', 'indexed_snapshot_changed']);
@@ -62,6 +70,9 @@ function datedValidActivity(row: any, now = Date.now()): KolTokenActivity | null
     return { ...current, accountingSnapshot: { ...current.accountingSnapshot, refreshStatus: 'pending', refreshReason: 'snapshot_refresh' } };
   }
   if (row.invalidated_at || row.complete || !saved?.accountingSnapshot || !reasons.length) return null;
+  if (saved.accountingSnapshot.historyBoundary === 'verified_zero_position'
+    && (current?.accountingSnapshot?.historyBoundary !== 'verified_zero_position'
+      || current.accountingSnapshot.historyFingerprint !== saved.accountingSnapshot.historyFingerprint)) return null;
   const known = saved.realizedAccounting, pending = current?.realizedAccounting, previous = known?.position, position = pending?.position;
   // Aggregate fees can leave FIFO allocation unknown while the complete ending
   // cash flows are independently verified. Losing only the quote must retain
@@ -376,9 +387,10 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
     const scope = request.scope ?? { kind: 'public' }, wallet = request.wallet, token = request.token;
     const [stateResult, baselineResult, proofResult] = await Promise.all([
       db.query(`SELECT m.*,m.registration_block::text AS registration,m.collected_through_block::text AS collected,
-        m.decoded_through_block::text AS decoded,b.timestamp AS decoded_timestamp,
+        m.decoded_through_block::text AS decoded,b.timestamp AS decoded_timestamp,r.timestamp AS registration_timestamp,
         (SELECT (value->>'blockNumber')::text FROM worker_state WHERE key='node') AS confirmed
         FROM node_monitored_wallets m LEFT JOIN node_evidence_blocks b ON b.block_number=m.decoded_through_block
+        LEFT JOIN node_evidence_blocks r ON r.block_number=m.registration_block AND r.block_hash=m.registration_hash
         WHERE wallet_address=$1 AND active`, [wallet]),
       scope.kind === 'public' && !withoutImported ? db.query('SELECT * FROM node_accounting_baselines WHERE wallet_address=$1 AND token_address=$2 AND invalidated_at IS NULL', [wallet, token]) : Promise.resolve({ rows: [] }),
       db.query('SELECT * FROM node_accounting_balances WHERE wallet_address=$1 AND token_address=$2 AND schema_version=2 AND invalidated_at IS NULL', [wallet, token]),
@@ -449,14 +461,15 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
         AND EXISTS(SELECT 1 FROM node_execution_flows target WHERE target.execution_id=e.id AND target.token_address=$2)
       ORDER BY e.block_number,e.transaction_index,e.execution_index,f.token_address`, [wallet, token, start, through, scope.kind === 'portfolio' ? scope.fromAt : null,
         scope.kind === 'portfolio' ? scope.accountId : null, scope.kind === 'portfolio' ? scope.membershipRevision : null])).rows : [];
-    const inputFingerprint = hash([state?.generation, start, rows, imported?.history_fingerprint, scope]);
+    const inputFingerprint = hash([normalizationRevision, state?.generation, start, rows, imported?.history_fingerprint, scope]);
     const previousHistory = (await db.query(`SELECT payload,history_revision FROM node_accounting_history WHERE scope_key=$1 AND wallet_address=$2
       AND token_address=$3 AND invalidated_at IS NULL`, [nodeAccountingScopeKey(scope), wallet, token])).rows[0];
     const cachedHistory = previousHistory?.payload as NodeAccountingEvidence | undefined;
     // Completed historical valuations are immutable block evidence. Reuse them
     // while independently refreshing the ending quote and balance. Failed or
     // incomplete history is retried so newly captured price evidence repairs it.
-    const normalized = cachedHistory?.inputFingerprint === inputFingerprint && cachedHistory?.coverage.complete ? { events: cachedHistory.events, reasons: [] }
+    const normalized = cachedHistory?.normalizationRevision === normalizationRevision
+      && cachedHistory.inputFingerprint === inputFingerprint && cachedHistory.coverage.complete ? { events: cachedHistory.events, reasons: [] }
       : await normalizeNodeExecutionFlows(rows, token, market);
     normalized.reasons.forEach(reason => reasons.add(reason));
     if(normalized.reasons.includes('native_trace_required')) {
@@ -552,6 +565,22 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
         reasons.add('historical_import_cooldown'); retryAfterMs = Math.max(retryAfterMs ?? 0, Math.min(300_000, Date.parse(iso(job.next_attempt_at)) - now()));
       }
     }
+    // A zero opening and continuous node capture can establish this captured
+    // position without proving that the wallet never traded an older cycle.
+    // Keep historical recovery alive, exposing the narrower boundary. Unknown
+    // costs, a contradictory aggregate, broken ranges and unreconciled balances
+    // never qualify. Provider cooldown alone cannot block independent node P&L.
+    // Retain this boundary through a head delay, retaining node_indexer_lag too:
+    // coverage stays incomplete and only an unchanged dated snapshot may show.
+    if (scope.kind === 'public' && !imported && state?.registration_timestamp
+      && completedRange && !currentRepair && proof && openingBalances.length === 1
+      && openingBalances[0].tokenAmount === '0' && reasons.has('historical_baseline_required')
+      && [...reasons].every(reason => ['historical_baseline_required', 'historical_import_cooldown', 'node_indexer_lag'].includes(reason))
+      && normalized.events.length > 0 && normalized.events.every(event => event.amountUsd !== null && event.feeUsd !== null)) {
+      reasons.delete('historical_baseline_required'); reasons.delete('historical_import_cooldown'); retryAfterMs = undefined;
+      historyBoundary = 'verified_zero_position';
+      boundaryFingerprint = hash([state.generation, start, state.registration_hash, iso(state.registration_timestamp), openingBalances]);
+    }
     const quote = await market.quote(token, { maxAgeMs: 180_000 });
     const source: NodeAccountingSource = imported ? normalized.events.length ? 'mixed' : 'imported' : historyBoundary === 'wallet_discovery' ? 'mixed' : 'node';
     const quantitiesComplete = completedRange && !currentRepair && !!proof && (!!imported || openingBalances.length > 0 || !!historyBoundary)
@@ -561,7 +590,8 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
       proof, quote, source, fromBlock: start, throughBlock: through,
       monitoringGeneration: state?.generation,
       historicalRecoveryNeeded,
-      historyFingerprint: hash([inputFingerprint, historyBoundary, boundaryFingerprint]), inputFingerprint, historyBoundary,
+      historyFingerprint: hash([inputFingerprint, historyBoundary, boundaryFingerprint]), inputFingerprint, normalizationRevision, historyBoundary,
+      ...(historyBoundary === 'verified_zero_position' ? { historyFrom: iso(state.registration_timestamp) } : {}),
       reasons: [...reasons].sort(),
       ...(retryAfterMs ? { retryAfterMs } : {}),
       coverage: { walletAddress: wallet, tokenAddress: token, complete: reasons.size === 0, quantitiesComplete, ...(reasons.size ? { reason: [...reasons].sort()[0] } : {}) },
@@ -639,11 +669,15 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
         historicalEvents: prepared.historicalEvents, evaluated, now: now() }) : base;
       const identity: NodeAccountingSnapshotIdentity = { version: 2, snapshotId: hash([key, prepared.historyFingerprint, evaluated, quote]), source: prepared.source,
         scope: request.scope!.kind, asOf: endingQuote?.timestamp ?? prepared.proof?.blockTimestamp ?? checkedAt, historyFingerprint: prepared.historyFingerprint,
-        historyFrom: [...prepared.historicalEvents, ...prepared.events][0]?.timestamp ?? null, coveredThroughBlock: prepared.throughBlock,
+        historyFrom: prepared.historyFrom ?? [...prepared.historicalEvents, ...prepared.events][0]?.timestamp ?? null, coveredThroughBlock: prepared.throughBlock,
         valuationBlock: endingQuote ? quote?.blockNumber ?? prepared.proof?.blockNumber ?? null : prepared.proof?.blockNumber ?? null,
         valuationHash: endingQuote ? quote?.blockHash ?? prepared.proof?.blockHash ?? null : prepared.proof?.blockHash ?? null,
         complete, reasons: [...new Set([...evaluated.reasons, ...(prepared.reasons ?? []), ...(prepared.reason ? [prepared.reason] : [])])].sort() };
       identity.historyBoundary = prepared.historyBoundary;
+      if (prepared.historyBoundary === 'verified_zero_position') {
+        identity.lifetimeComplete = false;
+        identity.lifetimeReason = 'historical_baseline_required';
+      }
       response = { ...response, accountingSnapshot: identity };
       if (response.realizedAccounting) response.realizedAccounting.coverage.historyFingerprint = prepared.historyFingerprint;
       if (response.replayAccounting?.history) response.replayAccounting.history.fingerprint = prepared.historyFingerprint;
