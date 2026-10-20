@@ -10,12 +10,15 @@
 
 import { BRAND_ICON_PATHS, BRAND_WORDMARK_PATHS } from './tradeReplayBrandPaths';
 import { replayAccountingTotal, replayEndTimestamp, replayIsOpen } from './tradeReplayData';
+import { selectReplaySellHighlights, reweightReplayProgress } from './tradeReplayHighlights';
 
 const WIDTH = 1080;
 const HEIGHT = 1350;
 const DURATION = 15.5;
 const MINUTE = 60_000;
 const PLAYHEAD_FRACTION = 0.74;
+const MARKER_RADIUS = 20;
+const MIN_STORY_WINDOW = 0.32;
 const FONT = 'Manrope, system-ui, sans-serif';
 
 const COLOR = {
@@ -335,10 +338,11 @@ export class ReplayCanvas {
     this.accountingEvents = [];
     this.eventProgresses = [];
     this.pacingEvents = [];
+    this.sellHighlights = [];
     this.supply = null;
     this.fillOnly = false;
     this.storyWindow = 0.5;
-    this.markerRadius = 26;
+    this.markerRadius = MARKER_RADIUS;
     this.markerPlacements = [];
     this.tooltipRects = [];
     this.axisTicks = [];
@@ -495,6 +499,21 @@ export class ReplayCanvas {
       this.eventProgresses = this.trades.map(trade => byTime.get(trade.ts) ?? 0);
     }
 
+    // Spend more presentation time entering and leaving a material sell. The
+    // ledger's timestamps and atomic groups stay intact; only their screen
+    // time changes, within the same fixed-length replay.
+    this.sellHighlights = selectReplaySellHighlights(this.trades, data.replayAccounting?.events);
+    if (this.pacingEvents.length) {
+      const highlightedTimes = new Set(this.sellHighlights.map(highlight => this.trades[highlight.tradeIndex].ts));
+      const groups = this.pacingEvents.flatMap((event, index) => highlightedTimes.has(event.ts) ? [index] : []);
+      const progress = reweightReplayProgress(this.pacingEvents.map(event => event.q), groups, this.eventPhase);
+      this.pacingEvents = this.pacingEvents.map((event, index) => ({ ...event, q: progress[index] }));
+      const byTime = new Map(this.pacingEvents.map(event => [event.ts, event.q]));
+      this.eventProgresses = this.trades.map(trade => byTime.get(trade.ts) ?? 0);
+    } else {
+      this.eventProgresses = reweightReplayProgress(this.eventProgresses, this.sellHighlights.map(highlight => highlight.tradeIndex), this.eventPhase);
+    }
+
     // Account for the canonical movement prefix without adding executions or
     // price vertices. Same-second transfers fit between their neighboring
     // paced trades; a future trade's snapshot never leaks into an earlier frame.
@@ -529,14 +548,13 @@ export class ReplayCanvas {
       return { ...event, q: movement?.q ?? Infinity, tradeIndex: movement?.tradeIndex };
     });
 
-    // Keep exact fill anchors separated horizontally, even for KOLs with a
-    // denser trade history. The camera still pans at a constant speed within
-    // each replay; only the amount of history visible at once changes.
-    const eventGaps = this.eventProgresses.slice(1).map((q, i) => q - this.eventProgresses[i]);
+    // A single rapid fill must not turn a long recap into an extreme close-up.
+    // Keep a readable, constant-speed pan instead of shrinking the markers.
+    // Same-second ledger groups share one anchor; they are not zero-width views.
+    const eventGaps = this.eventProgresses.slice(1).map((q, i) => q - this.eventProgresses[i]).filter(gap => gap > 1e-9);
     const minEventGap = eventGaps.length ? Math.min(...eventGaps) : 1;
-    this.storyWindow = Math.min(0.5, Math.max(0.08, minEventGap * (814 - 42) / 62));
-    const projectedGap = minEventGap * (814 - 42) / this.storyWindow;
-    this.markerRadius = clamp((projectedGap - 8) / 2, 12, 26);
+    this.storyWindow = clamp(minEventGap * (814 - 42) / (MARKER_RADIUS * 2 + 10), MIN_STORY_WINDOW, 0.5);
+    this.markerRadius = MARKER_RADIUS;
 
     const story = this.plotPoints
       .filter((point) => point.ts <= this.timelineEnd && point.priceUsd > 0)
@@ -595,15 +613,38 @@ export class ReplayCanvas {
     return this.trades.length ? Math.min(clamp(finite(progress), 0, 1), this.hasTail ? this.currentEndPhase : this.eventPhase) : clamp(finite(progress), 0, 1);
   }
 
+  sellZoomFactor(progress) {
+    const raw = clamp(finite(progress), 0, 1);
+    let focus = 0;
+    for (const highlight of this.sellHighlights) {
+      const sale = this.eventProgress(highlight.tradeIndex);
+      const elapsed = (raw - sale) * DURATION;
+      // Leave a short settled ending even when the highlighted sale is late.
+      const duration = Math.min(1.8, (1 - sale) * DURATION - 0.08);
+      if (duration <= 0 || elapsed < 0 || elapsed >= duration) continue;
+      const phase = elapsed / duration;
+      focus = Math.max(focus, smoothstep(phase / (0.55 / 1.8))
+        * (1 - smoothstep((phase - 1 / 1.8) / (0.8 / 1.8))));
+    }
+    return 1 - 0.38 * focus;
+  }
+
   viewportAt(progress) {
     const p = this.chartProgress(progress);
-    const camera = this.cameraAt(p);
-    const startQ = p - this.storyWindow * PLAYHEAD_FRACTION;
+    const base = this.cameraAt(p);
+    // Zoom only the visual viewport around the revealed price/playhead. Raw
+    // progress lets the zoom settle during a closed position's final hold.
+    const factor = this.sellZoomFactor(progress);
+    const window = this.storyWindow * factor;
+    const focus = this.valueAtStory(p).marketCapUsd;
+    const camera = factor === 1 || !(focus > 0) ? base
+      : { min: focus + (base.min - focus) * factor, max: focus + (base.max - focus) * factor };
+    const startQ = p - window * PLAYHEAD_FRACTION;
     const time = this.timeAt(p);
     const startTime = startQ < 0 ? this.timelineStart + startQ / 0.12 * 2 * MINUTE : this.timeAt(startQ);
-    const endTime = this.timeAt(startQ + this.storyWindow);
+    const endTime = this.timeAt(startQ + window);
     return { time, startTime, endTime, spanTime: endTime - startTime,
-      startQ, endQ: startQ + this.storyWindow, yMin: camera.min, yMax: camera.max };
+      startQ, endQ: startQ + window, yMin: camera.min, yMax: camera.max };
   }
 
   valueAtTime(time) {
@@ -620,7 +661,7 @@ export class ReplayCanvas {
       points.push({ q: p, ts: this.timeAt(p), priceUsd: current.priceUsd, marketCapUsd: current.marketCapUsd });
     }
     return points.map(point => ({ ts: point.ts, q: point.q, cap: point.marketCapUsd,
-      x: 42 + (point.q - viewport.startQ) / this.storyWindow * 772,
+      x: 42 + (point.q - viewport.startQ) / (viewport.endQ - viewport.startQ) * 772,
       y: this.yAtCap(point.marketCapUsd, camera) }));
   }
 
@@ -628,12 +669,14 @@ export class ReplayCanvas {
     const marker = this.markerPlacements[index];
     if (!marker || !Number.isFinite(marker.cap) || marker.cap <= 0) return null;
     const p = this.chartProgress(progress);
-    const viewport = this.viewportAt(p);
-    const x = 42 + (marker.q - viewport.startQ) / this.storyWindow * 772;
-    const y = this.markerCenterY(marker.cap, { min: viewport.yMin, max: viewport.yMax });
+    const viewport = this.viewportAt(progress);
+    const x = 42 + (marker.q - viewport.startQ) / (viewport.endQ - viewport.startQ) * 772;
+    const camera = { min: viewport.yMin, max: viewport.yMax };
+    const y = this.markerCenterY(marker.cap, camera);
+    const anchorY = y;
     const elapsed = Math.max(0, (clamp(finite(progress), 0, 1) - marker.q) * DURATION);
     const entrance = smoothstep(elapsed / 0.19);
-    return { index, ts: marker.ts, q: marker.q, x, y, marketValue: marker.cap,
+    return { index, ts: marker.ts, q: marker.q, x, y, anchorY, marketValue: marker.cap,
       executionValue: this.capMode ? this.trades[index].marketCapUsd : this.trades[index].priceUsd,
       visible: marker.q <= p + 1e-9 && x - this.markerRadius - 2 >= 42 && x + this.markerRadius + 2 <= 814,
       alpha: marker.q > p + 1e-9 ? 0 : 0.2 + 0.8 * entrance };
@@ -752,9 +795,7 @@ export class ReplayCanvas {
   }
 
   markerCenterY(cap, cameraRange) {
-    // The circle stays at the fill's exact x coordinate; its lower edge sits
-    // four pixels above the fill vertex, without a connector stem.
-    return clamp(this.yAtCap(cap, cameraRange), 265, 658) - this.markerRadius - 4;
+    return this.yAtCap(cap, cameraRange);
   }
 
   buildAxisTicks() {
@@ -799,12 +840,8 @@ export class ReplayCanvas {
   }
 
   layoutMarkers() {
-    this.markerPlacements = this.trades.map((trade, index) => ({
-      index,
-      q: this.eventProgress(index),
-      ts: trade.ts,
-      cap: this.capMode ? trade.marketCapUsd : trade.priceUsd,
-    }));
+    this.markerPlacements = this.trades.map((trade, index) => ({ index,
+      q: this.eventProgress(index), ts: trade.ts, cap: this.capMode ? trade.marketCapUsd : trade.priceUsd }));
   }
 
   layoutTooltips() {
@@ -815,7 +852,8 @@ export class ReplayCanvas {
       const nextProgress = this.eventProgresses[index + 1] ?? this.eventPhase;
       const anchorX = left + PLAYHEAD_FRACTION * (right - left);
       const anchorCap = this.capMode ? trade.marketCapUsd : trade.priceUsd;
-      const anchorY = this.markerCenterY(anchorCap, this.cameraAt(eventProgress));
+      const anchorView = this.viewportAt(eventProgress);
+      const anchorY = this.markerCenterY(anchorCap, { min: anchorView.yMin, max: anchorView.yMax });
       const bubbles = [];
       const linePoints = [];
       // Score each fixed position against the chart throughout this fill's
@@ -826,9 +864,9 @@ export class ReplayCanvas {
       for (let sample = 0; sample <= samples; sample += 1) {
         const fraction = sample / samples;
         const progress = eventProgress + (nextProgress - eventProgress) * fraction;
-        const cameraRange = this.cameraAt(progress);
-        const windowStart = progress - this.storyWindow * PLAYHEAD_FRACTION;
-        const xAt = (q) => left + (q - windowStart) / this.storyWindow * (right - left);
+        const viewport = this.viewportAt(progress);
+        const cameraRange = { min: viewport.yMin, max: viewport.yMax };
+        const xAt = (q) => left + (q - viewport.startQ) / (viewport.endQ - viewport.startQ) * (right - left);
         for (const marker of this.markerPlacements) {
           if (marker.index > index) continue;
           const q = marker.q;
@@ -1092,6 +1130,7 @@ export class ReplayCanvas {
       const state = this.snapshot(p);
       this.drawHeader(ctx, state);
       this.drawChart(ctx, p, state);
+      this.drawSellTransition(ctx, p);
       this.drawResult(ctx, state);
     } else {
       text(ctx, 'TRADE RECAP', 540, 560, `700 46px ${FONT}`, COLOR.white, 'center');
@@ -1162,6 +1201,37 @@ export class ReplayCanvas {
     }
   }
 
+  drawSellTransition(ctx, progress) {
+    const highlight = this.sellHighlights.findLast(event => {
+      const elapsed = (progress - this.eventProgress(event.tradeIndex)) * DURATION;
+      return elapsed >= 0 && elapsed < 1.55;
+    });
+    if (!highlight) return;
+    const elapsed = (progress - this.eventProgress(highlight.tradeIndex)) * DURATION;
+    const entrance = smoothstep(elapsed / 0.16);
+    const opacity = entrance * (1 - smoothstep((elapsed - 1.1) / 0.45));
+    if (opacity < 1e-6) return;
+    const marker = this.markerPosition(highlight.tradeIndex, progress);
+    ctx.save();
+    // The camera provides the transition. Keep the execution pulse restrained
+    // and the chart background unchanged.
+    if (marker?.visible) {
+      const pulse = clamp(elapsed, 0, 1);
+      ctx.globalAlpha = (1 - pulse) * 0.8;
+      ctx.beginPath();
+      ctx.arc(marker.x, marker.y, this.markerRadius + 5 + pulse * 32, 0, Math.PI * 2);
+      ctx.strokeStyle = highlight.label === 'Take profit' ? COLOR.green : COLOR.gold;
+      ctx.lineWidth = 4 - pulse * 2;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = opacity;
+    const badge = `${highlight.label.toUpperCase()} · ${money(highlight.amountUsd, 0, true)}`;
+    const y = 203 + (1 - entrance) * 10;
+    fillRound(ctx, 330, y, 420, 46, 12, '#292312', '#8e711e', 1.5);
+    text(ctx, badge, 540, y + 24, fitFont(ctx, badge, 386, 24, 19, 750), COLOR.goldBright, 'center', 'middle');
+    ctx.restore();
+  }
+
   drawChart(ctx, progress, state) {
     const { pnl } = displayedProfit(state);
     // A verified ending does not establish profit in an earlier unknown-cost
@@ -1169,14 +1239,15 @@ export class ReplayCanvas {
     const chartColor = pnl === null ? COLOR.muted : pnl >= 0 ? COLOR.green : COLOR.red;
     const chartRgb = pnl === null ? '169,166,154' : pnl >= 0 ? '22,199,132' : '246,70,93';
     const chartProgress = this.chartProgress(progress);
-    const cameraRange = this.cameraAt(chartProgress);
+    const viewport = this.viewportAt(progress);
+    const cameraRange = { min: viewport.yMin, max: viewport.yMax };
     const left = 42;
     const right = 814;
     const top = 272;
     const bottom = 651;
-    const windowStart = chartProgress - this.storyWindow * PLAYHEAD_FRACTION;
-    const windowEnd = windowStart + this.storyWindow;
-    const xAtProgress = (storyProgress) => left + (storyProgress - windowStart) / this.storyWindow * (right - left);
+    const windowStart = viewport.startQ;
+    const windowEnd = viewport.endQ;
+    const xAtProgress = (storyProgress) => left + (storyProgress - windowStart) / (windowEnd - windowStart) * (right - left);
     const activeX = xAtProgress(chartProgress);
     const hasQuote = Number.isFinite(state.currentCap) && state.currentCap > 0 && this.storyVertices.length > 0;
     const currentY = hasQuote ? clamp(this.yAtCap(state.currentCap, cameraRange), top + 6, bottom - 6) : (top + bottom) / 2;
@@ -1355,7 +1426,7 @@ export class ReplayCanvas {
       const entrance = smoothstep((progress - q) * DURATION / 0.19);
       const alpha = 0.2 + 0.8 * entrance;
       const scale = 0.82 + 0.18 * entrance;
-      // Each circle stays at its exact fill time just above its fill vertex.
+      // The circle is centered on its genuine execution point, without stems.
       if (x - this.markerRadius - 2 < 42 || x + this.markerRadius + 2 > 814) continue;
       markers.push({
         x, y,
@@ -1374,6 +1445,11 @@ export class ReplayCanvas {
       ctx.strokeStyle = COLOR.dark;
       ctx.lineWidth = 3;
       ctx.stroke();
+      // Paint each letter with its circle so a later overlapping execution
+      // covers the older label instead of stacking several B/S characters.
+      text(ctx, marker.letter, marker.x, marker.y + 1,
+        `800 ${Math.max(12, Math.round(this.markerRadius * marker.scale))}px ${FONT}`,
+        '#ffffff', 'center', 'middle');
       ctx.restore();
     }
     if (this.data.replayAccounting?.version === 2) for (const event of this.inventoryEvents) {
@@ -1385,14 +1461,6 @@ export class ReplayCanvas {
       ctx.beginPath(); ctx.arc(x, y, this.markerRadius, 0, Math.PI * 2); ctx.fillStyle = incoming ? COLOR.green : COLOR.red; ctx.fill();
       ctx.strokeStyle = COLOR.dark; ctx.lineWidth = 3; ctx.stroke();
       text(ctx, incoming ? 'IN' : 'OUT', x, y + 1, `750 ${Math.max(10, this.markerRadius * .68)}px ${FONT}`, '#fff', 'center', 'middle');
-    }
-    for (const marker of markers) {
-      ctx.save();
-      ctx.globalAlpha = marker.alpha;
-      text(ctx, marker.letter, marker.x, marker.y + 1,
-        `800 ${Math.max(12, Math.round(this.markerRadius * marker.scale * 0.92))}px ${FONT}`,
-        '#ffffff', 'center', 'middle');
-      ctx.restore();
     }
     return markers;
   }

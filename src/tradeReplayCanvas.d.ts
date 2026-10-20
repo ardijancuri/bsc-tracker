@@ -12,7 +12,7 @@ export interface ReplayViewport {
   startQ: number; endQ: number; yMin: number; yMax: number;
 }
 export interface ReplayMarkerPosition {
-  index: number; ts: number; q: number; x: number; y: number;
+  index: number; ts: number; q: number; x: number; y: number; anchorY: number;
   marketValue: number; executionValue: number | null; visible: boolean; alpha: number;
 }
 export class ReplayCanvas {
