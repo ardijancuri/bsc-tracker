@@ -7,10 +7,10 @@ const history: TokenChart = { address, period: '5m', source: 'geckoterminal', up
   candles: [{ time: 100, open: 1, high: 2, low: 1, close: 2, volume: 50 }], points: [{ timestamp: '1970-01-01T00:01:40Z', priceUsd: '2' }] };
 const response = (chart: TokenChart) => new Response(JSON.stringify(chart), { headers: { 'Content-Type': 'application/json' } });
 afterEach(() => vi.useRealTimers());
-it('polls independent history recovery without confusing it with older stored-page pagination',()=>{
+it('continues selected history recovery even when saved-page pagination is otherwise limited',()=>{
   const chart:TokenChart={...history,source:'imported',historyRecoveryPending:true,historyLoadStatus:'limited',fullHistory:true};
   expect(tokenChartRefreshDelay(chart,true)).toBe(1500);
-  expect(tokenChartHistoryRefreshDelay(chart)).toBeNull();
+  expect(tokenChartHistoryRefreshDelay(chart)).toBe(1500);
   expect(tokenChartRefreshDelay({...chart,historyRetryAfterMs:60000},true)).toBe(60000);
 });
 
@@ -351,6 +351,101 @@ describe('progressive full browser chart history', () => {
     expect(loaded).toMatchObject({ historyComplete: true, historyBefore: 50, pending: false, volumeCurrency: 'usd' });
     expect(fetcher.mock.calls[1][0]).toContain('priority=prefetch&history=full&before=1000');
     expect(charts.peek(address, '1m', true)).toBe(loaded);
+  });
+
+  it('marks an explicitly selected older page as foreground while background pagination remains prefetch', async () => {
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(full())).mockResolvedValue(response(full({historyComplete:true})));
+    const charts=createTokenChartRequests({fetcher,now:()=>0});
+    await charts.request(address,'1m','chart',false,true);
+    await charts.requestOlder(address,'1m',1000,'chart');
+    expect(fetcher.mock.calls[1][0]).toContain('priority=chart&history=full&before=1000');
+    await charts.requestOlder(address,'1m',100);
+    expect(fetcher.mock.calls[2][0]).toContain('priority=prefetch&history=full&before=100');
+  });
+
+  it('holds a recovering older page cursor and cooldown through independent latest refreshes',async()=>{
+    let clock=0;
+    const latest=full({source:'node',historyBefore:1000,historyPending:true});
+    const recovering=full({source:'imported',candles:[{...history.candles[0],time:100}],historyBefore:100,
+      historyRecoveryPending:true,historyRecoveryReason:'import_provider_cooldown',historyRetryAfterMs:60000,
+      historyLoadStatus:'limited',historyComplete:false,partialHistory:true});
+    const complete=full({source:'mixed',candles:[{...history.candles[0],time:100},{...history.candles[0],time:500}],
+      historyBefore:100,historyComplete:true,partialHistory:false});
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(latest)).mockResolvedValueOnce(response(recovering))
+      .mockResolvedValueOnce(response({...latest,candles:[{...history.candles[0],time:1060}]})).mockResolvedValueOnce(response(complete));
+    const charts=createTokenChartRequests({fetcher,now:()=>clock});
+    await charts.request(address,'1m','chart',false,true);
+    const pending=await charts.requestOlder(address,'1m',1000,'chart');
+    expect(pending).toMatchObject({historyBefore:1000,historyRecoveryPending:true,historyPending:true,historyLoadStatus:'queued',historyComplete:false});
+    expect(pending.candles.map(c=>c.time)).toEqual([100,1000]);
+    clock=15000;
+    const fresh=await charts.request(address,'1m','chart',true,true);
+    expect(fresh).toMatchObject({historyBefore:1000,historyRecoveryPending:true,historyRecoveryReason:'import_provider_cooldown'});
+    expect(charts.historyDelay(address,'1m')).toBe(45000);
+    expect(await charts.requestOlder(address,'1m',1000,'chart')).toMatchObject({historyBefore:1000,historyRetryAfterMs:45000});
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    clock=60000;
+    const repaired=await charts.requestOlder(address,'1m',1000,'chart');
+    expect(fetcher.mock.calls[3][0]).toContain('&before=1000');
+    expect(repaired).toMatchObject({historyBefore:100,historyRecoveryPending:false});
+    expect(repaired.candles.map(c=>c.time)).toEqual([100,500,1000,1060]);
+    expect(repaired.historyRecoveryReason).toBeUndefined();
+  });
+
+  it('retains a barless older recovery page until a completed empty retrieval ends it',async()=>{
+    let clock=0;
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(full({source:'node',historyBefore:1000})))
+      .mockResolvedValueOnce(response(full({source:'node',candles:[],historyRecoveryPending:true,historyRetryAfterMs:1500,historyLoadStatus:'limited'})))
+      .mockResolvedValueOnce(response(full({source:'node',candles:[],historyComplete:false,historyLoadStatus:'limited'})));
+    const charts=createTokenChartRequests({fetcher,now:()=>clock});
+    await charts.request(address,'1m','chart',false,true);
+    expect(await charts.requestOlder(address,'1m',1000,'chart')).toMatchObject({historyBefore:1000,historyRecoveryPending:true,historyLoadStatus:'queued'});
+    expect(charts.historyDelay(address,'1m')).toBe(1500);
+    clock=1500;
+    const exhausted=await charts.requestOlder(address,'1m',1000,'chart');
+    expect(exhausted).toMatchObject({historyRecoveryPending:false,historyLoadStatus:'limited',historyPending:false});
+    expect(charts.historyDelay(address,'1m')).toBeNull();
+    expect(exhausted.candles).toEqual(full().candles);
+  });
+
+  it('clears a repaired page without hiding a separately incomplete latest window or another older page',async()=>{
+    const latest=full({source:'node',historyBefore:1000,historyPending:true,partialHistory:true});
+    const older=(partial:boolean)=>full({source:'imported',candles:[{...history.candles[0],time:100}],historyBefore:100,
+      historyComplete:true,partialHistory:partial});
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(latest)).mockResolvedValueOnce(response(older(false)))
+      .mockResolvedValueOnce(response({...latest,partialHistory:false})).mockResolvedValueOnce(response(older(false)))
+      .mockResolvedValueOnce(response(older(true))).mockResolvedValueOnce(response(older(false)));
+    const charts=createTokenChartRequests({fetcher,now:()=>0});
+    await charts.request(address,'1m','chart',false,true);
+    expect(await charts.requestOlder(address,'1m',1000,'chart')).toMatchObject({partialHistory:true,historyComplete:false});
+    await charts.request(address,'1m','chart',true,true);
+    expect(await charts.requestOlder(address,'1m',1000,'chart')).toMatchObject({partialHistory:false,historyComplete:true});
+    await charts.requestOlder(address,'1m',500,'chart');
+    expect(await charts.requestOlder(address,'1m',1000,'chart')).toMatchObject({partialHistory:true,historyComplete:false});
+  });
+
+  it('restores the selected repair cursor and original cooldown without exposing local cache bookkeeping',async()=>{
+    const began=Date.parse('2026-10-20T12:00:00Z');let clock=began;
+    const before=began/1000-60,latest=full({source:'node',candles:[{...history.candles[0],time:before}],historyBefore:before,
+      updatedAt:new Date(began).toISOString(),supplyCheckedAt:new Date(began).toISOString(),partialHistory:false});
+    const recovering={...latest,candles:[{...history.candles[0],time:before-600}],historyBefore:before-600,partialHistory:true,
+      historyRecoveryPending:true,historyRetryAfterMs:60000,historyLoadStatus:'limited' as const};
+    const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);}};
+    const first=createTokenChartRequests({storage,now:()=>clock,fetcher:vi.fn<typeof fetch>().mockResolvedValueOnce(response(latest)).mockResolvedValueOnce(response(recovering))});
+    await first.request(address,'1m','chart',false,true);await first.requestOlder(address,'1m',before,'chart');
+    clock=began+15000;
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(response(latest)).mockResolvedValueOnce(response({...recovering,
+      historyRecoveryPending:false,historyRetryAfterMs:undefined,historyLoadStatus:undefined,historyComplete:true,partialHistory:false}));
+    const restored=createTokenChartRequests({storage,now:()=>clock,fetcher});
+    expect(restored.peek(address,'1m',true)).toMatchObject({historyBefore:before,historyRecoveryPending:true});
+    expect(restored.peek(address,'1m',true)).not.toHaveProperty('localHistoryCache');
+    expect(restored.historyDelay(address,'1m')).toBe(45000);
+    await restored.request(address,'1m','chart',true,true);
+    expect(await restored.requestOlder(address,'1m',before,'chart')).toMatchObject({historyBefore:before,historyRetryAfterMs:45000});
+    expect(fetcher).toHaveBeenCalledOnce();
+    clock=began+60000;
+    expect(await restored.requestOlder(address,'1m',before,'chart')).toMatchObject({historyBefore:before-600,historyRecoveryPending:false,partialHistory:false,historyComplete:true});
+    expect(fetcher.mock.calls[1][0]).toContain(`priority=chart&history=full&before=${before}`);
   });
 
   it('retains concurrent latest updates when an older delta arrives afterwards', async () => {

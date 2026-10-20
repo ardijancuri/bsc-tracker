@@ -119,4 +119,12 @@ describe('node-owned replay contract and ending', () => {
     expect(result.preparationStatus).toBe('pending'); expect(result.data.requestContext?.accountId).toBe(context!.accountId);
     expect(result.data.requestContext?.snapshotId).toBeUndefined(); expect(result.data.accountingSnapshot).toBeUndefined();
   });
+  it.each([429,500,502,503,504])('keeps transient HTTP %s preparation failures retryable without granting export approval',async status=>{
+    const {activity,now}=nodeReplayFixture();vi.useFakeTimers();vi.setSystemTime(now);
+    const data=prepareTradeReplayData(activity,null,undefined,now)!;
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response('{}',{status})));
+    const result=await replayMarketData(data,new AbortController().signal);
+    expect(result.preparationStatus).toBe('pending');expect(result.retryAfterMs).toBe(2000);
+    expect(result.data.replayAccounting?.final).toBeNull();
+  });
 });

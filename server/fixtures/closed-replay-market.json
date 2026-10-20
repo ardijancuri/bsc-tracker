@@ -1,0 +1,844 @@
+{
+  "description": "Public Rell/.ai closed position: complete confirmed collection, unfinished swap decoding, and genuine market marks bracketing the last sale. Historical import observations are intentionally excluded to reproduce the node-only failure.",
+  "version": 1,
+  "frozenAt": "2026-10-20T12:39:52.241Z",
+  "capturedAt": "2026-10-20T12:44:54.276Z",
+  "wallet": "0x3391a39a1b508e54a361924a26056c01c1c2c07d",
+  "token": "0x483c9746b455e296622945758437f8c7593b7777",
+  "from": "2026-10-20T12:17:26.000Z",
+  "to": "2026-10-20T12:19:40.000Z",
+  "chart": {
+    "tokenAddress": "0x483c9746b455e296622945758437f8c7593b7777",
+    "from": "2026-10-20T12:17:26.000Z",
+    "to": "2026-10-20T12:19:40.000Z",
+    "intervalSeconds": 60,
+    "bars": [
+      {
+        "timestamp": "2026-10-20T12:17:00.000Z",
+        "open": "0.000024932995358790297263431323487271",
+        "high": "0.000042665711936645646122061563119669",
+        "low": "0.00002288705879547504046857238145693",
+        "close": "0.000042665711936645646122061563119669",
+        "firstObservationAt": "2026-10-20T12:17:26.000Z",
+        "lastObservationAt": "2026-10-20T12:17:33.000Z",
+        "volumeUsd": "9455.650152499506716191234195408382349701",
+        "intervalSeconds": 60,
+        "source": "node",
+        "supply": null,
+        "supplyEstimated": true
+      },
+      {
+        "timestamp": "2026-10-20T12:18:00.000Z",
+        "open": "0.000025442732152769931303618340903459",
+        "high": "0.000026831482791066492707676008524469",
+        "low": "0.00002356498962823366668362644678351",
+        "close": "0.000023697661188469602344761379619589",
+        "firstObservationAt": "2026-10-20T12:18:08.000Z",
+        "lastObservationAt": "2026-10-20T12:18:50.000Z",
+        "volumeUsd": "1020.783753584344254314251060309761873716",
+        "intervalSeconds": 60,
+        "source": "node",
+        "supply": null,
+        "supplyEstimated": true
+      },
+      {
+        "timestamp": "2026-10-20T12:19:00.000Z",
+        "open": "0.000025562334629962946960043466508056",
+        "high": "0.000029528345357897301807324636448397",
+        "low": "0.000025562334629962946960043466508056",
+        "close": "0.000029430426817798648937072718805486",
+        "firstObservationAt": "2026-10-20T12:19:04.000Z",
+        "lastObservationAt": "2026-10-20T12:19:08.000Z",
+        "volumeUsd": "574.718148380552582403577894633703760337",
+        "intervalSeconds": 60,
+        "source": "node",
+        "supply": null,
+        "supplyEstimated": true
+      }
+    ],
+    "source": "node",
+    "coverage": [
+      {
+        "from": "2026-10-20T12:17:40.000Z",
+        "to": "2026-10-20T12:21:25.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:13:55.000Z",
+        "to": "2026-10-20T12:17:40.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:17:38.000Z",
+        "to": "2026-10-20T12:17:42.000Z",
+        "source": "node"
+      }
+    ],
+    "complete": false,
+    "sparse": false,
+    "reason": "incomplete_chart_coverage"
+  },
+  "samples": {
+    "tokenAddress": "0x483c9746b455e296622945758437f8c7593b7777",
+    "from": "2026-10-20T12:17:26.000Z",
+    "to": "2026-10-20T12:22:40.000Z",
+    "truncated": false,
+    "observations": [
+      {
+        "timestamp": "2026-10-20T12:16:40.000Z",
+        "priceUsd": "0.000007495371412989956634326266829345",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744614",
+        "blockHash": "0xf7c5fd4c25541186074e0002edf56710fd9c8487900727cc2876c193f1ce15bd",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:41.000Z",
+        "priceUsd": "0.000005944263560435118696374439227257",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744616",
+        "blockHash": "0x450da9e7703924cdb69e896c17b642b698cf5f375924524242a4d3643bea16ce",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:43.000Z",
+        "priceUsd": "0.000006985100919650296276525543436534",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744621",
+        "blockHash": "0x67093b4496daa954db42dc0aff0e3ac409e54bc4364431bf58ae21a5738bf652",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:44.000Z",
+        "priceUsd": "0.000006996254071659898053680338472108",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744623",
+        "blockHash": "0x4a535a68a5c4b7cd4f99408c04ea5ad3e397739d2ad2a52b53108a4290f05fda",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:46.000Z",
+        "priceUsd": "0.000007179752192131289433105230649658",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744628",
+        "blockHash": "0xabc80bd5da322a071cc51048a1ed7762286cdfd896dd5035fd3ca0c04e2b19ab",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:48.000Z",
+        "priceUsd": "0.000008152542283349522884875055815421",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744631",
+        "blockHash": "0xcd631cceeb43e9e13e3aae31b161838ba669461b476a4c608b6b85e3b063cbdc",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:50.000Z",
+        "priceUsd": "0.000008172628118050645854453359825637",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744636",
+        "blockHash": "0xbc2881b9163dae206c441a71862e2b6f972085a4fad7f7957492e3163266c3a3",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:52.000Z",
+        "priceUsd": "0.000008194010985385598414735360372075",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744640",
+        "blockHash": "0x517831e62d8d7728713b4d6d83e043b3163b656633039f4594f5af1107436d7c",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:53.000Z",
+        "priceUsd": "0.00000823570280498631555590816125336",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744643",
+        "blockHash": "0xa4a2bd8c383dafce254f1ec94c6a2cb105365b0eb137948267af22a3e927b743",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:54.000Z",
+        "priceUsd": "0.000009708522522695421065294471305417",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744645",
+        "blockHash": "0x5c74e83177db4314c34dd0679981fdaee79b69a2166bf2d7e4aa0de711d71839",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:55.000Z",
+        "priceUsd": "0.000011780145159747953810407945523804",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744648",
+        "blockHash": "0x8fd91490ad625ce5999d26765a2baf04a1a3eccec5a28a33f2d51e28655fe744",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:56.000Z",
+        "priceUsd": "0.00001123256822970227770439881109821",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744650",
+        "blockHash": "0x3f2f1787f3cf8fea97980ba8f6c9d0f9f28ecd7618cedbca78f79bb2220713c3",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:57.000Z",
+        "priceUsd": "0.000012194783858907617361692848785084",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744652",
+        "blockHash": "0xfbe986c27fc7687bc0d20121dbc364e8d9964c854cc7b5dd36a759b6d4a52aa0",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:58.000Z",
+        "priceUsd": "0.000012257233110491805061938219291127",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744654",
+        "blockHash": "0x442c2b73f326515df40e827d65b355d418bd8b0cdf1ac17fc1f2c797abe9f4d7",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:16:59.000Z",
+        "priceUsd": "0.000014225660627487180150609229938425",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744657",
+        "blockHash": "0x012379d5f5f43991d1688fb1ee6126c29a34523511e9118b1c847cead3119345",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:00.000Z",
+        "priceUsd": "0.000012993525527732208562230244106898",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744659",
+        "blockHash": "0xeb1d6be25e89d5d27810691a711163bf48e484826855beb9ef7e11ea3888ce2e",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:01.000Z",
+        "priceUsd": "0.000013239029462218015223668682753686",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744661",
+        "blockHash": "0x3decae0c504183cfdfdbfd3f1c16b6c013a41e2a9ea0f93019839a0f8fd5e631",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:02.000Z",
+        "priceUsd": "0.000012801168469049668407741353813659",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744662",
+        "blockHash": "0x8722be13e591a5446bc81cc32b7d529542e44b17bbf6b5c2f308b81b99c73d0a",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:03.000Z",
+        "priceUsd": "0.000012098849603974335391687588977644",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744665",
+        "blockHash": "0xf5d73fbbb317d98372b6765e6b4ddf9e6d267db3fbe973b6a90388585ee973eb",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:04.000Z",
+        "priceUsd": "0.000011748406019888935623998545272598",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744667",
+        "blockHash": "0x5aca9a937ae7c4bfbf338c16cc1de3d0346e5ef333093c3b1bf1bb750cfdbade",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:06.000Z",
+        "priceUsd": "0.000012749076366808766450325538779577",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744672",
+        "blockHash": "0xa9f469cf2e875df23af20ac43ad109cd7035aa4f1940764699fd23bd9a34b0b6",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:07.000Z",
+        "priceUsd": "0.000014566709206156930329374830812775",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744673",
+        "blockHash": "0x3a4d1541c30fd613ee1c8214b95dd0666b0f76fe38361a335ce558a22d0d2a7c",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:08.000Z",
+        "priceUsd": "0.000020288123540499930823253997803462",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744677",
+        "blockHash": "0xa371ffdca12eb8bb38889ceae8a42d439826af6962292bc22a51e417273a8a48",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:09.000Z",
+        "priceUsd": "0.000015935503721290422222499890582501",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744679",
+        "blockHash": "0xaca7f4de843f3bd306d49a39ec273c8ce8d0f4e2b0dfe42ce870d95eefdd719b",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:10.000Z",
+        "priceUsd": "0.00001491702055289568830898512007383",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744680",
+        "blockHash": "0x1f3fb465a1b9df81e5d0a45923cbf6aaa853a580bfd7973d7619eaf800aef3c4",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:11.000Z",
+        "priceUsd": "0.000017389728017515411197123771046584",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744683",
+        "blockHash": "0xdc0b2bb46be1a3aa4d3e01b9f6035dc7b5dc7449b47dee71967c4d65864d95ce",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:12.000Z",
+        "priceUsd": "0.000019307897270250245095635492055987",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744685",
+        "blockHash": "0x3c1b5a17f67793115c48463366d0ad5524a8d974cfe0e004def7d7927589d3d3",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:13.000Z",
+        "priceUsd": "0.000016817733092932702826653051197942",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744688",
+        "blockHash": "0xc222a25eb1e975c988d25d78959beda1bf1565c7af47e47801480d7c1c163872",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:15.000Z",
+        "priceUsd": "0.000018073271455763242241387174816063",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744692",
+        "blockHash": "0x71ebca430f3da073ad31b8e03f459ba76812ab3b55c2df973fdd3235f990e0c9",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:16.000Z",
+        "priceUsd": "0.000023651922522968061558805003190061",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744694",
+        "blockHash": "0xb975f6f94c709984557fb40a78793c867428809a5a60d5d5b4f90f05404378cd",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:17.000Z",
+        "priceUsd": "0.000016705653362692635944604736073697",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744697",
+        "blockHash": "0x9231daaa03c17f936049bcb5aca22984ca200a6815d456de625bb769bdd4983d",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:18.000Z",
+        "priceUsd": "0.000021016341553488562472434047167814",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744699",
+        "blockHash": "0x8879899ecf4f1615678fe148b13f30e8435cea6cbf91db6717bd8b08e57e4b10",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:19.000Z",
+        "priceUsd": "0.000023449638335377181861014013581104",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744701",
+        "blockHash": "0xcb98760faaccdc97e29d787aec5ed15081978a98642c803fac379ded9bf0fe37",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:20.000Z",
+        "priceUsd": "0.000021031199925522381977896408742773",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744703",
+        "blockHash": "0xda104051e6b13c305ab88440963daeb4e7f263b2c31e92810944c4c7427c26d0",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:21.000Z",
+        "priceUsd": "0.000020573256363536619331167049236357",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744705",
+        "blockHash": "0x338b248dba97dd15006e5a6c121c2b783b04fde3a89e8d0a19dae3f68b1b2ef7",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:22.000Z",
+        "priceUsd": "0.000021713427169277734257656378632835",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744707",
+        "blockHash": "0x91144acae115ab7649f63cded5c39e2046d27dbafe47b1fb5b4b8dd414885a5c",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:23.000Z",
+        "priceUsd": "0.000021708598017744982560222358353782",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744710",
+        "blockHash": "0x7ff383b98797b5117ead49c7697831af485b9a835003cf7f958244ea0428815e",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:24.000Z",
+        "priceUsd": "0.000022192730509807256602640884008139",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744712",
+        "blockHash": "0x28cee7dd3b39993f070392c8a2b852240f04982e943aacbbe1f49e91895804d9",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:25.000Z",
+        "priceUsd": "0.000023503078358275352053580015575259",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744714",
+        "blockHash": "0xfa3e04c8b21baae16f55fbb75277b6a478a740513c8ae3fa2b56b793337ee122",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:26.000Z",
+        "priceUsd": "0.000024672776293607203020746985860389",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744717",
+        "blockHash": "0x302b9d2b402f06ce818018fc288d66bd75f81ffc074931e5778e332200f176bf",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:27.000Z",
+        "priceUsd": "0.000023838515181694490810125135398691",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744719",
+        "blockHash": "0x50c4471286ddaaf6dd957203c49990d7eab9dbe946967fb8dafca2814b601ae6",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:28.000Z",
+        "priceUsd": "0.000026441134938316718528471690852732",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744721",
+        "blockHash": "0x3a5ef9d2536cb97cabb9029c1e4a8a03e458a8d2888afe36c6ba2f718f619cae",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:29.000Z",
+        "priceUsd": "0.000025259415944694368029964565972259",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744723",
+        "blockHash": "0x3141b5448c140a03d1ac05356d76dee74a16a5dff68a8e1dca91b43c7aff429c",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:30.000Z",
+        "priceUsd": "0.000027793338017485257747068502209572",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744724",
+        "blockHash": "0x243c8630aff963f65e5c3dadd927b29c0a0f65a546697688c5079b20b58235c7",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:31.000Z",
+        "priceUsd": "0.000027254528206702869189480142260218",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744728",
+        "blockHash": "0x919221c53b8622c71f49ed2b0c9c61fadfde0d843407a3597d4df9e68acb132c",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:32.000Z",
+        "priceUsd": "0.000029102230566030888388854608221794",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744730",
+        "blockHash": "0x897342aa934739b2a53ffe124e730c471a033a86a40ce5de50e7917986cdac55",
+        "marketId": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "swap"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:33.000Z",
+        "priceUsd": "0.00003257006938993802999011945920527",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744732",
+        "blockHash": "0x38f5ca4356a12a0ae155e04e1c4c9246b445006dc26887f5136dcc1453524018",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:46.000Z",
+        "priceUsd": "0.000022639953162746667409579372376669",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744761",
+        "blockHash": "0x594ae2374872fc22fa3ffa5934561dc7b85ef0fbdba305e6c1acb6527d4790ab",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:17:51.000Z",
+        "priceUsd": "0.000024004917062358712805821493687339",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744772",
+        "blockHash": "0xb0465bae5da52627d0c873e1e242a76d2d5a55b7f793baa8255a79e18fc06006",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:18:08.000Z",
+        "priceUsd": "0.000025416353654355477119334691906853",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744810",
+        "blockHash": "0xdd49cfd63e5affb2a143b1e7ac4a42d7f41bf50a00d6729f0eb586ef5c05e194",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:18:43.000Z",
+        "priceUsd": "0.000023261911171825027953292082597824",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744888",
+        "blockHash": "0x5cc2c4e43f0ee008c4441620bbda455bb196e9f8009da2e8985f25965bb79677",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:18:50.000Z",
+        "priceUsd": "0.000023673060339024361628197643149303",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744903",
+        "blockHash": "0x5748eb1b02e5cb397a96ce90eedf09fcaed166782c6eb0a608f93301d0936f49",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:19:04.000Z",
+        "priceUsd": "0.000026063883759932997796090696680297",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744933",
+        "blockHash": "0xf7f468ff6600adc8d6dc5ebaedae14354adf7f236f9733d598f8fb29dea88628",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:19:05.000Z",
+        "priceUsd": "0.000027073996570035765122252389475506",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744936",
+        "blockHash": "0x5b2ae6e91a6bd6c46ee90c7ac927ce4f647550c0dbf07acd1718249ebcb528a9",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:19:08.000Z",
+        "priceUsd": "0.000029495912172995263932522212983645",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128744943",
+        "blockHash": "0x8cb83549ab38687bda3c87fa4e4e06823b1cf406e17023ed6c4f25585bb31eb4",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:20:24.000Z",
+        "priceUsd": "0.000024131398455706382634405942297165",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128745111",
+        "blockHash": "0x93d939a8a573b8e8caf41e677c69bab13d2b66eae2556a4f4d3f28b983c079ce",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      },
+      {
+        "timestamp": "2026-10-20T12:21:11.000Z",
+        "priceUsd": "0.000016090057375474478994440514696887",
+        "supply": "1000000000",
+        "supplyEstimated": false,
+        "blockNumber": "128745215",
+        "blockHash": "0xb2d63eb1fea4c03e8ed3637bc1ed31638e828b45e9c6c8939a332b0d196d2268",
+        "marketId": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "kind": "state"
+      }
+    ],
+    "coverage": [
+      {
+        "from": "2026-10-20T12:13:55.000Z",
+        "to": "2026-10-20T12:17:40.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:17:00.000Z",
+        "to": "2026-10-20T12:20:00.000Z",
+        "source": "imported"
+      },
+      {
+        "from": "2026-10-20T12:17:38.000Z",
+        "to": "2026-10-20T12:17:42.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:17:40.000Z",
+        "to": "2026-10-20T12:21:25.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:21:22.000Z",
+        "to": "2026-10-20T12:21:26.000Z",
+        "source": "node"
+      },
+      {
+        "from": "2026-10-20T12:21:25.000Z",
+        "to": "2026-10-20T12:25:10.000Z",
+        "source": "node"
+      }
+    ]
+  },
+  "markets": [
+    {
+      "id": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+      "token_address": "0x483c9746b455e296622945758437f8c7593b7777",
+      "quote_address": "0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+      "protocol": "pcs_v2",
+      "contract_address": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088",
+      "token0": "0x483c9746b455e296622945758437f8c7593b7777",
+      "token1": "0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+      "decimals0": 18,
+      "decimals1": 18,
+      "authentication": {
+        "fee": null,
+        "factory": "0xca143ce32fe78f1f7019d7d551a6402fc5350c73",
+        "canonicalFactoryLookup": true
+      },
+      "status": "active"
+    },
+    {
+      "id": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0:0x483c9746b455e296622945758437f8c7593b7777",
+      "token_address": "0x483c9746b455e296622945758437f8c7593b7777",
+      "quote_address": "0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+      "protocol": "flap",
+      "contract_address": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0",
+      "token0": "0x483c9746b455e296622945758437f8c7593b7777",
+      "token1": "0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+      "decimals0": 18,
+      "decimals1": 18,
+      "authentication": {
+        "method": "getTokenV8Safe",
+        "controller": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0",
+        "tokenVersion": "6"
+      },
+      "status": "graduated"
+    }
+  ],
+  "decoderEvidence": {
+    "lastDecodedAt": "2026-10-20T12:19:08.000Z",
+    "terminalTransaction": {
+      "tx_hash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+      "block_number": "128745014",
+      "block_hash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+      "transaction_index": 20,
+      "timestamp": "2026-10-20T12:19:40.000Z",
+      "status": "0x1"
+    },
+    "terminalLogs": [
+      {
+        "market_id": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "block_number": "128745014",
+        "block_hash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+        "tx_hash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+        "transaction_index": 20,
+        "log_index": 235,
+        "timestamp": "2026-10-20T12:19:40.000Z",
+        "log": {
+          "data": "0x000000000000000000000000000000000000000000e3b1385d81f0759e93a6c6000000000000000000000000000000000000000000000050699fa03b31284769",
+          "topics": [
+            "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
+          ],
+          "address": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088",
+          "removed": false,
+          "logIndex": "0xeb",
+          "blockHash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+          "blockNumber": "0x7ac7e36",
+          "blockTimestamp": "0x6ad75c5c",
+          "transactionHash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+          "transactionIndex": "0x14"
+        },
+        "decoder_version": 1,
+        "decode_status": "pending"
+      },
+      {
+        "market_id": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "block_number": "128745014",
+        "block_hash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+        "tx_hash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+        "transaction_index": 20,
+        "log_index": 236,
+        "timestamp": "2026-10-20T12:19:40.000Z",
+        "log": {
+          "data": "0x00000000000000000000000000000000000000000000568cb9f1ffba8353e1ec000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001e88fdb3876a3d80",
+          "topics": [
+            "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",
+            "0x00000000000000000000000010ed43c718714eb63d5aa57b78b54704e256024e",
+            "0x000000000000000000000000a5479b42bfe71c7a7ef5a68ade865dd63260bb46"
+          ],
+          "address": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088",
+          "removed": false,
+          "logIndex": "0xec",
+          "blockHash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+          "blockNumber": "0x7ac7e36",
+          "blockTimestamp": "0x6ad75c5c",
+          "transactionHash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+          "transactionIndex": "0x14"
+        },
+        "decoder_version": 1,
+        "decode_status": "pending"
+      },
+      {
+        "market_id": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "block_number": "128745014",
+        "block_hash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+        "tx_hash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+        "transaction_index": 20,
+        "log_index": 249,
+        "timestamp": "2026-10-20T12:19:40.000Z",
+        "log": {
+          "data": "0x000000000000000000000000000000000000000000fe5e3018e5cb8e1dd1a6ff000000000000000000000000000000000000000000000047ffa257a66d508c2d",
+          "topics": [
+            "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
+          ],
+          "address": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088",
+          "removed": false,
+          "logIndex": "0xf9",
+          "blockHash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+          "blockNumber": "0x7ac7e36",
+          "blockTimestamp": "0x6ad75c5c",
+          "transactionHash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+          "transactionIndex": "0x14"
+        },
+        "decoder_version": 1,
+        "decode_status": "pending"
+      },
+      {
+        "market_id": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088:0x483c9746b455e296622945758437f8c7593b7777",
+        "block_number": "128745014",
+        "block_hash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+        "tx_hash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+        "transaction_index": 20,
+        "log_index": 250,
+        "timestamp": "2026-10-20T12:19:40.000Z",
+        "log": {
+          "data": "0x0000000000000000000000000000000000000000001aacf7bb63db187f3e00390000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000869fd4894c3d7bb3c",
+          "topics": [
+            "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",
+            "0x0000000000000000000000001de460f363af910f51726def188f9004276bf4bc",
+            "0x0000000000000000000000001de460f363af910f51726def188f9004276bf4bc"
+          ],
+          "address": "0x923149b62f6fe685a665ae2cd2e77d6f5e220088",
+          "removed": false,
+          "logIndex": "0xfa",
+          "blockHash": "0x0835c422ea30172c198fcd03e3e49be138915765e6176333349e7298460674e7",
+          "blockNumber": "0x7ac7e36",
+          "blockTimestamp": "0x6ad75c5c",
+          "transactionHash": "0xff7fe12b1848c20d106a54692ba3c91d1309e067658fea6a5da677a0b62fd53f",
+          "transactionIndex": "0x14"
+        },
+        "decoder_version": 1,
+        "decode_status": "pending"
+      }
+    ]
+  }
+}

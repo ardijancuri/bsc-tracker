@@ -10,6 +10,14 @@ import { chartPriceTickmarks, formatChartPrice, latestSubstantialSegmentStart, m
 
 type MarketHistoryBounds = { firstTime: number; lastTime: number; count: number };
 
+/** Volume shares the candle pane but keeps an independent, hidden value scale. */
+export function addVolumeOverlay(instance: IChartApi) {
+  const histogram=instance.addSeries(HistogramSeries,{priceScaleId:'volume',priceFormat:{type:'volume'},
+    priceLineVisible:false,lastValueVisible:false});
+  histogram.priceScale().applyOptions({scaleMargins:{top:.80,bottom:0}});
+  return histogram;
+}
+
 export function marketHistoryViewport(candles: MarketCandle[], previous: MarketHistoryBounds | null, plotWidth = 1200, interval?: CandleInterval) {
   if (!candles.length) return null;
   if (previous) return null;
@@ -106,9 +114,10 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     candleLookup.current.clear();
     const instance = createChart(container.current, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: '#0b0e11' }, textColor: '#879299', fontFamily: 'Manrope, sans-serif', fontSize: 11, attributionLogo: true },
+      layout: { background: { type: ColorType.Solid, color: '#0b0e11' }, textColor: '#879299', fontFamily: 'Manrope, sans-serif', fontSize: 11, attributionLogo: true,
+        panes:{enableResize:false} },
       grid: { vertLines: { color: '#1b222680' }, horzLines: { color: '#1b222680' } },
-      rightPriceScale: { borderColor: '#252d31', scaleMargins: { top: .12, bottom: .08 } },
+      rightPriceScale: { borderColor: '#252d31', scaleMargins: { top: .12, bottom: showVolume ? .24 : .08 } },
       timeScale: { borderColor: '#252d31', timeVisible: interval !== '1d', secondsVisible: false, rightOffset: 3, minBarSpacing: .5, lockVisibleTimeRangeOnResize: true },
       localization: { priceFormatter: formatPrice, tickmarksPriceFormatter: formatTicks, locale: getLocale() },
       crosshair: { mode: 0, vertLine: { color: '#69747a' }, horzLine: { color: '#69747a' } },
@@ -123,9 +132,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     });
     markers.current = createSeriesMarkers(candles.current);
     if (showVolume) {
-      volume.current = instance.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false }, 1);
-      instance.panes()[0].setStretchFactor(.84);
-      instance.panes()[1].setStretchFactor(.16);
+      volume.current = addVolumeOverlay(instance);
     }
     instance.subscribeCrosshairMove(event => setHover(typeof event.time === 'number' ? candleLookup.current.get(event.time) ?? null : null));
     let width = container.current.clientWidth;

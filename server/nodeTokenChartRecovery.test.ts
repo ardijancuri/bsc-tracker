@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { historicalChartSegments,uncoveredChartWindows } from './nodeTokenChartRecovery.js';
+import { historicalChartSegments,historicalFailureChartWindows,uncoveredChartWindows } from './nodeTokenChartRecovery.js';
 describe('coalesced historical token chart windows', () => {
   const to = Date.parse('2026-10-19T19:46:07Z');
   it.each([[60, 86400], [300, 432000], [3600, 2592000], [14400, 7776000], [86400, 15552000]])('bounds %ss requests in fixed completed segments', (seconds, span) => {
@@ -33,5 +33,24 @@ describe('selected chart coverage recovery',()=>{
     expect(uncoveredChartWindows(from,to,[{from:new Date(from).toISOString(),to:new Date(from+3600_000).toISOString()},
       {from:new Date(from+3599_000).toISOString(),to:new Date(from+10*3600_000).toISOString()},
       {from:new Date(from+10*3600_000+3000).toISOString(),to:new Date(to).toISOString()}],{seconds:60})).toEqual([]);
+  });
+  it('does not let collected logs mask missing historical prices, but reuses completed provider proof',()=>{
+    const failures=[{from:new Date(from+3600_000).toISOString(),to:new Date(from+3*3600_000).toISOString()}];
+    const captured=[{from:new Date(from).toISOString(),to:new Date(to).toISOString(),source:'node' as const}];
+    expect(historicalFailureChartWindows(from,to,failures,captured,60)).toEqual([{from:from+3600_000,to:from+3*3600_000}]);
+    expect(historicalFailureChartWindows(from,to,failures,[...captured,{...failures[0],source:'imported'}],60)).toEqual([]);
+  });
+  it('bounds unavailable history recovery to the selected page and the newest two genuine gaps',()=>{
+    const failures=[0,4,8,12].map(hour=>({from:new Date(from+hour*3600_000).toISOString(),to:new Date(from+(hour+2)*3600_000).toISOString()}));
+    expect(historicalFailureChartWindows(from+5*3600_000,from+13*3600_000,failures,[],60)).toEqual([
+      {from:from+12*3600_000,to:from+13*3600_000},{from:from+8*3600_000,to:from+10*3600_000},
+    ]);
+  });
+  it('recovers the genuine completed bucket for a sub-minute frozen ending without dropping it',()=>{
+    const first=from+23000,last=from+40000;
+    expect(uncoveredChartWindows(first,last,[],{seconds:60})).toEqual([]);
+    expect(uncoveredChartWindows(first,last,[],{seconds:60,includePartialBuckets:true})).toEqual([{from,to:from+60000}]);
+    expect(historicalFailureChartWindows(first,last,[{from:new Date(from).toISOString(),to:new Date(from+60000).toISOString()}],[],60,true))
+      .toEqual([{from,to:from+60000}]);
   });
 });

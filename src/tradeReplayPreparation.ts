@@ -6,13 +6,15 @@ const preparationMessages = replayPreparationMessages;
 
 export class ReplayPreparationError extends Error {
   readonly retryAfterMs: number;
+  readonly retryable: boolean;
   constructor(result: ReplayMarketRequestResult) {
     super(result.blockingReason ? preparationMessages[result.blockingReason] : result.preparationStatus === 'pending'
       ? 'The chart and profit data are still loading. Retry to prepare a complete replay.'
       : 'The chart and profit data could not be verified. Retry to prepare this replay.');
     this.name = 'ReplayPreparationError';
+    this.retryable = result.preparationStatus === 'pending';
     const delay = result.retryAfterMs;
-    this.retryAfterMs = typeof delay === 'number' && Number.isFinite(delay) && delay > 0 ? Math.min(600_000, delay) : 0;
+    this.retryAfterMs = this.retryable && typeof delay === 'number' && Number.isFinite(delay) && delay > 0 ? Math.min(600_000, delay) : 0;
   }
 }
 
@@ -32,7 +34,7 @@ export async function prepareReplayForShare(data: TradeReplayData, signal: Abort
 } = {}): Promise<ReplayMarketRequestResult> {
   const deadline = Date.now() + 180_000;
   let selected = data;
-  for (let attempt = 0; ; attempt += 1) {
+  for (;;) {
     if (signal.aborted) throw cancelled();
     const result = await (options.prepare ?? replayMarketData)(selected, signal);
     if (signal.aborted) throw cancelled();
@@ -40,7 +42,7 @@ export async function prepareReplayForShare(data: TradeReplayData, signal: Abort
     if (result.preparationStatus === 'ready') return result;
     const rawDelay = result.retryAfterMs;
     const delay = typeof rawDelay === 'number' && Number.isFinite(rawDelay) && rawDelay > 0 ? Math.max(1000, rawDelay) : 1500;
-    if (result.preparationStatus !== 'pending' || attempt >= 30 || Date.now() + delay + 8000 > deadline) return requirePreparedReplay(result);
+    if (result.preparationStatus !== 'pending' || Date.now() + delay + 8000 > deadline) return requirePreparedReplay(result);
     selected = result.data;
     options.onWait?.(Date.now() + delay);
     await new Promise<void>((resolve, reject) => {

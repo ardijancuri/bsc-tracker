@@ -24,7 +24,7 @@ const iso = (value: string) => { const time = Date.parse(value); if (!Number.isF
 const dateText = (value: string | Date) => iso(value instanceof Date ? value.toISOString() : value);
 const MAX_RANGE = 500, MAX_PRICE_AGE = 120_000;
 const provenance = (items: { source: string }[]): NodeMarketProvenance => {
-  const sources = new Set(items.map(item => item.source)); return sources.size > 1 ? 'mixed' : sources.has('imported') ? 'imported' : 'node';
+  const sources = new Set(items.map(item => item.source)); return sources.size > 1 || sources.has('mixed') ? 'mixed' : sources.has('imported') ? 'imported' : 'node';
 };
 const identity = (row: any): NodeMarketIdentity => ({ id: row.id, token: row.token_address, quote: row.quote_address, protocol: row.protocol,
   contract: row.contract_address, poolId: row.pool_id, token0: row.token0, token1: row.token1,
@@ -189,16 +189,41 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
           GROUP BY token_address,market_id,date_trunc('minute',timestamp)
       ) c JOIN node_markets m ON m.id=c.market_id
         ORDER BY c.minute,c.volume_usd DESC,c.observations DESC,c.market_id
-      ), bucketed AS (SELECT *,to_timestamp(floor(extract(epoch FROM minute)/$4)*$4) AS bucket FROM chosen)
+      ), imported_candidates AS (
+        SELECT DISTINCT ON(timestamp) timestamp AS minute,open,high,low,COALESCE(close,price_usd) AS close,volume_usd,supply,supply_estimated,
+          GREATEST(interval_seconds,60) AS interval_seconds FROM node_market_observations
+        WHERE token_address=$1 AND kind='imported' AND timestamp>=$2::timestamptz-$4*interval '1 second' AND timestamp<=$3::timestamptz
+          AND timestamp+interval_seconds*interval '1 second'>=$2::timestamptz AND interval_seconds<=$4
+        ORDER BY timestamp,interval_seconds DESC,CASE WHEN import_id LIKE 'legacy-cache:%' THEN 1 ELSE 0 END,created_at DESC,id
+      ), node_coverage AS MATERIALIZED (
+        SELECT range_agg(tstzrange(r.from_at,r.to_at+interval '3 seconds','[]')) AS covered
+        FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id WHERE m.token_address=$1 AND r.complete
+          AND r.to_at>=$2::timestamptz-$4*interval '1 second' AND r.from_at<=$3::timestamptz
+      ), preferred_imports AS (
+        SELECT i.* FROM imported_candidates i CROSS JOIN node_coverage proof
+        WHERE NOT COALESCE(proof.covered @> tstzrange(i.minute,i.minute+i.interval_seconds*interval '1 second','[]'),false)
+          OR NOT EXISTS(SELECT 1 FROM chosen n WHERE n.minute<i.minute+i.interval_seconds*interval '1 second' AND n.minute+interval '1 minute'>i.minute)
+          OR EXISTS(SELECT 1 FROM node_market_raw_logs l JOIN node_markets m ON m.id=l.market_id WHERE m.token_address=$1
+            AND l.timestamp>=i.minute AND l.timestamp<i.minute+i.interval_seconds*interval '1 second' AND l.decode_status IN('pending','missing_quote','invalid'))
+          OR EXISTS(SELECT 1 FROM node_market_observations p WHERE p.token_address=$1 AND p.kind='swap' AND p.candles_pending
+            AND p.timestamp>=i.minute AND p.timestamp<i.minute+i.interval_seconds*interval '1 second')
+      ), imported AS (
+        SELECT i.* FROM preferred_imports i WHERE NOT EXISTS(SELECT 1 FROM preferred_imports larger
+          WHERE larger.minute<i.minute+i.interval_seconds*interval '1 second' AND larger.minute+larger.interval_seconds*interval '1 second'>i.minute
+            AND (larger.interval_seconds>i.interval_seconds OR larger.interval_seconds=i.interval_seconds AND larger.minute<i.minute))
+      ), merged AS (
+        SELECT n.minute,n.open,n.high,n.low,n.close,n.volume_usd,n.first_observation_at,n.last_observation_at,
+          NULL::numeric AS supply,true AS supply_estimated,'node'::text AS source FROM chosen n
+        WHERE NOT EXISTS(SELECT 1 FROM imported i WHERE n.minute<i.minute+i.interval_seconds*interval '1 second' AND n.minute+interval '1 minute'>i.minute)
+        UNION ALL SELECT i.minute,i.open,i.high,i.low,i.close,i.volume_usd,i.minute,i.minute+i.interval_seconds*interval '1 second',i.supply,i.supply_estimated,'imported' FROM imported i
+      ), bucketed AS (SELECT *,to_timestamp(floor(extract(epoch FROM minute)/$4)*$4) AS bucket FROM merged)
       SELECT bucket AS minute,(array_agg(open ORDER BY minute))[1]::text AS open,max(high)::text AS high,min(low)::text AS low,
-        (array_agg(close ORDER BY minute DESC))[1]::text AS close,sum(volume_usd)::text AS volume_usd,
-        min(first_observation_at) AS first_observation_at,max(last_observation_at) AS last_observation_at
-        FROM bucketed GROUP BY bucket ORDER BY bucket LIMIT $5`, [token, from, to,intervalSeconds,limit]),
-    db.query(`SELECT timestamp,open::text,high::text,low::text,COALESCE(close,price_usd)::text AS close,price_usd::text,volume_usd::text,supply::text,interval_seconds
-      FROM node_market_observations WHERE token_address=$1 AND kind='imported' AND timestamp>=$2::timestamptz-$4*interval '1 second' AND timestamp<=$3::timestamptz
-      AND timestamp+interval_seconds*interval '1 second'>=$2::timestamptz
-      AND interval_seconds<=$4 ORDER BY timestamp,interval_seconds DESC,
-        CASE WHEN import_id LIKE 'legacy-cache:%' THEN 1 ELSE 0 END,created_at DESC,id`, [token, from, to, intervalSeconds]),
+        (array_agg(close ORDER BY minute DESC))[1]::text AS close,
+        CASE WHEN count(*)=count(volume_usd) THEN sum(volume_usd)::text ELSE NULL END AS volume_usd,
+        min(first_observation_at) AS first_observation_at,max(last_observation_at) AS last_observation_at,
+        CASE WHEN count(DISTINCT source)>1 THEN 'mixed' ELSE min(source) END AS source,
+        (array_agg(supply ORDER BY minute DESC))[1]::text AS supply,bool_or(supply_estimated) OR count(DISTINCT supply)>1 AS supply_estimated
+        FROM bucketed GROUP BY bucket ORDER BY bucket DESC LIMIT $5`, [token, from, to,intervalSeconds,limit]),
     db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
       WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT r.from_at,r.to_at,'imported' FROM node_market_import_ranges r WHERE r.token_address=$1 AND r.complete
@@ -209,58 +234,45 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
             AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds<=$4::integer)
           AND NOT EXISTS(SELECT 1 FROM node_market_observations o WHERE o.token_address=r.token_address AND o.import_id=r.import_id
             AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds>$4::integer))`, [token, from, to,intervalSeconds]),
-    db.query(`SELECT m.status,EXISTS(SELECT 1 FROM node_market_raw_logs l WHERE l.market_id=m.id
+    db.query(`WITH imported AS (
+      SELECT r.from_at,r.to_at FROM node_market_import_ranges r WHERE r.token_address=$1 AND r.complete
+        AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
+        AND (substring(r.import_id FROM ':interval:(60|300|3600|14400|86400)$')::integer<=$4::integer
+          OR r.import_id LIKE 'token-chart:'||$4::text||':%' OR EXISTS(
+          SELECT 1 FROM node_market_observations o WHERE o.token_address=r.token_address AND o.import_id=r.import_id
+            AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds<=$4::integer)
+          AND NOT EXISTS(SELECT 1 FROM node_market_observations o WHERE o.token_address=r.token_address AND o.import_id=r.import_id
+            AND o.source='imported' AND o.timestamp>=r.from_at AND o.timestamp<r.to_at AND o.interval_seconds>$4::integer))
+      ) SELECT m.status,EXISTS(SELECT 1 FROM node_market_raw_logs l WHERE l.market_id=m.id
       AND l.timestamp BETWEEN $2::timestamptz AND $3::timestamptz AND l.decode_status IN ('pending','missing_quote','invalid'))
       OR EXISTS(SELECT 1 FROM node_market_observations p WHERE p.market_id=m.id AND p.kind='swap' AND p.candles_pending
-        AND p.timestamp BETWEEN $2::timestamptz AND $3::timestamptz) AS pending
-      FROM node_markets m WHERE m.token_address=$1`, [token,from,to]),
+        AND p.timestamp BETWEEN $2::timestamptz AND $3::timestamptz) AS pending,
+      EXISTS(SELECT 1 FROM node_market_raw_logs l WHERE l.market_id=m.id AND l.timestamp BETWEEN $2::timestamptz AND $3::timestamptz
+        AND l.decode_status IN('pending','missing_quote','invalid')
+        AND NOT EXISTS(SELECT 1 FROM imported r WHERE l.timestamp>=r.from_at AND l.timestamp<r.to_at))
+      OR EXISTS(SELECT 1 FROM node_market_observations p WHERE p.market_id=m.id AND p.kind='swap' AND p.candles_pending
+        AND p.timestamp BETWEEN $2::timestamptz AND $3::timestamptz
+        AND NOT EXISTS(SELECT 1 FROM imported r WHERE p.timestamp>=r.from_at AND p.timestamp<r.to_at)) AS uncovered_pending
+      FROM node_markets m WHERE m.token_address=$1`, [token,from,to,intervalSeconds]),
   ]);
-  const coverage = results[2].rows.map(row => ({ from: dateText(row.from_at), to: dateText(row.to_at), source: row.source as NodeMarketProvenance }));
-  const nodePending=results[3].rows.some(row=>row.pending);
-  // A complete, independently imported market series remains usable while raw
-  // node evidence is being decoded. Partial node minutes must not overwrite
-  // those complete candles or hold an already covered historical replay open.
-  const importedFallback=nodePending&&results[1].rows.length>0&&nodeMarketCoverageComplete(from,to,coverage.filter(row=>row.source==='imported'));
-  const minutes = new Map<number, NodeMarketBar>();
-  for (const row of results[1].rows) {
-    const timestamp = dateText(row.timestamp), key = Date.parse(timestamp);
-    if (!minutes.has(key)) minutes.set(key, { timestamp, open: row.open ?? row.price_usd, high: row.high ?? row.price_usd,
-      low: row.low ?? row.price_usd, close: row.close, volumeUsd: row.volume_usd, source: 'imported',
-      intervalSeconds: row.interval_seconds || 60, supply: row.supply, supplyEstimated: row.supply == null });
-  }
-  const importedBuckets=new Set([...minutes.keys()].map(time=>Math.floor(time/(intervalSeconds*1000))));
-  const importedCoverage=coverage.filter(row=>row.source==='imported');
-  for (const row of results[0].rows) {
-    if(importedFallback)continue;
-    const timestamp = dateText(row.minute), key = Date.parse(timestamp);
-    const bucket=Math.floor(key/(intervalSeconds*1000)),bucketFrom=Math.max(Date.parse(from),bucket*intervalSeconds*1000),
-      bucketTo=Math.min(Date.parse(to),(bucket+1)*intervalSeconds*1000);
-    // Completeness belongs to a recorded interval. Pending decoding in a
-    // different day must not replace an independently complete saved bucket
-    // with a partial node projection or add both sources' trading volume.
-    if(nodePending&&importedBuckets.has(bucket)&&nodeMarketCoverageComplete(new Date(bucketFrom).toISOString(),new Date(bucketTo).toISOString(),importedCoverage))continue;
-    // Deterministic highest-activity market per minute, rather than adding
-    // duplicated arbitrage volume across all pools for the same token.
-    if (minutes.get(key)?.source === 'node') continue;
-    minutes.set(key, { timestamp, open: String(row.open), high: String(row.high), low: String(row.low), close: String(row.close),
-      ...(row.first_observation_at?{firstObservationAt:dateText(row.first_observation_at)}:{}),...(row.last_observation_at?{lastObservationAt:dateText(row.last_observation_at)}:{}),
-      volumeUsd: String(row.volume_usd), intervalSeconds, source: 'node', supply: null, supplyEstimated: true });
-  }
-  // Restored caches can contain the same interval at several resolutions.
-  // Use the coarsest genuine bars inside each output bucket, never add a
-  // completed 5m/hour candle to its constituent minute candles and volume.
-  const bucketResolution=new Map<number,number>();
-  for(const bar of minutes.values()) {
-    const bucket=Math.floor(Date.parse(bar.timestamp)/(intervalSeconds*1000));
-    bucketResolution.set(bucket,Math.max(bucketResolution.get(bucket)??0,bar.intervalSeconds));
-  }
-  const selectedBars=[...minutes.values()].filter(bar=>bar.intervalSeconds===bucketResolution.get(Math.floor(Date.parse(bar.timestamp)/(intervalSeconds*1000))));
-  const bars = aggregateNodeMarketBars(selectedBars, intervalSeconds).slice(-limit);
-  const complete = nodeMarketCoverageComplete(from, to, coverage) && bars.length > 0 && (!nodePending||importedFallback);
+  const coverage = results[1].rows.map(row => ({ from: dateText(row.from_at), to: dateText(row.to_at), source: row.source as NodeMarketProvenance }));
+  // Resolve genuine source intervals before coarse aggregation in PostgreSQL.
+  // A recovered 12:35 minute replaces only overlapping node evidence, while a
+  // node swap at 12:05 still belongs in the same hour. No coarse candle is
+  // split into fabricated minute values, and overlapping volumes enter once.
+  const bars:NodeMarketBar[]=results[0].rows.map(row=>({timestamp:dateText(row.minute),open:String(row.open),high:String(row.high),low:String(row.low),close:String(row.close),
+    volumeUsd:row.volume_usd==null?null:String(row.volume_usd),intervalSeconds,source:(row.source??'node') as NodeMarketProvenance,
+    supply:row.supply??null,supplyEstimated:row.supply_estimated??true,
+    ...(row.first_observation_at?{firstObservationAt:dateText(row.first_observation_at)}:{}),...(row.last_observation_at?{lastObservationAt:dateText(row.last_observation_at)}:{})}))
+    .sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
+  // Recovered historical buckets and complete node ranges can be combined.
+  // Requiring a provider proof for the entire chart would hold a mixed series
+  // open forever even after every unavailable raw price had been recovered.
+  const complete = nodeMarketCoverageComplete(from, to, coverage) && bars.length > 0 && !results[2].rows.some(row=>row.uncovered_pending);
   const sparse = bars.some((bar,index) => index > 0 && Date.parse(bar.timestamp) - Date.parse(bars[index - 1].timestamp) > intervalSeconds * 1000);
   return { tokenAddress: token, from, to, intervalSeconds, bars, source: provenance(bars), coverage, complete, sparse,
-    reason: complete ? null : !results[3].rows.length && !results[1].rows.length ? 'no_market'
-      : results[3].rows.every(row => row.status === 'unsupported') && !results[1].rows.length ? 'unsupported_decoder' : 'incomplete_chart_coverage' };
+    reason: complete ? null : !results[2].rows.length && !bars.length ? 'no_market'
+      : results[2].rows.length>0&&results[2].rows.every(row => row.status === 'unsupported') && !bars.some(bar=>bar.source!=='node') ? 'unsupported_decoder' : 'incomplete_chart_coverage' };
 }
 
 export function createNodeMarketService(options: { db: NodeMarketDatabase; rpc: Rpc; now?: () => number }) {

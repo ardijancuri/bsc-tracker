@@ -1,6 +1,8 @@
 import { candleIntervals, type CandleInterval, type ChartRange, type MarketCandle, type TokenChart } from '../shared/intelligence';
 
 type ChartStorage = Pick<Storage, 'getItem' | 'setItem'>;
+type HistoryCache = { latestPartial: boolean; partialPages: number[]; recoveryBefore?: number; checkedAt?: number };
+type StoredChart = TokenChart & { localHistoryCache?: HistoryCache };
 export type TokenChartPriority = 'chart' | 'prefetch' | 'sparkline';
 const priorityOrder: Record<TokenChartPriority, number> = { chart: 0, prefetch: 1, sparkline: 2 };
 // Provider-era charts must not appear as the initial node-owned read after cutover.
@@ -66,8 +68,8 @@ export function tokenChartRefreshDelay(chart: TokenChart, interactive: boolean) 
 }
 
 export function tokenChartHistoryRefreshDelay(chart: TokenChart | null) {
-  if (!chart?.fullHistory || !chart.candles.length || !['gmgn', 'geckoterminal','node','imported','mixed'].includes(chart.source) ||
-    chart.historyComplete || chart.historyLoadStatus === 'limited') return null;
+  if (!chart?.fullHistory || !chart.candles.length || !['gmgn', 'geckoterminal','node','imported','mixed'].includes(chart.source)) return null;
+  if (!chart.historyRecoveryPending && (chart.historyComplete || chart.historyLoadStatus === 'limited')) return null;
   return chart.historyRetryAfterMs ? Math.max(1000, Math.min(chart.historyRetryAfterMs, 600_000)) : 1500;
 }
 
@@ -75,7 +77,8 @@ export function tokenChartHistoryRefreshDelay(chart: TokenChart | null) {
 export function createTokenChartRequests({ fetcher = fetch, now = Date.now, timeoutMs = 12_000, storage = browserStorage() }: {
   fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; storage?: ChartStorage;
 } = {}) {
-  const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority; historyChecked?: number; latestRevision?: number }>();
+  const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority; historyChecked?: number;
+    historyRecoveryBefore?: number; latestPartialHistory?: boolean; historyPartialPages?: number[]; latestRevision?: number }>();
   let nextLatestRevision = 0;
   type PendingChart = { promise: Promise<TokenChart>; priority: TokenChartPriority; generation: number; controller?: AbortController; releaseForeground?: () => void };
   const pending = new Map<string, PendingChart>();
@@ -100,7 +103,8 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
   try {
     const raw = storage?.getItem(storageKey);
     const entries = raw && raw.length <= 3_000_000 ? JSON.parse(raw) : [];
-    if (Array.isArray(entries)) for (const chart of entries.slice(-12) as TokenChart[]) {
+    if (Array.isArray(entries)) for (const stored of entries.slice(-12) as StoredChart[]) {
+      const { localHistoryCache, ...chart } = stored;
       if (!/^0x[0-9a-f]{40}$/.test(chart?.address || '') || !['24h', '7d', '30d', ...candleIntervals].includes(chart.period) ||
         !nodeOwnedSource(chart.source) || !hasFreshChartSupply(chart, now()) ||
         !Array.isArray(chart.candles) || !chart.candles.length || chart.candles.length > (fullChartScope(chart.period, !!chart.fullHistory) ? 2000 : 1000) ||
@@ -111,16 +115,26 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         [c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) && Number.isFinite(c.volume) && c.volume >= 0);
       if (!candles.length) continue;
       const points=pointsForCandles(chart,candles).filter(point=>Date.parse(point.timestamp)<=now());
-      saved.set(chartKey(chart.address, chart.period, fullHistory), { chart: { ...chart, candles, points, stale: true }, checked: now() - 10_001, historyChecked: now(), latestRevision: ++nextLatestRevision });
+      const validCache=localHistoryCache&&typeof localHistoryCache.latestPartial==='boolean'&&Array.isArray(localHistoryCache.partialPages)
+        &&localHistoryCache.partialPages.length<=2000&&localHistoryCache.partialPages.every(before=>Number.isSafeInteger(before)&&before>0)
+        &&(localHistoryCache.recoveryBefore===undefined||Number.isSafeInteger(localHistoryCache.recoveryBefore)&&localHistoryCache.recoveryBefore>0);
+      saved.set(chartKey(chart.address, chart.period, fullHistory), { chart: { ...chart, candles, points, stale: true }, checked: now() - 10_001,
+        historyChecked:validCache&&Number.isFinite(localHistoryCache.checkedAt)&&localHistoryCache.checkedAt!<=now()?localHistoryCache.checkedAt:now(),
+        latestPartialHistory:validCache?localHistoryCache.latestPartial:!!chart.partialHistory,
+        historyPartialPages:validCache?localHistoryCache.partialPages:[],historyRecoveryBefore:validCache?localHistoryCache.recoveryBefore:undefined,
+        latestRevision: ++nextLatestRevision });
     }
   } catch { /* A restricted browser or invalid cache must not prevent chart loading. */ }
   const persist = () => {
     try {
-      const entries = [...saved.values()].map(item => item.chart).filter(chart => chart.candles.length && hasFreshChartSupply(chart, now())).slice(-12).map(chart => {
-        if (!chart.fullHistory || chart.candles.length <= 2000) return chart;
+      const entries:StoredChart[] = [...saved.values()].filter(item => item.chart.candles.length && hasFreshChartSupply(item.chart, now())).slice(-12).map(item => {
+        const chart=item.chart,localHistoryCache:HistoryCache={latestPartial:item.latestPartialHistory??!!chart.partialHistory,
+          partialPages:(item.historyPartialPages??[]).slice(-2000),recoveryBefore:item.historyRecoveryBefore,checkedAt:item.historyChecked};
+        if (!chart.fullHistory || chart.candles.length <= 2000) return {...chart,localHistoryCache};
         const candles = chart.candles.slice(-2000);
         return { ...chart, candles, points: pointsForCandles(chart,candles), historyComplete: false, historyPending: true,
-          historyLoadStatus: 'queued' as const, historyRetryAfterMs: 1500, historyBefore: candles[0].time };
+          historyLoadStatus: 'queued' as const, historyRetryAfterMs:chart.historyRecoveryPending?chart.historyRetryAfterMs:1500,
+          historyBefore:item.historyRecoveryBefore??candles[0].time,localHistoryCache };
       });
       let encoded = JSON.stringify(entries);
       while (encoded.length > 3_000_000 && entries.length) { entries.shift(); encoded = JSON.stringify(entries); }
@@ -178,7 +192,7 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     const cached = saved.get(key);
     const cachedChart = peek(normalized, range, fullHistory);
     const historical = fullHistory && before !== undefined;
-    const coolingDown = historical ? !!cached?.chart.historyRetryAfterMs && !!cached.chart.historyLoadStatus && cached.chart.historyLoadStatus !== 'queued'
+    const coolingDown = historical ? !!cached?.chart.historyRetryAfterMs && (cached.chart.historyRecoveryPending || !!cached.chart.historyLoadStatus && cached.chart.historyLoadStatus !== 'queued')
       : !!cached?.chart.loadStatus && cached.chart.loadStatus !== 'queued' && !!cached.chart.retryAfterMs;
     const retryAfterMs = historical ? cached?.chart.historyRetryAfterMs : cached?.chart.retryAfterMs;
     const checked = historical ? cached?.historyChecked ?? cached?.checked : cached?.checked;
@@ -223,26 +237,37 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
         chart = { ...chart, candles, points: pointsForCandles(chart,candles) };
       }
       const current = saved.get(key), retained = current?.chart ?? cachedChart;
+      const historyPartialPages=new Set(current?.historyPartialPages??[]);
+      const latestPartialHistory=historical?current?.latestPartialHistory??!!retained?.partialHistory:!!value.partialHistory;
       if (historical && retained) {
         const compatible = (value.source === retained.source || nodeOwnedSource(value.source)&&nodeOwnedSource(retained.source)) && value.resolution === retained.resolution;
         const incoming = mergeCandles([], compatible ? chart.candles : [], before);
         const candles = mergeCandles(retained.candles, incoming);
         const cursorProgress = Number.isSafeInteger(value.historyBefore) && value.historyBefore! > 0 && value.historyBefore! < before!;
-        const retryable = value.historyLoadStatus === 'queued' || value.historyLoadStatus === 'rate_limited' || value.historyLoadStatus === 'provider_error';
+        const recovering = value.historyRecoveryPending === true;
+        if(value.partialHistory||recovering)historyPartialPages.add(before!);else historyPartialPages.delete(before!);
+        const partialHistory=latestPartialHistory||historyPartialPages.size>0;
+        const retryable = recovering || value.historyLoadStatus === 'queued' || value.historyLoadStatus === 'rate_limited' || value.historyLoadStatus === 'provider_error';
         const limited = (!compatible && !!value.candles.length) || (!value.historyComplete && !incoming.length && !cursorProgress && !retryable);
         chart = { ...retained, candles, points: pointsForCandles(chart,candles,retained), fullHistory: true,
           source:compatible&&retained.source!==value.source?'mixed':retained.source,
-          partialHistory:!!retained.partialHistory||!!value.partialHistory,
-          volumeCurrency: mergedVolumeCurrency(retained, chart, incoming), historyComplete: limited || nodeOwnedSource(value.source)&&retained.partialHistory ? false : value.historyComplete,
-          historyPending: limited ? false : value.historyPending, historyLoadStatus: limited ? 'limited' : value.historyLoadStatus,
-          historyRetryAfterMs: limited ? undefined : value.historyRetryAfterMs, historyBefore: value.historyBefore };
+          partialHistory,
+          volumeCurrency: mergedVolumeCurrency(retained, chart, incoming), historyComplete: recovering || limited || partialHistory ? false : value.historyComplete,
+          historyPending: recovering ? true : limited ? false : value.historyPending,
+          historyLoadStatus: recovering ? value.historyLoadStatus === 'rate_limited' || value.historyLoadStatus === 'provider_error' ? value.historyLoadStatus : 'queued' : limited ? 'limited' : value.historyLoadStatus,
+          historyRecoveryPending: recovering, historyRecoveryReason: value.historyRecoveryReason,
+          historyRetryAfterMs: limited ? undefined : value.historyRetryAfterMs, historyBefore: recovering ? before : value.historyBefore };
       } else if (fullHistory && retained?.fullHistory && (retained.source === chart.source || nodeOwnedSource(retained.source)&&nodeOwnedSource(chart.source)) && retained.resolution === chart.resolution) {
         const incoming = mergeCandles([], chart.candles), candles = mergeCandles(retained.candles, incoming);
-        const keepProgress=nodeOwnedSource(chart.source)&&Number.isSafeInteger(retained.historyBefore)&&Number.isSafeInteger(chart.historyBefore)&&retained.historyBefore!<chart.historyBefore!;
+        const keepRecovery=current?.historyRecoveryBefore!==undefined;
+        const keepProgress=keepRecovery||nodeOwnedSource(chart.source)&&Number.isSafeInteger(retained.historyBefore)&&Number.isSafeInteger(chart.historyBefore)&&retained.historyBefore!<chart.historyBefore!;
+        const partialHistory=latestPartialHistory||historyPartialPages.size>0;
         chart = { ...chart, candles, points: pointsForCandles(chart,candles,retained), volumeCurrency: mergedVolumeCurrency(retained, chart, incoming),
-          source:retained.source===chart.source?chart.source:'mixed',
+          source:retained.source===chart.source?chart.source:'mixed',partialHistory,
           ...(keepProgress?{historyBefore:retained.historyBefore,historyPending:retained.historyPending,historyLoadStatus:retained.historyLoadStatus,
-            historyComplete:!!retained.historyComplete&&!value.partialHistory,partialHistory:!!retained.partialHistory||!!value.partialHistory}:{}), };
+            historyComplete:!!retained.historyComplete&&!partialHistory,
+            ...(keepRecovery?{historyRecoveryPending:retained.historyRecoveryPending,historyRecoveryReason:retained.historyRecoveryReason,
+              historyRetryAfterMs:retained.historyRetryAfterMs}:{})}:{}), };
       }
       if (!historical && !value.candles.length && retained?.candles.length && value.loadStatus !== 'no_history' && (value.pending || value.loadStatus)) {
         chart = { ...retained, ...value, candles: retained.candles, points: retained.points,
@@ -258,7 +283,9 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
       if (saved.size >= 500 && !saved.has(key)) saved.delete(saved.keys().next().value!);
       saved.set(key, { chart, checked: historical ? current?.checked ?? now() - 10_001 : now(),
         priority: historical ? current?.priority : jobState.priority,
-        historyChecked: fullHistory ? now() : current?.historyChecked,
+        historyChecked: historical ? now() : current?.historyChecked,
+        historyRecoveryBefore: historical ? value.historyRecoveryPending ? before : undefined : current?.historyRecoveryBefore,
+        latestPartialHistory,historyPartialPages:[...historyPartialPages],
         latestRevision: historical ? current?.latestRevision : ++nextLatestRevision });
       for (const listener of listeners.get(normalized) ?? []) listener();
       persist();
@@ -276,9 +303,9 @@ export function createTokenChartRequests({ fetcher = fetch, now = Date.now, time
     pending.set(jobKey, jobState);
     return job;
   };
-  const requestOlder = (address: string, range: ChartRange, before: number) => {
+  const requestOlder = (address: string, range: ChartRange, before: number, priority: TokenChartPriority = 'prefetch') => {
     if (!Number.isSafeInteger(before) || before <= 0 || !candleIntervals.includes(range as CandleInterval)) return Promise.reject(new Error('Invalid chart history boundary'));
-    return request(address, range, 'prefetch', false, true, before);
+    return request(address, range, priority, false, true, before);
   };
   const historyDelay = (address: string, range: ChartRange) => {
     const cached = saved.get(chartKey(address, range, true));

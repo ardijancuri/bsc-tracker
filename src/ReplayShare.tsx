@@ -43,6 +43,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const [exportProgress, setExportProgress] = useState<number | null>(0);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState('');
+  const [canRetry, setCanRetry] = useState(true);
   const [sharePending, setSharePending] = useState(false);
   const [imagePending, setImagePending] = useState(false);
   const [notice, setNotice] = useState('');
@@ -65,7 +66,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   useEffect(() => {
     const currentGeneration = ++generation.current;
     alive.current = true;
-    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0); setImagePending(false); setCopied(false);
+    setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setCanRetry(true); setNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0); setImagePending(false); setCopied(false);
     progress.current = 0;
     // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
     // encoder repaint or replace the file prepared by the next setup.
@@ -91,8 +92,10 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       onError: problem => {
         if (renderer) { renderer.render(1); paintPreview(renderer); progress.current = 1; setSeek(1); }
         setError(problem instanceof Error ? t(problem.message) : t('Video export failed.'));
+        const retryable = !(problem instanceof Error && 'retryable' in problem && problem.retryable === false);
+        setCanRetry(retryable); setRetryAt(0); setRetrySeconds(0);
         const retryAfterMs = problem instanceof Error && 'retryAfterMs' in problem ? Number(problem.retryAfterMs) : 0;
-        if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        if (retryable && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
           setRetryAt(Date.now() + retryAfterMs);
           setRetrySeconds(Math.ceil(retryAfterMs / 1000));
         }
@@ -230,7 +233,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
             {error && <p className="trade-replay-error" role="alert">{error}</p>}
-            {error && !exporting && <button type="button" className="trade-replay-retry" disabled={retrySeconds > 0} onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /> {retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t('Retry replay')}</button>}
+            {error && canRetry && !exporting && <button type="button" className="trade-replay-retry" disabled={retrySeconds > 0} onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /> {retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t('Retry replay')}</button>}
           </div>
         </div>
   </section>;

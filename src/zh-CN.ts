@@ -384,6 +384,8 @@ export const chinese: Record<string, string> = {
   'Recorded movements do not match the confirmed wallet balance.': '记录的资金变动与已确认钱包余额不符。',
   'Some purchase costs or wallet-paid fees are unavailable.': '部分买入成本或钱包支付费用无法获取。',
   'Market history does not cover the full replay window yet.': '市场历史尚未覆盖整个回放时间范围。',
+  'Recovering market history for the full replay window…': '正在恢复整个回放时间范围的市场历史…',
+  'The available market history cannot cover this replay. No further history was returned.': '现有市场历史无法覆盖本次回放，数据源未返回更多历史记录。',
   'A recent confirmed market price is unavailable.': '无法获取近期已确认的市场价格。',
   'This market or wallet execution needs a supported decoder.': '此市场或钱包交易需要支持的解码器。',
   'A historical import is waiting for its provider cooldown.': '历史导入正在等待服务商冷却期结束。',

@@ -93,7 +93,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       const before = Number.isSafeInteger(current.historyBefore) && current.historyBefore! > 0 ? current.historyBefore! : oldest;
       if (!before) return;
       loading = true;
-      try { await charts.requestOlder(address, period, before); }
+      try { await charts.requestOlder(address, period, before, priority); }
       catch { /* A transient missing snapshot is retried while this full chart stays visible. */ }
       loading = false;
       schedule();
@@ -111,7 +111,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       unsubscribeChart(); unsubscribePriority();
       document.removeEventListener('visibilitychange', visibilityChanged);
     };
-  }, [address, period, enabled, fullHistory]);
+  }, [address, period, enabled, fullHistory, priority]);
   // Another viewer or preload can repair the shared chart without this hook's own timer firing.
   const failedCurrentSnapshot = fullHistory && address ? failure?.latestRevision === charts.latestRevision(address, period, true) : failure?.chart === chart;
   return { chart, error: failure?.key === key && failedCurrentSnapshot, retry };

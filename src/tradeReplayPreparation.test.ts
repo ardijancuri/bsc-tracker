@@ -29,9 +29,25 @@ describe('automatic replay preparation continuation', () => {
   it('does not retry terminal unavailable data or shorten a cooldown beyond the bounded wait', async () => {
     for (const status of ['unavailable', 'pending'] as const) {
       const prepare = vi.fn().mockResolvedValue(result(status, 300_000));
-      await expect(prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare })).rejects.toMatchObject({ retryAfterMs: 300_000 });
+      await expect(prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare })).rejects.toMatchObject({
+        retryAfterMs: status === 'pending' ? 300_000 : 0, retryable: status === 'pending',
+      });
       expect(prepare).toHaveBeenCalledOnce();
     }
+  });
+
+  it('keeps joining recovery beyond thirty polls while the total deadline permits it', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const pending = result('pending', 2000), ready = result('ready');
+    const prepare = vi.fn().mockResolvedValue(pending);
+    for (let index = 0; index < 35; index++) prepare.mockResolvedValueOnce(pending);
+    prepare.mockResolvedValueOnce(ready);
+    const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare });
+    await vi.advanceTimersByTimeAsync(69_999);
+    expect(prepare).toHaveBeenCalledTimes(35);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await promise).toBe(ready); expect(prepare).toHaveBeenCalledTimes(36);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('cancels the automatic cooldown without another request or late progress', async () => {
@@ -49,15 +65,28 @@ describe('automatic replay preparation continuation', () => {
     const prepare = vi.fn().mockResolvedValue(result('pending', 1000));
     const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare });
     const rejected = expect(promise).rejects.toBeInstanceOf(ReplayPreparationError);
-    await vi.advanceTimersByTimeAsync(30_000); await rejected;
-    expect(prepare).toHaveBeenCalledTimes(31); expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(172_000); await rejected;
+    expect(prepare).toHaveBeenCalledTimes(173); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops as soon as completed historical recovery reports a terminal chart gap', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const unavailable = { ...result('unavailable', 2000), blockingReason: 'chart_unavailable' as const };
+    const prepare = vi.fn().mockResolvedValueOnce(result('pending', 45_000)).mockResolvedValue(unavailable);
+    const onWait = vi.fn(), onResult = vi.fn();
+    const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare, onWait, onResult });
+    const rejected = expect(promise).rejects.toMatchObject({ retryable: false, retryAfterMs: 0, message: expect.stringContaining('No further history') });
+    await vi.advanceTimersByTimeAsync(45_000); await rejected;
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(prepare).toHaveBeenCalledTimes(2); expect(onResult).toHaveBeenLastCalledWith(unavailable);
+    expect(onWait).toHaveBeenLastCalledWith(0); expect(vi.getTimerCount()).toBe(0);
   });
 });
 
 describe('complete replay export gate', () => {
   it.each([
     ['accounting_pending','transactions are still being processed'],['accounting_mismatch','confirmed wallet balance'],
-    ['unknown_costs','wallet-paid fees are unavailable'],['chart_coverage','full replay window'],
+    ['unknown_costs','wallet-paid fees are unavailable'],['chart_coverage','full replay window'],['chart_unavailable','No further history'],
     ['stale_quote','confirmed market price is unavailable'],['provider_cooldown','historical import'],
   ] as const)('explains the %s preparation stage',(blockingReason,message)=>{
     const error=new ReplayPreparationError({...result('pending',60_000),blockingReason});
@@ -71,7 +100,8 @@ describe('complete replay export gate', () => {
     expect(record).not.toHaveBeenCalled(); expect(onReady).not.toHaveBeenCalled(); expect(onFile).not.toHaveBeenCalled();
     expect(onFinish).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith(expect.any(ReplayPreparationError));
-    expect(onError.mock.calls[0][0].retryAfterMs).toBe(60_000);
+    expect(onError.mock.calls[0][0].retryAfterMs).toBe(status === 'pending' ? 60_000 : 0);
+    expect(onError.mock.calls[0][0].retryable).toBe(status === 'pending');
   });
 
   it('starts recording only after verified preparation finishes', async () => {

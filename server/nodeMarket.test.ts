@@ -124,7 +124,7 @@ describe('durable market chart boundaries',()=>{
   it('cannot report full charts while raw valuation is pending',async()=>{
     const query=vi.fn().mockImplementation((sql:string)=>Promise.resolve({rows:sql.includes('WITH chosen')?[{minute:'2026-10-18T10:00:00Z',open:'1',high:'2',low:'1',close:'2',volume_usd:'20'}]
       :sql.includes("'node' AS source")?[{from_at:'2026-10-18T10:00:00Z',to_at:'2026-10-18T11:00:00Z',source:'node'}]
-      :sql.includes('m.status,EXISTS')?[{status:'active',pending:true}]:[]}));
+      :sql.includes('m.status,EXISTS')?[{status:'active',pending:true,uncovered_pending:true}]:[]}));
     const chart=await readNodeMarketChart({query} as never,token,{from:'2026-10-18T10:00:00Z',to:'2026-10-18T11:00:00Z'});
     expect(chart.complete).toBe(false);expect(chart.reason).toBe('incomplete_chart_coverage');expect(chart.bars).toHaveLength(1);
   });

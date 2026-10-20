@@ -1,13 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { TokenChart } from '../shared/intelligence';
-import { marketHistoryViewport, tradeChartViewport, tradeChartNeedsRefit, TokenPriceChart } from './TokenPriceChart';
+import { addVolumeOverlay, marketHistoryViewport, tradeChartViewport, tradeChartNeedsRefit, TokenPriceChart } from './TokenPriceChart';
 import { TokenMarketPanel } from './TokenMarketPanel';
 
 const state = vi.hoisted(() => ({ chart: null as TokenChart | null, error: false, retry: vi.fn(), useTokenChart: vi.fn() }));
 vi.mock('./useTokenChart', () => ({ useTokenChart: (...args: unknown[]) => { state.useTokenChart(...args); return { chart: state.chart, error: state.error, retry: state.retry }; } }));
 const address = '0xd75a0cc8614b7c8cac56f5af39d73491c2ea7777';
 const render = (fullHistory = false) => renderToStaticMarkup(<TokenPriceChart address={address} interval="5m" fullHistory={fullHistory} />);
+
+describe('shared candle and volume layout',()=>{
+  it('places volume inside the existing candle pane on its own scale without a draggable divider',()=>{
+    const applyOptions=vi.fn(),histogram={priceScale:()=>({applyOptions})},addSeries=vi.fn((..._args:unknown[])=>histogram),panes=vi.fn();
+    const overlay=addVolumeOverlay({addSeries,panes} as never);
+    expect(overlay).toBe(histogram);
+    expect(addSeries.mock.calls[0]).toHaveLength(2);
+    expect(addSeries.mock.calls[0][1]).toMatchObject({priceScaleId:'volume',priceLineVisible:false,lastValueVisible:false});
+    expect(applyOptions).toHaveBeenCalledWith({scaleMargins:{top:.80,bottom:0}});
+    expect(panes).not.toHaveBeenCalled();
+  });
+});
 
 describe('readable token history viewport', () => {
   const history = (count: number, start = 1791586800) => Array.from({ length: count }, (_, index) => ({ time: start + index * 60, open: 1, high: 2, low: .5, close: 1.5, volume: 10 }));

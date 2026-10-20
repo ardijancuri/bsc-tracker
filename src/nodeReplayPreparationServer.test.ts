@@ -220,15 +220,114 @@ describe('database-only replay preparation', () => {
     });
     expect(await service.prepare(activity)).toMatchObject({status:'pending',reason:'chart_coverage'});
   });
-  it('requires a genuine price at a closed ending rather than extending the most recent sample',async()=>{
+  it('requires a genuine bracketing price at a closed ending instead of extending the most recent sample',async()=>{
     const {activity,service,market}=sampledSetup(false),raw=activity.replayAccounting!,last=raw.history!.events.at(-1)!;
     activity.realizedAccounting!.position!.status='closed';last.remainingTokenAmount='0';raw.history!.balanceProof.balance='0';
     Object.assign(raw.final!,{remainingTokenAmount:'0',remainingCostBasisUsd:'0',priceUsd:null});
     const normal=market.replaySamples.getMockImplementation()!;
     market.replaySamples.mockImplementation(async(token,input)=>{
-      const result=await normal(token,input);result.observations=result.observations.filter(row=>Date.parse(row.timestamp)<Date.parse(input.to));return result;
+      const result=await normal(token,input);result.observations=result.observations.filter(row=>Date.parse(row.timestamp)<Date.parse(last.timestamp));return result;
     });
     expect(await service.prepare(activity)).toMatchObject({status:'pending',reason:'chart_coverage'});
+  });
+  it('uses bounded genuine context around a closed trade without extending its accounting or rendered ending',async()=>{
+    const {activity,market,now,first}=sampledSetup(false),raw=activity.replayAccounting!,last=raw.history!.events.at(-1)!;
+    activity.realizedAccounting!.position!.status='closed';last.remainingTokenAmount='0';last.remainingCostBasisUsd='0';raw.history!.balanceProof.balance='0';
+    Object.assign(raw.final!,{remainingTokenAmount:'0',remainingCostBasisUsd:'0',reportedProfitUsd:'26.5',reportedRoi:String(26.5/101),priceUsd:null});
+    const finalTime=Date.parse(last.timestamp),normal=market.replaySamples.getMockImplementation()!;
+    market.replaySamples.mockImplementation(async(token,input)=>{
+      const result=await normal(token,input);
+      result.observations=result.observations.filter(row=>Date.parse(row.timestamp)!==first&&Date.parse(row.timestamp)!==finalTime);
+      return result;
+    });
+    const service=createNodeReplayPreparation({market,now:()=>now}),result=await service.prepare(activity);
+    expect(result).toMatchObject({status:'ready',window:{from:new Date(first).toISOString(),to:last.timestamp},chart:{sparseHistory:true}});
+    expect(market.replaySamples.mock.calls[0][1].to).toBe(new Date(finalTime+180_000).toISOString());
+    expect(Date.parse(result.chart!.points[0].timestamp)).toBeLessThan(first);
+    expect(Date.parse(result.chart!.points.at(-1)!.timestamp)).toBeGreaterThan(finalTime);
+    expect(result.chart!.candles).toEqual([]);
+    const base=prepareTradeReplayData(activity,null,undefined,now)!;
+    const rendered=applyReplayMarketChart(base,result.chart!,now);
+    expect(rendered.chart.points.at(-1)?.timestamp).toBe(last.timestamp);
+    expect(rendered.replayAccounting?.final).toEqual(base.replayAccounting?.final);
+  });
+  it('does not accept a post-closure observation outside the bounded context',async()=>{
+    const {activity,market,now}=sampledSetup(false),raw=activity.replayAccounting!,last=raw.history!.events.at(-1)!;
+    activity.realizedAccounting!.position!.status='closed';last.remainingTokenAmount='0';raw.history!.balanceProof.balance='0';
+    Object.assign(raw.final!,{remainingTokenAmount:'0',remainingCostBasisUsd:'0',priceUsd:null});
+    const finalTime=Date.parse(last.timestamp),normal=market.replaySamples.getMockImplementation()!;
+    market.replaySamples.mockImplementation(async(token,input)=>{
+      const result=await normal(token,input);result.observations=result.observations.filter(row=>Date.parse(row.timestamp)<finalTime);
+      result.observations.push({...result.observations.at(-1)!,timestamp:new Date(finalTime+180_001).toISOString()});return result;
+    });
+    expect(await createNodeReplayPreparation({market,now:()=>now}).prepare(activity)).toMatchObject({status:'pending',reason:'chart_coverage'});
+  });
+  it('queues independent selected market recovery without needing an accounting import',async()=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:false,coverage:[]}));
+    const recovery={requestChart:vi.fn(async()=>({pending:true,retryAfterMs:1500}))};
+    const service=createNodeReplayPreparation({market,recovery,now:()=>now});
+    const [first,joined]=await Promise.all([service.prepare(activity),service.prepare(structuredClone(activity))]);
+    expect(first).toMatchObject({status:'pending',reason:'chart_coverage',retryAfterMs:1500});expect(first).toBe(joined);
+    expect(recovery.requestChart).toHaveBeenCalledOnce();
+    expect(recovery.requestChart).toHaveBeenCalledWith(activity.token.address,expect.objectContaining({from:first.window!.from,to:first.window!.to}),{exactWindow:true});
+  });
+  it('honors an independent market provider cooldown instead of retrying every two seconds',async()=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:false,coverage:[]}));
+    const recovery={requestChart:vi.fn(async()=>({pending:true,coolingDown:true,retryAfterMs:45_000}))};
+    expect(await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity))
+      .toMatchObject({status:'pending',reason:'provider_cooldown',retryAfterMs:45_000,stages:{accounting:'ready',chart:'pending'}});
+  });
+  it.each([false,true])('re-reads completed historical recovery before declaring exhausted market data: race %s',async(race)=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;let completed=false;
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:completed,coverage:[]}));
+    const recovery={requestChart:vi.fn(async()=>{completed=race;return {pending:false,exhausted:true};})};
+    const result=await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity);
+    expect(result.status).toBe(race?'ready':'unavailable');expect(market.chart).toHaveBeenCalledTimes(race?3:6);
+    if(!race){expect(result).toMatchObject({reason:'chart_unavailable',stages:{chart:'unavailable'}});expect(market.requestHistoryWindow).not.toHaveBeenCalled();}
+  });
+  it('does not send private Portfolio evidence through public-token market recovery',async()=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;activity.accountingSnapshot!.scope='portfolio';
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:false,coverage:[]}));
+    const recovery={requestChart:vi.fn(async()=>({pending:true}))};
+    expect(await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity)).toMatchObject({status:'pending',reason:'chart_coverage'});
+    expect(recovery.requestChart).not.toHaveBeenCalled();expect(market.requestHistoryWindow).toHaveBeenCalledOnce();
+  });
+  it('reuses complete coarse history while recovering or exhausting only its missing recent segment',async()=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;
+    activity.replayAccounting!.history!.events[0].timestamp='2026-04-15T00:00:00Z';
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:input.intervalSeconds!==60}));
+    const recovery={requestChart:vi.fn(async()=>({pending:false,exhausted:true}))};
+    expect(await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity)).toMatchObject({status:'unavailable',reason:'chart_unavailable'});
+    expect(recovery.requestChart).toHaveBeenCalledTimes(2);
+    expect(recovery.requestChart).toHaveBeenCalledWith(activity.token.address,expect.objectContaining({intervalSeconds:60}),{exactWindow:true});
+  });
+  it.each([false,true])('resumes newly remaining gaps after an earlier bounded batch completes: cooldown %s',async(coolingDown)=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;let progressed=false;
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:false,coverage:[{
+      from:input.from,to:new Date(Date.parse(input.from)+(progressed?120_000:60_000)).toISOString(),source:'imported',
+    }]}));
+    const recovery={requestChart:vi.fn()
+      .mockImplementationOnce(async()=>{progressed=true;return{pending:false,exhausted:true};})
+      .mockResolvedValue({pending:true,retryAfterMs:coolingDown?45_000:1500,...(coolingDown?{coolingDown:true}:{})})};
+    const result=await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity);
+    expect(result).toMatchObject({status:'pending',reason:coolingDown?'provider_cooldown':'chart_coverage',retryAfterMs:coolingDown?45_000:1500,
+      stages:{accounting:'ready',valuation:'ready',chart:'pending'}});
+    expect(recovery.requestChart).toHaveBeenCalledTimes(2);
+    const [before,after]=recovery.requestChart.mock.calls.map(call=>(call[1] as NodeMarketChart).coverage);
+    expect(Date.parse(after[0].to)-Date.parse(before[0].to)).toBe(60_000);
+    expect(market.requestHistoryWindow).toHaveBeenCalledOnce();
+  });
+  it('keeps progress pending when a second recovery batch completes during the fresh enqueue',async()=>{
+    const {activity,market,now}=setup(),normal=market.chart.getMockImplementation()!;let batches=0;
+    market.chart.mockImplementation(async(token,input)=>({...await normal(token,input),complete:false,coverage:[{
+      from:input.from,to:new Date(Date.parse(input.from)+(batches+1)*60_000).toISOString(),source:'imported',
+    }]}));
+    const recovery={requestChart:vi.fn(async()=>{batches++;return{pending:false,exhausted:true};})};
+    const result=await createNodeReplayPreparation({market,recovery,now:()=>now}).prepare(activity);
+    expect(result).toMatchObject({status:'pending',reason:'chart_coverage',stages:{chart:'pending'}});
+    expect(recovery.requestChart).toHaveBeenCalledTimes(2);expect(market.chart).toHaveBeenCalledTimes(6);
   });
   it.each(['covered','starts_late','ends_early','unfinished'])('validates the complete %s imported island around a sparse price gap',async(variant)=>{
     const {activity,service,market,join}=sampledSetup(),normalSamples=market.replaySamples.getMockImplementation()!,normalChart=market.chart.getMockImplementation()!;

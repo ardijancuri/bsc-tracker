@@ -31,7 +31,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     requestContext: context ? { ...context, snapshotId: undefined } : undefined }, notice: replayPreparationMessages.accounting_pending,
     preparationStatus: 'pending', blockingReason: 'accounting_pending', retryAfterMs: 1000 };
   if (!response.ok) return { data: withoutApproval(data), notice: response.status === 403 || response.status === 401 ? 'Portfolio access changed. Close this replay and try again.' : 'Replay preparation is temporarily unavailable.',
-    preparationStatus: [429, 502, 503, 504].includes(response.status) ? 'pending' : 'unavailable', blockingReason: 'accounting_pending', retryAfterMs: 2000 };
+    preparationStatus: [429, 500, 502, 503, 504].includes(response.status) ? 'pending' : 'unavailable', blockingReason: 'accounting_pending', retryAfterMs: 2000 };
   const result = await response.json() as ReplayPreparation;
   if (result.version !== 2 || !['ready', 'pending', 'unavailable'].includes(result.status)) throw new Error('Invalid replay preparation response');
   const activity = result.activity;

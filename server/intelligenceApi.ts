@@ -139,7 +139,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       '1m': [86400, 60], '5m': [432000, 300], '1h': [2592000, 3600], '4h': [7776000, 14400], '1d': [15552000, 86400] };
     const [span, seconds] = settings[selected], to = before ? before * 1000-1 : Date.now();
     // Page real persisted buckets, rather than walking empty wall-clock spans.
-    // This reads existing data only; requesting an old page never starts RPC/import work.
+    // Ordinary pagination reads saved data only. An explicitly selected chart
+    // may additionally recover its own old page through the bounded importer.
     const page = fullHistory ? (await pool.query(`SELECT bucket FROM (
       (SELECT DISTINCT floor(extract(epoch FROM minute)/$3)*$3 AS bucket FROM node_market_candles
         WHERE token_address=$1 AND minute<$2::timestamptz ORDER BY bucket DESC LIMIT 1501)
@@ -152,9 +153,9 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     const [history, quote] = await Promise.all([nodeMarketService.chart(address, { from: new Date(from).toISOString(),
       to: new Date(to).toISOString(), intervalSeconds: seconds, limit: 2000 }), nodeMarketService.quote(address)]);
     if(!before&&(quote.stale||quote.priceUsd===null||priority==='chart'))await nodeMarketService.requestRefresh(address,{priority:priority==='chart'?10:1});
-    const recovery=!before&&priority==='chart'&&!history.complete
+    const recovery=priority==='chart'&&!history.complete
       ?await tokenChartRecovery.requestChart(address,history,
-        !history.bars.length&&known.rows[0].last_trade_at?{lastKnownTradeAt:Date.parse(known.rows[0].last_trade_at)}:{}):null;
+        before?{exactWindow:true}:!history.bars.length&&known.rows[0].last_trade_at?{lastKnownTradeAt:Date.parse(known.rows[0].last_trade_at)}:{}):null;
     // Scope identifies the requested chart, independently of whether all its
     // market coverage is available. Genuine partial candles remain displayable.
     const displayedHistory=fullHistory?{...history,bars:history.bars.filter(bar=>Date.parse(bar.timestamp)>=from)}:history;

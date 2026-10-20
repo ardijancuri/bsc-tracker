@@ -61,13 +61,17 @@ try{
   const locker=await db.connect();await locker.query('BEGIN');await locker.query('SELECT pg_advisory_xact_lock(908335)');
   let result:Awaited<ReturnType<typeof service.decodePending>>|undefined;
   const running=service.decodePending(300,{minimumBlock:100,databaseOnly:true}).then(value=>{result=value;return value;});
+  // Observe rejection immediately and always drain after releasing the test's
+  // projection lock. Otherwise an earlier assertion can end the pool while
+  // the intentionally blocked decoder is still using it, masking that failure.
+  const drained=running.then(()=>undefined,()=>undefined);
   try{
     const deadline=Date.now()+10_000;let saved=0;
     while(Date.now()<deadline){saved=(await db.query("SELECT count(*)::int n FROM node_market_observations WHERE source='node'")).rows[0].n;if(saved===300)break;await new Promise(resolve=>setTimeout(resolve,20));}
     assert.equal(saved,300,'All bounded append-only observations progress while unrelated collection/projection owns908335');
     assert.equal((await db.query("SELECT count(*)::int n FROM node_market_raw_logs WHERE decode_status='decoded'")).rows[0].n,300);
     assert.equal(result,undefined,'Mutable candle projection still waits for its serialization lock');
-  }finally{await locker.query('ROLLBACK');locker.release();}
+  }finally{try{await locker.query('ROLLBACK');}finally{locker.release();await drained;}}
   const completed=await running;assert.equal(completed.decoded,300);assert.equal(rpcCalls,0);
   assert.ok('timings'in completed&&completed.timings.selected===300);assert.ok((await service.chart(token,{from:at(100),to:at(119)})).bars.length>0);
   assert.ok(proofQuery);const captured=proofQuery as {sql:string;parameters:any[]};
