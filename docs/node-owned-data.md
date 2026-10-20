@@ -497,6 +497,15 @@ Publication rechecks financial evidence under short row locks, so a same-chain
 trace or valuation repair cannot publish an invalidated calculation. Current
 spot-price refreshes alone do not change the financial history fence.
 
+Coverage ranges reference a durable, normalized wallet-generation cohort. The
+wallet map is stored once per cohort; range checks aggregate compact block
+intervals before reading that map. A bounded, resumable worker backfills older
+ranges. Their original maps remain available for rollback, and unconverted
+ranges use the existing full proof until normalization completes. Generation
+changes, gaps, undecoded ranges and reorg rollback retain their original
+eligibility rules. This avoids repeatedly hashing gigabytes of duplicate wallet
+maps for a small P&L refresh without assuming that checkpoints prove coverage.
+
 Complete and labeled partial results sort together by available P&L from highest
 to lowest. Only independently supported position contributions and known
 fee-only costs enter a partial subtotal; it never claims completeness. Unknown

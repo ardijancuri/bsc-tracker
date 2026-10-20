@@ -70,12 +70,17 @@ describe('durable raw node collection', () => {
     expect(result.timings).toMatchObject({ blockLoadMs: expect.any(Number), discoveryMs: expect.any(Number), receiptLoadMs: expect.any(Number) });
   });
   it('commits receipts, headers, membership generations and checkpoint in one transaction', async () => {
-    const calls: { sql: string; values: any[] }[] = [], client = { query: vi.fn(async (sql: string, values: any[] = []) => { calls.push({ sql, values }); return { rows: [] }; }), release: vi.fn() };
+    const fingerprint = 'f'.repeat(64);
+    const calls: { sql: string; values: any[] }[] = [], client = { query: vi.fn(async (sql: string, values: any[] = []) => {
+      calls.push({ sql, values }); return { rows: sql.includes('INSERT INTO node_evidence_cohorts') ? [{ fingerprint }] : [] };
+    }), release: vi.fn() };
     const database = { query: vi.fn(async (_sql: string, _values?: any[]) => ({ rows: [] })), connect: vi.fn(async () => client) };
     await collectNodeEvidenceRange({ ...options, database: database as any, rpc: rpcFixture(), generations: new Map([[wallet, 'generation']]) });
     expect(calls[0].sql).toBe('BEGIN'); expect(calls.at(-1)?.sql).toBe('COMMIT');
     expect(calls.findIndex(item => item.sql.includes('INSERT INTO node_evidence_transactions'))).toBeLessThan(calls.findIndex(item => item.sql.includes("VALUES('node_collection'")));
     expect(calls.find(item => item.sql.includes('INSERT INTO node_evidence_ranges'))?.values[4]).toBe(JSON.stringify({ [wallet]: 'generation' }));
+    expect(calls.find(item => item.sql.includes('INSERT INTO node_evidence_ranges'))?.values[5]).toBe(fingerprint);
+    expect(calls.findIndex(item => item.sql.includes('INSERT INTO node_evidence_cohorts'))).toBeLessThan(calls.findIndex(item => item.sql.includes('INSERT INTO node_evidence_ranges')));
     const headerWrites = calls.filter(item => item.sql.includes('INSERT INTO node_evidence_blocks'));
     expect(headerWrites).toHaveLength(1);
     expect(JSON.parse(headerWrites[0].values[0])).toEqual([{ block_number: '100', block_hash: blockHash,

@@ -108,6 +108,35 @@ try {
   assert.equal(first[0].realizedProfitUsd, '47.3', 'The current period consumes pre-window FIFO costs and their acquisition fees, then values external transfer-out gains');
   assert.equal(first[0].valuedSellCount, 1); assert.equal(first[0].valuedTransferOutCount, 1);
   assert.equal(first[0].coveredThroughBlock, '300'); assert.equal(first[0].asOf, iso(end - 5000));
+  // Normalized range cohorts and unnormalized retained ranges prove the same
+  // exact coverage. Both branches must participate during bounded backfill.
+  const originalRange=(await database.query(`SELECT id,wallets,encode(sha256(convert_to(wallets::text,'UTF8')),'hex') AS fingerprint
+    FROM node_evidence_ranges WHERE wallets ? $1`,[wallet])).rows[0];
+  await database.query(`INSERT INTO node_evidence_cohorts(fingerprint,wallets)VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING`,
+    [originalRange.fingerprint,JSON.stringify(originalRange.wallets)]);
+  await database.query('UPDATE node_evidence_ranges SET to_block=225 WHERE id=$1',[originalRange.id]);
+  const normalizedRange=(await database.query(`INSERT INTO node_evidence_ranges(from_block,to_block,head_block,wallets,decoded_at,cohort_fingerprint)
+    VALUES(226,300,306,$1::jsonb,now(),$2) RETURNING id`,[JSON.stringify(originalRange.wallets),originalRange.fingerprint])).rows[0];
+  assert.equal((await calculate())[0].snapshotId,first[0].snapshotId,
+    'Mixed normalized and legacy ranges retain the identical genuine coverage and accounting result');
+  await database.query('UPDATE node_evidence_ranges SET decoded_at=NULL WHERE id=$1',[normalizedRange.id]);
+  const pendingNormalized=(await calculate())[0];
+  assert.equal(pendingNormalized.complete,false);assert.ok(pendingNormalized.reasons.includes('period_collection_incomplete'),
+    'A normalized cohort never authorizes an undecoded range');
+  await database.query('UPDATE node_evidence_ranges SET decoded_at=now() WHERE id=$1',[normalizedRange.id]);
+  const wrongMap={...originalRange.wallets,[wallet]:randomUUID()};
+  const wrongCohort=(await database.query(`INSERT INTO node_evidence_cohorts(fingerprint,wallets)
+    SELECT encode(sha256(convert_to($1::jsonb::text,'UTF8')),'hex'),$1::jsonb RETURNING fingerprint`,[JSON.stringify(wrongMap)])).rows[0];
+  await database.query('UPDATE node_evidence_ranges SET cohort_fingerprint=$2,wallets=$3::jsonb WHERE id=$1',
+    [normalizedRange.id,wrongCohort.fingerprint,JSON.stringify(wrongMap)]);
+  const wrongGeneration=(await calculate())[0];
+  assert.equal(wrongGeneration.complete,false);assert.ok(wrongGeneration.reasons.includes('period_collection_incomplete'),
+    'A normalized range for another monitoring generation cannot fill a retained legacy gap');
+  await database.query('DELETE FROM node_evidence_ranges WHERE id=$1',[normalizedRange.id]);
+  await database.query('UPDATE node_evidence_ranges SET to_block=300,cohort_fingerprint=$2 WHERE id=$1',
+    [originalRange.id,originalRange.fingerprint]);
+  assert.equal((await calculate())[0].snapshotId,first[0].snapshotId,
+    'Completed normalized coverage preserves exact profit, source, as-of time and snapshot identity');
   // Captured position readiness cannot imply that the wallet was monitored
   // throughout a preceding 24-hour leaderboard window.
   const recentWallet=`0x${'4'.repeat(40)}`,recentGeneration=privateGeneration;

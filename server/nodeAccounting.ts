@@ -15,6 +15,7 @@ import { nodeNativeTradeValue, queueNodeTraceRepairs, type NodeCallTrace } from 
 import { parseLaunchLog } from './launchpad.js';
 import { invalidateNodeLeaderboardForWallets } from './nodeAccountingSchema.js';
 import type { NodeAccountingTickResult } from './nodeAccountingQueue.js';
+import { readNodeEvidenceCoverageRanges } from './nodeEvidenceCoverage.js';
 import { decodeNodeMarketLog, poolMarketAbi, v3MarketAbi, infinityMarketAbi, infinityBinMarketAbi, fourMarketAbi, flapMarketAbi, type NodeMarketIdentity } from './nodeMarketProtocols.js';
 
 type Database = Pick<PoolClient, 'query'>;
@@ -464,8 +465,7 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
       || BigInt(state.decoded) < BigInt(through) || BigInt(state.collected) < BigInt(through) || BigInt(through) < BigInt(start)) reasons.add(state?.last_error ?? 'collection_pending');
     let completedRange = false;
     if (state && start != null && through != null && state.generation) {
-      const ranges = (await db.query(`SELECT from_block::text AS "fromBlock",to_block::text AS "toBlock" FROM node_evidence_ranges
-        WHERE decoded_at IS NOT NULL AND to_block>$2 AND from_block<=$3 AND wallets->>$1=$4 ORDER BY from_block,to_block`, [wallet, start, through, state.generation])).rows;
+      const ranges = await readNodeEvidenceCoverageRanges(db, { wallet, fromBlock: start, toBlock: through, generation: state.generation });
       completedRange = nodeAccountingRangesComplete(start, through, ranges);
       if (!completedRange) reasons.add('collection_pending');
     }

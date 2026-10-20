@@ -8,6 +8,7 @@ import { decodeNodeExecutions, ensureNodeExecutionSchema, NODE_ENTRY_POINTS, NOD
 import { enqueueNodeEvidenceMetadata, ensureNodeEvidenceMetadataSchema } from './nodeEvidenceMetadata.js';
 import {rollbackNodeTokenIdentities} from './nodeTokenIdentity.js';
 import { enqueuePublicNodeAccountingPairs } from './nodeAccountingQueue.js';
+import { ensureNodeEvidenceCoverageSchema, persistNodeEvidenceCoverageCohort } from './nodeEvidenceCoverage.js';
 export { drainNodeEvidenceMetadata } from './nodeEvidenceMetadata.js';
 
 export type NodeEvidenceDatabase = Pick<Pool, 'query' | 'connect'>;
@@ -71,6 +72,7 @@ async function createNodeEvidenceSchema(database: Database) {
       created_at timestamptz NOT NULL DEFAULT now(),invalidated_at timestamptz);
     CREATE TABLE IF NOT EXISTS node_collection_gaps(id uuid PRIMARY KEY REFERENCES node_capture_bootstraps(id),from_block bigint NOT NULL,to_block bigint NOT NULL,
       reason text NOT NULL,recorded_at timestamptz NOT NULL DEFAULT now(),CHECK(to_block>=from_block));`);
+  await ensureNodeEvidenceCoverageSchema(database);
   await ensureNodeExecutionSchema(database);
   await ensureNodeEvidenceMetadataSchema(database);
 }
@@ -327,7 +329,9 @@ export async function collectNodeEvidenceRange(options: { database: NodeEvidence
     }
     await enqueueNodeEvidenceMetadata(client, loaded.entries);
     const captured = Object.fromEntries([...options.generations].filter(([wallet]) => wallets.has(wallet)));
-    await client.query(`INSERT INTO node_evidence_ranges(from_block,to_block,head_block,repair_wallet,wallets) VALUES($1,$2,$3,$4,$5::jsonb)`, [options.from, options.to, options.head, options.repairWallet ?? null, JSON.stringify(captured)]);
+    const cohort = await persistNodeEvidenceCoverageCohort(client, captured);
+    await client.query(`INSERT INTO node_evidence_ranges(from_block,to_block,head_block,repair_wallet,wallets,cohort_fingerprint) VALUES($1,$2,$3,$4,$5::jsonb,$6)`,
+      [options.from, options.to, options.head, options.repairWallet ?? null, JSON.stringify(captured), cohort]);
     await client.query(`UPDATE node_monitored_wallets n SET registration_block=COALESCE(registration_block,$2-1),registration_hash=COALESCE(registration_hash,$4),
       collected_through_block=GREATEST(COALESCE(collected_through_block,$2-1),$3),
       repair_from_block=CASE WHEN repair_from_block BETWEEN $2 AND $3 THEN CASE WHEN $3>=$5 THEN NULL ELSE $3+1 END ELSE repair_from_block END,

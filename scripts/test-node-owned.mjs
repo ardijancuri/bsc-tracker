@@ -9,6 +9,8 @@ const environment={...process.env,TELEGRAM_BOT_TOKEN:'',TELEGRAM_CLIENT_ID:'',TE
 try {
   const evidence=spawnSync(process.execPath,['--import','tsx','server/nodeEvidence.integration.ts'],{env:environment,stdio:'inherit'});
   if(evidence.status!==0)throw Error('Evidence integration failed');
+  const coverage=spawnSync(process.execPath,['--import','tsx','server/nodeEvidenceCoverage.integration.ts'],{env:environment,stdio:'inherit'});
+  if(coverage.status!==0)throw Error('Evidence coverage integration failed');
   const collection=spawnSync(process.execPath,['--import','tsx','server/journalCollection.integration.ts'],{env:environment,stdio:'inherit'});
   if(collection.status!==0)throw Error('Journal collection integration failed');
   for(const file of ['server/nodeHistoricalImportSchema.integration.ts','server/schemaStartup.integration.ts','server/nodeEvidenceMetadata.integration.ts','server/nodeTokenIdentity.integration.ts','server/nodeLeaderboard.integration.ts','server/nodeLeaderboardAccounting.integration.ts','server/nodeMarketThroughput.integration.ts']){
@@ -41,5 +43,5 @@ try {
       if(result.status!==0)throw Error(file+' failed');
     }finally{await admin.query('DROP DATABASE "'+name+'" WITH (FORCE)');}
   }
-  console.log('All twenty-four node-owned PostgreSQL integration suites passed; transports fake/disabled.');
+  console.log('All twenty-five node-owned PostgreSQL integration suites passed; transports fake/disabled.');
 }finally{await admin.end();}

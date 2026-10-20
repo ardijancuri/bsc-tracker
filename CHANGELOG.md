@@ -6,6 +6,7 @@
 - Queue public position accounting atomically with decoded movements, preserve requested block watermarks, and drain four independent slots so slow historical work cannot hold an entire batch.
 - Refresh changed-wallet P&L in coalesced batches and rotate bounded oldest leaderboard snapshots. Profiles and rankings read the same committed PostgreSQL result and receive update notifications.
 - Prefer reconciled node FIFO over an overlapping imported baseline when the captured movement set is complete; retain older lifetime baselines and explicit unknown costs when node evidence is insufficient.
+- Normalize repeated collection wallet maps into durable coverage cohorts, with resumable legacy backfill and compact interval proofs, reducing P&L refresh work while preserving real gaps, generations and reorg checks.
 - Increase the qualifier countdown heading to 15px on desktop and 13px on mobile, with semibold weight for clearer visibility.
 - Add GMGN Global Championship Daily and Overall top-20 rankings, UTC date selection, trader profiles and streams, and fresh requests on each page load or manual refresh. Preserve dated saved rankings when GMGN blocks the feed.
 - Add a dark stadium hero with the centered Aston Martin prize and separate, spaced countdown number tiles, with responsive English and Chinese layouts.

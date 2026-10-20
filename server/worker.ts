@@ -21,6 +21,7 @@ import { TRUSTED_QUOTE_FEEDS } from './nodeMarketProtocols.js';
 import { nodeMarketDiscoverySql, nodeMarketReceiptHintsSql } from './nodeMarketDiscovery.js';
 import { nodeAccountingService } from './nodeAccounting.js';
 import { runNodeAccountingWorkers } from './nodeAccountingQueue.js';
+import { backfillNodeEvidenceCoverageCohorts } from './nodeEvidenceCoverage.js';
 import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
 import { nodeHistoricalImporter } from './nodeHistoricalImport.js';
 import { tokenChartRecovery } from './nodeTokenChartRecovery.js';
@@ -959,6 +960,18 @@ async function nodeDataHealthLoop() {
     await sleep(60_000);
   }
 }
+async function nodeCoverageNormalizationLoop() {
+  for (;;) {
+    let waitMs = 60_000;
+    try {
+      const began = performance.now();
+      const result = await backfillNodeEvidenceCoverageCohorts(pool, { limit: 5000 });
+      await setState('node_coverage_metrics', { ...result, durationMs: performance.now() - began, at: new Date().toISOString() });
+      if (result.remaining) waitMs = 100;
+    } catch { waitMs = 5000; console.warn('Node coverage normalization waiting'); }
+    await sleep(waitMs);
+  }
+}
 async function historicalImportLoop() {
   let discoveredAt = 0;
   for (;;) {
@@ -1001,5 +1014,5 @@ if (process.env.NODE_CAPTURE_BOOTSTRAP === '1') {
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('intelligence_started',jsonb_build_object('at',now())) ON CONFLICT(key) DO NOTHING`);
   const started = await pool.query(`SELECT value->>'at' AS at FROM worker_state WHERE key='intelligence_started'`);
   featuresLiveSince = new Date(started.rows[0].at).getTime();
-  await Promise.all([nodeLoop(), nodeDecodeLoop(), ...Array.from({ length: nodeMetadataConcurrency }, (_, index) => nodeMetadataLoop(index)), nodeTokenIdentityLoop(), nodeProjectionLoop(), nodeTraceLoop(), nodeMarketCollectionLoop(), nodeMarketDiscoveryLoop(), nodeMarketLoop(), nodeMarketDecodeLoop(), nodeAccountingLoop(), nodeDataHealthLoop(), historicalImportLoop(), tokenChartRecoveryLoop(), intelligenceLoop(), telegramNotifications.run(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop()]);
+  await Promise.all([nodeLoop(), nodeDecodeLoop(), ...Array.from({ length: nodeMetadataConcurrency }, (_, index) => nodeMetadataLoop(index)), nodeTokenIdentityLoop(), nodeProjectionLoop(), nodeTraceLoop(), nodeMarketCollectionLoop(), nodeMarketDiscoveryLoop(), nodeMarketLoop(), nodeMarketDecodeLoop(), nodeAccountingLoop(), nodeCoverageNormalizationLoop(), nodeDataHealthLoop(), historicalImportLoop(), tokenChartRecoveryLoop(), intelligenceLoop(), telegramNotifications.run(), tradeRepairLoop(), priceLoop(), leaderboardLoop(), avatarLoop(), ...Array.from({ length: 3 }, () => logoLoop()), sellValueLoop(), supplyLoop()]);
 }

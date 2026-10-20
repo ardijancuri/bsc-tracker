@@ -199,8 +199,10 @@ export async function loadPublicNodeLeaderboardAccounting(request:NodeLeaderboar
   if(pending.length)await enqueuePublicNodeAccountingPairs(db,pending.map(pair=>({wallet:pair.wallet_address,token:pair.token_address,throughBlock:pair.latest_block,
     priority:Date.parse(windowEnd)-Date.parse(pair.latest_at)<=300_000
       &&(!pair.payload||!validBlock(pair.payload.throughBlock)||pair.latest_block!=null&&BigInt(pair.payload.throughBlock)<BigInt(pair.latest_block))?5:0})));
-  // Most collection ranges share the same wallet/generation map. Merge their
-  // exact intervals once per map fingerprint before testing individual wallets.
+  // Most collection ranges share one wallet/generation cohort. Aggregate their
+  // compact persisted fingerprint first, then read each cohort map once. The
+  // compatibility branch proves unnormalized legacy ranges without trusting a
+  // checkpoint or assuming they have the current monitoring generation.
   // A later registration without verified discovery cannot cover the period;
   // rescanning its post-registration ranges cannot repair that missing history.
   monitoring=(await db.query(`WITH boundary AS(SELECT block_number FROM node_evidence_blocks
@@ -211,10 +213,19 @@ export async function loadPublicNodeLeaderboardAccounting(request:NodeLeaderboar
       WHERE m.active AND m.wallet_address=ANY($1::text[])), lower_bound AS(
       SELECT min(CASE WHEN registered_at<=$2::timestamptz AND (SELECT block_number FROM boundary) IS NOT NULL
         THEN (SELECT block_number FROM boundary) WHEN discovery_complete THEN registration_block+1 END) AS block_number FROM monitored
+    ), normalized_ranges AS MATERIALIZED(
+      SELECT r.cohort_fingerprint,range_agg(int8range(r.from_block,r.to_block+1,'[)')) AS coverage
+      FROM node_evidence_ranges r WHERE (SELECT block_number FROM lower_bound) IS NOT NULL AND $3::bigint IS NOT NULL
+        AND r.cohort_fingerprint IS NOT NULL AND r.decoded_at IS NOT NULL
+        AND r.to_block>=(SELECT block_number FROM lower_bound) AND r.from_block<=$3::bigint
+      GROUP BY r.cohort_fingerprint
     ), cohort_ranges AS MATERIALIZED(
+      SELECT c.wallets,r.coverage FROM normalized_ranges r JOIN node_evidence_cohorts c ON c.fingerprint=r.cohort_fingerprint
+      UNION ALL
       SELECT any_value(r.wallets) AS wallets,range_agg(int8range(r.from_block,r.to_block+1,'[)')) AS coverage
       FROM node_evidence_ranges r WHERE (SELECT block_number FROM lower_bound) IS NOT NULL AND $3::bigint IS NOT NULL
-        AND r.decoded_at IS NOT NULL AND r.to_block>=(SELECT block_number FROM lower_bound) AND r.from_block<=$3::bigint
+        AND r.cohort_fingerprint IS NULL AND r.decoded_at IS NOT NULL
+        AND r.to_block>=(SELECT block_number FROM lower_bound) AND r.from_block<=$3::bigint
       GROUP BY sha256(convert_to(r.wallets::text,'UTF8'))
     ), wallet_ranges AS(
       SELECT m.wallet_address,range_agg(c.coverage) AS coverage FROM monitored m JOIN cohort_ranges c

@@ -4,6 +4,7 @@ import pg from 'pg';
 import { advanceNodeDecodeCheckpoints, bootstrapNodeCapture, collectNodeEvidenceRange, drainNodeEvidenceDecode, drainNodeEvidenceProjection, ensureNodeEvidenceSchema, findNodeEvidenceReorgStart, nodeCaptureStart, rollbackNodeEvidence, syncNodeMonitoredWallets, type NodeRpc } from './nodeEvidence.js';
 import { transferTopic } from './swap.js';
 import { persistNodeExecutions,NODE_EXECUTION_VERSION,type NodeExecution } from './nodeExecution.js';
+import { backfillNodeEvidenceCoverageCohorts } from './nodeEvidenceCoverage.js';
 
 const configured = new URL(process.env.DATABASE_URL ?? 'postgres://invalid');
 if (!['localhost', '127.0.0.1'].includes(configured.hostname) || configured.port !== '5435') throw new Error('Disposable local PostgreSQL only');
@@ -28,6 +29,11 @@ try {
   await database.query('INSERT INTO kols(address,is_tracked) VALUES($1,true)', [wallet]);
   const generations = await syncNodeMonitoredWallets(database);
   await collectNodeEvidenceRange({ database, rpc, from: 100, to: 100, head: 106, generations });
+  const capturedCohort = (await database.query(`SELECT r.cohort_fingerprint,c.wallets=r.wallets AS matched FROM node_evidence_ranges r
+    JOIN node_evidence_cohorts c ON c.fingerprint=r.cohort_fingerprint`)).rows[0];
+  assert.match(capturedCohort.cohort_fingerprint, /^[a-f0-9]{64}$/); assert.equal(capturedCohort.matched, true,
+    'A successful capture atomically associates its exact monitoring generation cohort');
+  assert.deepEqual(await backfillNodeEvidenceCoverageCohorts(database), { processed: 0, remaining: false }, 'New captures need no legacy map migration');
   // Decode advances lock active registry rows. Routine synchronization must be
   // read-only for those rows rather than taking every row in a different order.
   const beforeSync=(await database.query('SELECT * FROM node_monitored_wallets WHERE wallet_address=$1',[wallet])).rows[0];
