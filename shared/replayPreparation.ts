@@ -1,7 +1,7 @@
 import type { KolTokenActivity } from './kolTokenTrades.js';
 import type { ReplayMarketChart } from './replayChart.js';
 
-export type ReplayPreparationReason = 'accounting_pending' | 'accounting_mismatch' | 'unknown_costs' |
+export type ReplayPreparationReason = 'preparation_pending' | 'accounting_pending' | 'accounting_mismatch' | 'unknown_costs' |
   'chart_coverage' | 'chart_unavailable' | 'stale_quote' | 'unsupported_decoder' | 'provider_cooldown';
 export interface ReplayPreparation {
   version: 2;
@@ -18,6 +18,7 @@ export interface ReplayPreparation {
 }
 
 export const replayPreparationMessages: Record<ReplayPreparationReason, string> = {
+  preparation_pending: 'Replay preparation is taking longer than usual. Retry shortly.',
   accounting_pending: 'Wallet transactions are still being processed. Retry shortly.',
   accounting_mismatch: 'Recorded movements do not match the confirmed wallet balance.',
   unknown_costs: 'Some purchase costs or wallet-paid fees are unavailable.',

@@ -380,6 +380,7 @@ export const chinese: Record<string, string> = {
   'Waiting for a fresh confirmed market price.': '正在等待最新的已确认市场价格。',
   'Captured wallet transactions are still being prepared.': '正在整理已保存的钱包交易。',
   'Position accounting is being prepared.': '正在准备仓位账目。',
+  'Replay preparation is taking longer than usual. Retry shortly.': '回放准备时间比平时长，请稍后重试。',
   'Wallet transactions are still being processed. Retry shortly.': '正在处理钱包交易，请稍后重试。',
   'Recorded movements do not match the confirmed wallet balance.': '记录的资金变动与已确认钱包余额不符。',
   'Some purchase costs or wallet-paid fees are unavailable.': '部分买入成本或钱包支付费用无法获取。',

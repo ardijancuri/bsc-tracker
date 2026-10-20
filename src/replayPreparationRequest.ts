@@ -23,16 +23,39 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   const context = data.requestContext && !snapshotFresh ? { ...data.requestContext, snapshotId: undefined } : data.requestContext;
   const frozen = context?.snapshotId ?? (!context && snapshotFresh && data.accountingSnapshot?.complete ? data.accountingSnapshot.snapshotId : undefined);
   const query = frozen ? `?snapshot=${encodeURIComponent(frozen)}` : '';
-  const response = await fetch(`${tradeActivityBase(data.kol.address, data.token.address, context)}/replay-preparation${query}`, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]), cache: 'no-store', headers: tradeRequestHeaders(context),
-  });
+  const deadline = AbortSignal.timeout(8000);
+  const requestSignal = AbortSignal.any([signal, deadline]);
+  const pendingRequest = (): ReplayMarketRequestResult => ({ data: withoutApproval(data), notice: replayPreparationMessages.preparation_pending,
+    preparationStatus: 'pending', blockingReason: 'preparation_pending', retryAfterMs: 2000 });
+  const timedOut = (problem: unknown) => deadline.aborted || problem instanceof Error && problem.name === 'TimeoutError';
+  let response: Response;
+  try {
+    response = await fetch(`${tradeActivityBase(data.kol.address, data.token.address, context)}/replay-preparation${query}`, {
+      signal: requestSignal, cache: 'no-store', headers: tradeRequestHeaders(context),
+    });
+  } catch (problem) {
+    if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
+    // One slow read must not end the enclosing bounded preparation poll. The
+    // server keeps its coalesced work; a retry joins it without export approval.
+    if (timedOut(problem) || problem instanceof TypeError) return pendingRequest();
+    throw problem;
+  }
   if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
   if (response.status === 410 || response.status === 404 && frozen) return { data: { ...withoutApproval(data), accountingSnapshot: undefined,
     requestContext: context ? { ...context, snapshotId: undefined } : undefined }, notice: replayPreparationMessages.accounting_pending,
     preparationStatus: 'pending', blockingReason: 'accounting_pending', retryAfterMs: 1000 };
   if (!response.ok) return { data: withoutApproval(data), notice: response.status === 403 || response.status === 401 ? 'Portfolio access changed. Close this replay and try again.' : 'Replay preparation is temporarily unavailable.',
     preparationStatus: [429, 500, 502, 503, 504].includes(response.status) ? 'pending' : 'unavailable', blockingReason: 'accounting_pending', retryAfterMs: 2000 };
-  const result = await response.json() as ReplayPreparation;
+  let result: ReplayPreparation;
+  try { result = await response.json() as ReplayPreparation; }
+  catch (problem) {
+    if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
+    // Fetch's signal also covers body consumption. Malformed JSON and contract
+    // errors remain failures rather than becoming repeated transport retries.
+    if (timedOut(problem)) return pendingRequest();
+    throw problem;
+  }
+  if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
   if (result.version !== 2 || !['ready', 'pending', 'unavailable'].includes(result.status)) throw new Error('Invalid replay preparation response');
   const activity = result.activity;
   if (activity && (activity.kol.address.toLowerCase() !== data.kol.address.toLowerCase() || activity.token.address.toLowerCase() !== data.token.address.toLowerCase())) throw new Error('Replay identity changed');

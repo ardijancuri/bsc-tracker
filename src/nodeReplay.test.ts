@@ -127,4 +127,55 @@ describe('node-owned replay contract and ending', () => {
     expect(result.preparationStatus).toBe('pending');expect(result.retryAfterMs).toBe(2000);
     expect(result.data.replayAccounting?.final).toBeNull();
   });
+  it.each(['fetch','body'] as const)('continues preparation after an eight-second %s deadline without granting export approval',async stage=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    const failure=new DOMException('signal timed out','TimeoutError');
+    const response=Response.json({});
+    if(stage==='body')response.json=vi.fn().mockRejectedValue(failure);
+    const fetcher=stage==='fetch'?vi.fn().mockRejectedValue(failure):vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch',fetcher);
+    const result=await replayMarketData(data,new AbortController().signal);
+    expect(result).toMatchObject({preparationStatus:'pending',blockingReason:'preparation_pending',retryAfterMs:2000});
+    expect(result.notice).not.toContain('signal timed out');
+    expect(result.data.replayAccounting).toMatchObject({status:'unavailable',final:null,
+      coverage:{exactFinal:false,transactionsComplete:false,balanceMatched:false}});
+    expect(data.replayAccounting?.final,'the original modal valuation is not mutated').not.toBeNull();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each(['fetch','body'] as const)('recognizes a browser AbortError caused by the internal %s deadline',async stage=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    const deadline=new AbortController(),timeout=vi.spyOn(AbortSignal,'timeout').mockReturnValue(deadline.signal);
+    const fail=()=>{deadline.abort(new DOMException('signal timed out','TimeoutError'));return Promise.reject(new DOMException('The operation was aborted.','AbortError'));};
+    const response=Response.json({});if(stage==='body')response.json=vi.fn(fail);
+    vi.stubGlobal('fetch',stage==='fetch'?vi.fn(fail):vi.fn().mockResolvedValue(response));
+    try {
+      expect(await replayMarketData(data,new AbortController().signal)).toMatchObject({preparationStatus:'pending',blockingReason:'preparation_pending'});
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(8000);
+    } finally {timeout.mockRestore();}
+  });
+  it.each(['fetch','body'] as const)('preserves caller cancellation during %s instead of restarting preparation',async stage=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    const controller=new AbortController();
+    const fail=()=>{controller.abort();return Promise.reject(new DOMException('signal timed out','TimeoutError'));};
+    const response=Response.json({});if(stage==='body')response.json=vi.fn(fail);
+    vi.stubGlobal('fetch',stage==='fetch'?vi.fn(fail):vi.fn().mockResolvedValue(response));
+    await expect(replayMarketData(data,controller.signal)).rejects.toMatchObject({name:'AbortError',message:'Video export cancelled.'});
+  });
+  it('keeps a temporary fetch network failure retryable without approving a replay',async()=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    vi.stubGlobal('fetch',vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    expect(await replayMarketData(data,new AbortController().signal)).toMatchObject({preparationStatus:'pending',blockingReason:'preparation_pending',
+      data:{replayAccounting:{final:null}}});
+  });
+  it.each([new SyntaxError('Unexpected token'),new TypeError('Invalid JSON body')])('does not retry an invalid response body: %s',async failure=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    const response=Response.json({});response.json=vi.fn().mockRejectedValue(failure);
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));
+    await expect(replayMarketData(data,new AbortController().signal)).rejects.toBe(failure);
+  });
+  it('does not turn malformed preparation contracts into transport retries',async()=>{
+    const {activity,now}=nodeReplayFixture(),data=prepareTradeReplayData(activity,null,undefined,now)!;
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(Response.json({version:1,status:'ready'})));
+    await expect(replayMarketData(data,new AbortController().signal)).rejects.toThrow('Invalid replay preparation response');
+  });
 });

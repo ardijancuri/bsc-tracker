@@ -69,6 +69,38 @@ describe('automatic replay preparation continuation', () => {
     expect(prepare).toHaveBeenCalledTimes(173); expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('automatically resumes a timed-out request before enabling the encoder', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const pending = { ...result('pending', 2000), blockingReason: 'preparation_pending' as const };
+    const ready = result('ready');
+    const prepare = vi.fn().mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(pending), 8000)))
+      .mockResolvedValueOnce(ready);
+    const record = vi.fn().mockResolvedValue({} as File), onError = vi.fn(), onWait = vi.fn();
+    const session = startReplaySession({
+      prepare: signal => prepareReplayForShare({} as TradeReplayData, signal, { prepare, onWait }), record, onError,
+    });
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(prepare).toHaveBeenCalledOnce(); expect(record).not.toHaveBeenCalled();
+    expect(onWait).toHaveBeenLastCalledWith(10_000); expect(onError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); await session.completed;
+    expect(prepare.mock.calls[1][0]).toBe(pending.data);
+    expect(record).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds repeated eight-second transport deadlines with a readable retryable error', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const pending = { ...result('pending', 2000), blockingReason: 'preparation_pending' as const };
+    const prepare = vi.fn().mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(pending), 8000)));
+    const promise = prepareReplayForShare({} as TradeReplayData, new AbortController().signal, { prepare });
+    const rejected = expect(promise).rejects.toMatchObject({
+      name: 'ReplayPreparationError', retryable: true, retryAfterMs: 2000,
+      message: 'Replay preparation is taking longer than usual. Retry shortly.',
+    });
+    await vi.advanceTimersByTimeAsync(178_000); await rejected;
+    expect(prepare).toHaveBeenCalledTimes(18); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('stops as soon as completed historical recovery reports a terminal chart gap', async () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     const unavailable = { ...result('unavailable', 2000), blockingReason: 'chart_unavailable' as const };
@@ -85,6 +117,7 @@ describe('automatic replay preparation continuation', () => {
 
 describe('complete replay export gate', () => {
   it.each([
+    ['preparation_pending','longer than usual'],
     ['accounting_pending','transactions are still being processed'],['accounting_mismatch','confirmed wallet balance'],
     ['unknown_costs','wallet-paid fees are unavailable'],['chart_coverage','full replay window'],['chart_unavailable','No further history'],
     ['stale_quote','confirmed market price is unavailable'],['provider_cooldown','historical import'],
