@@ -13,7 +13,10 @@ Link previews use a 1200 × 630 PNG with the current gold K/white wordmark. Open
 - `/trades` — observed swaps initiated by tracked wallets, with filters and BscScan links
 - `/tokens` — tokens traded by tracked wallets, ordered by recent activity
 - `/leaderboard` — profit realized in the last 24 hours using historical FIFO costs, fees and marked transfers; incomplete results remain unranked
+- `/championship` — GMGN Global Championship top 20, with Daily (UTC date selection) and Overall tabs, official competition PnL/ROI, trader X profiles and stream links
 - `/kol/:address` — wallet profile, X link, paginated trades from the last 24 hours, tokens, and 24-hour tracked P&L
+
+The championship is a separate GMGN competition feed covering all competition chains; the `chain=bsc` parameter on GMGN's page selects its terminal context, not a BSC-only competition. It does not change Kollens' node-owned KOL leaderboard. `/api/championship?period=daily&date=2026-10-20` and `?period=overall` read GMGN's public championship endpoints and coalesce concurrent requests. Page loads and explicit refreshes add `refresh=1` to bypass the one-minute background polling cache. Verified snapshots persist in the existing `worker_state` table. If GMGN rejects server requests (HTTP 403 observed locally), the page labels the original snapshot and its update time. A verified October 20 reference snapshot is bundled as a fallback; it is never reused for another UTC day or presented as live. Missing dates return an unavailable state. No API key, browser cookies, challenge bypass or trading access is used. See [Championship feed](docs/championship.md).
 
 The worker follows new BSC blocks via WebSocket and queries the local HTTP RPC for ERC-20 transfers, transactions, and receipts. It waits six blocks, stores trades once, and rescans after short reorganizations. BNB/USD comes from the [Chainlink BNB/USD feed on BSC](https://data.chain.link/feeds/bsc/mainnet/bnb-usd), read through the local node. BNB-quoted swaps are valued at the price reported near their block; stablecoin-quoted swaps use the quoted amount. Ambiguous interactions remain unpriced.
 

@@ -2,6 +2,9 @@
 
 ## v1.4.0 — 2026-10-20
 
+- Add GMGN Global Championship Daily and Overall top-20 rankings, UTC date selection, trader profiles and streams, and fresh requests on each page load or manual refresh. Preserve dated saved rankings when GMGN blocks the feed.
+- Add a dark stadium hero with the centered Aston Martin prize and separate, spaced countdown number tiles, with responsive English and Chinese layouts.
+
 - Restore numbered positions and gold/silver/bronze podium highlights for known partial P&L, retaining partial labels and leaving unknown results unranked.
 
 - Sort partial leaderboard results by their known realized P&L using exact decimal values, with trade activity only breaking ties. Keep complete rankings separate and unknown results below available partial totals.

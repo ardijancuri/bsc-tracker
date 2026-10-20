@@ -1,5 +1,6 @@
 import { registerCreatorRoutes } from './creatorApi.js';
 import { registerJournalRoutes } from './journalApi.js';
+import { registerChampionshipRoutes } from './championshipApi.js';
 import Fastify from 'fastify';
 import { Client } from 'pg';
 import path from 'node:path';
@@ -47,6 +48,7 @@ registerTelegramNotificationRoutes(app, { available: telegramNotifications.avail
 registerIntelligenceRoutes(app);
 registerCreatorRoutes(app);
 registerJournalRoutes(app);
+registerChampionshipRoutes(app);
 
 function int(input: unknown, fallback: number, maximum: number) {
   const parsed = Number(input);

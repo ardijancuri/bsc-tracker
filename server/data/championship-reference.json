@@ -1,0 +1,544 @@
+{
+  "source": "Verified public GMGN championship API and rendered trader identities. This is a dated fallback, never a live feed.",
+  "capturedAt": "2026-10-20T18:44:39.808Z",
+  "daily": {
+    "date": "2026-10-20",
+    "payload": {
+      "code": 0,
+      "reason": "",
+      "message": "success",
+      "data": {
+        "date": "20261020",
+        "status": "live",
+        "updated_at": 1792521743,
+        "list": [
+          {
+            "rank": 1,
+            "user_id": "38e58e76-2849-455d-9aad-29133752c75a",
+            "x_handle": "comethankme12",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "11573.50",
+            "roi": "6.2119"
+          },
+          {
+            "rank": 2,
+            "user_id": "f3bb9ff8-aa1d-4506-9ad2-7bdbe0394218",
+            "x_handle": "daniworldwide",
+            "live_url": "https://twitch.tv/daniworldwide",
+            "is_live": true,
+            "daily_pnl": "8938.45",
+            "roi": "4.4714"
+          },
+          {
+            "rank": 3,
+            "user_id": "46c5b6d7-8148-43ae-90ee-923955c7ee28",
+            "x_handle": "monotoneexe",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "4743.93",
+            "roi": "2.3647"
+          },
+          {
+            "rank": 4,
+            "user_id": "ef279812-2208-47da-8c67-0d46926d81be",
+            "x_handle": "0xzhy",
+            "live_url": "https://www.binance.com/square/profile/square-creator-e631a3ac843b",
+            "is_live": false,
+            "daily_pnl": "4658.09",
+            "roi": "2.4039"
+          },
+          {
+            "rank": 5,
+            "user_id": "acea5d0c-d731-4330-9b78-6a908044e561",
+            "x_handle": "kingofgoldendog",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "4137.27",
+            "roi": "2.1130"
+          },
+          {
+            "rank": 6,
+            "user_id": "7d411fe6-358c-46f8-a379-1a889645cac6",
+            "x_handle": "leecroise",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "3631.53",
+            "roi": "1.9499"
+          },
+          {
+            "rank": 7,
+            "user_id": "ddd578b5-dbdc-4fdb-8a7a-91d52b02493e",
+            "x_handle": "0xrell",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "2984.14",
+            "roi": "1.5060"
+          },
+          {
+            "rank": 8,
+            "user_id": "6a5d916e-09b9-4856-9b8d-ce542823377d",
+            "x_handle": "franklinflips4",
+            "live_url": "https://twitch.tv/jhunno",
+            "is_live": false,
+            "daily_pnl": "2331.35",
+            "roi": "1.2450"
+          },
+          {
+            "rank": 9,
+            "user_id": "49a13cb8-8925-4585-bdd4-7bf31bbaa118",
+            "x_handle": "yyzzy_diamond",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "2134.04",
+            "roi": "1.1791"
+          },
+          {
+            "rank": 10,
+            "user_id": "fa5325ee-c140-4880-bb05-b96b9e1501d8",
+            "x_handle": "eustazzeus",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1800.57",
+            "roi": "0.9165"
+          },
+          {
+            "rank": 11,
+            "user_id": "f6165232-0999-4f79-80d7-d4d8bd611bea",
+            "x_handle": "chen8xdt",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1725.79",
+            "roi": "0.8639"
+          },
+          {
+            "rank": 12,
+            "user_id": "ebaec2e3-a538-4a72-b9eb-6fd4a00cab97",
+            "x_handle": "5l1m333",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1640.13",
+            "roi": "0.8224"
+          },
+          {
+            "rank": 13,
+            "user_id": "4a78fd7a-7960-4691-bd4e-8aa55cca5b02",
+            "x_handle": "zephyrtrading",
+            "live_url": "https://www.binance.com/square/profile/zephyrtrading",
+            "is_live": false,
+            "daily_pnl": "1631.73",
+            "roi": "0.8159"
+          },
+          {
+            "rank": 14,
+            "user_id": "d63d7859-6962-4dc7-a717-a298e89d1ba9",
+            "x_handle": "hzjxhcyy",
+            "live_url": "https://twitch.tv/hzjxhcyy",
+            "is_live": false,
+            "daily_pnl": "1617.06",
+            "roi": "0.8374"
+          },
+          {
+            "rank": 15,
+            "user_id": "fa164160-0225-4079-bb3f-b84c6a5c572f",
+            "x_handle": "_gas404",
+            "live_url": "https://twitch.tv/gassy100x",
+            "is_live": true,
+            "daily_pnl": "1596.65",
+            "roi": "0.8130"
+          },
+          {
+            "rank": 16,
+            "user_id": "6df9077f-785d-457d-b659-a31d6ea4bf0e",
+            "x_handle": "mewudi669",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1499.50",
+            "roi": "0.8845"
+          },
+          {
+            "rank": 17,
+            "user_id": "acbd4eec-ec5f-4d7a-b011-6900295261a2",
+            "x_handle": "ash_rs9",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1488.44",
+            "roi": "0.7768"
+          },
+          {
+            "rank": 18,
+            "user_id": "d3e84e4d-adff-4e4c-ba76-30488f8b9c79",
+            "x_handle": "zacktradezcf",
+            "live_url": "https://twitch.tv/zacktradez",
+            "is_live": true,
+            "daily_pnl": "1455.04",
+            "roi": "0.7294"
+          },
+          {
+            "rank": 19,
+            "user_id": "8994a515-03aa-47a4-ac7f-8b54275aef07",
+            "x_handle": "degen_ak",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1434.59",
+            "roi": "0.7200"
+          },
+          {
+            "rank": 20,
+            "user_id": "c44ffb1c-0fc9-4aa1-8812-d3144bc500cc",
+            "x_handle": "padly1k",
+            "live_url": "",
+            "is_live": false,
+            "daily_pnl": "1368.85",
+            "roi": "2.6334"
+          }
+        ]
+      }
+    }
+  },
+  "overall": {
+    "payload": {
+      "code": 0,
+      "reason": "",
+      "message": "success",
+      "data": {
+        "status": "live",
+        "updated_at": 1792521743,
+        "list": [
+          {
+            "rank": 1,
+            "user_id": "79fe3278-b02e-4a30-8bd7-229d4188369e",
+            "x_handle": "waiter1x",
+            "live_url": "https://twitch.tv/waitergg",
+            "is_live": false,
+            "total_pnl": "21524.70",
+            "roi": "10.8104"
+          },
+          {
+            "rank": 2,
+            "user_id": "fa5325ee-c140-4880-bb05-b96b9e1501d8",
+            "x_handle": "eustazzeus",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "13938.79",
+            "roi": "7.0949"
+          },
+          {
+            "rank": 3,
+            "user_id": "38e58e76-2849-455d-9aad-29133752c75a",
+            "x_handle": "comethankme12",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "13870.85",
+            "roi": "7.4450"
+          },
+          {
+            "rank": 4,
+            "user_id": "f3bb9ff8-aa1d-4506-9ad2-7bdbe0394218",
+            "x_handle": "daniworldwide",
+            "live_url": "https://twitch.tv/daniworldwide",
+            "is_live": true,
+            "total_pnl": "11677.78",
+            "roi": "5.8418"
+          },
+          {
+            "rank": 5,
+            "user_id": "d63d7859-6962-4dc7-a717-a298e89d1ba9",
+            "x_handle": "hzjxhcyy",
+            "live_url": "https://twitch.tv/hzjxhcyy",
+            "is_live": false,
+            "total_pnl": "9533.01",
+            "roi": "4.9365"
+          },
+          {
+            "rank": 6,
+            "user_id": "26dd1c43-b067-4b2d-a310-80377a16eac6",
+            "x_handle": "lowkeyysol",
+            "live_url": "https://twitch.tv/lowkeyy66",
+            "is_live": false,
+            "total_pnl": "8993.86",
+            "roi": "4.5402"
+          },
+          {
+            "rank": 7,
+            "user_id": "ebaec2e3-a538-4a72-b9eb-6fd4a00cab97",
+            "x_handle": "5l1m333",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "7722.93",
+            "roi": "3.8726"
+          },
+          {
+            "rank": 8,
+            "user_id": "6a5d916e-09b9-4856-9b8d-ce542823377d",
+            "x_handle": "franklinflips4",
+            "live_url": "https://twitch.tv/jhunno",
+            "is_live": false,
+            "total_pnl": "6908.55",
+            "roi": "3.6894"
+          },
+          {
+            "rank": 9,
+            "user_id": "8994a515-03aa-47a4-ac7f-8b54275aef07",
+            "x_handle": "degen_ak",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "5958.70",
+            "roi": "2.9904"
+          },
+          {
+            "rank": 10,
+            "user_id": "4a78fd7a-7960-4691-bd4e-8aa55cca5b02",
+            "x_handle": "zephyrtrading",
+            "live_url": "https://www.binance.com/square/profile/zephyrtrading",
+            "is_live": false,
+            "total_pnl": "5655.30",
+            "roi": "2.8276"
+          },
+          {
+            "rank": 11,
+            "user_id": "fa164160-0225-4079-bb3f-b84c6a5c572f",
+            "x_handle": "_gas404",
+            "live_url": "https://twitch.tv/gassy100x",
+            "is_live": true,
+            "total_pnl": "5390.34",
+            "roi": "2.7448"
+          },
+          {
+            "rank": 12,
+            "user_id": "f29028bb-8386-435f-9152-226459a56bf2",
+            "x_handle": "aa_afeng",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "5164.12",
+            "roi": "2.6779"
+          },
+          {
+            "rank": 13,
+            "user_id": "7d411fe6-358c-46f8-a379-1a889645cac6",
+            "x_handle": "leecroise",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "4841.04",
+            "roi": "2.5994"
+          },
+          {
+            "rank": 14,
+            "user_id": "ef279812-2208-47da-8c67-0d46926d81be",
+            "x_handle": "0xzhy",
+            "live_url": "https://www.binance.com/square/profile/square-creator-e631a3ac843b",
+            "is_live": false,
+            "total_pnl": "4739.30",
+            "roi": "2.4458"
+          },
+          {
+            "rank": 15,
+            "user_id": "acea5d0c-d731-4330-9b78-6a908044e561",
+            "x_handle": "kingofgoldendog",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "4553.30",
+            "roi": "2.3255"
+          },
+          {
+            "rank": 16,
+            "user_id": "46c5b6d7-8148-43ae-90ee-923955c7ee28",
+            "x_handle": "monotoneexe",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "4094.91",
+            "roi": "2.0412"
+          },
+          {
+            "rank": 17,
+            "user_id": "0c18a728-7cef-41c2-b0ab-69629c2896ab",
+            "x_handle": "t1iumph",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "3858.74",
+            "roi": "2.1972"
+          },
+          {
+            "rank": 18,
+            "user_id": "79f08555-67d8-495f-9ce7-56673e2dc840",
+            "x_handle": "rawrstarxdd",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "3722.57",
+            "roi": "1.8663"
+          },
+          {
+            "rank": 19,
+            "user_id": "6df9077f-785d-457d-b659-a31d6ea4bf0e",
+            "x_handle": "mewudi669",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "3619.33",
+            "roi": "2.1349"
+          },
+          {
+            "rank": 20,
+            "user_id": "ddd578b5-dbdc-4fdb-8a7a-91d52b02493e",
+            "x_handle": "0xrell",
+            "live_url": "",
+            "is_live": false,
+            "total_pnl": "2969.46",
+            "roi": "1.4986"
+          }
+        ]
+      }
+    }
+  },
+  "identities": [
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1989965630338895873/p02qLIsq_400x400.jpg",
+      "id": "79fe3278-b02e-4a30-8bd7-229d4188369e",
+      "name": "WaiterG",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1873774065929879552/ED9J1D___400x400.jpg",
+      "id": "fa5325ee-c140-4880-bb05-b96b9e1501d8",
+      "name": "EustazZ",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2107844287128117249/Mlt5zygn_400x400.jpg",
+      "id": "38e58e76-2849-455d-9aad-29133752c75a",
+      "name": "ladyboy⛾",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1983615574480392192/5q5UdmRx_400x400.png",
+      "id": "f3bb9ff8-aa1d-4506-9ad2-7bdbe0394218",
+      "name": "Dani",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2057106948915695616/xEbHRM4f_400x400.jpg",
+      "id": "d63d7859-6962-4dc7-a717-a298e89d1ba9",
+      "name": "古月月",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2008654332372127744/E1Z40XVV_400x400.jpg",
+      "id": "26dd1c43-b067-4b2d-a310-80377a16eac6",
+      "name": "lowkey",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1946548944512720897/Yy_ZFsgG_400x400.jpg",
+      "id": "ebaec2e3-a538-4a72-b9eb-6fd4a00cab97",
+      "name": "Slime",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1884154123987152896/AJVZ2OJ1_400x400.jpg",
+      "id": "6a5d916e-09b9-4856-9b8d-ce542823377d",
+      "name": "Franklin",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2096526508378783744/8N62gapw_400x400.jpg",
+      "id": "8994a515-03aa-47a4-ac7f-8b54275aef07",
+      "name": "AK 🔶 BNB",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1976882977662787584/g8bgTXqi_400x400.jpg",
+      "id": "4a78fd7a-7960-4691-bd4e-8aa55cca5b02",
+      "name": "Zephyr",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1913487224156659712/Jydo9TAF_400x400.jpg",
+      "id": "f29028bb-8386-435f-9152-226459a56bf2",
+      "name": "阿峰_Afeng",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2016332158604898305/FuHX9pDy_400x400.jpg",
+      "id": "fa164160-0225-4079-bb3f-b84c6a5c572f",
+      "name": "gas",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2107178634612248576/1Dg6ZWm0_400x400.jpg",
+      "id": "7d411fe6-358c-46f8-a379-1a889645cac6",
+      "name": "lee",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2112494090009112576/wmvG60OO_400x400.jpg",
+      "id": "ef279812-2208-47da-8c67-0d46926d81be",
+      "name": "0x3🧲",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2110289094865788928/lW7s0PL1_400x400.jpg",
+      "id": "acea5d0c-d731-4330-9b78-6a908044e561",
+      "name": "YZBY💎🏆🐶",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2085211935595962368/ftFGrzc2_400x400.jpg",
+      "id": "46c5b6d7-8148-43ae-90ee-923955c7ee28",
+      "name": "渡",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2083626837759205376/Bs8Ol8vx_400x400.jpg",
+      "id": "0c18a728-7cef-41c2-b0ab-69629c2896ab",
+      "name": "我来这旅游123",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2024858643389124608/V3k2hFLw_400x400.jpg",
+      "id": "79f08555-67d8-495f-9ce7-56673e2dc840",
+      "name": "ROCKSTAR",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2098309730154450945/weqMIu_t_400x400.jpg",
+      "id": "6df9077f-785d-457d-b659-a31d6ea4bf0e",
+      "name": "底部筹码 | Golden.S",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2031143912719491073/MEUHp707_400x400.jpg",
+      "id": "ddd578b5-dbdc-4fdb-8a7a-91d52b02493e",
+      "name": "Rell",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2074207498635280384/73PMa3Pd_400x400.jpg",
+      "id": "49a13cb8-8925-4585-bdd4-7bf31bbaa118",
+      "name": "YYYzzy | GDC",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2111169233812127744/VTm57V_V_400x400.jpg",
+      "id": "d3e84e4d-adff-4e4c-ba76-30488f8b9c79",
+      "name": "Zack",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2096501485169483776/NOBt3EsS_400x400.jpg",
+      "id": "f6165232-0999-4f79-80d7-d4d8bd611bea",
+      "name": "Chen",
+      "verified": false
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/1821837071935270912/Ui8icCxd_400x400.jpg",
+      "id": "acbd4eec-ec5f-4d7a-b011-6900295261a2",
+      "name": "A",
+      "verified": true
+    },
+    {
+      "avatarUrl": "https://pbs.twimg.com/profile_images/2073254569447141377/6nI9nK2y_400x400.jpg",
+      "id": "c44ffb1c-0fc9-4aa1-8812-d3144bc500cc",
+      "name": "Padly",
+      "verified": true
+    }
+  ]
+}

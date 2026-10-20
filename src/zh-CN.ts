@@ -1,8 +1,10 @@
 // Product copy only. Token symbols, wallet names, addresses and protocol names stay unchanged.
 import { creatorJournalChinese } from './creatorJournalChinese';
+import { championshipChinese } from './championshipChinese';
 export const chinese: Record<string, string> = {
   'Telegram login is not connected to this app. The bot still uses the live site.': 'Telegram 登录尚未连接到此应用。机器人仍在使用线上网站。',
   ...creatorJournalChinese,
+  ...championshipChinese,
   'Log in to Kollens': '登录 Kollens',
   'Signing you in…': '正在登录…',
   'You’ll be logged in to Kollens in this browser.': '你将在此浏览器中登录 Kollens。',
