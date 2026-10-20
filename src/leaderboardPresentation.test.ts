@@ -12,17 +12,17 @@ describe('period leaderboard presentation', () => {
   it('ranks a complete period result and retains its original observation time', () => {
     expect(leaderboardPresentation({ accounting: snapshot, tradeCount24h: 3 })).toMatchObject({ status: 'ready', value: '25', canRank: true, asOf: snapshot.asOf });
   });
-  it('labels known partial profit and does not rank it against complete results', () => {
+  it('restores the displayed rank for known partial profit while retaining its partial status', () => {
     expect(leaderboardPresentation({ accounting: { ...snapshot, complete: false, realizedProfitUsd: null, excludedSellCount: 1 }, tradeCount24h: 3 }))
-      .toMatchObject({ status: 'partial', value: '25', canRank: false, unavailableCount: 1 });
+      .toMatchObject({ status: 'partial', value: '25', canRank: true, unavailableCount: 1 });
   });
   it('does not turn an entirely unresolved position into a zero-profit result', () => {
     expect(leaderboardPresentation({ accounting: { ...snapshot, complete: false, realizedProfitUsd: null, knownRealizedProfitUsd: '0', valuedSellCount: 0, excludedSellCount: 1 } }))
       .toMatchObject({ status: 'pending', value: null, canRank: false });
   });
-  it('keeps an exactly break-even known partial result available and unranked', () => {
+  it('numbers an exactly break-even known partial result without treating it as unknown', () => {
     expect(leaderboardPresentation({ accounting: { ...snapshot, complete: false, realizedProfitUsd: null, knownRealizedProfitUsd: '0', excludedSellCount: 1 } }))
-      .toMatchObject({ status: 'partial', value: '0', canRank: false });
+      .toMatchObject({ status: 'partial', value: '0', canRank: true });
   });
   it('supports marked transfer realizations when there are no buy/sell rows', () => {
     expect(leaderboardPresentation({ accounting: { ...snapshot, valuedSellCount: 0, valuedTransferOutCount: 1 }, tradeCount24h: 0 }))

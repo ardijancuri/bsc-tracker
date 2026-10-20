@@ -590,6 +590,6 @@ prepared modal accounting; an independent positive node case showed +$28.06.
 
 This does not certify complete old data or production cutover. Historical
 unknown costs and the retained older market backlog remain explicit; incomplete
-wallet subtotals remain unranked. Local native tracing still uses the bounded
+wallet subtotals retain explicit partial labels. Local native tracing still uses the bounded
 helper and cannot establish unattended production access. No commit, push,
 deployment, VPS database write or VPS configuration change was performed.

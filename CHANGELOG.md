@@ -2,6 +2,8 @@
 
 ## v1.4.0 — 2026-10-20
 
+- Restore numbered positions and gold/silver/bronze podium highlights for known partial P&L, retaining partial labels and leaving unknown results unranked.
+
 - Sort partial leaderboard results by their known realized P&L using exact decimal values, with trade activity only breaking ties. Keep complete rankings separate and unknown results below available partial totals.
 - Restore genuine saved chart history into PostgreSQL with original source/timestamps, resumable import checkpoints and conservative coverage claims.
 - Recover selected public token charts independently of P&L, sharing completed provider pages and preserving cooldowns without blocking node capture.
