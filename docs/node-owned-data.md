@@ -482,17 +482,27 @@ Acquisition fees follow the disposed lots, and a wallet-paid disposal or failed
 execution fee is charged once. Open-position mark-to-market changes do not
 enter this realized ranking. There is no separate legacy `server/pnl.ts` engine.
 
-The worker refreshes the period rollup every thirty seconds. Its bounded
-database adapter consumes the existing accounting histories and coalesced jobs;
+The decoder atomically queues each affected public wallet/token through its
+block watermark. Four independent accounting slots prioritize recent trades;
+a slow historical job cannot hold the other slots. A complete snapshot clears
+its job only after covering the requested block. Changed wallets request a
+coalesced period rollup every five seconds. Periodic batches refresh the oldest
+24 wallets every five seconds so rolling-window expiration stays bounded.
+Matching refresh requests share work; unrelated batches wait in arrival order
+so neither rolling-window expiry nor changed wallets can starve. Cross-process
+lock contention retains pending wallets for retry. Its adapter consumes accounting histories;
 HTTP reads do not scan receipts or call financial providers. Completed range
 coverage is checked as genuine interval unions for the monitoring generation.
 Publication rechecks financial evidence under short row locks, so a same-chain
 trace or valuation repair cannot publish an invalidated calculation. Current
 spot-price refreshes alone do not change the financial history fence.
 
-Complete wallets can be ranked. Partial wallets are explicitly unranked; only
-independently supported position contributions and known fee-only costs enter
-their subtotal. Unknown opening lots, contradictory balances, incomplete
+Complete and labeled partial results sort together by available P&L from highest
+to lowest. Only independently supported position contributions and known
+fee-only costs enter a partial subtotal; it never claims completeness. Unknown
+results remain unranked below every known amount, including losses. Exact
+decimal values determine order; activity, last trade, name and address break
+ties deterministically. Unknown opening lots, contradictory balances, incomplete
 quantity coverage and ambiguous movement evidence suppress the affected
 position rather than assigning zero purchase cost. Opaque historical aggregate
 fee differences are never assigned to invented dates. A fully closed cycle

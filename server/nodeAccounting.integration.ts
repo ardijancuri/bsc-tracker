@@ -9,6 +9,7 @@ import type { NodeMarketQuote } from '../shared/nodeMarket.js';
 import { FOUR_MANAGERS, fourInterface } from './launchpad.js';
 import { captureNodeTraceBatch,queueNodeTraceRepairs } from './nodeTrace.js';
 import { calculateJournalLedgerPeriod } from './nodeAccountingLedger.js';
+import { enqueuePublicNodeAccountingPairs } from './nodeAccountingQueue.js';
 const connection = new URL(process.env.DATABASE_URL || '');
 if (!['127.0.0.1', 'localhost'].includes(connection.hostname) || !/^\/bscan_node_accounting_test(?:_\d+)?$/.test(connection.pathname)) throw new Error('Use a local disposable bscan_node_accounting_test database');
 const wallet = `0x${'a'.repeat(40)}`, token = `0x${'b'.repeat(40)}`, blockHash = `0x${'f'.repeat(64)}`, tx = `0x${'1'.repeat(64)}`;
@@ -44,6 +45,54 @@ try {
   assert.ok(oldSchemaSnapshot.invalidated_at); assert.equal(oldSchemaSnapshot.last_valid, null); assert.equal(oldSchemaSnapshot.schema_version, null);
   await pool.query(`INSERT INTO kols(address,display_name,source,is_tracked) VALUES($1,'Fixture KOL','node',true)`, [wallet]);
   await pool.query(`INSERT INTO tokens(address,symbol,name,decimals) VALUES($1,'TEST','Test',18)`, [token]);
+  const pendingMetadataToken = `0x${'7'.repeat(40)}`;
+  await pool.query(`INSERT INTO node_accounting_jobs(scope_key,wallet_address,token_address,scope,requested_through_block)
+    VALUES('public',$1,$2,'{"kind":"public"}',150)`, [wallet, pendingMetadataToken]);
+  await service.tick(1);
+  const absentMetadata = (await pool.query('SELECT * FROM node_accounting_jobs WHERE token_address=$1', [pendingMetadataToken])).rows[0];
+  assert.equal(absentMetadata.requested_through_block, '150');
+  assert.equal(absentMetadata.last_error, 'token_metadata_unavailable');
+  assert.ok(absentMetadata.next_attempt_at.getTime() > Date.now(), 'Missing metadata retains the movement request with bounded retries');
+  for (const [digit, symbol, name] of [['6', 'Cake-LP', 'Pancake pool'], ['5', 'TRACKER', 'Dividend tracker'], ['4', 'USDT', 'Tether']]) {
+    const enrichedToken = `0x${digit.repeat(40)}`;
+    await pool.query("INSERT INTO tokens(address,name) VALUES($1,'Unknown')", [enrichedToken]);
+    await pool.query(`INSERT INTO node_accounting_jobs(scope_key,wallet_address,token_address,scope,priority,requested_through_block)
+      VALUES('public',$1,$2,'{"kind":"public"}',100,150)`, [wallet, enrichedToken]);
+    await pool.query('UPDATE tokens SET symbol=$2,name=$3 WHERE address=$1', [enrichedToken, symbol, name]);
+    assert.equal((await service.tick(1)).claimed, 1);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM node_accounting_jobs WHERE token_address=$1', [enrichedToken])).rows[0].n, 0,
+      'Metadata enrichment explicitly excluding an LP, tracker or quote asset retires its previously queued preparation');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM node_accounting_jobs WHERE token_address=$1', [pendingMetadataToken])).rows[0].n, 1,
+      'Retiring an excluded token cannot discard a genuinely missing metadata request');
+    await pool.query('DELETE FROM tokens WHERE address=$1', [enrichedToken]);
+  }
+  await pool.query('UPDATE kols SET is_tracked=false WHERE address=$1', [wallet]);
+  await pool.query('UPDATE node_accounting_jobs SET next_attempt_at=now() WHERE token_address=$1', [pendingMetadataToken]);
+  await service.tick(1);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM node_accounting_jobs')).rows[0].n, 0,
+    'An actually revoked public subscription can retire work without a snapshot');
+  await pool.query('UPDATE kols SET is_tracked=true WHERE address=$1', [wallet]);
+  // New live movements promote one existing pair without stealing its lease,
+  // resetting its age or overriding a shared retry deadline. The same block is
+  // idempotent, including after a failed attempt rotated its priority down.
+  await enqueuePublicNodeAccountingPairs(pool, [{ wallet, token, priority: 0, throughBlock: '149' }]);
+  const queueLease = randomUUID();
+  await pool.query(`UPDATE node_accounting_jobs SET lease_id=$1,lease_until=now()+interval '1 minute',next_attempt_at=now()+interval '2 minutes',
+    requested_at=now()-interval '1 hour'`, [queueLease]);
+  const beforePromotion = (await pool.query('SELECT * FROM node_accounting_jobs')).rows[0];
+  await enqueuePublicNodeAccountingPairs(pool, [{ wallet, token, priority: 5, throughBlock: '150' }, { wallet, token, priority: 0, throughBlock: '149' }]);
+  const promotedLive = (await pool.query('SELECT * FROM node_accounting_jobs')).rows[0];
+  assert.equal(promotedLive.priority, 5); assert.equal(promotedLive.requested_through_block, '150');
+  for (const field of ['lease_id', 'lease_until', 'next_attempt_at', 'requested_at']) assert.deepEqual(promotedLive[field], beforePromotion[field]);
+  await pool.query('UPDATE node_accounting_jobs SET priority=0');
+  await enqueuePublicNodeAccountingPairs(pool, [{ wallet, token, priority: 5, throughBlock: '150' }]);
+  assert.equal((await pool.query('SELECT priority FROM node_accounting_jobs')).rows[0].priority, 0,
+    'Repeated observations of one block do not permanently repromote an unavailable historical pair');
+  await pool.query('UPDATE node_accounting_jobs SET priority=100');
+  await enqueuePublicNodeAccountingPairs(pool, [{ wallet, token, priority: 5, throughBlock: '151' }]);
+  assert.equal((await pool.query('SELECT priority FROM node_accounting_jobs')).rows[0].priority, 100,
+    'Live background activity cannot lower an explicitly selected preparation');
+  await pool.query('DELETE FROM node_accounting_jobs');
   await pool.query(`INSERT INTO node_market_token_evidence(token_address,block_number,block_hash,timestamp,decimals,total_supply_raw,supply)
     VALUES($1,100,$2,$3,18,1000000000000000000000,1000)`, [token, `0x${'100'.padStart(64, '0')}`, start]);
   await pool.query(`INSERT INTO worker_state(key,value) VALUES('node',$1::jsonb)`, [JSON.stringify({ blockNumber: 200, blockHash })]);
@@ -82,6 +131,59 @@ try {
   assert.equal(ready.replayAccounting?.final?.reportedRoi, ready.realizedAccounting?.position?.estimatedRoi);
   const summaries = await service.summaries(wallet, [token]); assert.equal(summaries[token].estimatedProfitUsd, '9');
   assert.equal(nodeBalanceCalls, 1, 'Warm reads use persisted snapshots');
+  // A decoded sale requests block 201 before the decoder commits its global
+  // range checkpoint. A complete block-200 result must retain that request.
+  await pool.query('DELETE FROM node_accounting_jobs WHERE wallet_address=$1', [wallet]);
+  const saleHash = `0x${'3'.repeat(64)}`, saleTx = `0x${'4'.repeat(64)}`;
+  await pool.query(`INSERT INTO node_evidence_blocks(block_number,block_hash,parent_hash,timestamp,header)
+    VALUES(201,$1,$2,$3,'{}')`, [saleHash, blockHash, quoted]);
+  await pool.query(`INSERT INTO node_evidence_transactions(tx_hash,block_number,block_hash,transaction_index,timestamp,transaction,receipt)
+    VALUES($1,201,$2,0,$3,'{}','{}')`, [saleTx, saleHash, quoted]);
+  await pool.query(`INSERT INTO node_executions(id,tx_hash,wallet_address,execution_index,block_number,block_hash,transaction_index,timestamp,status,kind,
+    fee_native_wei,fee_complete,native_value_raw,logs,decoder_version)
+    VALUES('watermark-sale',$1,$2,0,201,$3,0,$4,'success','transaction',1000000000000000,true,0,$5::jsonb,1)`,
+  [saleTx, wallet, saleHash, quoted, JSON.stringify(logs)]);
+  await pool.query(`INSERT INTO node_execution_flows(execution_id,token_address,delta_raw,log_indices,counterparties)
+    VALUES('watermark-sale',$1,-5000000000000000000,ARRAY[1],ARRAY[]::text[])`, [token]);
+  await pool.query(`INSERT INTO node_trace_evidence(tx_hash,block_hash,trace,checked_at) VALUES($1,$2,$3::jsonb,$4)`,
+    [saleTx, saleHash, JSON.stringify({ type: 'CALL', from: token, to: wallet, value: '0x2386f26fc10000' }), quoted]);
+  await pool.query('UPDATE node_monitored_wallets SET collected_through_block=201,decoded_through_block=201 WHERE wallet_address=$1', [wallet]);
+  await pool.query(`INSERT INTO node_evidence_ranges(from_block,to_block,head_block,wallets,decoded_at)
+    SELECT 201,201,207,jsonb_build_object(wallet_address,generation::text),now() FROM node_monitored_wallets WHERE wallet_address=$1`, [wallet]);
+  await enqueuePublicNodeAccountingPairs(pool, [{ wallet, token, priority: 5, throughBlock: '201' }]);
+  const checkpointService = createNodeAccountingService({ db: pool, now: () => now,
+    balance: async request => ({ walletAddress: wallet, tokenAddress: token, chain: 'bsc', blockNumber: request.blockNumber!,
+      blockHash: request.blockNumber === '201' ? saleHash : blockHash, blockTimestamp: quoted, checkedAt: quoted,
+      balance: request.blockNumber === '201' ? '5' : '10' }),
+    market: { quote: async () => ({ ...current, blockNumber: '201', blockHash: saleHash }),
+      priceAt: async asset => ({ ...current, tokenAddress: asset, priceUsd: asset === token ? '2' : '1000' }) } });
+  const beforeRangeCommit = await checkpointService.tick(1);
+  assert.equal(beforeRangeCommit.completed, 0, 'A complete older result does not count as completing the queued movement');
+  const awaitingRange = (await pool.query('SELECT * FROM node_accounting_jobs WHERE wallet_address=$1 AND token_address=$2', [wallet, token])).rows[0];
+  assert.equal(awaitingRange.requested_through_block, '201'); assert.equal(awaitingRange.lease_id, null);
+  assert.equal(awaitingRange.last_error, 'indexing_lag'); assert.ok(awaitingRange.next_attempt_at.getTime() > Date.now());
+  assert.equal((await checkpointService.tick(1)).claimed, 0, 'An unfinished range uses retry spacing instead of a tight preparation loop');
+  assert.equal((await checkpointService.activity({ wallet, token }))?.accountingSnapshot?.coveredThroughBlock, '200');
+  await pool.query(`UPDATE worker_state SET value=jsonb_set(value,'{blockNumber}','201') WHERE key='node'`);
+  await pool.query('UPDATE node_accounting_jobs SET next_attempt_at=now() WHERE wallet_address=$1 AND token_address=$2', [wallet, token]);
+  assert.equal((await checkpointService.tick(1)).completed, 1);
+  const afterRangeCommit = await checkpointService.activity({ wallet, token });
+  assert.equal(afterRangeCommit?.accountingSnapshot?.coveredThroughBlock, '201');
+  assert.equal(afterRangeCommit?.summary.soldUsd, '10');
+  assert.equal(afterRangeCommit?.realizedAccounting?.position?.remainingTokenAmount, '5');
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM node_accounting_jobs WHERE wallet_address=$1 AND token_address=$2', [wallet, token])).rows[0].n, 0,
+    'The sale request is acknowledged only after its confirmed sale and holdings are included');
+  // Restore this fixture's original head for the independent regressions below.
+  await pool.query('DELETE FROM node_execution_flows WHERE execution_id=\'watermark-sale\'');
+  await pool.query('DELETE FROM node_executions WHERE id=\'watermark-sale\'');
+  await pool.query('DELETE FROM node_trace_evidence WHERE tx_hash=$1', [saleTx]);
+  await pool.query('DELETE FROM node_evidence_transactions WHERE tx_hash=$1', [saleTx]);
+  await pool.query('DELETE FROM node_evidence_ranges WHERE from_block=201');
+  await pool.query('DELETE FROM node_evidence_blocks WHERE block_number=201');
+  await pool.query('UPDATE node_monitored_wallets SET collected_through_block=200,decoded_through_block=200 WHERE wallet_address=$1', [wallet]);
+  await pool.query(`UPDATE worker_state SET value=jsonb_set(value,'{blockNumber}','200') WHERE key='node'`);
+  await service.refresh({ wallet, token });
+  const historicalValuationsAfterWatermark = historicalValuationCalls;
   await pool.query(`INSERT INTO leaderboard_snapshots(wallet_address,period,node_accounting)VALUES($1,'1d','{"current":true}'),($1,'7d','{"retained":true}')`,[wallet]);
   quoteTimestamp=new Date(Date.parse(bought)-1000).toISOString();quoteBlock='149';
   const beforeLatestMovement=await service.refresh({wallet,token,foreground:true});
@@ -105,7 +207,7 @@ try {
   assert.equal((await service.activity({ wallet, token }))?.accountingSnapshot?.complete, true,
     'A pruned registration RPC cannot force a provider dependency after complete raw transfer capture');
   assert.equal((await pool.query('SELECT balance_raw::text FROM journal_opening_balances WHERE wallet_address=$1', [wallet])).rows[0].balance_raw, '0');
-  assert.equal(historicalValuationCalls, 1, 'Completed historical accounting is reused when only balance/head/quote refreshes');
+  assert.equal(historicalValuationCalls, historicalValuationsAfterWatermark, 'Completed historical accounting is reused when only balance/head/quote refreshes');
   const beforeNormalizationUpgrade=historicalValuationCalls;
   await pool.query(`UPDATE node_accounting_history SET payload=jsonb_set(payload-'normalizationRevision','{events,0,amountUsd}','"1"')
     WHERE scope_key='public' AND wallet_address=$1 AND token_address=$2`,[wallet,token]);
@@ -419,9 +521,47 @@ try {
   await pool.query(`INSERT INTO node_market_token_evidence(token_address,block_number,block_hash,timestamp,decimals,total_supply_raw,supply)
     VALUES($1,100,$2,$3,18,1000000000000000000000,1000)`, [token, `0x${'100'.padStart(64, '0')}`, start]);
   assert.equal((await service.refresh({ wallet, token }))?.accountingSnapshot?.source, 'node');
-  // The following fixture represents an older token: it has no creation proof
-  // within the monitored segment and genuinely needs its lifetime baseline.
+  // Without a launch receipt, the independently confirmed zero opening still
+  // proves the captured cycle. A provider prefix entirely backed by that node
+  // cycle must not hide known FIFO behind opaque imported lot allocations.
   await pool.query("UPDATE node_evidence_transactions SET receipt='{}' WHERE tx_hash=$1", [tx]);
+  await saveNodeAccountingBaseline(pool, { wallet, token, checkpoint: importedCurrentCheckpoint, historyFingerprint: 'd'.repeat(64),
+    overlapVerified: true, quantityVerified: true,
+    ledger: { investedUsd: '10', soldUsd: '0', incomingTransferCostUsd: '0', transferOutIncomeUsd: '0', feesUsd: '1', realizedProfitUsd: null,
+      feeInclusiveCapitalUsd: '11', lots: [{ tokenAmount: '10', costBasisUsd: null }] },
+    events: [{ id: 'provider-buy', walletAddress: wallet, tokenAddress: token, kind: 'buy', tokenAmount: '10', amountUsd: '10', feeUsd: null,
+      txHash: tx, timestamp: bought, blockNumber: null, transactionIndex: null, logIndex: null }] });
+  await pool.query(`INSERT INTO node_import_jobs(wallet_address,token_address,stage,completed_at) VALUES($1,$2,'done',now())
+    ON CONFLICT(wallet_address,token_address) DO UPDATE SET stage='done',completed_at=now()`, [wallet, token]);
+  const capturedPreferred = await service.refresh({ wallet, token });
+  assert.equal(capturedPreferred?.accountingSnapshot?.source, 'node');
+  assert.equal(capturedPreferred?.accountingSnapshot?.historyBoundary, 'verified_zero_position');
+  assert.equal(capturedPreferred?.accountingSnapshot?.lifetimeComplete, false, 'A known captured cycle is not silently promoted to lifetime history');
+  assert.equal(capturedPreferred?.realizedAccounting?.position?.remainingCostBasisUsd, '11');
+  assert.equal(capturedPreferred?.realizedAccounting?.position?.estimatedProfitUsd, '19');
+  assert.equal((await pool.query('SELECT stage FROM node_import_jobs WHERE wallet_address=$1 AND token_address=$2', [wallet, token])).rows[0].stage, 'done',
+    'A preserved matching import is not reopened during every completed node refresh');
+  currentPrice = null;
+  const nodeWithoutQuote = await service.refresh({ wallet, token });
+  assert.equal(nodeWithoutQuote?.accountingSnapshot?.source, 'node', 'Missing current price does not demote verified historical FIFO to the opaque baseline');
+  assert.equal(nodeWithoutQuote?.summary.realizedProfitUsd, '0');
+  assert.ok(nodeWithoutQuote?.accountingSnapshot?.reasons.includes('quote_unavailable'));
+  currentPrice = '3';
+  await pool.query('UPDATE journal_opening_balances SET balance_raw=1000000000000000000 WHERE wallet_address=$1 AND token_address=$2', [wallet, token]);
+  assert.equal((await service.refresh({ wallet, token }))?.accountingSnapshot?.source, 'imported',
+    'A nonzero node opening with unknown original costs preserves the reconciled import');
+  await pool.query('DELETE FROM journal_opening_balances WHERE wallet_address=$1 AND token_address=$2', [wallet, token]);
+  assert.equal((await service.refresh({ wallet, token }))?.accountingSnapshot?.source, 'imported',
+    'Absent independent registration holdings cannot authorize replacing the preserved import');
+  await pool.query(`INSERT INTO journal_opening_balances(wallet_address,token_address,block_number,block_hash,balance_raw,decimals)
+    VALUES($1,$2,100,$3,0,18)`, [wallet, token, `0x${'100'.padStart(64, '0')}`]);
+  await pool.query('UPDATE node_evidence_ranges SET from_block=102 WHERE from_block=101 AND to_block=200');
+  assert.equal((await service.refresh({ wallet, token }))?.accountingSnapshot?.source, 'imported',
+    'An incomplete node range cannot displace the reconciled checkpoint baseline');
+  await pool.query('UPDATE node_evidence_ranges SET from_block=101 WHERE from_block=102 AND to_block=200');
+  assert.equal((await service.refresh({ wallet, token }))?.accountingSnapshot?.source, 'node');
+  // A genuinely older baseline can include closed cycles before registration,
+  // even with a zero opening. Preserve its lifetime realized profit and capital.
   // A reconciled import at a known checkpoint carries old realized profit and
   // complete acquisition capital even when the old position is flat.
   const checkpoint = { walletAddress: wallet, tokenAddress: token, chain: 'bsc' as const, blockNumber: '100', blockHash: `0x${'100'.padStart(64, '0')}`,

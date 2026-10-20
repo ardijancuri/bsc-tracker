@@ -46,11 +46,26 @@ export function validateNodeLeaderboardSnapshot(snapshot: NodeLeaderboardSnapsho
 }
 
 /** Worker-only accounting. HTTP routes only read these committed snapshots. */
+export interface NodeLeaderboardRefreshRequest {
+  wallets?: string[];
+  limit?: number;
+}
 export function createNodeLeaderboardService(options: { database: Pick<Pool, 'connect'>; calculate: Calculate; now?: () => number }) {
   const now = options.now ?? Date.now;
   let inFlight: Promise<{ updatedWallets: number; completeWallets: number; partialWallets: number; pendingWallets: number; elapsedMs: number; skipped?: boolean }> | undefined;
-  function refresh() {
-    if (inFlight) return inFlight;
+  let inFlightKey: string | undefined;
+  function refresh(input: NodeLeaderboardRefreshRequest = {}): NonNullable<typeof inFlight> {
+    const selected = input.wallets === undefined ? undefined : [...new Set(input.wallets.map(wallet => wallet.toLowerCase())
+      .filter(wallet => /^0x[a-f0-9]{40}$/.test(wallet)))].sort();
+    const limit = input.limit === undefined ? (selected === undefined ? null : 32)
+      : Math.max(1, Math.min(32, Math.floor(Number.isFinite(input.limit) ? input.limit : 24)));
+    const key = JSON.stringify([selected ?? null, limit]);
+    // A foreground refresh cannot mistake an unrelated batch for its own.
+    // Waiters retain arrival order instead of repeatedly racing five-second
+    // timers, which could starve either changed wallets or rolling expiry.
+    if (inFlight) return inFlightKey === key ? inFlight : inFlight.then(
+      () => refresh(input), () => refresh(input));
+    inFlightKey = key;
     inFlight = (async () => {
       const started = performance.now(), client = await options.database.connect();
       let locked = false, transaction = false;
@@ -59,7 +74,11 @@ export function createNodeLeaderboardService(options: { database: Pick<Pool, 'co
         // Different workers join the stored result instead of recomputing it.
         locked = (await client.query('SELECT pg_try_advisory_lock(908345) AS acquired')).rows[0]?.acquired === true;
         if (!locked) return { ...empty(), skipped: true };
-        const wallets = (await client.query('SELECT address FROM published_kols WHERE is_tracked ORDER BY address')).rows.map(row => String(row.address));
+        const wallets = (await client.query(`SELECT k.address FROM published_kols k
+          LEFT JOIN leaderboard_snapshots s ON s.wallet_address=k.address AND s.period='1d'
+          WHERE k.is_tracked AND ($1::text[] IS NULL OR k.address=ANY($1::text[]))
+          ORDER BY s.window_end ASC NULLS FIRST,k.address LIMIT $2::integer`, [selected ?? null, limit])).rows.map(row => String(row.address));
+        if (!wallets.length) return empty();
         const windowEnd = new Date(now()).toISOString(), windowStart = new Date(Date.parse(windowEnd) - 86_400_000).toISOString();
         const validators: ((database: Database) => Promise<void>)[] = [];
         const request = { database: client, wallets, windowStart, windowEnd,
@@ -104,7 +123,7 @@ export function createNodeLeaderboardService(options: { database: Pick<Pool, 'co
         return result;
       } catch (error) { if (transaction) await client.query('ROLLBACK'); throw error; }
       finally { try { if (locked) await client.query('SELECT pg_advisory_unlock(908345)'); } finally { client.release(); } }
-    })().finally(() => { inFlight = undefined; });
+    })().finally(() => { inFlight = undefined; inFlightKey = undefined; });
     return inFlight;
   }
   return { refresh };

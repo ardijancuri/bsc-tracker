@@ -14,6 +14,7 @@ import { chainRpc } from './rpc.js';
 import { nodeNativeTradeValue, queueNodeTraceRepairs, type NodeCallTrace } from './nodeTrace.js';
 import { parseLaunchLog } from './launchpad.js';
 import { invalidateNodeLeaderboardForWallets } from './nodeAccountingSchema.js';
+import type { NodeAccountingTickResult } from './nodeAccountingQueue.js';
 import { decodeNodeMarketLog, poolMarketAbi, v3MarketAbi, infinityMarketAbi, infinityBinMarketAbi, fourMarketAbi, flapMarketAbi, type NodeMarketIdentity } from './nodeMarketProtocols.js';
 
 type Database = Pick<PoolClient, 'query'>;
@@ -166,6 +167,31 @@ export function nodeAccountingRangesComplete(fromBlock: string, toBlock: string,
     next = to + 1n;
   }
   return next > through;
+}
+
+/** A zero opening proves the captured cycle, not older closed cycles. Only
+ * replace an imported prefix when every imported movement belongs to that
+ * cycle and its authentic node transaction quantities cover the same prefix.
+ * Group operations within a transaction because providers may merge them. */
+export function nodeHistoryCoversImportedMovements(input: { wallet: string; token: string; registeredAt: string | Date;
+  checkpoint: string; imported: JournalLedgerEvent[]; node: JournalLedgerEvent[] }) {
+  const registered = new Date(input.registeredAt).getTime();
+  if (!Number.isFinite(registered) || !/^\d+$/.test(input.checkpoint) || !input.imported.length) return false;
+  const grouped = (events: JournalLedgerEvent[], imported: boolean) => {
+    const groups = new Map<string, string[]>();
+    for (const event of events) {
+      if (event.walletAddress !== input.wallet || event.tokenAddress !== input.token || !/^0x[0-9a-f]{64}$/i.test(event.txHash)
+        || !decimal(event.tokenAmount) || event.tokenAmount.startsWith('-') || !Number.isFinite(Date.parse(event.timestamp))
+        || imported && Date.parse(event.timestamp) < registered) return null;
+      const key = `${event.txHash.toLowerCase()}:${event.kind}`;
+      const amounts = groups.get(key) ?? []; amounts.push(event.tokenAmount); groups.set(key, amounts);
+    }
+    return new Map([...groups].map(([key, amounts]) => [key, sumJournalDecimals(amounts)]));
+  };
+  const imported = grouped(input.imported, true), node = grouped(input.node.filter(event => event.blockNumber != null
+    && /^\d+$/.test(event.blockNumber) && BigInt(event.blockNumber) <= BigInt(input.checkpoint)), false);
+  return !!imported && !!node && imported.size === node.size
+    && [...imported].every(([key, quantity]) => node.get(key) === quantity);
 }
 
 /** A confirmed mark may be recent yet precede a newly captured movement. It
@@ -363,6 +389,7 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
   db?: Pool; market?: Market; balance?: typeof currentKolTokenBalance; now?: () => number;
 } = {}) {
   const jobs = new Map<string, Promise<KolTokenActivity | undefined>>();
+  let draining = 0, lastVersionCleanup = -Infinity, versionCleanup: Promise<unknown> | undefined;
   const normalize = (request: NodeAccountingRequest): NodeAccountingRequest => ({ ...request, wallet: request.wallet.toLowerCase(), token: request.token.toLowerCase(), scope: request.scope ?? { kind: 'public' } });
   async function authorize(request: NodeAccountingRequest) {
     if (!address(request.wallet) || !address(request.token) || isExcludedKolProfileTokenAddress(request.token)) return false;
@@ -399,20 +426,33 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
     const proof: KolTokenBalanceProof | null = stored ? { walletAddress: wallet, tokenAddress: token, chain: 'bsc', blockNumber: String(stored.block_number), blockHash: stored.block_hash,
       blockTimestamp: iso(stored.block_timestamp), balance: String(stored.balance), checkedAt: iso(stored.checked_at) } : null;
     if (scope.kind === 'public' && imported && proof && state?.registration && state.registered_at
-      && BigInt(state.registration) <= BigInt(proof.blockNumber)
-      && await publicNodeCreationBoundary(db, token, state.registration, proof.blockNumber)) {
+      && BigInt(state.registration) <= BigInt(proof.blockNumber)) {
+      const creation = await publicNodeCreationBoundary(db, token, state.registration, proof.blockNumber);
+      const importWithinCapture = Array.isArray(imported.events) && imported.events.length > 0
+        && imported.events.every((event: JournalLedgerEvent) => Number.isFinite(Date.parse(event.timestamp))
+          && Date.parse(event.timestamp) >= Date.parse(iso(state.registered_at)));
+      const zeroOpening = !creation && importWithinCapture && (await db.query(`SELECT 1 FROM journal_opening_balances
+        WHERE wallet_address=$1 AND token_address=$2 AND block_number=$3 AND block_hash=$4 AND balance_raw=0`,
+      [wallet, token, state.registration, state.registration_hash])).rowCount;
       // Historical recovery must not replace complete permanent node evidence.
       // Keep the baseline stored as a fallback, and select the node candidate
       // only after its full captured FIFO, costs, fees and balance reconcile.
-      const candidate = await readEvidence(request, true);
-      if (candidate.historyBoundary === 'token_creation' && candidate.coverage.complete && candidate.proof) {
+      const candidate = creation || zeroOpening ? await readEvidence(request, true) : null;
+      const coveredImport = candidate?.historyBoundary === 'token_creation' || candidate?.historyBoundary === 'verified_zero_position'
+        && nodeHistoryCoversImportedMovements({ wallet, token, registeredAt: state.registered_at,
+          checkpoint: String(imported.checkpoint_block), imported: imported.events, node: candidate.events });
+      if (candidate && coveredImport && candidate.coverage.complete && candidate.proof) {
         const quote = candidate.quote, usableQuote = quote?.priceUsd && !quote.stale && nodeQuoteCoversMovements(quote, candidate.events);
         const evaluated = calculateJournalLedger({ wallets: [wallet], events: candidate.events, openingBalances: candidate.openingBalances,
           coverage: [candidate.coverage], asOf: new Date(now()).toISOString(), valuations: [{ tokenAddress: token,
             priceUsd: usableQuote ? quote.priceUsd : null, pricedAt: quote?.timestamp ?? candidate.proof.blockTimestamp,
             balances: [{ walletAddress: wallet, tokenAmount: candidate.proof.balance }] }] });
         const position = evaluated.positions[0];
-        if (position && position.remainingCostBasisUsd !== null && position.reasons.every(reason => reason === 'quote_unavailable')) return candidate;
+        if (position && position.remainingCostBasisUsd !== null && position.reasons.every(reason => reason === 'quote_unavailable')) {
+          // The retained import already covers this exact prefix. Reopening its
+          // completed recovery job on each node refresh would cause churn.
+          return { ...candidate, historicalRecoveryNeeded: false };
+        }
       }
     }
     const reasons = new Set<string>();
@@ -823,31 +863,70 @@ export function createNodeAccountingService({ db = pool, market = nodeMarketServ
     if (!await authorize({ wallet, token: selected[0], scope })) return {};
     return result;
   }
-  async function tick(limit = 4) {
+  async function tick(limit = 4): Promise<NodeAccountingTickResult> {
+    const capacity = Math.min(4 - draining, Math.max(1, Math.min(4, Math.trunc(limit))));
+    if (!capacity) return { claimed: 0, active: jobs.size, updated: 0, completed: 0, wallets: [] };
+    draining += capacity;
+    let updated = 0, completed = 0;
+    const wallets = new Set<string>();
+    try {
     // These immutable versions are short media-preparation leases; permanent
     // executions, historical ledgers and the latest financial snapshot remain.
-    await db.query(`DELETE FROM node_accounting_snapshot_versions WHERE ctid IN
-      (SELECT ctid FROM node_accounting_snapshot_versions WHERE expires_at<=now() LIMIT 1000)`);
+    if (!versionCleanup && now() - lastVersionCleanup >= 60_000) {
+      lastVersionCleanup = now();
+      versionCleanup = db.query(`DELETE FROM node_accounting_snapshot_versions WHERE ctid IN
+        (SELECT ctid FROM node_accounting_snapshot_versions WHERE expires_at<=now() LIMIT 1000)`)
+        .finally(() => { versionCleanup = undefined; });
+    }
+    await versionCleanup;
     const lease = randomUUID();
     const claimed = await db.query(`WITH selected AS (SELECT scope_key,wallet_address,token_address FROM node_accounting_jobs
       WHERE next_attempt_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY priority DESC,requested_at LIMIT $1 FOR UPDATE SKIP LOCKED)
       UPDATE node_accounting_jobs j SET lease_id=$2::uuid,lease_until=now()+interval '30 seconds',attempts=attempts+1 FROM selected s
-      WHERE j.scope_key=s.scope_key AND j.wallet_address=s.wallet_address AND j.token_address=s.token_address RETURNING j.*`, [Math.max(1, Math.min(8, limit)), lease]);
+      WHERE j.scope_key=s.scope_key AND j.wallet_address=s.wallet_address AND j.token_address=s.token_address RETURNING j.*`, [capacity, lease]);
     await Promise.all(claimed.rows.map(async row => {
       try {
-        const result = await refresh({ wallet: row.wallet_address, token: row.token_address, scope: row.scope, foreground: row.priority >= 100 });
-        if (!result || result.accountingSnapshot?.complete) await db.query('DELETE FROM node_accounting_jobs WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4', [row.scope_key, row.wallet_address, row.token_address, lease]);
+        const request = { wallet: row.wallet_address, token: row.token_address, scope: row.scope, foreground: row.priority >= 100 };
+        const result = await refresh(request);
+        const snapshot = result?.accountingSnapshot;
+        // Decoding can queue a movement before the range's global checkpoint
+        // advances. A valid older snapshot must not acknowledge that newer
+        // request merely because it was complete at its own balance block.
+        const coversRequested = row.requested_through_block == null || snapshot?.coveredThroughBlock != null
+          && BigInt(snapshot.coveredThroughBlock) >= BigInt(row.requested_through_block);
+        const ready = !!snapshot?.complete && coversRequested;
+        // An absent token row can be a metadata/registration delay. A revoked
+        // subscription or an existing, explicitly excluded asset is terminal;
+        // later enrichment must not leave an LP/quote/tracker retrying forever.
+        const retired = !result && (!await authorize(request) || !!(await db.query(`SELECT 1 FROM tokens v
+          WHERE v.address=$1 AND NOT ${kolProfileTokenSql('v')}`, [row.token_address])).rowCount);
+        if (result?.accountingSnapshot) {
+          updated++; if (ready) completed++;
+          if (row.scope?.kind === 'public') wallets.add(row.wallet_address);
+        }
+        if (retired || ready) {
+          await db.query(`DELETE FROM node_accounting_jobs WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4
+            AND requested_through_block IS NOT DISTINCT FROM $5::bigint`, [row.scope_key, row.wallet_address, row.token_address, lease, row.requested_through_block ?? null]);
+          // A new decoded movement joined the leased preparation. Its higher
+          // watermark survives the old result, and immediately gets a new slot.
+          await db.query(`UPDATE node_accounting_jobs SET lease_until=NULL,lease_id=NULL
+            WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4`, [row.scope_key, row.wallet_address, row.token_address, lease]);
+        }
         // Priority describes waiting work, not a permanent subscription. A
         // pending old selection rotates behind newly visible cards; a joining
         // selected caller can promote its coalesced job again.
-        else await db.query(`UPDATE node_accounting_jobs SET lease_until=NULL,lease_id=NULL,priority=0,requested_at=clock_timestamp(),
+        else await db.query(`UPDATE node_accounting_jobs SET lease_until=NULL,lease_id=NULL,
+          priority=CASE WHEN requested_through_block IS DISTINCT FROM $6::bigint THEN priority ELSE 0 END,requested_at=clock_timestamp(),
           next_attempt_at=GREATEST(next_attempt_at,now()+interval '5 seconds'),last_error=$5
-          WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4`, [row.scope_key, row.wallet_address, row.token_address, lease, result.accountingSnapshot?.reasons[0] ?? 'collection_pending']);
-      } catch { await db.query(`UPDATE node_accounting_jobs SET lease_until=NULL,lease_id=NULL,priority=0,requested_at=clock_timestamp(),
+          WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4`, [row.scope_key, row.wallet_address, row.token_address, lease,
+            snapshot?.complete && !coversRequested ? 'indexing_lag' : snapshot?.reasons[0] ?? (result ? 'collection_pending' : 'token_metadata_unavailable'), row.requested_through_block ?? null]);
+      } catch { await db.query(`UPDATE node_accounting_jobs SET lease_until=NULL,lease_id=NULL,
+        priority=CASE WHEN requested_through_block IS DISTINCT FROM $5::bigint THEN priority ELSE 0 END,requested_at=clock_timestamp(),
         next_attempt_at=GREATEST(next_attempt_at,now()+interval '5 seconds'),last_error='snapshot_preparation_failed'
-        WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4`, [row.scope_key, row.wallet_address, row.token_address, lease]); }
+        WHERE scope_key=$1 AND wallet_address=$2 AND token_address=$3 AND lease_id=$4`, [row.scope_key, row.wallet_address, row.token_address, lease, row.requested_through_block ?? null]); }
     }));
-    return { claimed: claimed.rowCount ?? 0, active: jobs.size };
+    return { claimed: claimed.rowCount ?? 0, active: jobs.size, updated, completed, wallets: [...wallets] };
+    } finally { draining -= capacity; }
   }
   return { activity, savedActivity, summaries, evidence, refresh, tick };
 }

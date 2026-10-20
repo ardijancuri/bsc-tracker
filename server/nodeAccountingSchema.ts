@@ -114,6 +114,7 @@ export async function ensureNodeAccountingSchema(db: Pool) {
       ALTER TABLE node_accounting_jobs ADD COLUMN IF NOT EXISTS lease_id uuid;
       ALTER TABLE node_accounting_jobs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
       ALTER TABLE node_accounting_jobs ADD COLUMN IF NOT EXISTS last_error text;
+      ALTER TABLE node_accounting_jobs ADD COLUMN IF NOT EXISTS requested_through_block bigint;
     `);
     // A same-name table left by an earlier experimental schema is evidence to
     // retain, never implicit verification. Quarantine its financial records and

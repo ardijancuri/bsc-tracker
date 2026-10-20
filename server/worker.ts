@@ -20,6 +20,7 @@ import { nodeMarketService } from './nodeMarket.js';
 import { TRUSTED_QUOTE_FEEDS } from './nodeMarketProtocols.js';
 import { nodeMarketDiscoverySql, nodeMarketReceiptHintsSql } from './nodeMarketDiscovery.js';
 import { nodeAccountingService } from './nodeAccounting.js';
+import { runNodeAccountingWorkers } from './nodeAccountingQueue.js';
 import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
 import { nodeHistoricalImporter } from './nodeHistoricalImport.js';
 import { tokenChartRecovery } from './nodeTokenChartRecovery.js';
@@ -716,9 +717,11 @@ const nodeLeaderboard = createNodeLeaderboardService({ database: pool, calculate
 async function leaderboardLoop() {
   let consecutiveChanges = 0;
   for (;;) {
-    let waitMs = 30_000;
+    let waitMs = 5_000;
     try {
-      const result = await nodeLeaderboard.refresh();
+      // Rotate a bounded oldest batch so rolling-window expiry never waits for
+      // a whole-roster calculation. Fresh accounting also requests its wallets.
+      const result = await nodeLeaderboard.refresh({ limit: 24 });
       consecutiveChanges = 0;
       if (result.updatedWallets) await notifyUpdate();
     } catch (error) {
@@ -861,14 +864,48 @@ async function nodeMarketCollectionLoop() {
   }
 }
 async function nodeAccountingLoop() {
-  for (;;) {
-    try {
-      const began = performance.now(), result = await nodeAccountingService.tick(4);
-      await setState('node_accounting_metrics', { ...result, durationMs: performance.now() - began, at: new Date().toISOString() });
+  let claimed = 0, updated = 0, completed = 0, active = 0, durationMs = 0;
+  const wallets = new Set<string>();
+  const dirtyWallets = new Set<string>();
+  let leaderboardRunning = false, lastLeaderboardRefresh = -Infinity;
+  // Reporting and rollup publication do not occupy an accounting slot. Keep a
+  // burst coalesced while allowing the next trade to be prepared immediately.
+  const report = async () => {
+    for (;;) {
+      await sleep(1000);
+      const progress = { claimed, active, updated, completed, wallets: [...wallets], durationMs, at: new Date().toISOString() };
+      claimed = updated = completed = durationMs = 0; wallets.clear();
+      try {
+        await setState('node_accounting_metrics', progress);
+        if (progress.updated) await notifyUpdate();
+      } catch { console.warn('Node accounting progress waiting'); }
+      if (dirtyWallets.size && !leaderboardRunning && Date.now() - lastLeaderboardRefresh >= 5000) {
+        const selected = [...dirtyWallets].slice(0, 24);
+        // Remove only this captured batch before dispatch. A subsequent update
+        // for the same wallet creates a new entry that this result cannot erase.
+        selected.forEach(wallet => dirtyWallets.delete(wallet));
+        const retain = () => selected.forEach(wallet => dirtyWallets.add(wallet));
+        leaderboardRunning = true; lastLeaderboardRefresh = Date.now();
+        void nodeLeaderboard.refresh({ wallets: selected }).then(async result => {
+          if (result.skipped) retain();
+          else if (result.updatedWallets) await notifyUpdate();
+        }).catch(retain).finally(() => { leaderboardRunning = false; });
+      }
     }
-    catch { console.warn('Node accounting work waiting'); }
-    await sleep(1000);
-  }
+  };
+  await Promise.all([runNodeAccountingWorkers({
+    tick: async limit => {
+      const began = performance.now(), result = await nodeAccountingService.tick(limit);
+      durationMs += performance.now() - began;
+      return result;
+    },
+    onProgress: result => {
+      claimed += result.claimed; updated += result.updated; completed += result.completed; active = result.active;
+      result.wallets.forEach(wallet => wallets.add(wallet));
+      result.wallets.forEach(wallet => dirtyWallets.add(wallet));
+    },
+    onError: () => { console.warn('Node accounting work waiting'); },
+  }), report()]);
 }
 async function nodeDataHealthLoop() {
   for (;;) {

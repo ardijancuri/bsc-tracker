@@ -7,6 +7,7 @@ import { userOperationTopic } from './smartAccountTrades.js';
 import { decodeNodeExecutions, ensureNodeExecutionSchema, NODE_ENTRY_POINTS, NODE_EXECUTION_VERSION, persistNodeExecutions, type NodeBlock, type NodeReceipt, type NodeTransaction } from './nodeExecution.js';
 import { enqueueNodeEvidenceMetadata, ensureNodeEvidenceMetadataSchema } from './nodeEvidenceMetadata.js';
 import {rollbackNodeTokenIdentities} from './nodeTokenIdentity.js';
+import { enqueuePublicNodeAccountingPairs } from './nodeAccountingQueue.js';
 export { drainNodeEvidenceMetadata } from './nodeEvidenceMetadata.js';
 
 export type NodeEvidenceDatabase = Pick<Pool, 'query' | 'connect'>;
@@ -376,6 +377,14 @@ export async function drainNodeEvidenceDecode(options: { database: NodeEvidenceD
           }
           await client.query('DELETE FROM node_executions WHERE tx_hash=$1', [row.tx_hash]);
           await persistNodeExecutions(client, executions);
+          // Standalone raw collectors need not install accounting. When it is
+          // present, commit the fresh pair requests with the decoded evidence.
+          const accountingAvailable = (await client.query("SELECT to_regclass('node_accounting_jobs') IS NOT NULL AS available")).rows[0]?.available;
+          if (accountingAvailable) await enqueuePublicNodeAccountingPairs(client, executions.flatMap(execution => execution.flows.map(flow => ({
+            wallet: execution.walletAddress, token: flow.tokenAddress,
+            priority: row.observed_live && Date.now() >= execution.timestamp * 1000 && Date.now() - execution.timestamp * 1000 <= 300_000 ? 5 : 0,
+            throughBlock: String(execution.blockNumber),
+          }))));
           await client.query(`UPDATE node_evidence_transactions SET decoded_version=$2,decode_reason=NULL WHERE tx_hash=$1 AND lease_id=$3`, [row.tx_hash, NODE_EXECUTION_VERSION, lease]);
           await client.query('COMMIT'); decoded++;
         } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }

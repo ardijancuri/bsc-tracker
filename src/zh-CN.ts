@@ -84,7 +84,7 @@ export const chinese: Record<string, string> = {
   'What does a KOL profile show?': 'KOL 主页显示哪些信息？',
   'Each tracked wallet has recent trades, token positions and profit realized during the last 24 hours. Purchase costs can come from earlier history.': '每个已跟踪钱包展示最近交易、代币持仓和过去 24 小时的已实现收益。买入成本可来自更早的历史记录。',
   'How does the leaderboard work?': '排行榜如何计算？',
-  'Rankings use available profit realized in the last 24 hours, including historical FIFO costs, fees and marked transfer-out gains. Complete totals appear first, followed by labeled partial totals. Results without a known profit remain unranked.': '排名使用过去 24 小时可计算的已实现收益，计入历史先进先出成本、费用和按市值估算的转出收益。完整收益优先展示，其后为明确标注的部分收益。没有已知收益的结果不参与排名。',
+  'Rankings sort available profit realized in the last 24 hours from highest to lowest, including historical FIFO costs, fees and marked transfer-out gains. Partial totals keep their label and sort by their known amount. Results without a known profit remain unranked.': '排名按过去 24 小时可计算的已实现收益从高到低排序，计入历史先进先出成本、费用和按市值估算的转出收益。部分收益保留明确标注，并按已知金额参与排序。没有已知收益的结果不参与排名。',
   'Follow us on X': '在 X 上关注我们', 'Updates from kollens.': 'kollens 最新消息。',
   'Observed price': '成交参考价', 'Market cap': '市值', '24h volume': '24 小时成交额', 'MC —': '市值 —', 'MC {value}': '市值 {value}',
   'KOL CONVICTION': 'KOL 动向', 'Meme coin tracker': 'Meme 代币追踪', 'Live feed reconnecting': '正在重新连接',

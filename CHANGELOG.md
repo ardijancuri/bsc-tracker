@@ -2,13 +2,16 @@
 
 ## v1.4.0 — 2026-10-20
 
+- Rank complete and labeled partial 24-hour results together by exact displayed P&L; known losses precede unknown results, with stable ties and existing podium highlights.
+- Queue public position accounting atomically with decoded movements, preserve requested block watermarks, and drain four independent slots so slow historical work cannot hold an entire batch.
+- Refresh changed-wallet P&L in coalesced batches and rotate bounded oldest leaderboard snapshots. Profiles and rankings read the same committed PostgreSQL result and receive update notifications.
+- Prefer reconciled node FIFO over an overlapping imported baseline when the captured movement set is complete; retain older lifetime baselines and explicit unknown costs when node evidence is insufficient.
 - Increase the qualifier countdown heading to 15px on desktop and 13px on mobile, with semibold weight for clearer visibility.
 - Add GMGN Global Championship Daily and Overall top-20 rankings, UTC date selection, trader profiles and streams, and fresh requests on each page load or manual refresh. Preserve dated saved rankings when GMGN blocks the feed.
 - Add a dark stadium hero with the centered Aston Martin prize and separate, spaced countdown number tiles, with responsive English and Chinese layouts.
 
 - Restore numbered positions and gold/silver/bronze podium highlights for known partial P&L, retaining partial labels and leaving unknown results unranked.
 
-- Sort partial leaderboard results by their known realized P&L using exact decimal values, with trade activity only breaking ties. Keep complete rankings separate and unknown results below available partial totals.
 - Restore genuine saved chart history into PostgreSQL with original source/timestamps, resumable import checkpoints and conservative coverage claims.
 - Recover selected public token charts independently of P&L, sharing completed provider pages and preserving cooldowns without blocking node capture.
 - Display genuine token-price candles when verified supply is unavailable, including very small token prices. Preserve real gaps and unknown volume.

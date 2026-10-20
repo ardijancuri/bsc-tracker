@@ -15,7 +15,7 @@ export interface NodeLeaderboardSnapshot {
   complete: boolean;
   reasons: string[];
   realizedProfitUsd: string | null;
-  /** A clearly labeled subtotal; never substituted for a complete ranking. */
+  /** A labeled subtotal, sorted by its known amount without claiming completeness. */
   knownRealizedProfitUsd: string;
   valuedSellCount: number;
   excludedSellCount: number;

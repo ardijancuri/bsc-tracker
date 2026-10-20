@@ -6,6 +6,7 @@ import { calculateJournalLedgerPeriod, journalDecimalMultiply, sumJournalDecimal
   type JournalLedgerEvent, type JournalLedgerPeriodFeeEvent } from './nodeAccountingLedger.js';
 import { kolProfileTokenSql } from './kolProfileToken.js';
 import { TRUSTED_QUOTE_FEEDS } from './nodeMarketProtocols.js';
+import { enqueuePublicNodeAccountingPairs } from './nodeAccountingQueue.js';
 
 type Pair = { wallet_address:string; token_address:string; latest_block:string|null; latest_at:string;
   payload:NodeAccountingEvidence|null; history_revision:string|null; canonical:boolean; baseline_at:string|null;
@@ -195,10 +196,9 @@ export async function loadPublicNodeLeaderboardAccounting(request:NodeLeaderboar
     if(current.rows.length!==captured.length)throw Error('node_leaderboard_accounting_evidence_changed');
   });
   const pending=rows.filter(pair=>{const value=publicLeaderboardPeriodInput(pair,windowStart,windowEnd);return!value.complete;});
-  if(pending.length)await db.query(`INSERT INTO node_accounting_jobs(scope_key,wallet_address,token_address,scope,priority)
-    SELECT 'public',j.wallet,j.token,'{"kind":"public"}'::jsonb,0 FROM jsonb_to_recordset($1::jsonb)j(wallet text,token text)
-    JOIN published_kols k ON k.address=j.wallet AND k.is_tracked ON CONFLICT(scope_key,wallet_address,token_address) DO NOTHING`,
-  [JSON.stringify(pending.map(pair=>({wallet:pair.wallet_address,token:pair.token_address})))]);
+  if(pending.length)await enqueuePublicNodeAccountingPairs(db,pending.map(pair=>({wallet:pair.wallet_address,token:pair.token_address,throughBlock:pair.latest_block,
+    priority:Date.parse(windowEnd)-Date.parse(pair.latest_at)<=300_000
+      &&(!pair.payload||!validBlock(pair.payload.throughBlock)||pair.latest_block!=null&&BigInt(pair.payload.throughBlock)<BigInt(pair.latest_block))?5:0})));
   // Most collection ranges share the same wallet/generation map. Merge their
   // exact intervals once per map fingerprint before testing individual wallets.
   // A later registration without verified discovery cannot cover the period;

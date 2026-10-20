@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { NodeMarketQuote } from '../shared/nodeMarket.js';
 import type { KolTokenActivity } from '../shared/kolTokenTrades.js';
 import { calculateJournalLedger, type JournalLedgerBaseline, type JournalLedgerEvent } from './nodeAccountingLedger.js';
-import { authenticNodeTokenCreation, createNodeAccountingService, nodeAccountingRangesComplete, nodeAccountingScopeKey, nodeQuoteCoversMovements, normalizeNodeExecutionFlows, saveNodeAccountingBaseline, type NodeExecutionFlow } from './nodeAccounting.js';
+import { authenticNodeTokenCreation, createNodeAccountingService, nodeAccountingRangesComplete, nodeAccountingScopeKey, nodeHistoryCoversImportedMovements, nodeQuoteCoversMovements, normalizeNodeExecutionFlows, saveNodeAccountingBaseline, type NodeExecutionFlow } from './nodeAccounting.js';
 import { rollbackNodeAccounting } from './nodeAccountingSchema.js';
 import { FOUR_MANAGERS, fourInterface, PCS_V2_FACTORY } from './launchpad.js';
 import { poolMarketAbi, type NodeMarketIdentity } from './nodeMarketProtocols.js';
@@ -25,6 +25,23 @@ const flow = (overrides: Partial<NodeExecutionFlow> = {}): NodeExecutionFlow => 
   trace:{type:'CALL',from:wallet,to:token,value:'0xde0b6b3a7640000'},...overrides });
 afterEach(() => vi.restoreAllMocks());
 describe('ending valuation boundary', () => {
+  it('reserves at most four accounting queue slots across overlapping drains and coalesces lease cleanup', async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith('WITH selected AS')) await held;
+      return { rows: [], rowCount: 0 };
+    });
+    const service = createNodeAccountingService({ db: { query } as unknown as Pool, now: () => Date.parse(stamp) });
+    const drains = Array.from({ length: 8 }, () => service.tick(1));
+    await vi.waitFor(() => expect(query.mock.calls.filter(([sql]) => sql.startsWith('WITH selected AS'))).toHaveLength(4));
+    expect(query.mock.calls.filter(([sql]) => sql.startsWith('DELETE FROM node_accounting_snapshot_versions'))).toHaveLength(1);
+    release();
+    await Promise.all(drains);
+    await service.tick(1);
+    expect(query.mock.calls.filter(([sql]) => sql.startsWith('WITH selected AS'))).toHaveLength(5);
+    expect(query.mock.calls.filter(([sql]) => sql.startsWith('DELETE FROM node_accounting_snapshot_versions'))).toHaveLength(1);
+  });
   it('requires a mark at or after every included movement, including same-second block ordering', () => {
     const movement=event('101','buy','10','5');
     expect(nodeQuoteCoversMovements({...quote,blockNumber:'101'},[movement])).toBe(true);
@@ -34,6 +51,29 @@ describe('ending valuation boundary', () => {
   });
 });
 describe('shared exact accounting baseline handoff', () => {
+  it('matches imported quantities to authentic node prefixes across repeated operations without requiring provider prices or fees', () => {
+    const txHash = `0x${'1'.repeat(64)}`;
+    const node = [
+      { ...event('100', 'buy', '10', '10'), txHash },
+      { ...event('100', 'buy', '5', '5'), id: 'second-operation', txHash },
+      { ...event('102', 'sell', '10', '5'), txHash: blockHash },
+    ];
+    const imported = [{ ...node[0], id: 'merged-provider-row', tokenAmount: '15.000', amountUsd: '14.9', feeUsd: null, blockNumber: null }];
+    expect(nodeHistoryCoversImportedMovements({ wallet, token, registeredAt: stamp, checkpoint: '101', imported, node })).toBe(true);
+  });
+  it('keeps prior cycles, missing transactions and contradictory provider quantities out of a captured node replacement', () => {
+    const movement = { ...event('100', 'buy', '10', '10'), txHash: blockHash };
+    const input = { wallet, token, registeredAt: stamp, checkpoint: '100', imported: [movement], node: [movement] };
+    for (const altered of [
+      { imported: [] }, { node: [] },
+      { imported: [{ ...movement, timestamp: new Date(Date.parse(stamp) - 1000).toISOString() }] },
+      { imported: [{ ...movement, tokenAmount: '10.000000000000000001' }] },
+      { imported: [{ ...movement, walletAddress: wbnb }] },
+      { imported: [{ ...movement, tokenAddress: wbnb }] },
+      { imported: [{ ...movement, txHash: `0x${'2'.repeat(64)}` }] },
+      { imported: [{ ...movement, timestamp: 'unknown' }] },
+    ]) expect(nodeHistoryCoversImportedMovements({ ...input, ...altered })).toBe(false);
+  });
   it('retains past realized profit and capital after a zero-balance closure and reopening', () => {
     const result = calculate(seed, [event('101', 'buy', '10', '10')], '10');
     expect(result.positions[0]).toMatchObject({ complete: true, realizedProfitUsd: '48', estimatedProfitUsd: '58', feeInclusiveCapitalUsd: '111', investedUsd: '110', soldUsd: '150' });
