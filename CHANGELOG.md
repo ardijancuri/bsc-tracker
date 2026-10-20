@@ -2,6 +2,7 @@
 
 ## v1.4.0 — 2026-10-20
 
+- Increase the qualifier countdown heading to 15px on desktop and 13px on mobile, with semibold weight for clearer visibility.
 - Add GMGN Global Championship Daily and Overall top-20 rankings, UTC date selection, trader profiles and streams, and fresh requests on each page load or manual refresh. Preserve dated saved rankings when GMGN blocks the feed.
 - Add a dark stadium hero with the centered Aston Martin prize and separate, spaced countdown number tiles, with responsive English and Chinese layouts.
 
