@@ -13,12 +13,13 @@ try {
   if(coverage.status!==0)throw Error('Evidence coverage integration failed');
   const collection=spawnSync(process.execPath,['--import','tsx','server/journalCollection.integration.ts'],{env:environment,stdio:'inherit'});
   if(collection.status!==0)throw Error('Journal collection integration failed');
-  for(const file of ['server/nodeHistoricalImportSchema.integration.ts','server/schemaStartup.integration.ts','server/nodeEvidenceMetadata.integration.ts','server/nodeTokenIdentity.integration.ts','server/nodeLeaderboard.integration.ts','server/nodeLeaderboardAccounting.integration.ts','server/nodeMarketThroughput.integration.ts']){
+  for(const file of ['server/nodeHistoricalImportSchema.integration.ts','server/schemaStartup.integration.ts','server/nodeEvidenceMetadata.integration.ts','server/nodeTokenIdentity.integration.ts','server/nodeLeaderboard.integration.ts','server/nodeLeaderboardAccounting.integration.ts','server/nodeMarketThroughput.integration.ts','server/databaseRetirement.integration.ts','server/positionSnapshotRetention.integration.ts']){
     const result=spawnSync(process.execPath,['--import','tsx',file],{env:environment,stdio:'inherit'});
     if(result.status!==0)throw Error(file+' failed');
   }
   for(const [prefix,file] of [
     ['bscan_node_market_test_','server/nodeMarket.integration.ts'],
+    ['bscan_node_market_coverage_test_','server/nodeMarketCoverage.integration.ts'],
     ['bscan_node_market_discovery_test_','server/nodeMarketDiscovery.integration.ts'],
     ['bscan_node_market_conversion_test_','server/nodeMarketConversion.integration.ts'],
     ['bscan_node_market_migration_test_','server/nodeMarketMigration.integration.ts'],
@@ -43,5 +44,5 @@ try {
       if(result.status!==0)throw Error(file+' failed');
     }finally{await admin.query('DROP DATABASE "'+name+'" WITH (FORCE)');}
   }
-  console.log('All twenty-five node-owned PostgreSQL integration suites passed; transports fake/disabled.');
+  console.log('All twenty-eight node-owned PostgreSQL integration suites passed; transports fake/disabled.');
 }finally{await admin.end();}

@@ -70,7 +70,7 @@ try{
   await service.collectRange(100,101);await service.decodePending();
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_raw_logs')).rows[0].n,4,'every participant log captured, not just a watched transaction');
   assert.equal((await db.query("SELECT count(*)::int AS n FROM node_market_raw_logs WHERE decode_status='missing_quote'")).rows[0].n,4,'valuation failure cannot lose raw evidence');
-  assert.equal((await db.query('SELECT collected_through_block::text FROM node_markets')).rows[0].collected_through_block,'101');
+  assert.equal((await db.query('SELECT max(to_block)::text AS through FROM node_market_coverage')).rows[0].through,'101');
   feedAvailable=true;await service.decodePending();
   assert.equal((await db.query("SELECT count(*)::int AS n FROM node_market_raw_logs WHERE decode_status='decoded'")).rows[0].n,4,'failed feed requests remain retriable');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_candles')).rows[0].n,2);
@@ -106,7 +106,7 @@ try{
   forkAt=Infinity;
   now+=3600_000;const stale=await service.quote(token);assert.equal(stale.stale,true);assert.equal(stale.timestamp,timestamp(103),'cached reads never become fresh by access');
   wrongBlock=true;await assert.rejects(()=>service.collectRange(103,104),/market_block_mismatch/);wrongBlock=false;
-  assert.equal((await db.query('SELECT collected_through_block::text FROM node_markets')).rows[0].collected_through_block,'102','a wrong block cannot advance coverage');
+  assert.equal((await db.query('SELECT max(to_block)::text AS through FROM node_market_coverage')).rows[0].through,'102','a wrong block cannot advance coverage');
   logs[0].blockHash=hash(999);await assert.rejects(()=>service.collectRange(100,101),/market_log_block_mismatch/);logs[0].blockHash=hash(100);
   const client=await db.connect();try{await client.query('BEGIN');await service.rollback(client,101);await client.query('COMMIT');}finally{client.release();}
   assert.equal((await db.query("SELECT value->>'blockNumber' AS n FROM worker_state WHERE key='node_market_collection'")).rows[0].n,'100','orphan collection cursor rewinds atomically for canonical replacements');
@@ -140,14 +140,17 @@ try{
   const priorCursor=(await db.query('SELECT backfill_next_block::text FROM node_markets WHERE id=$1',[discovered[0]])).rows[0].backfill_next_block;
   await db.query("UPDATE node_markets SET collection_gap=true,last_error='pruned_market_range' WHERE id=$1",[discovered[0]]);
   await service.tick({confirmedBlock:1000,maxMarkets:1,retainedBlocks:1000});
-  assert.equal((await db.query('SELECT from_block::text FROM node_market_ranges WHERE market_id=$1 AND to_block=1000',[discovered[0]])).rows[0].from_block,'501','selected newly discovered market captures its recent missing page before old bulk history');
+  assert.equal((await db.query('SELECT from_block::text FROM node_market_coverage WHERE market_id=$1 AND to_block=1000',[discovered[0]])).rows[0].from_block,'501','selected newly discovered market captures its recent missing page before old bulk history');
   assert.equal((await db.query('SELECT backfill_next_block::text FROM node_markets WHERE id=$1',[discovered[0]])).rows[0].backfill_next_block,priorCursor,'recent backfill never advances the independent older cursor past missing history');
   assert.equal((await db.query('SELECT collection_gap FROM node_markets WHERE id=$1',[discovered[0]])).rows[0].collection_gap,true,'old pruned coverage remains explicit while recent selected repairs progress');
   await service.tick({confirmedBlock:1000,maxMarkets:1,retainedBlocks:1000,priorityTokens:[token]});
-  const resumed=(await db.query('SELECT from_block::text FROM node_market_ranges WHERE market_id=$1 AND to_block=500',[discovered[0]])).rows[0];
+  const resumed=(await db.query('SELECT from_block::text FROM node_market_coverage WHERE market_id=$1 AND to_block=500',[discovered[0]])).rows[0];
   assert.ok(resumed,JSON.stringify((await db.query('SELECT id,status,collection_gap,last_error,retry_at FROM node_markets')).rows));
   assert.equal(resumed.from_block,'100','selected backfill resumes backwards from completed coverage rather than refetching the same recent page');
-  await db.query('DELETE FROM node_market_ranges WHERE market_id=$1 AND to_block=500',[discovered[0]]);
+  const removeFixture=await db.connect();try{await removeFixture.query('BEGIN');await removeFixture.query("SELECT set_config('kollens.coverage_canonical_repair','true',true)");
+    await removeFixture.query(`DELETE FROM node_market_collection_ranges r USING node_market_collection_cohorts c,node_market_collection_members m
+      WHERE r.cohort_fingerprint=c.fingerprint AND c.part_fingerprints @> ARRAY[m.cohort_fingerprint]
+        AND m.market_id=$1 AND r.to_block=500`,[discovered[0]]);await removeFixture.query('COMMIT');}finally{removeFixture.release();}
   await svcHistoryRequest();
   async function svcHistoryRequest(){
     const options={snapshotId:'snapshot-proof',windowId:'approved-window'};
@@ -158,7 +161,7 @@ try{
     const step=await service.tick({confirmedBlock:1000,maxMarkets:1,retainedBlocks:1000});assert.equal(step.repairedWindow,true,JSON.stringify((await db.query('SELECT last_error,next_block::text,end_block::text FROM node_market_history_jobs')).rows));
     const saved=(await db.query('SELECT next_block::text,end_block::text,completed_at,snapshot_id FROM node_market_history_jobs')).rows[0];
     assert.equal(saved.next_block,'204');assert.equal(saved.end_block,'203');assert.ok(saved.completed_at);assert.equal(saved.snapshot_id,'snapshot-proof');
-    assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_ranges WHERE market_id=$1 AND from_block=199 AND to_block=203',[discovered[0]])).rows[0].n,1,'Small closed windows repair directly before generic historical pages');
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_coverage WHERE market_id=$1 AND from_block=199 AND to_block=203',[discovered[0]])).rows[0].n,1,'Small closed windows repair directly before generic historical pages');
   }
   const v3Pool='0x5555555555555555555555555555555555555555';
   await db.query(`INSERT INTO node_markets(id,token_address,quote_address,protocol,contract_address,token0,token1,decimals0,decimals1,
@@ -177,9 +180,9 @@ try{
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_feed_evidence WHERE block_number=107')).rows[0].n,0,'Fallback never manufactures a newer oracle proof');
   await service.refreshState(discovered[0],{blockNumber:400,blockHash:hash(400),timestamp:timestamp(400)});
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_observations WHERE block_number=400')).rows[0].n,0,'Old or future oracle observations cannot fill an unobserved historical price');
-  const rangesBefore=(await db.query('SELECT count(*)::int AS n FROM node_market_ranges')).rows[0].n;
+  const rangesBefore=(await db.query('SELECT count(*)::int AS n FROM node_market_coverage')).rows[0].n;
   const deferred=await service.tick({confirmedBlock:1001,maxMarkets:1,retainedBlocks:1000,priorityTokens:[token],deferHistoricalBackfill:true});
-  assert.equal(deferred.historicalBackfillDeferred,true);assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_ranges')).rows[0].n,rangesBefore,'Capture lag defers ordinary backfill instead of pretending it completed');
+  assert.equal(deferred.historicalBackfillDeferred,true);assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_coverage')).rows[0].n,rangesBefore,'Capture lag defers ordinary backfill instead of pretending it completed');
   const urgentFeeds=await service.captureFeedEvidence({blockNumber:1002,blockHash:hash(1002),timestamp:timestamp(1002)});
   assert.equal(urgentFeeds.captured,0,'A dated fallback cannot complete an urgent exact-block oracle capture job');
   feedAvailable=true;rpcHead=1008;now=Date.parse(timestamp(1002))+5000;
@@ -263,13 +266,13 @@ try{
   logs.push(...burst);
   const cursorBefore=(await db.query("SELECT value FROM worker_state WHERE key='node_market_collection'")).rows[0].value;
   await db.query(`CREATE FUNCTION fail_market_batch_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture_batch_failure';END$$;
-    CREATE TRIGGER fail_market_batch_fixture BEFORE UPDATE ON node_markets FOR EACH ROW EXECUTE FUNCTION fail_market_batch_fixture()`);
+    CREATE TRIGGER fail_market_batch_fixture BEFORE INSERT ON node_market_collection_ranges FOR EACH ROW EXECUTE FUNCTION fail_market_batch_fixture()`);
   await assert.rejects(()=>service.collectRange(108,108,{marketIds:[discovered[0]],liveCheckpoint:true}),/fixture_batch_failure/);
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_raw_logs WHERE block_number=108')).rows[0].n,0,'Failure after multiple raw batches rolls back every inserted event');
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_ranges WHERE from_block=108 AND to_block=108')).rows[0].n,0,'Failure cannot commit a completed range');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM node_market_coverage WHERE from_block=108 AND to_block=108')).rows[0].n,0,'Failure cannot commit a completed range');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM node_evidence_metadata_jobs')).rows[0].n,0,'Failed ranges cannot leave urgent financial jobs behind');
   assert.deepEqual((await db.query("SELECT value FROM worker_state WHERE key='node_market_collection'")).rows[0].value,cursorBefore,'Failed batch cannot advance the live checkpoint');
-  await db.query('DROP TRIGGER fail_market_batch_fixture ON node_markets;DROP FUNCTION fail_market_batch_fixture()');
+  await db.query('DROP TRIGGER fail_market_batch_fixture ON node_market_collection_ranges;DROP FUNCTION fail_market_batch_fixture()');
   await service.collectRange(108,108,{marketIds:[discovered[0]],liveCheckpoint:true});await service.collectRange(108,108,{marketIds:[discovered[0]]});
   const metadataDependencies=(await db.query('SELECT tokens FROM node_evidence_metadata_jobs WHERE block_hash=$1',[hash(108)])).rows[0].tokens;
   assert.ok(metadataDependencies.includes(token)&&metadataDependencies.includes(WBNB),'Other participants’ swaps queue both authenticated assets, including quote precision excluded from public token lists');

@@ -122,7 +122,8 @@ try{
   assert.equal(failed,true);assert.equal(secondComplete,true);assert.equal(marketCalls,requestsBefore,'shared historical market pages are reused across wallets');
   assert.equal((await db.query('SELECT priority FROM node_import_jobs WHERE wallet_address=$1',[second])).rows[0].priority,0,
     'A card-only import releases priority after its baseline, keeping a long chart behind waiting card histories');
-  assert.equal((await db.query('SELECT count(*)::int n FROM node_import_pages WHERE wallet_address=$1',[second])).rows[0].n,2);
+  assert.equal((await db.query('SELECT count(DISTINCT cursor_key)::int n FROM node_import_page_versions WHERE wallet_address=$1',[second])).rows[0].n,2,
+    'Immutable page evidence preserves both completed cursors without a duplicate mutable page table');
   assert.equal((await market.chart(token,{from:new Date(first).toISOString(),to:new Date(ending).toISOString()})).source,'imported');
   await db.query("UPDATE node_import_wallet_jobs SET stage='done',completed_at=now()");
   await db.query('INSERT INTO kols(address,is_tracked) VALUES($1,true),($2,false)',[third,privateWallet]);

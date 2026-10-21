@@ -28,7 +28,6 @@ try {
     CREATE TABLE processed_blocks(block_number bigint PRIMARY KEY,block_hash text NOT NULL);
     CREATE TABLE journal_node_evidence(block_number bigint NOT NULL);
     CREATE TABLE journal_opening_balances(block_number bigint NOT NULL);
-    CREATE TABLE journal_pair_preparations(status text,checked_at timestamptz,balance_proof jsonb,quote jsonb,reason text);
     CREATE TABLE journal_replay_snapshots(id text PRIMARY KEY);
     CREATE TABLE journal_snapshots(id text PRIMARY KEY);`);
   await database.query(`INSERT INTO journal_wallet_coverage(wallet_address,generation) VALUES($1,$2),($3,$4);
@@ -60,8 +59,7 @@ try {
   await database.query('INSERT INTO processed_blocks(block_number,block_hash) VALUES($1::bigint,$2)', [boundary + 1, parentHash]);
   await database.query('INSERT INTO journal_node_evidence(block_number) VALUES($1::bigint),($2::bigint)', [boundary + 1, boundary + 2]);
   await database.query('INSERT INTO journal_opening_balances(block_number) VALUES($1::bigint),($2::bigint)', [boundary + 1, boundary + 2]);
-  await database.query(`INSERT INTO journal_pair_preparations VALUES('ready',now(),'{}','{}',NULL);
-    INSERT INTO journal_replay_snapshots VALUES('replay'); INSERT INTO journal_snapshots VALUES('summary');`);
+  await database.query(`INSERT INTO journal_replay_snapshots VALUES('replay'); INSERT INTO journal_snapshots VALUES('summary');`);
   await rollbackJournalCollection(database, boundary + 2);
   const rewound = (await database.query('SELECT registration_block,registration_hash,revision FROM journal_wallets WHERE wallet_address=$1', [newerWallet])).rows[0];
   assert.equal(rewound.registration_block, String(boundary + 1));
@@ -71,7 +69,6 @@ try {
   assert.equal((await database.query('SELECT count(*)::int n FROM journal_node_evidence')).rows[0].n, 1);
   assert.equal((await database.query('SELECT count(*)::int n FROM journal_opening_balances')).rows[0].n, 1);
   assert.equal((await database.query('SELECT collected_through_block FROM journal_wallet_coverage WHERE wallet_address=$1', [wallet])).rows[0].collected_through_block, String(boundary + 1));
-  assert.equal((await database.query('SELECT status,reason FROM journal_pair_preparations')).rows[0].status, 'pending');
   assert.equal((await database.query('SELECT count(*)::int n FROM journal_replay_snapshots')).rows[0].n, 0);
   assert.equal((await database.query('SELECT count(*)::int n FROM journal_snapshots')).rows[0].n, 0);
   console.log('Journal collection PostgreSQL regression passed: initialization, bigint ranges, generation protection, repairs and reorg rollback');

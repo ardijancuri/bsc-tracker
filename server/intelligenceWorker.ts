@@ -8,6 +8,7 @@ import { hasRecognizedSwap, transferTopic } from './swap.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
 import type { NodeExecution } from './nodeExecution.js';
+import { prunePositionSnapshots } from './positionSnapshotRetention.js';
 
 type ChainLog = { address: string; topics: string[]; data: string; transactionHash: string; logIndex?: string; blockNumber?: string; blockHash?: string; removed?: boolean };
 type Block = { number: string; hash: string; timestamp: string };
@@ -80,8 +81,6 @@ export async function rollbackIntelligence(client: PoolClient, from: number) {
   await client.query('DELETE FROM wallet_transfers WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM position_snapshots WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM launch_events WHERE block_number >= $1', [from]);
-  await client.query('DELETE FROM launch_observations WHERE block_number >= $1', [from]);
-  await client.query('DELETE FROM liquidity_observations WHERE block_number >= $1', [from]);
   await client.query(`UPDATE token_launches SET stage='unavailable',progress=NULL,launched_at=NULL,graduated_at=NULL,graduation_tx_hash=NULL,
     pool_address=NULL,pool_id=NULL,migrator_type=NULL,block_number=NULL,block_hash=NULL,checked_at=NULL,
     first_kol_at=NULL,liquidity_usd=NULL,liquidity_baseline_usd=NULL,liquidity_baseline_at=NULL,liquidity_at=NULL WHERE block_number >= $1`, [from]);
@@ -305,9 +304,6 @@ export async function collectLaunches() {
       first.rows[0]?.at ?? null, graduated?.timestamp ?? previous.graduated_at ?? null, graduated?.tx_hash ?? previous.graduation_tx_hash ?? null,
       state?.quoteAddress ?? null, poolAddress, poolId, migrator, height, block.hash]);
     if (!saved.rowCount) { await client.query('ROLLBACK'); continue; }
-    await client.query(`INSERT INTO launch_observations(token_address,block_number,block_hash,platform,stage,progress)
-      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(token_address,block_number) DO NOTHING`,
-    [token, height, block.hash, state?.platform ?? previous.platform ?? graduated?.platform ?? created?.platform ?? null, stage, state?.progress ?? null]);
     const transition = launchTransition(previous.stage ?? null, stage);
     if (transition) {
       const participants = await client.query(`SELECT DISTINCT wallet_address FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND token_address=$1 AND block_number IS NOT NULL AND block_number<=$2`, [token, height]);
@@ -337,7 +333,8 @@ export async function collectLaunches() {
 }
 
 export async function intelligenceLoop() {
-  await Promise.all(([['radar', collectSignals], ['positions', collectPositions], ['launches', collectLaunches]] as const).map(async ([name, collect]) => {
+  await Promise.all(([['radar', collectSignals], ['positions', collectPositions], ['launches', collectLaunches],
+    ['position_retention', () => prunePositionSnapshots(pool)]] as const).map(async ([name, collect]) => {
     for (;;) {
       try { await collect(); }
       catch (error) { console.error(`Intelligence ${name}:`, error instanceof Error ? error.message : 'Unavailable'); await setState(`intelligence_${name}_error`, { at: new Date().toISOString() }); }

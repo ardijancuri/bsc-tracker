@@ -49,7 +49,7 @@ describe('private journal collection boundaries', () => {
     const { query, db } = database(); await rollbackJournalCollection(db, 100);
     const statements = query.mock.calls.map(call => call[0]);
     expect(statements.some(sql => sql.includes('DELETE FROM journal_node_evidence'))).toBe(true);
-    expect(statements.some(sql => sql.includes("reason='chain_reorganization'"))).toBe(true);
+    expect(statements.some(sql => sql.includes("last_error='chain_reorganization'"))).toBe(true);
     expect(statements.some(sql => sql.includes('DELETE FROM journal_snapshots'))).toBe(true);
     expect(statements.some(sql => sql.includes('repair_from_block=LEAST'))).toBe(true);
     expect(statements.some(sql => sql.includes('UPDATE journal_wallets SET registration_hash') && sql.includes('revision=md5') && sql.includes('registration_block=LEAST'))).toBe(true);

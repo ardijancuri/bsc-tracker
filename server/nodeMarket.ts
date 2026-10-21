@@ -10,6 +10,7 @@ import type { NodeMarketBar, NodeMarketChart, NodeMarketImport, NodeMarketProven
 import { MarketDecimal, positiveDecimal, ratioPrice, sqrtPrice } from './nodeMarketMath.js';
 import {selectNodeQuoteConversion,type NodeQuoteConversionRoute} from './nodeMarketConversion.js';
 import {NodeMarketWorkCache}from'./nodeMarketWorkCache.js';
+import {persistMarketCoverageCohort,persistMarketCoverageRange,invalidateMarketCoverage,affectedMarketCoverageMarkets} from './nodeMarketCoverage.js';
 import {isKolProfileToken,kolProfileTokenSql} from './kolProfileToken.js';
 import {enqueueNodeEvidenceMetadataCheckpoints} from './nodeEvidenceMetadata.js';
 import { authenticatedPoolKey, binPrice, decodeNodeMarketLog, erc20MarketAbi, INFINITY_BIN, INFINITY_CL, infinityBinMarketAbi, infinityMarketAbi,
@@ -176,8 +177,8 @@ export async function readNodeMarketReplaySamples(db:DB,tokenAddress:string,opti
       ORDER BY o.timestamp,CASE WHEN o.recent_swaps>0 AND m.status='active' THEN 0 WHEN o.recent_swaps>0 THEN 1 ELSE 2 END,
         o.recent_volume DESC NULLS LAST,o.recent_swaps DESC,o.block_number DESC,CASE WHEN o.kind='state' THEN 1 ELSE 0 END DESC,
         o.transaction_index DESC NULLS LAST,o.log_index DESC NULLS LAST,o.market_id LIMIT $4`,[token,from,to,limit+1]),
-    db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
-      WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
+    db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_coverage r
+      WHERE r.market_id=ANY(ARRAY(SELECT id FROM node_markets WHERE token_address=$1)) AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT from_at,to_at,'imported' AS source FROM node_market_import_ranges WHERE token_address=$1
         AND complete AND to_at>=$2::timestamptz AND from_at<=$3::timestamptz ORDER BY from_at,to_at`,[token,from,to]),
   ]);
@@ -246,7 +247,7 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
         ORDER BY timestamp,interval_seconds DESC,CASE WHEN import_id LIKE 'legacy-cache:%' THEN 1 ELSE 0 END,created_at DESC,id
       ), node_coverage AS MATERIALIZED (
         SELECT range_agg(tstzrange(r.from_at,r.to_at+interval '3 seconds','[]')) AS covered
-        FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id WHERE m.token_address=$1 AND r.complete
+        FROM node_market_coverage r WHERE r.market_id=ANY(ARRAY(SELECT id FROM node_markets WHERE token_address=$1)) AND r.complete
           AND r.to_at>=$2::timestamptz-$4*interval '1 second' AND r.from_at<=$3::timestamptz
       ), preferred_imports AS (
         SELECT i.* FROM imported_candidates i CROSS JOIN node_coverage proof
@@ -273,8 +274,8 @@ export async function readNodeMarketChart(db: DB, tokenAddress: string, options:
         CASE WHEN count(DISTINCT source)>1 THEN 'mixed' ELSE min(source) END AS source,
         (array_agg(supply ORDER BY minute DESC))[1]::text AS supply,bool_or(supply_estimated) OR count(DISTINCT supply)>1 AS supply_estimated
         FROM bucketed GROUP BY bucket ORDER BY bucket DESC LIMIT $5`, [token, from, to,intervalSeconds,limit,JSON.stringify(graduations)]),
-    db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_ranges r JOIN node_markets m ON m.id=r.market_id
-      WHERE m.token_address=$1 AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
+    db.query(`SELECT r.from_at,r.to_at,'node' AS source FROM node_market_coverage r
+      WHERE r.market_id=ANY(ARRAY(SELECT id FROM node_markets WHERE token_address=$1)) AND r.complete AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
       UNION ALL SELECT r.from_at,r.to_at,'imported' FROM node_market_import_ranges r WHERE r.token_address=$1 AND r.complete
         AND r.to_at>=$2::timestamptz AND r.from_at<=$3::timestamptz
         AND (substring(r.import_id FROM ':interval:(60|300|3600|14400|86400)$')::integer<=$4::integer
@@ -981,11 +982,14 @@ export function createNodeMarketService(options: { db: NodeMarketDatabase; rpc: 
       // the independent urgent drain captures exact state before it is pruned.
       if(hasEvidence&&support.metadata_queue&&metadataBlocks.size)await enqueueNodeEvidenceMetadataCheckpoints(client,
         [...metadataBlocks.values()].map(entry=>({...entry,tokens:[...entry.tokens]})));
-      await client.query(`INSERT INTO node_market_ranges(market_id,from_block,to_block,from_hash,to_hash,from_at,to_at,complete)
-        SELECT unnest($1::text[]),$2::bigint,$3::bigint,$4,$5,$6::timestamptz,$7::timestamptz,true
-        ON CONFLICT(market_id,from_block,to_block) DO UPDATE SET from_hash=EXCLUDED.from_hash,to_hash=EXCLUDED.to_hash,
-          from_at=EXCLUDED.from_at,to_at=EXCLUDED.to_at,complete=true`,[marketIds,from,to,first.blockHash,last.blockHash,first.timestamp,last.timestamp]);
-      await client.query(`UPDATE node_markets SET collected_from_block=LEAST(COALESCE(collected_from_block,$2),$2),
+      const cohort=await persistMarketCoverageCohort(client,marketIds);
+      await persistMarketCoverageRange(client,cohort,{fromBlock:String(from),toBlock:String(to),fromHash:first.blockHash,toHash:last.blockHash,
+        fromAt:first.timestamp,toAt:last.timestamp});
+      // Forward coverage belongs to the shared proof and global checkpoint.
+      // Touching every registered market each second used to create enormous
+      // heap/index churn. These legacy scalar hints now track targeted repairs
+      // only; all completeness decisions read node_market_coverage.
+      if(options.marketIds?.length)await client.query(`UPDATE node_markets SET collected_from_block=LEAST(COALESCE(collected_from_block,$2),$2),
         collected_through_block=GREATEST(COALESCE(collected_through_block,$3),$3),last_error=NULL WHERE id=ANY($1::text[])`,[marketIds,from,to]);
       if(options.liveCheckpoint)await client.query(`INSERT INTO worker_state(key,value) VALUES('node_market_collection',$1::jsonb)
         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()
@@ -1103,7 +1107,7 @@ export function createNodeMarketService(options: { db: NodeMarketDatabase; rpc: 
         // for the nearest genuine gap first; old pages and the independent
         // forward cursor remain intact. Repeated ticks resume backwards.
         let recentTo=input.confirmedBlock;
-        const completed=await db.query(`SELECT r.from_block::text,r.to_block::text FROM node_market_ranges r WHERE market_id=$1
+        const completed=await db.query(`SELECT r.from_block::text,r.to_block::text FROM node_market_coverage r WHERE market_id=$1
           AND complete AND to_block>=$2 AND from_block<=$3 ORDER BY r.to_block DESC,r.from_block DESC`,[row.id,floor,input.confirmedBlock]);
         for(const range of completed.rows) {
           const a=Number(range.from_block),b=Number(range.to_block);
@@ -1245,11 +1249,12 @@ export async function rollbackNodeMarket(db:DB,from:number) {
   await db.query(`UPDATE node_market_history_jobs SET next_block=NULL,end_block=NULL,completed_at=NULL,lease_id=NULL,lease_until=NULL,
     next_attempt_at=now(),last_error='chain_reorganization' WHERE end_block>=$1`,[from]);
   await db.query('DELETE FROM node_market_token_evidence WHERE block_number>=$1',[from]);
-  await db.query('DELETE FROM node_market_ranges WHERE to_block>=$1',[from]);
-  await db.query(`UPDATE node_markets SET collected_from_block=(SELECT min(from_block) FROM node_market_ranges r WHERE r.market_id=node_markets.id),
-    collected_through_block=(SELECT max(to_block) FROM node_market_ranges r WHERE r.market_id=node_markets.id),checked_at=NULL,retry_at=NULL,
+  const coveredMarkets=await affectedMarketCoverageMarkets(db,from);
+  await invalidateMarketCoverage(db,from);
+  await db.query(`UPDATE node_markets SET collected_from_block=(SELECT min(from_block) FROM node_market_coverage r WHERE r.market_id=node_markets.id),
+    collected_through_block=(SELECT max(to_block) FROM node_market_coverage r WHERE r.market_id=node_markets.id),checked_at=NULL,retry_at=NULL,
     backfill_next_block=LEAST(backfill_next_block,$1),
-    status=CASE WHEN authenticated_at_block>=$1 THEN 'repair' ELSE status END WHERE collected_through_block>=$1 OR authenticated_at_block>=$1`,[from]);
+    status=CASE WHEN authenticated_at_block>=$1 THEN 'repair' ELSE status END WHERE collected_through_block>=$1 OR authenticated_at_block>=$1 OR id=ANY($2::text[])`,[from,coveredMarkets]);
   for(const row of affected.rows) {
     await db.query('DELETE FROM node_market_candles WHERE token_address=$1 AND minute=$2',[row.token_address,row.minute]);
     await db.query(`INSERT INTO node_market_candles(token_address,market_id,minute,open,high,low,close,volume_usd,observations,first_observation_at,last_observation_at)

@@ -64,17 +64,6 @@ export async function ensureIntelligenceSchema(pool: Pool) {
       tx_hash text NOT NULL, timestamp timestamptz NOT NULL, details jsonb NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS launch_events_token_idx ON launch_events(token_address,kind,block_number);
-    CREATE TABLE IF NOT EXISTS launch_observations (
-      token_address text NOT NULL REFERENCES tokens(address),block_number bigint NOT NULL,block_hash text NOT NULL,
-      platform text,stage text NOT NULL,progress numeric,observed_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY(token_address,block_number)
-    );
-    CREATE TABLE IF NOT EXISTS liquidity_observations (
-      token_address text NOT NULL REFERENCES tokens(address), observed_at timestamptz NOT NULL DEFAULT now(),
-      liquidity_usd numeric NOT NULL, pool_identifier text NOT NULL, PRIMARY KEY(token_address,observed_at)
-    );
-    ALTER TABLE liquidity_observations ADD COLUMN IF NOT EXISTS block_number bigint;
-    ALTER TABLE liquidity_observations ADD COLUMN IF NOT EXISTS block_hash text;
   `);
   await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; }

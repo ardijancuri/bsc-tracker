@@ -8,6 +8,7 @@ import { decodeNodeExecutions, ensureNodeExecutionSchema, NODE_ENTRY_POINTS, NOD
 import { enqueueNodeEvidenceMetadata, ensureNodeEvidenceMetadataSchema } from './nodeEvidenceMetadata.js';
 import {rollbackNodeTokenIdentities} from './nodeTokenIdentity.js';
 import { enqueuePublicNodeAccountingPairs } from './nodeAccountingQueue.js';
+import {invalidateMarketCoverage} from './nodeMarketCoverage.js';
 import { ensureNodeEvidenceCoverageSchema, persistNodeEvidenceCoverageCohort } from './nodeEvidenceCoverage.js';
 export { drainNodeEvidenceMetadata } from './nodeEvidenceMetadata.js';
 
@@ -148,7 +149,7 @@ export async function bootstrapNodeCapture(options: { database: NodeEvidenceData
     // certify coverage until independently recollected or historically imported.
     await client.query('SELECT pg_advisory_xact_lock(908335)');
     const marketRanges = (await client.query("SELECT to_regclass('node_market_ranges') AS name")).rows[0]?.name;
-    if (hasGap && marketRanges) await client.query(`UPDATE node_market_ranges SET complete=false WHERE from_block<=$2 AND to_block>=$1`, [gapFrom, boundary]);
+    if (hasGap && marketRanges) await invalidateMarketCoverage(client,gapFrom,boundary);
     const checkpoint = JSON.stringify({ blockNumber: boundary, blockHash: block.hash.toLowerCase(), headBlock: head, bootstrapId: id, historicalGap: hasGap });
     await client.query(`INSERT INTO worker_state(key,value,updated_at) SELECT unnest(ARRAY['node_collection','node','node_capture_boundary','node_market_collection']),$1::jsonb,now()
       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [checkpoint]);

@@ -21,39 +21,6 @@ export async function ensureJournalSchema(db: Pool) {
         updated_at timestamptz NOT NULL DEFAULT now()
       );
       ALTER TABLE journal_wallet_coverage ADD COLUMN IF NOT EXISTS generation uuid;
-      CREATE TABLE IF NOT EXISTS journal_history_jobs (
-        wallet_address text NOT NULL REFERENCES kols(address), scope text NOT NULL,
-        cursor text, cursors jsonb NOT NULL DEFAULT '[]', complete boolean NOT NULL DEFAULT false,
-        covered_to timestamptz, head_checked_at timestamptz, pages integer NOT NULL DEFAULT 0,
-        status text NOT NULL DEFAULT 'pending', retry_at timestamptz, error text,
-        lease_id uuid, lease_until timestamptz, updated_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY(wallet_address,scope)
-      );
-      ALTER TABLE journal_history_jobs ADD COLUMN IF NOT EXISTS refresh_cursor text;
-      ALTER TABLE journal_history_jobs ADD COLUMN IF NOT EXISTS refresh_pending boolean NOT NULL DEFAULT false;
-      CREATE TABLE IF NOT EXISTS journal_provider_movements (
-        wallet_address text NOT NULL REFERENCES kols(address), token_address text NOT NULL REFERENCES tokens(address),
-        event_key text NOT NULL, kind text NOT NULL CHECK(kind IN('buy','sell','transfer_in','transfer_out')),
-        tx_hash text NOT NULL, timestamp timestamptz NOT NULL, token_amount numeric NOT NULL,
-        amount_usd numeric, fee_usd numeric, quote_amount numeric, quote_symbol text,
-        counterparty text, evidence_hash text NOT NULL, observed_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY(wallet_address,event_key)
-      );
-      CREATE INDEX IF NOT EXISTS journal_provider_pair_idx ON journal_provider_movements(wallet_address,token_address,timestamp);
-      CREATE TABLE IF NOT EXISTS journal_pair_preparations (
-        wallet_address text NOT NULL REFERENCES kols(address), token_address text NOT NULL REFERENCES tokens(address),
-        history_revision text, balance_proof jsonb, quote jsonb, checked_at timestamptz, attempted_at timestamptz,
-        status text NOT NULL DEFAULT 'pending', reason text,
-        PRIMARY KEY(wallet_address,token_address)
-      );
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS events jsonb;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS source text;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS coverage jsonb;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS generation uuid;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS canonical_revision text;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS tracking_from timestamptz;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS opening_balances jsonb;
-      ALTER TABLE journal_pair_preparations ADD COLUMN IF NOT EXISTS membership_revision uuid;
       ALTER TABLE wallet_transfers ADD COLUMN IF NOT EXISTS counterparty_address text;
       CREATE TABLE IF NOT EXISTS journal_node_evidence (
         tx_hash text PRIMARY KEY,block_number bigint NOT NULL,block_hash text NOT NULL,timestamp timestamptz NOT NULL,

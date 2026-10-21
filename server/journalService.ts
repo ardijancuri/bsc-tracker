@@ -87,7 +87,6 @@ export function createJournalService({ db = pool, accounting = nodeAccountingSer
             VALUES($1,$2,$3,$4,$5) ON CONFLICT(wallet_address) DO UPDATE SET registered_at=now(),registration_block=EXCLUDED.registration_block,
             registration_hash=EXCLUDED.registration_hash,repair_from_block=EXCLUDED.repair_from_block,collected_from_block=NULL,collected_through_block=NULL,
             history_complete=false,last_error=NULL,generation=EXCLUDED.generation,updated_at=now()`, [wallet, current?.block_number ?? null, current?.block_hash ?? null, current?.block_number ? (BigInt(current.block_number) + 1n).toString() : null, randomUUID()]);
-          await client.query('DELETE FROM journal_pair_preparations WHERE wallet_address=$1', [wallet]);
           await client.query('DELETE FROM journal_opening_balances WHERE wallet_address=$1', [wallet]);
         }
         await client.query(`DELETE FROM journal_snapshots WHERE user_id=$1`, [userId]);
@@ -110,8 +109,6 @@ export function createJournalService({ db = pool, accounting = nodeAccountingSer
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`journal-wallet:${wallet}`]);
       await client.query('DELETE FROM journal_wallets WHERE user_id=$1 AND wallet_address=$2', [userId, wallet]);
       await client.query('DELETE FROM journal_snapshots WHERE user_id=$1', [userId]);
-      await client.query(`DELETE FROM journal_history_jobs WHERE wallet_address=$1 AND NOT EXISTS(SELECT 1 FROM journal_wallets WHERE wallet_address=$1)`, [wallet]);
-      await client.query(`DELETE FROM journal_pair_preparations WHERE wallet_address=$1 AND NOT EXISTS(SELECT 1 FROM journal_wallets WHERE wallet_address=$1)`, [wallet]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     return list(userId);

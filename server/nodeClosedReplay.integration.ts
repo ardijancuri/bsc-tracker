@@ -27,6 +27,27 @@ try{
   }
   const activity=structuredClone(position.activity) as KolTokenActivity;
   const chart=await nodeMarketService.chart(position.token,{from:evidence.from,to:evidence.to,intervalSeconds:60});
+  const {backfillNodeMarketCoverage,pruneValidatedLegacyMarketCoverage}=await import('./nodeMarketCoverage.js');
+  const protectedTables=['node_market_observations','node_market_candles','node_market_raw_logs'] as const;
+  const protectedRows=async()=>Promise.all(protectedTables.map(async table=>(await pool.query(`SELECT count(*)::text AS count,
+    bit_xor(hashtextextended(row_to_json(t)::text,721683))::text AS checksum FROM ${table} t`)).rows[0]));
+  const savedRows=await protectedRows();
+  let completed=false;
+  for(let attempt=0;attempt<100;attempt++){
+    const migration=await backfillNodeMarketCoverage(pool,{limit:10});
+    if(migration.idle){completed=true;break;}
+  }
+  assert.ok(completed,'Legacy replay coverage migration finishes in bounded pages');
+  for(let attempt=0;attempt<100;attempt++){
+    const pruning=await pruneValidatedLegacyMarketCoverage(pool,{limit:10});
+    if(pruning.idle)break;
+  }
+  assert.equal((await pool.query('SELECT count(*)::int n FROM node_market_ranges')).rows[0].n,0,
+    'This replay is prepared entirely from compacted coverage after old range rows retire');
+  const compactedChart=await nodeMarketService.chart(position.token,{from:evidence.from,to:evidence.to,intervalSeconds:60});
+  assert.deepEqual(compactedChart.bars,chart.bars,'Genuine historical candles and prices remain identical');
+  assert.equal(compactedChart.complete,chart.complete);
+  assert.deepEqual(await protectedRows(),savedRows,'Compaction preserves every observation, candle and pending raw log');
   assert.equal(chart.complete,false,'The pending original closing swaps must not become a completed candle projection');
   assert.ok(Date.parse(chart.bars.at(-1)?.lastObservationAt??'')<Date.parse(evidence.to),'The curated incomplete node projection ends before the sale');
   let recoveries=0;

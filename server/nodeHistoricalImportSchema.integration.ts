@@ -38,17 +38,19 @@ try {
     for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
   } finally { gate.release(); }
 
-  const tables = ['node_import_jobs', 'node_import_pages', 'node_import_movements', 'node_import_page_versions',
+  const tables = ['node_import_jobs', 'node_import_movements', 'node_import_page_versions',
     'node_import_chart_pages', 'node_import_wallet_jobs', 'node_import_wallet_pages', 'node_import_wallet_head_checks', 'node_import_aggregates'];
   assert.equal((await database.query('SELECT count(*)::int n FROM pg_tables WHERE schemaname=\'public\' AND tablename=ANY($1::text[])', [tables])).rows[0].n, tables.length);
   await database.query(`INSERT INTO node_import_jobs(wallet_address,token_address,cursor,pagination_cursors,attempts)
     VALUES('wallet','token','completed-page',ARRAY['initial','completed-page'],2);
-    INSERT INTO node_import_pages(wallet_address,token_address,cursor_key,payload,payload_hash)
+    INSERT INTO node_import_page_versions(wallet_address,token_address,cursor_key,payload,payload_hash)
       VALUES('wallet','token','initial','{"complete":true}','evidence-hash');`);
   await Promise.all([ensureNodeHistoricalImportSchema(database), ensureNodeHistoricalImportSchema(database), ensureNodeHistoricalImportSchema(database)]);
   const progress = (await database.query('SELECT cursor,pagination_cursors,attempts FROM node_import_jobs')).rows[0];
   assert.deepEqual(progress, { cursor: 'completed-page', pagination_cursors: ['initial', 'completed-page'], attempts: 2 });
-  assert.deepEqual((await database.query('SELECT payload,payload_hash FROM node_import_pages')).rows[0], { payload: { complete: true }, payload_hash: 'evidence-hash' });
+  assert.deepEqual((await database.query('SELECT payload,payload_hash FROM node_import_page_versions')).rows[0], { payload: { complete: true }, payload_hash: 'evidence-hash' });
+  assert.equal((await database.query("SELECT to_regclass('public.node_import_pages') AS relation")).rows[0].relation, null,
+    'Repeated startup must not recreate the retired mutable page table');
   // The advisory lock belongs to the batch's transaction, not a pooled session.
   const probe = await database.connect();
   try {

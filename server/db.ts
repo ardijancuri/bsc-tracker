@@ -120,12 +120,6 @@ async function applySchema() {
       value jsonb NOT NULL,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE TABLE IF NOT EXISTS backfill_jobs (
-      wallet_address text PRIMARY KEY REFERENCES kols(address),
-      cursor text,
-      done boolean NOT NULL DEFAULT false,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );
   `);
   await ensureIntelligenceSchema(pool);
   await ensureAuthSchema(pool);

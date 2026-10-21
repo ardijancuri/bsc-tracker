@@ -274,7 +274,6 @@ try {
   assert.equal((await launch(token)).stage, 'near_graduation'); assert.equal((await launch(flapToken)).liquidityBaselineAt, baseline); assert.equal((await launch(flapToken)).liquidityBaselineUsd,null); assert.equal((await launch(flapToken)).liquidityUsd,null);
   for (const follower of followers) await pool.query(`INSERT INTO watch_entries(session_id,kind,address) VALUES($1,'token',$2)`, [follower.session_id, token]);
   await pool.query('DELETE FROM trades WHERE token_address=ANY($1::text[])', [coldTokens]);
-  await pool.query('DELETE FROM launch_observations WHERE token_address=ANY($1::text[])', [coldTokens]);
   await pool.query('DELETE FROM token_launches WHERE token_address=ANY($1::text[])', [coldTokens]);
   await pool.query('DELETE FROM tokens WHERE address=ANY($1::text[])', [coldTokens]);
   assert.equal((await pool.query(`SELECT * FROM radar_signals WHERE kind='near_graduation'`)).rowCount, 1);

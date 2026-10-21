@@ -654,3 +654,71 @@ then resume normal cache reuse. Validation passed 2,190 unit tests, both
 TypeScript projects, the production build and 23 PostgreSQL integration suites.
 The local MP4 retained 1080 × 1350 resolution and 15.5-second duration, with the
 decoded ending showing the same $26.02 and 7.13% as the frozen modal snapshot.
+
+### Bounded storage maintenance (local validation, 2026-10-21)
+
+Normal market capture stores one block-range proof for the exact immutable set
+of markets queried, rather than one row per market per scan. Reusable member
+chunks limit the work caused by new discoveries. A new market never inherits
+coverage from earlier scans. Targeted recovery has its own exact membership.
+Raw logs, observations, genuine candles and financial evidence remain permanent.
+
+`node_market_coverage` reads shared proofs and unmigrated legacy ranges. The
+resumable migration merges only truly adjacent/overlapping ranges of the same
+completion state. It verifies stored compact spans before switching the legacy
+scope; actual gaps remain gaps. Source changes invalidate unfinished revisions.
+Legacy rows can be pruned only after validation, in bounded transactions. Saved
+authentic boundary hashes/times support reorg trimming and explicit gap splits;
+compaction must never turn a short reorg into deletion of an entire old prefix.
+Until a legacy scope has completed validation, reorg checks remain conservative
+and can still read substantial legacy coverage. Only measured validated bounds
+or fully retired source scopes allow skipping that work; neither a current node
+checkpoint nor the old scalar market hints establish a safe historical bound.
+
+Compatibility `position_snapshots` retain a full recent 24-hour window, every
+pair's latest observation (including errors), two successful checkpoints at
+distinct heights, and a successful pre-window anchor. Long-closed positions
+retain their latest state regardless of age. Unknown-age rows are preserved.
+A separate low-priority loop uses keyset progress, capped deletes, short locks
+and the canonical rollback fence. It defers to lagging capture and requires a
+fresh confirmed checkpoint. It does not expire accounting balances, purchase
+lots, trades, transfers, chart data or receipts. A stopped historical clone
+correctly skips this maintenance rather than pretending its checkpoint is live.
+
+The obsolete backfill, old journal preparation/provider, launch/liquidity
+observation and duplicate latest-import-page callers are retired. Existing
+contents move reversibly to `kollens_retired` only through an explicit command;
+ordinary startup does not move/drop them or recreate them. Immutable import
+page versions remain active. `journal_node_evidence` stays intact because it
+contains unique old receipts and conversion evidence.
+
+The maintenance CLI accepts only local PostgreSQL databases on port 5435;
+connection query overrides and remote hosts are rejected. It never loads X,
+Telegram, RPC or external financial transports. Inspect status before applying:
+
+```sh
+npm run db:maintenance -- status
+npm run db:maintenance -- archive-unused --apply
+npm run db:maintenance -- market-coverage --apply --batches 100 --limit 1000
+npm run db:maintenance -- market-coverage --apply --batches 100 --limit 1000 --prune-legacy
+npm run db:maintenance -- positions --apply --batches 20 --limit 1000
+```
+
+Commands print credential-free progress and can be stopped/restarted. Old
+coverage pruning is opt-in and is not performed by app startup. To restore the
+seven archived tables locally, use `restore-unused --apply`; restore them
+before running an older application version that expects their public names.
+No `DROP TABLE`, `TRUNCATE`, `VACUUM FULL` or automatic database rewrite is used.
+Ordinary vacuum makes deleted space reusable but does not promise an immediate
+reduction in the database's allocated file size. Production rollout and disk
+reclamation require their own maintenance plan and release authorization.
+
+Local clone validation compacted 157,511 range rows for 34 markets into 34 spans.
+Six real token chart outputs and exact complete/incomplete block unions matched
+the deployed reader. Content checksums matched for all retained trades, receipt
+evidence, executions, transfers, imported movements, accounting histories and
+snapshots, market observations and candles. A compacted closed-position replay
+generated an inspected 1080 × 1350, 15.5-second MP4; the decoded ending matched
+the frozen modal's −$121.35 and −14.32%. These are regression values, not live
+market figures. Bounded position retention was exercised in disposable databases
+with fresh canonical checkpoints, including row locks, timeouts and reorgs.

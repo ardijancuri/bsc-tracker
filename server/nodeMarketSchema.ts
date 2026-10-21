@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import {ensureNodeMarketCoverageSchema} from './nodeMarketCoverage.js';
 
 export async function ensureNodeMarketSchema(db: Pick<Pool | PoolClient, 'query'>) {
   await db.query(`
@@ -97,7 +98,10 @@ export async function ensureNodeMarketSchema(db: Pick<Pool | PoolClient, 'query'
         ELSE RAISE EXCEPTION 'Unsupported legacy node_token_market_values relation'; END IF;
       END IF;
       FOREACH relation_name IN ARRAY family||ARRAY['node_market_coverage'] LOOP
-        IF to_regclass(relation_name) IS NULL OR (NOT incompatible AND relation_name<>'node_market_coverage') THEN CONTINUE; END IF;
+        IF to_regclass(relation_name) IS NULL THEN CONTINUE; END IF;
+        IF NOT incompatible AND (relation_name<>'node_market_coverage' OR EXISTS(
+          SELECT 1 FROM pg_class WHERE oid=to_regclass(relation_name) AND relkind='v')
+          AND to_regclass('node_market_collection_cohorts') IS NOT NULL) THEN CONTINUE; END IF;
         archived_name := relation_name||'_legacy_v1'; suffix := 1;
         WHILE to_regclass(archived_name) IS NOT NULL LOOP
           suffix := suffix+1; archived_name := relation_name||'_legacy_v1_'||suffix;
@@ -110,7 +114,9 @@ export async function ensureNodeMarketSchema(db: Pick<Pool | PoolClient, 'query'
           EXECUTE format('ALTER INDEX %I RENAME TO %I',index_row.relname,
             left(index_row.relname,38)||'_legacy_'||substr(md5(archived_name||index_row.relname),1,16));
         END LOOP;
-        EXECUTE format('ALTER TABLE %I RENAME TO %I',relation_name,archived_name);
+        SELECT relkind INTO relation_kind FROM pg_class WHERE oid=to_regclass(relation_name);
+        IF relation_kind='v' THEN EXECUTE format('ALTER VIEW %I RENAME TO %I',relation_name,archived_name);
+        ELSE EXECUTE format('ALTER TABLE %I RENAME TO %I',relation_name,archived_name); END IF;
       END LOOP;
     END $market_migration$;
     CREATE TABLE IF NOT EXISTS node_market_discoveries (
@@ -221,4 +227,5 @@ export async function ensureNodeMarketSchema(db: Pick<Pool | PoolClient, 'query'
         COALESCE(block_number,0) DESC,CASE WHEN kind='state' AND tx_hash IS NULL THEN 1 ELSE 0 END DESC,
         COALESCE(transaction_index,-1) DESC,CASE WHEN kind='state' THEN 1 ELSE 0 END DESC,COALESCE(log_index,-1) DESC;
   `);
+  await ensureNodeMarketCoverageSchema(db);
 }

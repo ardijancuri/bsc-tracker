@@ -296,8 +296,6 @@ export function createNodeHistoricalImporter({ db = pool, request = gmgnRequest,
   async function persistPage(client:Pick<Pool,'query'>,wallet:string,token:string,cursorKey:string,result:Awaited<ReturnType<typeof page>>) {
     const payloadHash=digest({events:result.rows.map(row=>row.event),next:result.next}),payload=JSON.stringify(result);
     await client.query(`INSERT INTO node_import_page_versions(wallet_address,token_address,cursor_key,payload_hash,payload) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING`,[wallet,token,cursorKey,payloadHash,payload]);
-    await client.query(`INSERT INTO node_import_pages(wallet_address,token_address,cursor_key,next_cursor,payload,payload_hash) VALUES($1,$2,$3,$4,$5::jsonb,$6)
-      ON CONFLICT(wallet_address,token_address,cursor_key) DO UPDATE SET next_cursor=EXCLUDED.next_cursor,payload=EXCLUDED.payload,payload_hash=EXCLUDED.payload_hash,observed_at=now()`,[wallet,token,cursorKey,result.next,payload,payloadHash]);
     return payloadHash;
   }
   async function savePage(job: any) {

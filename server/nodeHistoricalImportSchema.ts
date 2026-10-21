@@ -19,11 +19,6 @@ export async function ensureNodeHistoricalImportSchema(db: Pick<Pool, 'query'>) 
     ALTER TABLE node_import_jobs ADD COLUMN IF NOT EXISTS pagination_cursors text[] NOT NULL DEFAULT '{}';
     ALTER TABLE node_import_jobs ADD COLUMN IF NOT EXISTS chart_gaps boolean NOT NULL DEFAULT false;
     ALTER TABLE node_import_jobs ADD COLUMN IF NOT EXISTS aggregate_orders text[] NOT NULL DEFAULT '{}';
-    CREATE TABLE IF NOT EXISTS node_import_pages (
-      wallet_address text NOT NULL,token_address text NOT NULL,cursor_key text NOT NULL,
-      next_cursor text,payload jsonb NOT NULL,payload_hash text NOT NULL,observed_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY(wallet_address,token_address,cursor_key)
-    );
     CREATE TABLE IF NOT EXISTS node_import_movements (
       wallet_address text NOT NULL,token_address text NOT NULL,id text NOT NULL,event jsonb NOT NULL,
       raw jsonb NOT NULL,payload_hash text NOT NULL,observed_at timestamptz NOT NULL DEFAULT now(),

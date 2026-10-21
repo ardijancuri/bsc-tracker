@@ -65,7 +65,6 @@ export async function rollbackJournalCollection(database: Database, from: number
     WHERE collected_through_block >= $1::bigint OR registration_block >= $1::bigint`, [from]);
   await database.query(`UPDATE journal_wallets SET registration_hash=CASE WHEN registration_block >= $1::bigint THEN (SELECT block_hash FROM processed_blocks WHERE block_number=$1::bigint-1::bigint) ELSE registration_hash END,
     registration_block=LEAST(registration_block,$1::bigint-1::bigint),revision=md5(revision::text||':reorg:'||($1::bigint)::text)::uuid WHERE registration_block >= $1::bigint`, [from]);
-  await database.query(`UPDATE journal_pair_preparations SET status='pending',checked_at=NULL,balance_proof=NULL,quote=NULL,reason='chain_reorganization'`);
   await database.query('DELETE FROM journal_replay_snapshots');
   // Saved snapshots certify one canonical valuation; an orphaned proof cannot
   // remain available as a dated fallback after a reorganization.
