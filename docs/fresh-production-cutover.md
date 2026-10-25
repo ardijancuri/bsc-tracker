@@ -1,10 +1,10 @@
 # Fresh v1.4 production database cutover
 
-This is an operator procedure prepared and rehearsed locally. It has **not**
-been run against production. A later explicit release request is required for
-commit, deployment, selecting the production start boundary, applying this
-import, changing public traffic or enabling Telegram delivery. The canceled
-eight-hour local trial stays closed.
+This operator procedure was executed following the October 25 release request.
+See [the completed production release](fresh-v14-release-20261025.md) for the
+exact application commit, boundary, preservation checks and handoff. The canceled
+eight-hour local trial stays closed. Do not rerun an initial import against the
+existing production database.
 
 Use [the isolated deployment configuration](fresh-v14-deployment.md),
 [`compose.fresh.vps.yaml`](../compose.fresh.vps.yaml) and the separately reviewed

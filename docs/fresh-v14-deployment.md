@@ -1,8 +1,9 @@
 # Fresh v1.4 deployment configuration
 
-This is prepared configuration, not an executed deployment. The existing live
-app, node configuration, database and volumes remain unchanged. Use the separate
-database cutover procedure before enabling these services in production.
+This configuration was deployed following the October 25 release request. See
+[the completed production release](fresh-v14-release-20261025.md) for exact
+versions and results. The legacy database and volumes remain intact; the legacy
+API and sender are stopped. The BSC-node configuration is unchanged.
 
 ## Isolation and startup
 
@@ -16,7 +17,7 @@ or production credentials. Do not combine it with the old `compose.yaml`.
 | PostgreSQL database/role | `kollens_fresh_v14` / `kollens_fresh` | `bscan` remains intact |
 | PostgreSQL loopback port | `5437` | `5434` remains intact |
 | PostgreSQL data volume | `kollens-fresh-v14_fresh_pgdata` | never reused or removed |
-| Candidate API | `127.0.0.1:3303` | current live port `3300` unchanged |
+| API | Preview `127.0.0.1:3303`; activated Fresh now uses `3300` | legacy API stopped; shared proxy unchanged |
 | GMGN chart cache | new volume at `/app/.cache/fresh/charts` | old chart cache untouched |
 
 An unqualified `up` can start only the new database. API and worker require the

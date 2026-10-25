@@ -1,12 +1,16 @@
-# Fresh v1.4 local release preparation
+# Fresh v1.4 local release preparation record
+
+Fresh v1.4 was subsequently committed and deployed on October 25. See
+[the completed release](fresh-v14-release-20261025.md) for current production
+status. The measurements below record the earlier local preparation state.
 
 Final local runtime: `dd60353513240af656375c9bfa2c14d6536e9841ca98e681f753c61bfc94ce5a` (October 25, 2026).
 The ordinary app is running at http://127.0.0.1:5173 with API port 3302 and the
 separate local PostgreSQL database on port 5436. The canceled eight-hour trial remains
 closed; its 4160.051 audited seconds and every prior report are retained.
-Nothing was committed, pushed or deployed. The live VPS application and node
-configuration, original checkout X work, old databases and migration copies
-remain unchanged.
+At this local preparation checkpoint, nothing had been committed, pushed or
+deployed. Original checkout X work, old databases and migration copies remain
+preserved after the later production release.
 
 ## Accounting fixes and remaining historical gaps
 
@@ -127,10 +131,11 @@ financial history. A later explicit release request must still perform:
 4. Drain/seal the legacy collector/sender, prove canonical B-to-C handoff,
    activate explicitly and switch live traffic during the agreed maintenance.
 
-None of these production mutations or traffic changes occurred. Local code
-verification does not substitute for the actual candidate-image/mount/export/
-activation checks. See [cutover](fresh-production-cutover.md) and
-[deployment](fresh-v14-deployment.md).
+These production checks were still outstanding at the local preparation
+checkpoint and were completed during the later authorized release. Local code
+verification does not substitute for the recorded candidate-image/mount/export/
+activation checks. See [the release record](fresh-v14-release-20261025.md),
+[cutover](fresh-production-cutover.md) and [deployment](fresh-v14-deployment.md).
 
 ## Evidence
 
