@@ -1,3 +1,4 @@
+import{isFreshSettlementQuote,freshSettlementQuoteSymbol}from'./settlementQuote.js';
 import{freshAcquisitionCostKey}from'./acquisitionCost.js';
 import{freshSignedSelfCallSettlement}from'./signedSelfCallSettlement.js';
 import { createHash } from 'node:crypto';
@@ -187,7 +188,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
       selector = input.slice(0, 10).toLowerCase();
     } catch { return attribution; }
     const identified = { ...attribution, contract, selector };
-    if (isExcludedKolProfileTokenAddress(contract) || TRUSTED_QUOTE_FEEDS[contract]) return { ...identified, status: 'excluded', tokenAddress: contract };
+    if (isExcludedKolProfileTokenAddress(contract) || isFreshSettlementQuote(contract)) return { ...identified, status: 'excluded', tokenAddress: contract };
     const token = await meta(contract);
     if (!token || token.address !== contract) return identified;
     if (!isKolProfileToken(token) || services.knownLaunch && !await services.knownLaunch(contract) || !await services.eligible(token)) return { ...identified, status: 'excluded', tokenAddress: contract };
@@ -198,7 +199,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     if (execution.status === 'unsupported') { reasons.add('unsupported_smart_account_operation'); continue; }
     const flows = tokenFlows(execution.wallet, execution.logs), targets: { token: string; raw: bigint; logs: FreshLog[]; metadata: FreshTokenMetadata }[] = [];
     for (const [token, flow] of flows) {
-      if (isExcludedKolProfileTokenAddress(token) || TRUSTED_QUOTE_FEEDS[token]) continue;
+      if (isExcludedKolProfileTokenAddress(token) || isFreshSettlementQuote(token)) continue;
       if (services.knownLaunch && !await services.knownLaunch(token)) continue;
       const tokenMetadata = await meta(token);
       if (!tokenMetadata) { reasons.add('token_decimals_unavailable');const diagnostic=metadataFailures.get(token);if(diagnostic)reasons.add(diagnostic);continue; }
@@ -256,7 +257,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     for (const target of targets) {
       const controller = controllerTrade(execution, target.token);
       if (controller.length > 1) { reasons.add('multiple_actions_require_execution_decoder'); continue; }
-      const positive = target.raw > 0n, opposingQuotes = [...flows].filter(([token, flow]) => TRUSTED_QUOTE_FEEDS[token] && flow.raw !== 0n && (flow.raw < 0n) === positive);
+      const positive = target.raw > 0n, opposingQuotes = [...flows].filter(([token, flow]) => isFreshSettlementQuote(token) && flow.raw !== 0n && (flow.raw < 0n) === positive);
       const swap = execution.kind !== 'transfer' && (controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0])));
       if (swap && target.raw !== 0n) {
         if (controller.length && (controller[0].side === 'buy') !== positive) { reasons.add('controller_quantity_direction_mismatch'); continue; }
@@ -286,22 +287,27 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
         }
         if (!smartSettlement && targets.length === 1 && opposingQuotes.length === 1) {
           const [quoteAddress, flow] = opposingQuotes[0];
+          // A supported non-feed asset is valued from its authenticated raw
+          // wallet settlement and historical conversion, never a generic token
+          // price/current mark. Keep existing feed-backed quote behavior.
+          if(amountUsd===null&&execution.kind==='transaction'&&!TRUSTED_QUOTE_FEEDS[quoteAddress]&&services.quotePaymentUsd)
+            amountUsd=await services.quotePaymentUsd(target.token,execution.wallet,target.raw,await price(WBNB)).catch(()=>null);
           // A retained USD payment route remains authoritative. Optional quote
           // display cannot start fresh historical metadata/feed requests after
           // that route succeeded; only original exact-block precision may add it.
           const quoteMetadata=amountUsd===null?await meta(quoteAddress):(await retainedTradeQuotePrecision(entry,
             {number:Number(freshInteger(block.number)),hash:block.hash.toLowerCase(),timestamp:occurredAt},quoteAddress)
             ??await services.retainedQuoteMetadata?.(quoteAddress).catch(()=>null));
-          const usd=amountUsd===null?await price(quoteAddress):null;
+          const usd=amountUsd===null&&TRUSTED_QUOTE_FEEDS[quoteAddress]?await price(quoteAddress):null;
           if(quoteMetadata){
             const quoteAmount=units(flow.raw < 0n ? -flow.raw : flow.raw,quoteMetadata.decimals);
             // The trusted contract mapping identifies the asset. Arbitrary
             // token metadata cannot relabel an ERC20 balance as native BNB.
-            const quoteSymbol=quoteAddress===WBNB?'WBNB':TRUSTED_QUOTE_FEEDS[quoteAddress].description.split(' / ')[0];
+            const quoteSymbol=freshSettlementQuoteSymbol(quoteAddress)!;
             if([...flows].every(([asset,flow])=>asset===target.token||asset===quoteAddress||flow.raw===0n))settledQuote={quoteAddress,quoteSymbol,quoteAmount};
             if(amountUsd===null&&usd!==null)amountUsd=q(quoteAmount).mul(q(usd)).decimal();
           }
-          if(amountUsd===null&&execution.kind==='transaction'&&services.quotePaymentUsd)
+          if(amountUsd===null&&execution.kind==='transaction'&&TRUSTED_QUOTE_FEEDS[quoteAddress]&&services.quotePaymentUsd)
             amountUsd=await services.quotePaymentUsd(target.token,execution.wallet,target.raw,await price(WBNB)).catch(()=>null);
         } else if (!smartSettlement && targets.length === 1 && opposingQuotes.length === 0 && [...flows].every(([asset, flow]) => asset === target.token || flow.raw === 0n)) {
           let native: bigint | null = null, contradictoryNative = false;

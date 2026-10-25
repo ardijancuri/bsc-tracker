@@ -1,4 +1,5 @@
 import{compactFreshAcquisitionCost}from'./acquisitionCost.js';
+import{recoverFreshQuotePaymentV3,type FreshQuotePaymentV3Evidence}from'./quotePaymentV3.js';
 import{freshNativeStockAcquisitionCost,type FreshNativeStockAcquisitionCost}from'./nativeStockAcquisitionCost.js';
 import{captureFreshParentPoolQuote,type FreshParentPoolCapture}from'./parentPoolCapture.js';
 import{valueFreshParentFlapPurchase,type FreshHistoricalParentPoolQuoteEvidence}from'./historicalParentPoolQuote.js';
@@ -52,6 +53,7 @@ export interface FreshReceiptRecoveryEvidence {
  capturedPoolQuotes?:FreshHistoricalCapturedPoolQuote[];
  directFlapPurchases?:FreshDirectFlapPurchaseEvidence[];
  quotePayments?:FreshQuotePaymentEvidence[];
+ v3QuotePayments?:FreshQuotePaymentV3Evidence[];
  nativeQuoteChanges?:FreshNativeQuoteChangeValue[];
  nativeStockQuoteChanges?:FreshNativeStockQuoteChangeValue[];
  signedBatchPurchases?:FreshSignedBatchPurchaseValue[];
@@ -65,7 +67,7 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const acquisitionCost=(token:string,wallet:string)=>{const p=approvedAcquisitionCosts.get(token+':'+wallet);return p?compactFreshAcquisitionCost(p):null;};
  const prior=entry.recoveryEvidence;
  const validPrior=prior?.version===1&&JSON.stringify(prior.target)===JSON.stringify(target)&&Buffer.byteLength(JSON.stringify(prior))<=256*1024?prior:undefined;
- const evidence:FreshReceiptRecoveryEvidence={version:1,target:{...target},nativeStockAcquisitionCosts:validPrior&&Array.isArray(validPrior.nativeStockAcquisitionCosts)&&validPrior.nativeStockAcquisitionCosts.length<=4?[...validPrior.nativeStockAcquisitionCosts]:[],parentPoolQuoteCaptures:validPrior&&Array.isArray(validPrior.parentPoolQuoteCaptures)&&validPrior.parentPoolQuoteCaptures.length<=4?[...validPrior.parentPoolQuoteCaptures]:[],parentPoolQuotes:validPrior&&Array.isArray(validPrior.parentPoolQuotes)&&validPrior.parentPoolQuotes.length<=4?[...validPrior.parentPoolQuotes]:[],metadata:{},quotes:[],pools:[],stockwaveMarkets:[],stockQuotes:[],flapQuotes:[],flapCurveQuotes:[],capturedPoolQuotes:[],directFlapPurchases:[],quotePayments:[],nativeQuoteChanges:[],nativeStockQuoteChanges:[],signedBatchPurchases:[]};
+ const evidence:FreshReceiptRecoveryEvidence={version:1,target:{...target},v3QuotePayments:validPrior&&Array.isArray(validPrior.v3QuotePayments)&&validPrior.v3QuotePayments.length<=4?[...validPrior.v3QuotePayments]:[],nativeStockAcquisitionCosts:validPrior&&Array.isArray(validPrior.nativeStockAcquisitionCosts)&&validPrior.nativeStockAcquisitionCosts.length<=4?[...validPrior.nativeStockAcquisitionCosts]:[],parentPoolQuoteCaptures:validPrior&&Array.isArray(validPrior.parentPoolQuoteCaptures)&&validPrior.parentPoolQuoteCaptures.length<=4?[...validPrior.parentPoolQuoteCaptures]:[],parentPoolQuotes:validPrior&&Array.isArray(validPrior.parentPoolQuotes)&&validPrior.parentPoolQuotes.length<=4?[...validPrior.parentPoolQuotes]:[],metadata:{},quotes:[],pools:[],stockwaveMarkets:[],stockQuotes:[],flapQuotes:[],flapCurveQuotes:[],capturedPoolQuotes:[],directFlapPurchases:[],quotePayments:[],nativeQuoteChanges:[],nativeStockQuoteChanges:[],signedBatchPurchases:[]};
  type Source={entry:FreshCapturedReceipt;payload:Buffer;block:FreshPriceBlock};
  const batch=options.batch??createFreshRecoveryBatch(db,rpc);
  const hashCache=new Map<number,Promise<string|null>>(),sources=new Map<string,Promise<Source[]>>();
@@ -252,8 +254,12 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  };
  const quotePaymentUsd=async(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly=false):Promise<string|null>=>{
   const old=validPrior?.quotePayments?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
-  if(retainedOnly&&!old)return null;
+  const oldV3=validPrior?.v3QuotePayments?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
+  if(retainedOnly&&!old&&!oldV3)return null;
   const payment=freshQuotePayment(entry,target,token,wallet,targetRaw);if(!payment||nativePriceUsd===null)return null;
+  const v3=async()=>{const proof=await recoverFreshQuotePaymentV3({rpc,payment,target,anchor:oldV3?.conversion.anchor??await anchor(),canonicalHash,state:options.state?.()??entry.stateEvidence,prior:oldV3});
+   if(!evidence.v3QuotePayments!.some(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet)){const next=[...evidence.v3QuotePayments!,proof];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,v3QuotePayments:next}))>256*1024)return null;evidence.v3QuotePayments=next;}return proof.amountUsd;};
+  if(oldV3){try{return await v3();}catch{return null;}}
   try{
    const native=MarketDecimal.parse(nativePriceUsd);if(native.n<=0n)return null;
    const conversion=await recoverFreshHistoricalPoolNativeQuote({rpc,quoteAddress:payment.quoteAddress,target,transactionIndex:payment.transactionIndex,
@@ -264,7 +270,7 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    if(old&&stable(old)!==stable(proof))return null;
    if(!evidence.quotePayments!.some(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet))evidence.quotePayments!.push(proof);
    return amountUsd;
-  }catch{return null;}
+  }catch{try{return await v3();}catch{return null;}}
  };
  const nativeQuoteChangeUsd=async(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly=false):Promise<string|null>=>{
   const old=validPrior?.nativeQuoteChanges?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
@@ -306,5 +312,5 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    return proof.amountUsd;
   }catch{return null;}
  };
- return{acquisitionCost,metadata,importedMetadata,priceUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.nativeStockAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
+ return{acquisitionCost,metadata,importedMetadata,priceUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.v3QuotePayments!.length||evidence.nativeStockAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
 }

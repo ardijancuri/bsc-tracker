@@ -1,5 +1,5 @@
 import {WBNB} from '../launchpad.js';
-import {TRUSTED_QUOTE_FEEDS} from '../nodeMarketProtocols.js';
+import {isFreshSettlementQuote} from './settlementQuote.js';
 import {beforeExecutionTopic,userOperationTopic} from '../smartAccountTrades.js';
 import {transferTopic} from '../swap.js';
 import {FRESH_ENTRY_POINTS,freshAddress,freshHash,freshInteger,type FreshCapturedReceipt} from './capture.js';
@@ -18,7 +18,7 @@ const zero='0x'+'0'.repeat(40);
 
 /** Actual ERC20 wallet settlement, independent of a router's gross Swap event.
  * The caller must already establish one eligible trade target. This guard proves
- * one opposing trusted quote settlement, including returned quote units, without
+ * one opposing explicitly supported quote settlement, including returned quote units, without
  * assuming that quote's decimals or a peg. A separately authenticated earlier
  * pool ratio and dated BNB/USD convert the raw payment. Gas remains separate.
  * Native-value, authorization/AA and mixed-asset operations are not covered. */
@@ -60,7 +60,7 @@ export function freshQuotePayment(entry:FreshCapturedReceipt,block:FreshPriceBlo
     }
     const delivery=flows.get(token),buy=targetRaw>0n;
     if(!delivery||flows.size!==2||(buy?delivery.outgoing!==0n||delivery.incoming!==targetRaw:delivery.incoming!==0n||delivery.outgoing!==-targetRaw))return null;
-    const opposing=[...flows].filter(([asset,flow])=>asset!==token&&asset!==WBNB&&!!TRUSTED_QUOTE_FEEDS[asset]
+    const opposing=[...flows].filter(([asset,flow])=>asset!==token&&asset!==WBNB&&isFreshSettlementQuote(asset)
       &&(buy?flow.outgoing>flow.incoming:flow.incoming>flow.outgoing));
     if(opposing.length!==1)return null;
     const [quoteAddress,payment]=opposing[0];
