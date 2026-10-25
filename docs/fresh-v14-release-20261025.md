@@ -133,3 +133,61 @@ membership, canonical-source and idempotency review. The production import
 manifest SHA-256 is
 `3c2733bbe6da8fed47db0cc56fdc3e0a3d7b949381df09e11a20be9567e81532`.
 Runtime and post-deployment verification are recorded separately when complete.
+
+## GANG follow-up deployed
+
+The additive follow-up was deployed on October 25 at approximately 15:26 UTC.
+Runtime commit is `b37abebabf1c959835f26b6db6d33d602e0e88be`, tagged
+`v1.4-gang-20261025`. Both live containers use image
+`sha256:d7e643e6dbd421ce203c425d61f5140209b89b71e98139ab9b010d04ce48f3fe`.
+The existing Fresh database, volume, initial tracking boundary and notification
+activation remain unchanged; no initial cutover or financial reset ran.
+
+The guarded import committed 220 financial facts and 177 buy/sell trades across
+21 trading KOLs. It added 200 receipt contexts and merged 20 existing contexts
+without replacing their original bodies or expiry times. All 177 imported
+trades have quantities, amounts and dated transaction market caps. Historical
+facts are not live observations and were marked already processed for alerts.
+No historical Telegram message or X test post was sent.
+
+Independent checks compared every one of the 2,968 original financial row
+digests, 7,006 receipt-body checksums and expiry times, and 21 account/settings
+table digests. All matched exactly after import and after traffic switched.
+The fixed GANG bundle also matched the final capture tail through block
+129729010 before import. No additional GANG context was omitted in that tail.
+
+The new worker resumed the same checkpoint with its private read-only IPC
+mount. Capture advanced and capture/decode/quote block hashes matched the VPS
+node. Exactly one worker remains. Temporary preview containers were removed.
+The existing chart/frontend/championship cache volumes, both championship
+snapshots and the single four-hour championship scheduler were preserved.
+
+Public token details, artwork and genuine charts were checked on kollens.com.
+All 177 trade rows have complete amounts, quantities and MCAPs. All 21 KOL
+profile/leaderboard stored realized totals agreed. CryptoCharming's GANG
+position retains six buys, 28 sells and realized profit
+`13666.00057317412279034487012538546883512` USD. Its live replay preparation
+returned ready with 1,243 genuine chart observations in 429 ms and passed
+manifest validation. The actual live share UI generated and downloaded a
+12,582,248-byte MP4; its playback inspection is retained with the release
+evidence.
+
+That downloaded production MP4 played to completion at 15.5 seconds in
+1080 × 1350 resolution. Its ending profit `+$16,418.30` and ROI `+287.55%`
+matched the dated frozen prepared object. This estimated open-position ending
+is separate from the lifetime realized figure above. All 15 imported
+USDC-settled trades also retained their original amounts and displayed the
+verified historical BNB equivalent. No external share/post action was used.
+
+Four GANG position summaries still truthfully wait on pre-existing opaque
+synthetic-transfer receipts for other tokens in those wallets. Those receipts
+predate this import and are not in the GANG bundle. Their original unknown
+settlement and accounting guards were preserved; this release does not claim
+those unrelated historical gaps are repaired. The untraded distributor's
+unknown acquisition basis likewise remains explicit.
+
+Private production plans, original-row checks and post-switch reports are in
+`/opt/bscan/deploy/gang-v14-20261025/`. Local release evidence is in
+`.cache/release/` in the isolated `gang-live-v14` worktree. These artifacts may
+contain private account data and must not be published. The canceled local
+validation and unrelated X/replay-motion work were not restarted or changed.
