@@ -9,6 +9,7 @@ import { FreshRational, freshDecimal, rebuildFreshScopesAfterReorg,freshFeeExclu
 import type { createFreshReads } from './reads.js';
 import type { FreshReplay } from './replay.js';
 import { FreshChartError,freshChartIntervals,freshChartPeriods,freshChartFrom,type FreshCharts,type FreshResolution } from './charts.js';
+import {freshTrackedTokenSql} from './tracking.js';
 
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const iso=(v:string|Date)=>new Date(v).toISOString();
@@ -139,8 +140,8 @@ export function registerFreshPortfolio(app:FastifyInstance,options:{db:Pool;read
   app.get<{Params:{wallet:string;token:string};Querystring:{interval?:string;period?:string;before?:string;priority?:string;membership?:string;history?:string;workload?:string}}>('/api/journal/wallets/:wallet/tokens/:token/chart',quiet,async(req,reply)=>{
     const user=await account(req,reply);if(!user)return;return result(reply,async()=>{
       const wallet=freshPortfolioAddress(req.params.wallet),token=freshPortfolioAddress(req.params.token),member=await service.authorize(user.id,wallet,req.query.membership);
-      const row=(await options.db.query(`SELECT t.*,l.launched_at FROM fresh.positions p JOIN fresh.tokens t ON t.address=p.token_address LEFT JOIN fresh.launch_facts l ON l.token_address=t.address
-        WHERE p.scope_id=$1 AND t.address=$2 AND t.launch_status='eligible'`,[freshPortfolioScope(user.id,wallet),token])).rows[0];
+      const row=(await options.db.query(`SELECT t.*,CASE WHEN t.launch_status='preexisting' THEN NULL ELSE l.launched_at END AS launched_at FROM fresh.positions p JOIN fresh.tokens t ON t.address=p.token_address LEFT JOIN fresh.launch_facts l ON l.token_address=t.address
+        WHERE p.scope_id=$1 AND t.address=$2 AND ${freshTrackedTokenSql('t')}`,[freshPortfolioScope(user.id,wallet),token])).rows[0];
       if(!row)return reply.code(404).send({error:'Portfolio token activity not found'});if(!options.charts)return reply.code(503).send({error:'Charts are temporarily unavailable'});
       const resolution=(req.query.interval??({'24h':'5m','7d':'1h','30d':'4h'}[req.query.period??'24h'])??'1m') as FreshResolution;
       if(!Object.hasOwn(freshChartIntervals,resolution))throw new FreshPortfolioError('Invalid chart interval');
@@ -151,7 +152,8 @@ export function registerFreshPortfolio(app:FastifyInstance,options:{db:Pool;read
       const launchedAt=new Date(row.launched_at??0).getTime(),from=freshChartFrom(launchedAt,to,resolution,{period:req.query.period,interval:req.query.interval,fullHistory:req.query.history==='full'}),supply=row.total_supply_raw!=null&&row.decimals!=null?q(String(row.total_supply_raw)).div(new FreshRational(10n**BigInt(row.decimals))).decimal(255):null;
       const controller=new AbortController(),abort=()=>controller.abort(new Error('Chart consumer disconnected')),closed=()=>{if(!reply.raw.writableEnded)abort();};req.raw.once('aborted',abort);reply.raw.once('close',closed);
       try{const chart=await options.charts.chart(token,{from,to,resolution,period:(req.query.interval??req.query.period??'24h') as ChartRange,foreground:req.query.priority!=='prefetch',workload:req.query.workload==='replay'?'replay':'browse',signal:controller.signal,quote:{priceUsd:row.price_usd,supply,timestamp:row.observed_at?iso(row.observed_at):null}});await service.authorize(user.id,wallet,member.revision);
-        const full=req.query.history==='full',complete=row.launched_at!=null&&from<=launchedAt;return {...chart,fullHistory:full,historyComplete:full?complete:chart.historyComplete,historyPending:full&&!complete,historyBefore:full&&!complete?Math.floor(from/1000):undefined};}
+        const full=req.query.history==='full',creationKnown=row.launched_at!=null,complete=creationKnown&&from<=launchedAt;return {...chart,fullHistory:full,historyComplete:full?complete:chart.historyComplete,historyPending:full&&creationKnown&&!complete,historyBefore:full&&creationKnown&&!complete?Math.floor(from/1000):undefined,
+          ...(!creationKnown?{historyLoadStatus:'limited' as const,historyRecoveryPending:false,historyRecoveryReason:'token_creation_unknown'}:{})};}
       catch(error){await service.authorize(user.id,wallet,member.revision);if(!(error instanceof FreshChartError))throw error;return reply.header('Retry-After',String(Math.ceil((error.retryAfterMs||5000)/1000))).send({address:token,period:req.query.interval??req.query.period??'24h',source:'unavailable',candles:[],points:[],updatedAt:null,resolution,pending:error.reason!=='chart_unavailable',stale:true,fullHistory:req.query.history==='full',historyComplete:false,loadStatus:error.reason==='provider_cooldown'?'rate_limited':'provider_error',retryAfterMs:error.retryAfterMs||5000});}
       finally{req.raw.removeListener('aborted',abort);reply.raw.removeListener('close',closed);}
     });

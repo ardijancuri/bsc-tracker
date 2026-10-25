@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { championshipApiUrl, championshipLimit, type ChampionshipBoard, type ChampionshipPeriod, type ChampionshipSnapshot } from '../shared/championship.js';
 import reference from './data/championship-reference.json' with { type: 'json' };
+import { compareChampionshipSnapshots, createChampionshipFileStore, validateChampionshipSnapshot } from './championshipFileStore.js';
 
 const number = z.string().regex(/^-?\d+(?:\.\d+)?$/).refine(value => Number.isFinite(Number(value)));
 const payloadSchema = z.object({ code: z.literal(0), data: z.object({
@@ -46,43 +47,33 @@ export interface ChampionshipStore {
   save(key: string, value: ChampionshipSnapshot): Promise<void>;
 }
 
-const snapshotSchema = z.object({
-  period: z.enum(['daily', 'overall']), date: z.string().nullable(), updatedAt: z.string().datetime(), fetchedAt: z.string().datetime(),
-  items: z.array(z.object({ rank: z.number().int().min(1).max(championshipLimit), id: z.string().uuid(),
-    xHandle: z.string().regex(/^[A-Za-z0-9_]{1,15}$/), name: z.string(), avatarUrl: z.string().url().nullable(), verified: z.boolean(),
-    liveUrl: z.string().url().nullable(), isLive: z.boolean(), pnlUsd: number.nullable(), roi: number.nullable() })).max(championshipLimit),
-});
-
 /** Separate period/date caches and shared requests; explicit refreshes bypass the polling cooldown. */
 export function createChampionshipService({ fetcher = fetch, now = Date.now, store }:
   { fetcher?: typeof fetch; now?: () => number; store?: ChampionshipStore } = {}) {
-  type Entry = { snapshot?: ChampionshipSnapshot; checkedAt: number; blocked: boolean; healthy: boolean; loaded: boolean; inFlight?: Promise<void> };
+  const snapshotDirectory = process.env.CHAMPIONSHIP_SNAPSHOT_DIR?.trim();
+  const snapshotStore = store ?? (snapshotDirectory ? createChampionshipFileStore(snapshotDirectory) : undefined);
+  type Entry = { snapshot?: ChampionshipSnapshot; checkedAt: number; blocked: boolean; healthy: boolean; inFlight?: Promise<void> };
   const entries = new Map<string, Entry>();
   const capturedAt = Date.parse(reference.capturedAt);
   for (const period of ['daily', 'overall'] as const) {
     const date = period === 'daily' ? reference.daily.date : null;
     const snapshot = parseChampionshipBoard(reference[period].payload, period, date, capturedAt);
-    entries.set(`${period}:${date || 'all'}`, { snapshot, checkedAt: -Infinity, blocked: false, healthy: false, loaded: false });
+    entries.set(`${period}:${date || 'all'}`, { snapshot, checkedAt: -Infinity, blocked: false, healthy: false });
   }
   return {
     async get(period: ChampionshipPeriod, date: string | null, { refresh = false }: { refresh?: boolean } = {}): Promise<ChampionshipBoard> {
       const key = `${period}:${period === 'daily' ? date : 'all'}`;
       let entry = entries.get(key);
-      if (!entry) { entry = { checkedAt: -Infinity, blocked: false, healthy: false, loaded: false }; entries.set(key, entry); }
+      if (!entry) { entry = { checkedAt: -Infinity, blocked: false, healthy: false }; entries.set(key, entry); }
       const current = entry;
       if (!current.inFlight && (refresh || now() - current.checkedAt >= 60_000)) {
         current.inFlight = (async () => {
-          if (!current.loaded) {
-            current.loaded = true;
-            try {
-              const saved = snapshotSchema.safeParse(await store?.load(key));
-              if (saved.success && saved.data.period === period && saved.data.date === date
-                && Date.parse(saved.data.fetchedAt) <= now() + 60_000
-                && (!current.snapshot || Date.parse(saved.data.updatedAt) > Date.parse(current.snapshot.updatedAt))) current.snapshot = saved.data;
-            } catch { /* A cache failure must not hide verified rankings. */ }
-          }
+          current.healthy = false;
           try {
-            current.healthy = false;
+            const saved = validateChampionshipSnapshot(await snapshotStore?.load(key), key, now());
+            if (saved && (!current.snapshot || compareChampionshipSnapshots(saved, current.snapshot) > 0)) current.snapshot = saved;
+          } catch { /* A cache failure must not hide verified rankings. */ }
+          try {
             const response = await fetcher(championshipApiUrl(period, date), {
               headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000), redirect: 'error', cache: 'no-store',
             });
@@ -93,7 +84,7 @@ export function createChampionshipService({ fetcher = fetch, now = Date.now, sto
             if (!current.snapshot || Date.parse(snapshot.updatedAt) >= Date.parse(current.snapshot.updatedAt)) {
               current.snapshot = snapshot;
               current.healthy = true;
-              try { await store?.save(key, snapshot); } catch { /* Memory cache remains usable. */ }
+              try { await snapshotStore?.save(key, snapshot); } catch { /* Memory cache remains usable. */ }
             }
           } catch { /* Keep the original timestamps and report saved data honestly. */ }
           finally { current.checkedAt = now(); }

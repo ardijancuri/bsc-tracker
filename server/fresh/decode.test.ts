@@ -4,7 +4,8 @@ import { transferTopic } from '../swap.js';
 import { WBNB } from '../launchpad.js';
 import { beforeExecutionTopic, userOperationTopic } from '../smartAccountTrades.js';
 import { FRESH_ENTRY_POINTS,decodeFreshEvidence,encodeFreshEvidence, type FreshCapturedReceipt, type FreshLog } from './capture.js';
-import { decodeFreshExecutions, normalizeFreshReceipt,recoverFreshRetainedTradeQuotes, preserveFreshVerifiedValuations,queueFreshDecodeRepair,freshDecodedEvidencePayload,finishFreshDecodedReceipt,assertFreshDecodeEvidenceUnchanged,reconcileFreshDecodeEvidence,canRecoverFreshMetadata, type FreshDecodeServices } from './decode.js';
+import { decodeFreshExecutions, normalizeFreshReceipt,recoverFreshRetainedTradeQuotes, preserveFreshVerifiedValuations,queueFreshDecodeRepair,freshDecodedEvidencePayload,finishFreshDecodedReceipt,assertFreshDecodeEvidenceUnchanged,reconcileFreshDecodeEvidence,canRecoverFreshMetadata,assertFreshDecodeAdmissionUnchanged,persistFreshDecodedReceipt, type FreshDecodeServices } from './decode.js';
+import{GANG_TOKEN_ADDRESS,type FreshExistingTokenPermission}from'./tracking.js';
 import { freshNativeDelta, freshTraceMatchesTransaction } from './trace.js';
 import {FreshMetadataReadError} from './pricing.js';
 import {RpcRequestError} from '../rpc.js';
@@ -23,6 +24,40 @@ function fixture(logs: FreshLog[]): FreshCapturedReceipt { return { transaction:
 function services(): FreshDecodeServices { return { async metadata(address) { return { address, name: 'Fresh Token', symbol: 'NEW', decimals: 18, supplyRaw: '1000000000000000000000000', block: { number: 101, hash: block.hash, timestamp: '2026-10-21T18:00:00Z' } }; }, async eligible(value) { return value.address === token; }, async priceUsd(address) { return address === WBNB ? '600' : address === quote ? '1' : '3'; } }; }
 function swapLog(index: number) { const value = swap.encodeEventLog('Swap', [other, 100n, 0n, 0n, 10n, wallet]); return log(other, value.topics, value.data, index); }
 describe('fresh exact execution normalization', () => {
+  it('admits only the selected existing token through the shared gate without making missing values known',async()=>{
+    const value=fixture([transfer(quote,wallet,other,100n*10n**18n,0),transfer(GANG_TOKEN_ADDRESS,other,wallet,10n*10n**18n,1),swapLog(2)]),normal=services();
+    const admitted={...normal,knownLaunch:async(address:string)=>address===GANG_TOKEN_ADDRESS,eligible:async(value:any)=>value.address===GANG_TOKEN_ADDRESS};
+    const decoded=await normalizeFreshReceipt(value,block,admitted);
+    expect(decoded.events).toHaveLength(1);expect(decoded.events[0]).toMatchObject({tokenAddress:GANG_TOKEN_ADDRESS,kind:'buy',quantity:'10',amountUsd:'100'});
+    const unavailable=await normalizeFreshReceipt(value,block,{...admitted,priceUsd:async()=>null});
+    expect(unavailable.events[0].amountUsd).toBeNull();expect(unavailable.reasons).toContain('trade_value_unavailable');
+    const metadata=vi.fn(normal.metadata),excluded=await normalizeFreshReceipt(value,block,{...admitted,knownLaunch:async()=>false,metadata});
+    expect(excluded.events).toEqual([]);expect(metadata).not.toHaveBeenCalled();
+    const unrelated=fixture([transfer(quote,wallet,other,100n*10n**18n,0),transfer(token,other,wallet,10n*10n**18n,1),swapLog(2)]);
+    expect((await normalizeFreshReceipt(unrelated,block,admitted)).events).toEqual([]);
+  });
+  it('fails closed when a cached explicit token permission is revoked or corrected before commit',()=>{
+    const before={kind:'preexisting',launchStatus:'preexisting',fromBlock:91,admissionDigest:'a'.repeat(64),permission:{active:true}}as any;
+    expect(()=>assertFreshDecodeAdmissionUnchanged(before,structuredClone(before))).not.toThrow();expect(()=>assertFreshDecodeAdmissionUnchanged(null,null)).not.toThrow();
+    for(const after of[null,{...before,admissionDigest:'b'.repeat(64)},{...before,fromBlock:92},{...before,permission:{active:false}},{kind:'new_launch',launchStatus:'eligible',fromBlock:91,fact:{status:'eligible'}}]as any[])
+      expect(()=>assertFreshDecodeAdmissionUnchanged(before,after)).toThrow('decode_token_admission_changed');
+    expect(()=>assertFreshDecodeAdmissionUnchanged(null,before)).toThrow('decode_token_admission_changed');
+  });
+  it('stores explicit existing-token metadata as preexisting and rechecks the permission under lock',async()=>{
+    const start={block_number:'90',block_hash:hash('9'),value:{startBlock:90,startHash:hash('9'),startTime:'2026-10-25T00:00:00.000Z'}};
+    let permission:FreshExistingTokenPermission|null={version:1,kind:'explicit_existing',chainId:56,tokenAddress:GANG_TOKEN_ADDRESS,active:true,startBlock:90,startHash:hash('9'),startTime:start.value.startTime,fromBlock:91,approvedAt:'2026-10-25T01:00:00.000Z',reason:'user_approved_gang_only'};
+    const query=vi.fn(async(sql:string,_params:unknown[]=[])=>{
+      if(sql.startsWith('SELECT block_number::text,block_hash,value'))return{rows:[start]};
+      if(sql.startsWith('SELECT value FROM fresh.checkpoints WHERE key=$1'))return{rows:permission?[{value:permission}]:[]};
+      return{rows:[],rowCount:0};
+    });
+    const metadata=await services().metadata(GANG_TOKEN_ADDRESS),decoded={events:[],reasons:[],tokens:[metadata!],executions:0};
+    await persistFreshDecodedReceipt({query}as any,decoded,new Date('2026-10-25T02:00:00.000Z'));
+    const inserted=query.mock.calls.find(([sql])=>sql.startsWith('INSERT INTO fresh.tokens'))!;
+    expect(inserted[1]![6]).toBe('preexisting');expect(query.mock.calls.filter(([sql])=>sql.startsWith('SELECT value FROM fresh.checkpoints WHERE key=$1')).every(([sql])=>sql.endsWith(' FOR SHARE'))).toBe(true);
+    query.mockClear();permission=null;await expect(persistFreshDecodedReceipt({query}as any,decoded,new Date())).rejects.toThrow('decode_token_admission_changed');
+    expect(query.mock.calls.some(([sql])=>sql.startsWith('INSERT INTO fresh.tokens'))).toBe(false);
+  });
   it('commits agreeing additive urgent reads without losing concurrently saved raw proof or its own successful normalization reads',async()=>{
     const metadataAbi=new Interface(['function decimals() view returns(uint8)','function totalSupply() view returns(uint256)']);
     const entry=fixture([]),firstFailure={version:1 as const,at:entry.observedAt,reasons:['token_decimals_unavailable']};

@@ -1,4 +1,6 @@
 import{isFreshSettlementQuote,freshSettlementQuoteSymbol}from'./settlementQuote.js';
+import{GANG_TOKEN_ADDRESS,readFreshTokenAdmission,freshScopeEventSql}from'./tracking.js';
+import{freshPendingGangTrade,persistFreshPendingTrades,removeFreshResolvedPendingTrades,type FreshPendingTrade}from'./pendingTrades.js';
 import{freshAcquisitionCostKey}from'./acquisitionCost.js';
 import{freshSignedSelfCallSettlement}from'./signedSelfCallSettlement.js';
 import { createHash } from 'node:crypto';
@@ -15,8 +17,8 @@ import { fourMarketAbi, flapMarketAbi, TRUSTED_QUOTE_FEEDS, v3MarketAbi, infinit
 import { isKolProfileToken, isExcludedKolProfileTokenAddress } from '../kolProfileToken.js';
 import {RpcRequestError,type Rpc} from '../rpc.js';
 import type { FreshFinancialEvent } from '../../shared/freshAccounting.js';
-import { applyFreshFinancialEvents,validateFreshFinancialEvent, FreshRational, rebuildFreshScopesAfterReorg, freshEventFromRow, freshEventOrder, freshEventAccountingEligible,assertFreshEventQuoteCompatible,freshSameTradeQuoteContext,persistFreshTradeQuote } from './accounting.js';
-import { FRESH_ENTRY_POINTS, decodeFreshEvidence, encodeFreshEvidence, freshAddress, freshHash, freshInteger,validateFreshReceipt, type FreshCapturedReceipt, type FreshLog, type FreshBlock, type FreshCaptureCheckpoint } from './capture.js';
+import { applyFreshFinancialEvents,validateFreshFinancialEvent, FreshRational, rebuildFreshScopesAfterReorg, freshEventFromRow, freshScopeFromRow,freshEventOrder, freshEventAccountingEligible,assertFreshEventQuoteCompatible,freshSameTradeQuoteContext,persistFreshTradeQuote } from './accounting.js';
+import { FRESH_ENTRY_POINTS, decodeFreshEvidence, encodeFreshEvidence, freshAddress, freshHash, freshInteger,validateFreshReceipt, type FreshCapturedReceipt, type FreshLog, type FreshBlock } from './capture.js';
 import { freshCall, freshCurrentQuote, freshTokenMetadata, freshQuoteUsd, freshMetadataDiagnostic, type FreshTokenMetadata, type FreshPriceBlock } from './pricing.js';
 import { freshIpcTrace, freshNativeDelta, freshTraceMatchesTransaction,validateFreshTrace, type FreshTraceLoader, type FreshCallTrace } from './trace.js';
 import { createFreshStateEvidenceRpc, type FreshStateEvidenceRpc, type FreshStateReadEvidence } from './stateEvidence.js';
@@ -24,12 +26,15 @@ import {createFreshReceiptRecovery,type FreshReceiptRecoveryEvidence} from './re
 import {freshNativeBuyCost} from './routerPayment.js';
 import type {FreshRecoveryBatch} from './recoveryBatch.js';
 import{isFreshSyntheticBatchCandidate,decodeFreshSyntheticTransferBatch,readFreshSyntheticBatchAnchor,type FreshSyntheticBatchAnchor,type FreshSyntheticBatchProof}from'./syntheticTransferBatch.js';
-import { freshPositionDependencies } from './positionDependencies.js';
+import { freshPositionDependencies,freshPendingTradeInScopeSql } from './positionDependencies.js';
 import {hasFreshSmartSellSettlement,freshSmartAccountSellSettlement} from './smartAccountSettlement.js';
 import {persistFreshTradeBnbPrice} from './tradeBnbDisplay.js';
 import {freshQuotePayment} from './quotePayment.js';
 import {freshTokenExchangeSettlement,hasFreshTokenExchangeRoute} from './tokenExchangeSettlement.js';
 import {freshSignedBatchNativeBuyPayment} from './signedBatchPayment.js';
+import{readFreshGangMetadataInput,recoverFreshGangHistoricalMetadata,validFreshGangImportedMetadata,type FreshGangImportedMetadata}from'./gangMetadata.js';
+import{recoverFreshGangTradeMarketMark,persistFreshGangTradeMarketMark,invalidateFreshTradeMarketMarks,type FreshGangTradeMarketMark}from'./gangTradeMarketMark.js';
+import{freshImportedMetadataMatchesState}from'./importedMetadata.js';
 
 export const FRESH_DECODER_VERSION = 3;
 const q = FreshRational.parse, units = (raw: bigint, decimals: number) => new FreshRational(raw, 10n ** BigInt(decimals)).decimal(255);
@@ -44,7 +49,7 @@ const attributionKey = (value: FreshFinancialEvent['feeAttribution']) => JSON.st
   contract: value.contract ?? null, selector: value.selector ?? null, nativeFeeWei: value.nativeFeeWei,
   ...(value.expensePolicy?{expensePolicy:value.expensePolicy,batchExpenseNativeWei:value.batchExpenseNativeWei,gasNativeWei:value.gasNativeWei}:{}) } : null);
 export interface FreshExecution { key: string; wallet: string; index: number; kind: 'transaction' | 'user_operation' | 'transfer'; logs: FreshLog[]; feeWei: bigint | null; status: 'success' | 'failed' | 'unsupported'; operationHash: string | null; nativeValue: bigint; router: string | null }
-export interface FreshDecodedReceipt { events: FreshFinancialEvent[]; reasons: string[]; tokens: FreshTokenMetadata[]; executions: number; trace?: FreshCallTrace | null;syntheticTransferBatch?:FreshSyntheticBatchProof;tradeBnbPrices?:Record<string,string> }
+export interface FreshDecodedReceipt { events: FreshFinancialEvent[]; reasons: string[]; tokens: FreshTokenMetadata[]; executions: number; trace?: FreshCallTrace | null;syntheticTransferBatch?:FreshSyntheticBatchProof;tradeBnbPrices?:Record<string,string>;pendingTrades?:FreshPendingTrade[];gangMarketMarks?:FreshGangTradeMarketMark[] }
 export interface FreshDecodeDiagnostics { version:1; valuationReasons:string[]; firstFailure?:{version:1;at:string;reasons:string[]} }
 type FreshDiagnosedReceipt=FreshCapturedReceipt&{decodeDiagnostics?:FreshDecodeDiagnostics};
 export interface FreshDecodeServices {
@@ -62,6 +67,7 @@ export interface FreshDecodeServices {
   nativeQuoteChangeUsd?(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly?:boolean):Promise<string|null>;
   signedBatchPurchaseUsd?(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,trace:FreshCallTrace):Promise<string|null>;
   syntheticBatchAnchor?(tokenAddress:string):Promise<FreshSyntheticBatchAnchor|null>;
+  tradeAdmission?(tokenAddress:string):ReturnType<typeof readFreshTokenAdmission>;
   trace?: FreshTraceLoader;
 }
 
@@ -354,7 +360,10 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     if (events.length === previousEvents && selfTransfersOnly && execution.feeWei !== 0n) emit(targets.length === 1 ? targets[0].token : null, 'fee', '0', '0', null, null, null,
       { status: targets.length === 1 ? 'eligible' : 'unattributed', ...(targets.length === 1 ? { tokenAddress: targets[0].token } : {}), ...(tx.to ? { contract: tx.to.toLowerCase() } : {}), nativeFeeWei: execution.feeWei?.toString() ?? null });
   }
-  return { events, reasons: [...reasons].sort(), tokens: [...tokens.values()], executions: executions.length, ...(trace !== undefined ? { trace } : {}),...(syntheticTransferBatch?{syntheticTransferBatch}:{}),...(Object.keys(tradeBnbPrices).length?{tradeBnbPrices}:{}) };
+  let pending:FreshPendingTrade|null=null;
+  if(services.tradeAdmission&&entry.receipt.logs.some(log=>log.address===GANG_TOKEN_ADDRESS)&&!events.some(event=>event.tokenAddress===GANG_TOKEN_ADDRESS&&['buy','sell'].includes(event.kind)))
+    pending=freshPendingGangTrade(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},await services.tradeAdmission(GANG_TOKEN_ADDRESS));
+  return { events, reasons: [...reasons].sort(), tokens: [...tokens.values()], executions: executions.length, ...(trace !== undefined ? { trace } : {}),...(syntheticTransferBatch?{syntheticTransferBatch}:{}),...(Object.keys(tradeBnbPrices).length?{tradeBnbPrices}:{}),...(pending?{pendingTrades:[pending]}:{}) };
 }
 
 /** An existing canonical fact already identifies its traded token and scaled
@@ -453,12 +462,25 @@ export function recoverFreshRetainedStableTradeQuote(entry:FreshCapturedReceipt,
 }
 
 async function persistMetadata(client: PoolClient, tokens: FreshTokenMetadata[]) {
-  for (const token of tokens) await client.query(`INSERT INTO fresh.tokens(address,name,symbol,decimals,total_supply_raw,launch_status,metadata_updated_at)
-    VALUES($1,$2,$3,$4,$5,'eligible',$6) ON CONFLICT(address) DO UPDATE SET name=COALESCE(EXCLUDED.name,fresh.tokens.name),symbol=COALESCE(EXCLUDED.symbol,fresh.tokens.symbol),
-    decimals=EXCLUDED.decimals,total_supply_raw=COALESCE(EXCLUDED.total_supply_raw,fresh.tokens.total_supply_raw),metadata_updated_at=EXCLUDED.metadata_updated_at,launch_status='eligible'
+  for (const token of tokens) {
+    // An explicit existing-token permission never rewrites its launch age.
+    // Recheck it under the financial transaction before retaining metadata.
+    const admission=token.address===GANG_TOKEN_ADDRESS?await readFreshTokenAdmission(client,token.address,{blockNumber:token.block.number,lock:true}):null;
+    if(token.address===GANG_TOKEN_ADDRESS&&!admission)throw Error('decode_token_admission_changed');
+    const launchStatus=admission?.launchStatus??'eligible';
+    await client.query(`INSERT INTO fresh.tokens(address,name,symbol,decimals,total_supply_raw,launch_status,metadata_updated_at)
+    VALUES($1,$2,$3,$4,$5,$7,$6) ON CONFLICT(address) DO UPDATE SET name=COALESCE(EXCLUDED.name,fresh.tokens.name),symbol=COALESCE(EXCLUDED.symbol,fresh.tokens.symbol),
+    decimals=EXCLUDED.decimals,total_supply_raw=COALESCE(EXCLUDED.total_supply_raw,fresh.tokens.total_supply_raw),metadata_updated_at=EXCLUDED.metadata_updated_at,launch_status=EXCLUDED.launch_status
     WHERE fresh.tokens.metadata_updated_at IS NULL OR fresh.tokens.metadata_updated_at<=EXCLUDED.metadata_updated_at AND
       (fresh.tokens.name,fresh.tokens.symbol,fresh.tokens.decimals,fresh.tokens.total_supply_raw,fresh.tokens.launch_status) IS DISTINCT FROM
-      (COALESCE(EXCLUDED.name,fresh.tokens.name),COALESCE(EXCLUDED.symbol,fresh.tokens.symbol),EXCLUDED.decimals,COALESCE(EXCLUDED.total_supply_raw,fresh.tokens.total_supply_raw),'eligible')`, [token.address, token.name, token.symbol, token.decimals, token.supplyRaw, token.block.timestamp]);
+      (COALESCE(EXCLUDED.name,fresh.tokens.name),COALESCE(EXCLUDED.symbol,fresh.tokens.symbol),EXCLUDED.decimals,COALESCE(EXCLUDED.total_supply_raw,fresh.tokens.total_supply_raw),EXCLUDED.launch_status)`, [token.address, token.name, token.symbol, token.decimals, token.supplyRaw, token.block.timestamp,launchStatus]);
+  }
+}
+
+/** A permission revocation or authenticated launch correction wins over work
+ * normalized outside the financial lock, including work emitting no facts. */
+export function assertFreshDecodeAdmissionUnchanged(before:Awaited<ReturnType<typeof readFreshTokenAdmission>>,after:Awaited<ReturnType<typeof readFreshTokenAdmission>>){
+  if(JSON.stringify(before)!==JSON.stringify(after))throw Error('decode_token_admission_changed');
 }
 
 /** A canonical fact already valued successfully must not lose that value just
@@ -561,8 +583,9 @@ export async function canAppendFreshIsolatedIncoming(database:Pick<Pool,'query'>
 
 /** A correction is exceptional durable work, never a page-read recalculation.
  * Existing event identities stay stable; only the affected books are rebuilt. */
-async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, now: Date, contexts: FreshDecodedReceipt[] = [decoded]) {
+async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, now: Date, contexts: FreshDecodedReceipt[] = [decoded],allowedScopeIds?:readonly string[]) {
   await persistMetadata(client, decoded.tokens);
+  if(decoded.pendingTrades?.length)await persistFreshPendingTrades(client,decoded.pendingTrades,now);
   const saved = decoded.events.length ? (await client.query(`SELECT * FROM fresh.financial_events WHERE id=ANY($1::text[]) OR
     canonical AND transaction_hash=ANY($2::text[]) AND block_hash=ANY($3::text[]) AND wallet_address=ANY($4::text[])`, [decoded.events.map(event => event.id),
     [...new Set(decoded.events.map(event => event.transactionHash))], [...new Set(decoded.events.map(event => event.blockHash))], [...new Set(decoded.events.map(event => event.walletAddress))]])).rows : [];
@@ -581,7 +604,17 @@ async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, 
   for(const event of decoded.events){validateFreshFinancialEvent(event);const prior=old.get(event.id);if(prior)assertFreshEventQuoteCompatible(prior,event);}
   const changed = decoded.events.filter(event => { const previous = old.get(event.id); return previous && (['tokenAddress', 'quantity', 'amountUsd', 'feeUsd', 'feeKey', 'counterparty', 'transferKey', 'executionIndex'].some(key => previous[key as keyof FreshFinancialEvent] !== event[key as keyof FreshFinancialEvent])
     || freshAcquisitionCostKey(previous.acquisitionCost)!==freshAcquisitionCostKey(event.acquisitionCost)|| attributionKey(previous.feeAttribution) !== attributionKey(event.feeAttribution)); });
-  const scopes = (await client.query('SELECT id FROM fresh.accounting_scopes WHERE active AND wallet_addresses && $1::text[] ORDER BY id', [[...new Set(decoded.events.map(event => event.walletAddress))]])).rows.map(row => row.id as string);
+  let restrictedScopes:ReturnType<typeof freshScopeFromRow>[]|undefined;
+  if(allowedScopeIds!==undefined){
+    if(allowedScopeIds.length>1024||new Set(allowedScopeIds).size!==allowedScopeIds.length||allowedScopeIds.some(id=>typeof id!=='string'||!id||id.length>256))throw Error('decode_allowed_scopes_invalid');
+    const events=decoded.events.map(e=>({wallet_address:e.walletAddress,token_address:e.tokenAddress,block_number:e.blockNumber,occurred_at:e.occurredAt}));
+    const rows=(await client.query(`SELECT DISTINCT s.* FROM fresh.accounting_scopes s JOIN jsonb_to_recordset($2::jsonb) AS e(wallet_address text,token_address text,block_number bigint,occurred_at timestamptz)
+      ON e.wallet_address=ANY(s.wallet_addresses) WHERE s.active AND s.id=ANY($1::text[]) AND ${freshScopeEventSql('e','s')}
+      AND(s.account_id IS NULL OR EXISTS(SELECT 1 FROM public.journal_wallets j WHERE j.user_id::text=s.account_id AND j.wallet_address=e.wallet_address
+      AND e.block_number>=COALESCE(j.registration_block,s.starts_block) AND e.occurred_at>=j.activity_from)) ORDER BY s.id`,[allowedScopeIds,JSON.stringify(events)])).rows;
+    if(rows.length!==allowedScopeIds.length)throw Error('decode_allowed_scope_outside_events');restrictedScopes=rows.map(freshScopeFromRow);
+  }
+  const scopes = restrictedScopes?.map(s=>s.id)??(await client.query('SELECT id FROM fresh.accounting_scopes WHERE active AND wallet_addresses && $1::text[] ORDER BY id', [[...new Set(decoded.events.map(event => event.walletAddress))]])).rows.map(row => row.id as string);
   for (const id of scopes) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`fresh-scope:${id}`]);
   for (const event of changed) await client.query('UPDATE fresh.financial_events SET quantity=$2,amount_usd=$3,fee_usd=$4,fee_key=$5,counterparty=$6,transfer_key=$7,decoder_version=$8,execution_index=$9,fee_attribution=$10::jsonb,token_address=$11,acquisition_cost=$12::jsonb WHERE id=$1 AND canonical',
     [event.id, event.quantity, event.amountUsd, event.feeUsd, event.feeKey, event.counterparty, event.transferKey, FRESH_DECODER_VERSION, event.executionIndex, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null, event.tokenAddress,event.acquisitionCost?JSON.stringify(event.acquisitionCost):null]);
@@ -600,12 +633,14 @@ async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, 
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,true,$19::jsonb,$20,$21,$22,$23::jsonb) ON CONFLICT DO NOTHING`, [event.id, event.executionKey, event.walletAddress, event.tokenAddress, event.kind, event.quantity, event.amountUsd, event.feeUsd,
       event.feeKey, event.counterparty, event.transferKey, event.blockNumber, event.blockHash, event.transactionHash, event.transactionIndex, event.executionIndex, event.logIndex, event.occurredAt, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null,event.quoteAddress??null,event.quoteSymbol??null,event.quoteAmount??null,event.acquisitionCost?JSON.stringify(event.acquisitionCost):null]);
     await rebuildFreshScopesAfterReorg(client, scopes, now);
-  } else await applyFreshFinancialEvents(client, decoded.events, { now });
+  } else await applyFreshFinancialEvents(client, decoded.events, restrictedScopes?{now,scopes:restrictedScopes}:{now});
   for(const context of contexts)for(const[id,rate]of Object.entries(context.tradeBnbPrices??{})){
     const event=decoded.events.find(event=>event.id===id);if(!event)throw Error('trade_bnb_display_event_missing');
     await persistFreshTradeBnbPrice(client,event,rate);
   }
   if (decoded.events.length) await client.query('UPDATE fresh.financial_events SET decoder_version=$2 WHERE id=ANY($1::text[]) AND decoder_version IS DISTINCT FROM $2', [decoded.events.map(event => event.id), FRESH_DECODER_VERSION]);
+  for(const context of contexts)for(const mark of context.gangMarketMarks??[])await persistFreshGangTradeMarketMark(client,mark);
+  await removeFreshResolvedPendingTrades(client,decoded.events.filter(event=>event.tokenAddress===GANG_TOKEN_ADDRESS&&['buy','sell'].includes(event.kind)).map(event=>event.id));
 }
 /** Transaction-owned entry for decoder correction integration and repair jobs. */
 export { persistDecoded as persistFreshDecodedReceipt };
@@ -723,14 +758,18 @@ export function canRecoverFreshMetadata(error:unknown){
   return error.category==='state_unavailable'||error.category==='transport'||error.category==='rate_limit';
 }
 
-export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?: number; now?: Date; trace?: FreshTraceLoader; recoveryBatch?: FreshRecoveryBatch; maxNormalizeMs?:number; normalizationNow?:()=>number } = {}) {
+export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?: number; now?: Date; trace?: FreshTraceLoader; recoveryBatch?: FreshRecoveryBatch; maxNormalizeMs?:number; normalizationNow?:()=>number;
+ gangHistoricalMetadata?:(context:{tokenAddress:string;entry:FreshCapturedReceipt;block:FreshPriceBlock})=>Promise<FreshGangImportedMetadata|null> } = {}) {
   const now = options.now ?? new Date(), selected = await selectFreshDecodeEvidence(database, now, options.limit);
   if (!selected.rows.length) return { receipts: 0, attemptedReceipts:0,deferredReceipts:0,events: 0, repair: 0, unsupported: 0, evidenceMerges:0,completeCutoffBlock: null };
   const boundary = (await database.query("SELECT value FROM fresh.checkpoints WHERE key='capture'")).rows[0]?.value?.startBlock;
   if (!Number.isSafeInteger(Number(boundary))) throw new Error('tracking_boundary_uninitialized');
-  const decodedRows: { row: any; entry: FreshCapturedReceipt; decoded: FreshDecodedReceipt; state:FreshStateEvidenceRpc; recovery:ReturnType<typeof createFreshReceiptRecovery> }[] = [];
-  const launchCache = new Map<string, Promise<{ status: string; block_number: string } | undefined>>();
-  const launchFact = (token: string) => { let value = launchCache.get(token); if (!value) { value = database.query('SELECT status,block_number FROM fresh.launch_facts WHERE token_address=$1', [token]).then(result => result.rows[0]); launchCache.set(token, value); } return value; };
+  type GangRecovery={anchorSha256?:string;withoutSupply?:boolean;proof?:unknown;imported?:FreshGangImportedMetadata};
+  const decodedRows: { row: any; entry: FreshCapturedReceipt; decoded: FreshDecodedReceipt; state:FreshStateEvidenceRpc; recovery:ReturnType<typeof createFreshReceiptRecovery>;gang:GangRecovery }[] = [];
+  const recoverySnapshot=(recovery:ReturnType<typeof createFreshReceiptRecovery>,gang:GangRecovery,block:FreshPriceBlock):FreshReceiptRecoveryEvidence|undefined=>{
+    const prior=recovery.snapshot();return gang.proof?{...(prior??{version:1,target:block,metadata:{},quotes:[],pools:[]}),metadata:{...prior?.metadata,[GANG_TOKEN_ADDRESS]:gang.proof}}:prior;};
+  const admissionCache=new Map<string,Promise<Awaited<ReturnType<typeof readFreshTokenAdmission>>>>();
+  const admission=(token:string,number:number)=>{const key=`${token}:${number}`;let value=admissionCache.get(key);if(!value){value=readFreshTokenAdmission(database,token,{blockNumber:number});admissionCache.set(key,value);}return value;};
   // Coalesce wire reads while each receipt records the successful values it
   // actually used. Caching whole metadata promises lost those proofs on retry.
   const wireReads=new Map<string,Promise<unknown>>();
@@ -749,14 +788,24 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
     const entry = decodeFreshEvidence(row.payload), block: FreshPriceBlock = { number: Number(row.block_number), hash: row.block_hash, timestamp: new Date(row.occurred_at).toISOString() };
     const state=createFreshStateEvidenceRpc(sharedRpc,block,entry.stateEvidence);
     const recovery=createFreshReceiptRecovery(database,sharedRpc,entry,block,{state:()=>state.snapshot()??undefined,batch:options.recoveryBatch});
+    const gang:GangRecovery={};
     const services: FreshDecodeServices = {
       async metadata(token) {const imported=await recovery.importedMetadata(token);if(imported)return imported;
         try{return await freshTokenMetadata(token,{rpc:state.rpc,block,requireSupply:false});}
         catch(error){if(canRecoverFreshMetadata(error)){
           const recovered=await recovery.metadata(token).catch(()=>null);if(recovered)return recovered;
+          if(token===GANG_TOKEN_ADDRESS&&(await admission(token,block.number))?.kind==='preexisting'){
+            const anchor=await readFreshGangMetadataInput(database,block);
+            if(anchor){let value=await recoverFreshGangHistoricalMetadata(anchor.input);
+              if(!value&&anchor.input.after){value=await recoverFreshGangHistoricalMetadata({...anchor.input,after:undefined});gang.withoutSupply=true;}
+              if(value&&freshImportedMetadataMatchesState(value.metadata,state.snapshot())){gang.anchorSha256=anchor.anchorSha256;gang.proof=value.proof;return value.metadata;}}
+            const imported=await options.gangHistoricalMetadata?.({tokenAddress:token,entry,block});
+            if(imported&&validFreshGangImportedMetadata(imported,entry,block,state.snapshot())){
+              gang.imported=structuredClone(imported);gang.proof=gang.imported.proof;return{...gang.imported.metadata,name:null,symbol:null};}
+          }
         }throw error;}},
-      async knownLaunch(token) { const fact = await launchFact(token); return Boolean(fact && fact.status === 'eligible' && Number(fact.block_number) > Number(boundary) && Number(fact.block_number) <= block.number); },
-      async eligible(token) { const fact = await launchFact(token.address); return Boolean(fact && fact.status === 'eligible' && Number(fact.block_number) > Number(boundary) && Number(fact.block_number) <= block.number); },
+      async knownLaunch(token) {return Boolean(await admission(token,block.number));},
+      async eligible(token) {return Boolean(await admission(token.address,block.number));},
       priceUsd(token) { return (TRUSTED_QUOTE_FEEDS[token]?freshQuoteUsd(token,{rpc:state.rpc,block}):freshCurrentQuote(token,{rpc:state.rpc,block}).then(quote=>quote.priceUsd)).catch(()=>recovery.priceUsd(token)); },
       additionalNativeFeeWei:recovery.additionalNativeFeeWei,
       directFlapPurchaseUsd:recovery.directFlapPurchaseUsd,
@@ -766,10 +815,11 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
       acquisitionCost:recovery.acquisitionCost,
       signedBatchPurchaseUsd:recovery.signedBatchPurchaseUsd,
       syntheticBatchAnchor:token=>readFreshSyntheticBatchAnchor(database,token),
+      tradeAdmission:token=>admission(token,block.number),
       trace: options.trace ?? freshIpcTrace,
     };
     try { const decoded = await normalizeFreshReceipt(entry, { number: `0x${block.number.toString(16)}`, hash: block.hash, timestamp: `0x${Math.floor(Date.parse(block.timestamp) / 1_000).toString(16)}` }, services);
-      if(entry.launchRepair)decoded.reasons.push('factory_launch_unverified');await state.settle();decodedRows.push({ row, entry, decoded,state,recovery }); }
+      if(entry.launchRepair)decoded.reasons.push('factory_launch_unverified');await state.settle();decodedRows.push({ row, entry, decoded,state,recovery,gang }); }
     catch (error) {
       unsupported++;
       const reason = error instanceof Error ? error.message.slice(0, 128) : 'receipt_decoder_unavailable';
@@ -781,7 +831,7 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
         const canonical=(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[block.number])).rows[0];
         if(canonical?.block_hash===block.hash){
           const saved=await client.query(`UPDATE fresh.recent_evidence SET decoder_status='repair',last_error=$3,payload=COALESCE($4,payload)
-            WHERE tx_hash=$1 AND block_hash=$2 AND payload=$5`,[row.tx_hash,row.block_hash,reason,freshDecodedEvidencePayload(entry,state,undefined,recovery.snapshot()),row.payload]);
+            WHERE tx_hash=$1 AND block_hash=$2 AND payload=$5`,[row.tx_hash,row.block_hash,reason,freshDecodedEvidencePayload(entry,state,undefined,recoverySnapshot(recovery,gang,block)),row.payload]);
           if(saved.rowCount)await queueFreshDecodeRepair(client,row,transactionNow,[reason]);
         }
         await client.query('COMMIT');
@@ -806,22 +856,36 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
         const reconciled=reconcileFreshDecodeEvidence(current,work.row,work.entry,work.state);
         work.entry=reconciled.entry;work.state=reconciled.state;if(reconciled.merged)evidenceMerges++;
       }
-      // A concurrent authenticated correction must win over a previously
-      // cached eligible launch, even when that stale decode emitted no facts.
-      const contracts=[...new Set(rows.flatMap(({entry})=>entry.receipt.logs.map(log=>log.address.toLowerCase())))];
-      if(contracts.length){
-        const excluded=(await client.query("SELECT token_address FROM fresh.launch_facts WHERE token_address=ANY($1::text[]) AND status='excluded_non_token'",[contracts])).rows;
-        for(const item of excluded)if((await launchCache.get(item.token_address))?.status==='eligible')throw new Error('decode_token_authenticity_changed');
-      }
+      // A concurrent authenticated launch correction or permission change
+      // wins even when stale normalization emitted no financial facts.
+      const contracts=[...new Set(rows.flatMap(({entry})=>[...entry.receipt.logs.map(log=>log.address.toLowerCase()),...(freshAddress(entry.transaction.to)?[freshAddress(entry.transaction.to)!]:[])]))];
+      for(const token of contracts){const cached=admissionCache.get(`${token}:${number}`);if(cached)assertFreshDecodeAdmissionUnchanged(await cached,await readFreshTokenAdmission(client,token,{blockNumber:number,lock:true}));}
       for(const token of new Set(rows.flatMap(row=>row.decoded.syntheticTransferBatch?[row.decoded.syntheticTransferBatch.tokenAddress]:[])))if(!await readFreshSyntheticBatchAnchor(client,token))throw Error('decode_synthetic_birth_changed');
+      for(const work of rows){
+        const block={number:Number(work.row.block_number),hash:work.row.block_hash,timestamp:new Date(work.row.occurred_at).toISOString()};
+        const pairTouched=work.entry.receipt.logs.some(log=>log.address==='0x0bd5ded695d61c2db15c703c345d57e039fd0b6d');
+        const anchor=work.gang.anchorSha256||pairTouched?await readFreshGangMetadataInput(client,block,{lock:true}):null;
+        if(work.gang.anchorSha256){if(!anchor||anchor.anchorSha256!==work.gang.anchorSha256)throw Error('gang_metadata_anchor_changed');
+          const checked=await recoverFreshGangHistoricalMetadata({...anchor.input,...(work.gang.withoutSupply?{after:undefined}:{})});
+          if(!checked||JSON.stringify(checked.proof)!==JSON.stringify(work.gang.proof)||!freshImportedMetadataMatchesState(checked.metadata,work.state.snapshot()))throw Error('gang_metadata_proof_changed');}
+        if(work.gang.imported&&!validFreshGangImportedMetadata(work.gang.imported,work.entry,block,work.state.snapshot()))throw Error('gang_metadata_import_changed');
+        if(pairTouched){
+          const canonicalHeader=async(n:number)=>{const b=(await client.query('SELECT block_number,block_hash,occurred_at FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[n])).rows[0];return b?{number:Number(b.block_number),hash:b.block_hash,timestamp:new Date(b.occurred_at).toISOString()}:null;};
+          const proof=recoverySnapshot(work.recovery,work.gang,block)?.quotes.find(p=>p.tokenAddress===WBNB);
+          const mark=await recoverFreshGangTradeMarketMark({entry:{...work.entry,stateEvidence:work.state.snapshot()},block,metadata:anchor?.input,canonicalHeader,
+            admission:await readFreshTokenAdmission(client,GANG_TOKEN_ADDRESS,{blockNumber:block.number,lock:true}),historicalBnbFeed:proof});
+          if(mark)work.decoded.gangMarketMarks=[mark];
+        }
+      }
       // Apply the whole block's normalized events together for transfer pairing.
-      const combined = { events: rows.flatMap(row => row.decoded.events), reasons: rows.flatMap(row => row.decoded.reasons), tokens: rows.flatMap(row => row.decoded.tokens), executions: rows.reduce((sum, row) => sum + row.decoded.executions, 0) };
+      const combined = { events: rows.flatMap(row => row.decoded.events), reasons: rows.flatMap(row => row.decoded.reasons), tokens: rows.flatMap(row => row.decoded.tokens), executions: rows.reduce((sum, row) => sum + row.decoded.executions, 0),pendingTrades:rows.flatMap(row=>row.decoded.pendingTrades??[]) };
       await persistDecoded(client, combined, transactionNow, rows.map(row => row.decoded)); events += combined.events.length;
       for (const { entry, decoded } of rows) if (entry.historicalWallets?.length) await client.query(`UPDATE fresh.financial_events SET observed_live=false
         WHERE id=ANY($1::text[]) AND wallet_address=ANY($2::text[]) AND observed_live`, [decoded.events.map(event => event.id), entry.historicalWallets]);
       const batchEvents=decodedRows.flatMap(row=>row.decoded.events);
-      for (const { row, decoded, entry,state,recovery } of rows) {
-        const{waiting}=await finishFreshDecodedReceipt(client,{row,entry,decoded,state,recovery:recovery.snapshot(),now:transactionNow,batchEvents});if(waiting)repair++;
+      for (const { row, decoded, entry,state,recovery,gang } of rows) {
+        const block={number:Number(row.block_number),hash:row.block_hash,timestamp:new Date(row.occurred_at).toISOString()};
+        const{waiting}=await finishFreshDecodedReceipt(client,{row,entry,decoded,state,recovery:recoverySnapshot(recovery,gang,block),now:transactionNow,batchEvents});if(waiting)repair++;
       }
       await client.query(`INSERT INTO fresh.checkpoints(key,block_number,block_hash) VALUES('decode',$1,$2)
         ON CONFLICT(key) DO UPDATE SET block_number=greatest(fresh.checkpoints.block_number,EXCLUDED.block_number),block_hash=CASE WHEN fresh.checkpoints.block_number<=EXCLUDED.block_number THEN EXCLUDED.block_hash ELSE fresh.checkpoints.block_hash END,updated_at=clock_timestamp()`, [number, rows[0].row.block_hash]);
@@ -841,10 +905,14 @@ export async function rollbackFreshToAncestor(client: PoolClient, ancestor: { bl
   const known = (await client.query('SELECT 1 FROM fresh.recent_blocks WHERE block_number=$1 AND block_hash=$2', [ancestor.blockNumber, ancestor.blockHash])).rowCount;
   if (!known && (Number(checkpoint.value?.startBlock) !== ancestor.blockNumber || checkpoint.value?.startHash !== ancestor.blockHash)) throw new Error('reorg_beyond_repair_buffer');
   await invalidateFreshNotificationActivation(client,ancestor.blockNumber,now);
-  const wallets = (await client.query(`UPDATE fresh.financial_events SET canonical=false WHERE canonical AND block_number>$1 RETURNING wallet_address`, [ancestor.blockNumber])).rows.map(row => row.wallet_address);
-  const scopes = (await client.query(`SELECT id FROM fresh.accounting_scopes s WHERE wallet_addresses && $1::text[]
+  const pendingScopes=(await client.query(`SELECT DISTINCT s.id FROM fresh.accounting_scopes s JOIN fresh.pending_trades pending ON pending.wallet_address=ANY(s.wallet_addresses)
+    WHERE pending.block_number>$1 AND ${freshPendingTradeInScopeSql('pending','s')}`,[ancestor.blockNumber])).rows.map(row=>row.id);
+  const pendingWallets=(await client.query('UPDATE fresh.pending_trades SET canonical=false WHERE canonical AND block_number>$1 RETURNING wallet_address',[ancestor.blockNumber])).rows.map(row=>row.wallet_address);
+  const wallets = [...pendingWallets,...(await client.query(`UPDATE fresh.financial_events SET canonical=false WHERE canonical AND block_number>$1 RETURNING wallet_address`, [ancestor.blockNumber])).rows.map(row => row.wallet_address)];
+  await invalidateFreshTradeMarketMarks(client,ancestor.blockNumber);
+  const scopes = [...new Set([...pendingScopes,...(await client.query(`SELECT id FROM fresh.accounting_scopes s WHERE wallet_addresses && $1::text[]
     OR EXISTS(SELECT 1 FROM fresh.positions p LEFT JOIN fresh.tokens t ON t.address=p.token_address WHERE p.scope_id=s.id AND (p.balance_block>$2 OR t.observed_block>$2))
-    ORDER BY id`, [wallets, ancestor.blockNumber])).rows.map(row => row.id);
+    ORDER BY id`, [wallets, ancestor.blockNumber])).rows.map(row => row.id)])].sort();
   await rebuildFreshScopesAfterReorg(client, scopes, now);
   if (onRollback) await onRollback(client, ancestor.blockNumber);
   await client.query(`DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference IN(SELECT tx_hash||':'||block_hash FROM fresh.recent_evidence WHERE block_number>$1)`, [ancestor.blockNumber]);

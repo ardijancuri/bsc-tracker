@@ -21,6 +21,9 @@ export interface FreshScope {
   accountId: string | null; startsAt: string; startsBlock: string; revision: string;
   /** Active membership boundaries; combined books never adopt another wallet's older history. */
   walletStarts?: Record<string, { startsAt: string; startsBlock: string }>;
+  /** Server-validated explicit public-token history only; private membership
+   * boundaries never inherit this extension. Not a changed collection start. */
+  tokenHistoryStarts?:Record<string,{startsAt:string;startsBlock:string;permissionDigest:string;policy:'gmgn_gang_only_history_v1'}>;
 }
 export interface FreshLot {
   id: string; scopeId: string; tokenAddress: string; walletAddress: string;

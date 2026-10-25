@@ -23,6 +23,8 @@ export interface Trade {
   tokenLogoUrl: string | null;
   side: TradeSide;
   tokenAmount: string | null;
+  accountingStatus?: 'ready' | 'pending_precision' | 'pending_settlement';
+  accountingReason?: string;
   quoteSymbol: string | null;
   quoteTokenAddress?: string | null;
   quoteAmount: string | null;

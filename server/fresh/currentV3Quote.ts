@@ -1,8 +1,6 @@
 import{AbiCoder,Interface,getCreate2Address,keccak256}from'ethers';
-import type{Rpc}from'../rpc.js';
 import{PCS_V3_FACTORY}from'../launchpad.js';
 import{freshAddress,freshHash}from'./capture.js';
-import type{FreshPriceBlock}from'./pricing.js';
 import{FRESH_CURRENT_STABLE_BRIDGE}from'./currentPoolQuote.js';
 import{freshHistoricalValuation,type FreshValuationReadOptions}from'./valuationContext.js';
 

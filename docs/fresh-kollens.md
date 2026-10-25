@@ -425,3 +425,98 @@ are separate in docs/fresh-v14-release-readiness.md. Read-only cutover preflight
 passes; actual Linux candidate build/mount, sealed production export, preview
 and activation remain release-only gates. No commit, push, deployment or real
 message occurred. The original checkout's X work and live VPS remain unchanged.
+
+### GANG local exception and complete observed trade list — October 25, 13:16 UTC
+
+The user approved GANG only as an existing-token tracking exception. Its
+permission is bound to the unchanged Fresh boundary, rather than a fabricated
+new launch. Other older tokens remain excluded. No GANG production activation
+has occurred.
+
+The isolated local preview on port 3304 now returns all ten genuine GANG swaps
+in the twenty retained receipts: three buys, seven sells and five public KOLs.
+Six previously hidden swaps lacked historical precision. Compact pending swap
+facts retain their exact raw quantities, wallet-paid native gas and canonical identity without entering
+FIFO, financial totals, signals or notification delivery. Normalized executions
+replace these observations atomically, and the public read view deduplicates
+them. They survive temporary receipt expiry and prevent affected accounting or
+replays from being incorrectly approved. Reorgs invalidate pending facts too.
+
+All seven sells have receipt-verified net BNB proceeds. Six historical token
+quantities and the three buys' native settlement remain unverified; no current
+precision, current USD price or transaction-value guess fills these gaps.
+Unknown opening costs remain unknown. Charts and optional authentic GANG
+artwork work independently. A new read-only VPS scan through block 129711498
+found no further GANG receipts after the original fixed scan.
+
+Actual PostgreSQL re-decoding, pagination and HTTP checks verify ten unique
+swaps and five participants, excluding approvals and transfer-only Ed_x. The
+eight original normalized facts and twenty original transaction/receipt bodies
+are unchanged. All five KOL token-card and selected-activity routes retain these
+swaps too, with unknown holdings/P&L explicit. Replays with unavailable
+historical precision return a terminal evidence status instead of retrying
+indefinitely. Artifacts are under
+`.cache/fresh/private/gang-only-20261025/complete-trades-*`.
+Production, the ordinary local financial database and account settings are
+untouched. The canceled timed validation stays canceled; no commit or deploy.
+
+### Authorized one-time GANG history recovery — October 25, 14:40 UTC
+
+This supersedes the limited ten-swap preview above. The user separately approved
+one GMGN activity-history recovery for GANG. All 226 public tracked KOLs were
+queried through the official CLI with shared server-side credential pacing;
+token-filtered pages were exhausted, including the participating wallets'
+transfer streams. Private Portfolio wallets were not queried. GMGN P&L,
+`buy_cost_usd` and balance aggregates do not enter accounting.
+
+The isolated `kollens_gang_test_20261025123431260` preview now retains 220
+canonical receipt contexts and 220 compact financial facts, including 177
+settled swaps (68 buys and 109 sells) across 21 trading KOLs. Provider activity
+is reconciled against canonical raw transfers, exact settlement and wallet gas.
+An explicitly sourced historical transfer mark supplies the opening inventory
+basis where present. `gangHistoryImport.ts` retains page/row checksums and field
+provenance; pre-existing non-null financial fields remain unchanged. The
+original eight financial IDs, twenty receipt bodies/TTLs and account/settings
+digests were independently verified after recovery.
+
+The separate `token_history_admission` permission extends only GANG's public
+books back to its authenticated creation. It never changes the global Fresh
+boundary or Portfolio membership floors. Both page reads and replay FIFO use
+this scope. Revocation or a changed history permission invalidates signed
+replay leases. Imported financial results are labeled `mixed`; ordinary
+activity remains node-driven.
+
+Exact historical GANG precision/supply and relevant USDC precision were
+recovered from canonical archive state at 175 blocks, using 660 bounded,
+rate-limited methods. All 177 swap MCAPs use authentic post-trade pool Sync
+reserves, dated supply and a validated historical BNB/USD observation. Native
+router adapters prove gross purchase expenses separately from gas; routed MCAP
+display proof does not loosen settlement or FIFO eligibility.
+
+One `token_coverage` current row describes the preview's finite GANG-only
+continuation. Canonical, contiguous public-wallet transfer ranges and a
+separate genuine captured-transaction fee check are required. It extends only
+the authorized public GANG read/balance/replay cutoff, leaving global capture
+and health unchanged. All 21 reconstructed trading balances match confirmed
+node balances. The untraded distributor's unknown opening costs remain
+explicit. No response snapshots or periodic financial histories are added.
+
+CryptoCharming's recovered GANG position has six buys, 28 sells and two incoming
+transfers. Independent FIFO gives realized profit
+`13666.00057317412279034487012538546883512` USD. A genuine 14:37 UTC quote and
+842 GMGN candles produced a signed ready replay; its actual 1080×1350,
+15.5-second MP4 was played through. The exported ending profit and ROI equal
+the modal's frozen values. This is a local, dated recovery demonstration, not
+production activation or a resumed timed validation. Evidence and the saved
+video are under `.cache/fresh/private/gang-recovery-20261025/` and
+`.cache/fresh/gang-history-live/` respectively.
+
+The ignored port-3304 preview entry keeps confirmed node balances/prices fresh
+every 75 seconds using the finite, fee-complete GANG continuation guard. It
+overwrites two bounded current-proof files and current rows; it does not create
+a trial, schedule, financial history or accumulated response snapshots. A new
+unimported GANG movement fails this preview refresh closed. Its chart routes
+and replay owner share the ordinary local credential budget. The final modal
+validator accepts server-approved matching `mixed` Fresh accounting without
+requiring retired inventory copies, while retaining freshness, completeness,
+source agreement and private-membership checks.

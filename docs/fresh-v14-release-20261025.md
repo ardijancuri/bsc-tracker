@@ -94,3 +94,42 @@ The canceled eight-hour trial remains closed. Its 4,160.051 audited seconds are
 preserved; no scheduled validation, trial monitor or wakefulness guard was
 restarted. Ordinary production collection and explicitly activated Telegram
 delivery now belong to Fresh. No arbitrary Telegram or X test post was sent.
+
+## GANG follow-up release contract
+
+The later October 25 request authorizes the recovered GANG feature and its
+one-time history import on the existing live Fresh database. This is an
+additive upgrade, not another initial database cutover. The legacy database
+was subsequently deleted at the user's explicit request; the initial
+cutover/seal instructions above must not be rerun.
+
+This release preserves the separately deployed GGC disk snapshots, import CLI
+and four-hour app scheduler. Its exact live source patches were recovered from
+the retained production build manifests. Unrelated uncommitted replay-motion
+changes and original-checkout X work are excluded.
+
+The GANG-only historical bundle contains 220 canonical receipt contexts,
+181 reconciled provider movements, 220 compact financial facts and 177 trades
+across 21 trading KOLs. All 177 transaction MCAPs use dated verified supply,
+pool reserves and BNB/USD evidence. The checksummed import operator defaults to
+read-only planning, binds the existing production database/start, preserves
+original known financial inputs and receipt bodies/TTLs, applies exact
+Portfolio membership floors and silences historical delivery. An identical
+rerun adds no facts or accounting rebuilds. Missing GANG artwork is seeded
+from its previously authenticated public image without replacing existing art.
+
+Normal collection, prices, balances and incremental accounting remain node
+driven. GMGN supplies charts/replay candles; its wallet-history API was used
+only for the explicitly authorized recovery. No QA token-coverage checkpoint,
+local preview refresher, trading reset or periodic financial snapshots are
+installed in production. The existing global start and notification activation
+remain unchanged.
+
+The isolated release candidate passed 3,954 regression tests, including the
+preserved GGC suites, both TypeScript projects and the production build. The
+final operator and its default decoder path passed focused follow-up tests and
+nine rollback-only PostgreSQL groups, with independent preservation,
+membership, canonical-source and idempotency review. The production import
+manifest SHA-256 is
+`3c2733bbe6da8fed47db0cc56fdc3e0a3d7b949381df09e11a20be9567e81532`.
+Runtime and post-deployment verification are recorded separately when complete.

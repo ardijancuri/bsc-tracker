@@ -1,0 +1,70 @@
+/** TEMP-table policy tests only. No app rows, credentials, provider calls or raw-history scans. */
+import assert from'node:assert/strict';
+import{Pool}from'pg';
+import{freshPendingTradeScopeSql}from'./positionDependencies.js';
+import{freshDailyLeaderboardPendingSql,freshRollingLeaderboardPendingSql}from'./leaderboard.js';
+import{GANG_TOKEN_ADDRESS}from'./tracking.js';
+const url=new URL(process.env.DATABASE_URL??'');
+if(!['127.0.0.1','localhost'].includes(url.hostname)||url.port!=='5436'||url.pathname!=='/kollens_fresh_20261022_24h')throw Error('local_fresh_policy_fixture_only');
+const db=new Pool({connectionString:url.href,max:1}),client=await db.connect(),checks:string[]=[];
+const a=(n:number)=>'0x'+n.toString(16).padStart(40,'0'),h=(n:number)=>'0x'+n.toString(16).padStart(64,'0');
+const wallet=a(1),privateWallet=a(2),token=a(3),other=a(4),oldToken=a(5),account='00000000-0000-4000-8000-000000000001',scope='kol:'+wallet;
+const from='2026-10-24T13:00:00.000Z',to='2026-10-25T13:00:00.000Z',start='2026-10-20T00:00:00.000Z';
+const names=['pending_trades','financial_events','scope_event_results','accounting_scopes','tokens','wallets','kols','checkpoints','launch_facts','recent_evidence','recent_blocks'];
+const rewrite=(sql:string)=>names.reduce((s,n)=>s.replaceAll('fresh.'+n,'pg_temp.pending_'+n),sql).replaceAll('public.journal_wallets','pg_temp.pending_members');
+const pending=async(scopeId=scope,selectedToken=token,cutoff='1000')=>(await client.query(rewrite(`SELECT ${freshPendingTradeScopeSql('s','$2','$3')} AS blocked FROM fresh.accounting_scopes s WHERE s.id=$1`),[scopeId,selectedToken,cutoff])).rows[0].blocked;
+const rolling=async()=> (await client.query(rewrite(`SELECT ${freshRollingLeaderboardPendingSql()} AS blocked FROM fresh.wallets w WHERE w.address=$3`),[from,to,wallet])).rows[0].blocked;
+const daily=async()=> (await client.query(rewrite(`SELECT ${freshDailyLeaderboardPendingSql()} AS blocked FROM fresh.wallets w WHERE w.address=$2`),['2026-10-25',wallet])).rows[0].blocked;
+async function add(overrides:{wallet?:string;token?:string;block?:number;at?:string;canonical?:boolean;id?:string;key?:string}={}){
+ await client.query('INSERT INTO pg_temp.pending_pending_trades VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[overrides.id??'pending',overrides.key??'operation:0',overrides.wallet??wallet,overrides.token??token,'buy',overrides.block??110,overrides.at??'2026-10-24T12:00:00Z',overrides.canonical??true]);
+}
+async function reset(){await client.query('TRUNCATE pg_temp.pending_pending_trades,pg_temp.pending_financial_events');}
+try{
+ await client.query('BEGIN');await client.query("SET LOCAL statement_timeout='5s'");
+ await client.query(`CREATE TEMP TABLE pending_pending_trades(id text PRIMARY KEY,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean);
+ CREATE TEMP TABLE pending_financial_events(id text,execution_key text,canonical boolean);
+ CREATE TEMP TABLE pending_scope_event_results(scope_id text,token_address text,occurred_at timestamptz);
+ CREATE TEMP TABLE pending_accounting_scopes(id text PRIMARY KEY,kind text,wallet_addresses text[],account_id text,starts_block bigint,starts_at timestamptz,active boolean);
+ CREATE TEMP TABLE pending_tokens(address text PRIMARY KEY,launch_status text,symbol text,name text);
+ CREATE TEMP TABLE pending_wallets(address text PRIMARY KEY,monitoring_from_block bigint,monitoring_to_block bigint,active boolean DEFAULT true);
+ CREATE TEMP TABLE pending_kols(wallet_address text PRIMARY KEY,is_tracked boolean);
+ CREATE TEMP TABLE pending_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text,value jsonb);
+ CREATE TEMP TABLE pending_launch_facts(token_address text,status text);
+ CREATE TEMP TABLE pending_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz);
+ CREATE TEMP TABLE pending_recent_evidence(wallet_addresses text[],decoder_status text,block_number bigint,block_hash text,position_dependency_addresses text[],position_dependency_proof text);
+ CREATE TEMP TABLE pending_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz);`);
+ await client.query('INSERT INTO pg_temp.pending_wallets VALUES($1,101,NULL),($2,101,NULL)',[wallet,privateWallet]);
+ await client.query('INSERT INTO pg_temp.pending_kols VALUES($1,true)',[wallet]);
+ await client.query("INSERT INTO pg_temp.pending_accounting_scopes VALUES($1,'kol',$2,NULL,101,$3,true),('private','portfolio_wallet',$4,$5,101,$3,true)",[scope,[wallet],start,[privateWallet],account]);
+ await client.query("INSERT INTO pg_temp.pending_tokens VALUES($1,'eligible','TOKEN','Token'),($2,'eligible','OTHER','Other'),($3,'preexisting','OLD','Old'),($4,'preexisting','GANG','GANG')",[token,other,oldToken,GANG_TOKEN_ADDRESS]);
+ await client.query('INSERT INTO pg_temp.pending_checkpoints VALUES($1,100,$2,$3),($4,1000,$5,$6)',['start',h(100),{startBlock:100,startHash:h(100),startTime:start},'capture',h(1000),{}]);
+ await client.query('INSERT INTO pg_temp.pending_members VALUES($1,$2,200,$3)',[account,privateWallet,'2026-10-24T14:00:00Z']);
+ await add();assert.equal(await pending(),true);assert.equal(await pending(scope,other),false);assert.equal(await rolling(),false);
+ checks.push('Permanent pending swaps block the affected position after every temporary receipt/header has expired, without unrelated-token blocking');
+ await client.query('INSERT INTO pg_temp.pending_scope_event_results VALUES($1,$2,$3)',[scope,token,'2026-10-25T12:00:00Z']);
+ assert.equal(await rolling(),true);assert.equal(await daily(),true);checks.push('Older unknown purchase quantities keep later realized accounting and both ranking periods incomplete');
+ await reset();await add({token:other,at:'2026-10-25T12:00:00Z'});assert.equal(await rolling(),true);assert.equal(await daily(),true);
+ await reset();await add({token:other,at:'2026-10-25T13:00:01Z'});assert.equal(await rolling(),false);
+ checks.push('New in-window pending trades block stored ranks, while future trades do not invalidate an earlier rolling evaluation');
+ await reset();await add({canonical:false});assert.equal(await pending(),false);await reset();await add({block:100});assert.equal(await pending(),false);
+ await reset();await add({at:'2026-10-19T23:59:59Z'});assert.equal(await pending(),false);await reset();await add({block:1001});assert.equal(await pending(),false);
+ checks.push('Orphaned, pre-book and not-yet-captured observations cannot approve or block current accounting');
+ await reset();await add();await client.query("INSERT INTO pg_temp.pending_financial_events VALUES('pending','operation:0',true)");assert.equal(await pending(),false);
+ await client.query("UPDATE pg_temp.pending_financial_events SET id='other',execution_key='operation:1'");assert.equal(await pending(),true);
+ await client.query("UPDATE pg_temp.pending_financial_events SET execution_key='operation:0'");assert.equal(await pending(),false);
+ await client.query('UPDATE pg_temp.pending_financial_events SET canonical=false');assert.equal(await pending(),true);
+ checks.push('Promotion is deduplicated by exact canonical execution only; another smart operation or orphaned normalization cannot clear the gap');
+ await reset();await add({wallet:privateWallet,block:150,at:'2026-10-24T13:59:59Z'});assert.equal(await pending('private'),false);assert.equal(await pending(),false);
+ await reset();await add({wallet:privateWallet,block:201,at:'2026-10-24T14:00:00Z'});assert.equal(await pending('private'),true);assert.equal(await rolling(),false);
+ await client.query('DELETE FROM pg_temp.pending_members');assert.equal(await pending('private'),false);
+ checks.push('Private wallet observations affect only their own active membership after its block/time boundary and never public rankings');
+ await reset();await add({token:oldToken});assert.equal(await pending(scope,oldToken),false);
+ const permission={version:1,kind:'explicit_existing',chainId:56,tokenAddress:GANG_TOKEN_ADDRESS,active:true,startBlock:100,startHash:h(100),startTime:start,fromBlock:101,approvedAt:'2026-10-25T12:00:00.000Z',reason:'user_approved_gang_only'};
+ await client.query('INSERT INTO pg_temp.pending_checkpoints VALUES($1,NULL,NULL,$2)',['token_admission:'+GANG_TOKEN_ADDRESS,permission]);
+ await reset();await add({token:GANG_TOKEN_ADDRESS});assert.equal(await pending(scope,GANG_TOKEN_ADDRESS),true);
+ await client.query('UPDATE pg_temp.pending_checkpoints SET value=$1 WHERE key=$2',[{...permission,active:false},'token_admission:'+GANG_TOKEN_ADDRESS]);assert.equal(await pending(scope,GANG_TOKEN_ADDRESS),false);
+ checks.push('Only admitted tokens participate; GANG revocation and unrelated older contracts remain excluded');
+ assert.equal(await pending(scope,token,'109'),false);await reset();await add();assert.equal(await pending(scope,token,'109'),false);assert.equal(await pending(scope,token,'110'),true);
+ checks.push('Frozen replay cutoffs ignore later swaps but reject newly discovered pending facts at or before their cutoff');
+ await client.query('ROLLBACK');console.log(JSON.stringify({ok:true,checks,persistentRowsWritten:0,fixtureWrites:'TEMP tables rolled back',networkRequests:0}));
+}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();await db.end();}

@@ -6,6 +6,7 @@ import { ensureAccountWatchlistSchema } from '../accountWatchlist.js';
 import { ensureCreatorSchema } from '../creatorSchema.js';
 import { ensureTelegramNotificationsSchema } from '../telegramNotificationsSchema.js';
 import {freshRollingSchemaSql} from './rollingSchema.js';
+import{freshPendingTradesSchemaSql}from'./pendingTrades.js';
 
 
 /** Existing objects owned by this startup, including compatibility views.
@@ -137,7 +138,12 @@ async function ensureFreshSchemaAttempt(db: Pool) {
       );
       ALTER TABLE fresh.financial_events ADD COLUMN IF NOT EXISTS bnb_price_usd text;
       ALTER TABLE fresh.financial_events ADD COLUMN IF NOT EXISTS acquisition_cost jsonb;
+      ALTER TABLE fresh.financial_events ADD COLUMN IF NOT EXISTS market_cap_usd text;
+      ALTER TABLE fresh.financial_events ADD COLUMN IF NOT EXISTS market_mark jsonb;
+      ALTER TABLE fresh.financial_events ADD COLUMN IF NOT EXISTS provenance jsonb;
+      ${freshPendingTradesSchemaSql}
       CREATE INDEX IF NOT EXISTS financial_events_wallet_idx ON fresh.financial_events(wallet_address,occurred_at DESC,id DESC) WHERE canonical;
+      CREATE INDEX IF NOT EXISTS financial_events_imported_idx ON fresh.financial_events(wallet_address,token_address,block_number) WHERE canonical AND provenance IS NOT NULL;
       CREATE INDEX IF NOT EXISTS financial_events_unvalued_transfer_idx ON fresh.financial_events(wallet_address,token_address,id)
         WHERE canonical AND amount_usd IS NULL AND kind IN('transfer_in','transfer_out');
       CREATE INDEX IF NOT EXISTS financial_events_token_idx ON fresh.financial_events(token_address,occurred_at DESC,id DESC) WHERE canonical;

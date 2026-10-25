@@ -4,9 +4,12 @@ const url=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].in
 const db=new Pool({connectionString:url.toString(),max:1}),client=await db.connect(),checks:string[]=[];
 const a=(n:number)=>`0x${n.toString(16).padStart(40,'0')}`,h=(n:number)=>`0x${n.toString(16).padStart(64,'0')}`,wallet=a(1),token=a(2),scope=`kol:${wallet}`,now=Date.parse('2026-10-24T01:00:00Z');
 const names=['positions','tokens','accounting_scopes','financial_events','recent_blocks','checkpoints','recent_evidence','wallets','jobs','open_lots'];
-const rewrite=(sql:string)=>names.reduce((value,name)=>value.replaceAll('fresh.'+name,'pg_temp.position_read_'+name),sql);
+const rewrite=(sql:string)=>names.reduce((value,name)=>value.replaceAll('fresh.'+name,'pg_temp.position_read_'+name),sql)
+ .replaceAll('fresh.pending_trades','pg_temp.position_read_pending_trades').replaceAll('fresh.visible_trades','pg_temp.position_read_financial_events');
 const facade={query:(sql:string,args?:unknown[])=>client.query(rewrite(sql),args)}as unknown as Pool,reads=createFreshReads(facade,()=>now,true);
 try{await client.query('BEGIN');await client.query("SET LOCAL statement_timeout='10s'");for(const name of names)await client.query(`CREATE TEMP TABLE position_read_${name} AS SELECT * FROM fresh.${name} LIMIT 0`);
+await client.query('ALTER TABLE position_read_financial_events ADD COLUMN IF NOT EXISTS provenance jsonb');
+await client.query('CREATE TEMP TABLE position_read_pending_trades AS SELECT * FROM position_read_financial_events LIMIT 0');
 await client.query('ALTER TABLE position_read_recent_evidence ADD COLUMN IF NOT EXISTS position_dependency_addresses text[],ADD COLUMN IF NOT EXISTS position_dependency_proof text');
 await client.query(`INSERT INTO position_read_accounting_scopes(id,kind,wallet_addresses,starts_block,starts_at,revision,correction_epoch,active)VALUES($1,'kol',$2,10,'2026-10-23T00:00:00Z',1,0,true)`,[scope,[wallet]]);
 await client.query(`INSERT INTO position_read_tokens(address,name,symbol,decimals,launch_status,valuation_status)VALUES($1,'Test','TEST',18,'eligible','pending')`,[token]);

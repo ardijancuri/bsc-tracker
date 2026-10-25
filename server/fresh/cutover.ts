@@ -30,7 +30,7 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const digest=(value:unknown)=>hash(JSON.stringify(value));
 function need(ok:unknown,reason:string):asserts ok{if(!ok)throw Error(reason);}
 const identifier=(v:string)=>{need(/^[a-z_][a-z_0-9]*$/.test(v),'cutover_identifier_invalid');return '"'+v+'"';};
-const noFinance=['financial_events','scope_event_results','positions','open_lots','tokens','markets','launch_facts','recent_evidence'];
+const noFinance=['financial_events','pending_trades','scope_event_results','positions','open_lots','tokens','markets','launch_facts','recent_evidence'];
 const kolColumns=['address','display_name','avatar_url','twitter','source','is_tracked','first_seen_at','last_seen_at','profile_checked_at','avatar_checked_at'];
 
 export function freshCutoverBindings(source:string,destination:string,mode='production') {

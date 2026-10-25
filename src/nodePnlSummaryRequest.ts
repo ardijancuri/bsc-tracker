@@ -11,7 +11,7 @@ export function validNodeSummaryIdentity(summary: NodeAccountingSummary | undefi
   if (summary.tracking !== undefined) {
     const tracking = summary.tracking;
     if (tracking.version !== 1 || tracking.source !== 'fresh' || summary.walletAddress?.toLowerCase() !== wallet.toLowerCase()
-      || snapshot.source !== 'node' || !/^\d+$/.test(tracking.fromBlock) || !/^\d{4}-\d{2}-\d{2}$/.test(tracking.utcDay)
+      || !['node','mixed'].includes(snapshot.source) || !/^\d+$/.test(tracking.fromBlock) || !/^\d{4}-\d{2}-\d{2}$/.test(tracking.utcDay)
       || !/^\d+$/.test(snapshot.coveredThroughBlock ?? '') || BigInt(snapshot.coveredThroughBlock!) < BigInt(tracking.fromBlock)) return false;
   }
   return true;

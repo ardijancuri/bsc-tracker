@@ -1,7 +1,8 @@
 import type {Pool} from 'pg';
-import {freshPublicTokenSql} from './publicTokens.js';
+import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {tokenIdentity,tradeIdentity} from './reads.js';
 import {FreshRational} from './accounting.js';
+import {freshTrackedEventSql} from './tracking.js';
 
 export const freshTokenDirectoryWindowMs=8*60*60_000;
 
@@ -27,9 +28,9 @@ export function freshTokenDirectoryIdentity(row:Record<string,any>,now:number){
  * tracker. Delayed node capture stays eligible by execution time: observed_live
  * governs alert delivery, rather than whether a genuine trade happened.
  * Private transfers and a token's global last_trade_at cannot renew discovery. */
-const recentPublicTradeSql=`e.canonical AND e.kind IN('buy','sell')
-  AND e.occurred_at>=$1::timestamptz AND e.occurred_at<=$2::timestamptz
-  AND e.block_number<=COALESCE((SELECT block_number FROM fresh.checkpoints WHERE key='capture'),0)`;
+const recentPublicTradeSql=`${freshPublicTradeScopeSql('e')}
+  AND ${freshTrackedEventSql('e','directory_token')}
+  AND e.occurred_at>=$1::timestamptz AND e.occurred_at<=$2::timestamptz`;
 
 export async function readFreshTokenDirectory(db:Pick<Pool,'query'>,options:{limit?:number;offset?:number;withTrades?:boolean;now?:number}={}){
   const now=options.now??Date.now(),window=freshTokenDirectoryWindow(now),limit=Number.isFinite(options.limit)?Math.min(300,Math.max(1,Math.floor(options.limit!))):150,
@@ -38,7 +39,8 @@ export async function readFreshTokenDirectory(db:Pick<Pool,'query'>,options:{lim
   // page beyond the last offset. Existing wallet/time indexes serve this window.
   const selected=await db.query(`WITH recent AS MATERIALIZED(
     SELECT e.token_address,max(e.occurred_at) AS last_public_trade_at
-    FROM fresh.financial_events e JOIN fresh.kols tracked ON tracked.wallet_address=e.wallet_address AND tracked.is_tracked
+    FROM fresh.visible_trades e JOIN fresh.kols tracked ON tracked.wallet_address=e.wallet_address AND tracked.is_tracked
+    JOIN fresh.tokens directory_token ON directory_token.address=e.token_address
     JOIN fresh.recent_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash AND b.occurred_at=e.occurred_at
     WHERE ${recentPublicTradeSql} GROUP BY e.token_address
   ),available AS MATERIALIZED(
@@ -51,7 +53,8 @@ export async function readFreshTokenDirectory(db:Pick<Pool,'query'>,options:{lim
   if(options.withTrades&&items.length){
     const trades=(await db.query(`SELECT e.*,t.name,t.symbol,t.logo_url,t.logo_data,k.display_name,k.avatar_url,k.twitter
       FROM unnest($3::text[]) candidate(address) CROSS JOIN LATERAL(
-        SELECT e.* FROM fresh.financial_events e JOIN fresh.kols tracked ON tracked.wallet_address=e.wallet_address AND tracked.is_tracked
+        SELECT e.* FROM fresh.visible_trades e JOIN fresh.kols tracked ON tracked.wallet_address=e.wallet_address AND tracked.is_tracked
+        JOIN fresh.tokens directory_token ON directory_token.address=e.token_address
         JOIN fresh.recent_blocks b ON b.block_number=e.block_number AND b.block_hash=e.block_hash AND b.occurred_at=e.occurred_at
         WHERE e.token_address=candidate.address AND ${recentPublicTradeSql} ORDER BY e.occurred_at DESC,e.id DESC LIMIT 5
       )e JOIN fresh.tokens t ON t.address=e.token_address JOIN published_kols k ON k.address=e.wallet_address

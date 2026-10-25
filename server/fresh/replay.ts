@@ -6,13 +6,14 @@ import { FreshChartError, type FreshCharts } from './charts.js';
 
 const LEASE_MS = 15 * 60_000;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export type FreshReplayRevision = { scopeId: string; correctionEpoch: string | number; membershipRevision?: string | number };
+export type FreshReplayRevision = { scopeId: string; correctionEpoch: string | number; membershipRevision?: string | number;historyPermissionDigest?:string };
 export type FreshReplayActivity = KolTokenActivity & { __freshRevision?: FreshReplayRevision };
 export interface FreshReplayManifest {
   version: 1; audience: 'kollens-replay-fresh-v1'; wallet: string; token: string; scope: string;
   snapshotId: string; windowId: string; historyFingerprint: string; cutoffBlock: string | null; cutoffHash: string | null;
   correctionEpoch: string; membershipRevision: string | null; scopeId: string;
   valuationAt: string; from: string; to: string; issuedAt: number; expiresAt: number;
+  historyPermissionDigest?:string;
 }
 export type FreshReplayPreparation = ReplayPreparation & { manifest?: string; expiresAt?: string };
 export function createFreshReplay({ charts, secret, validateRevision, now = Date.now, maxBytes = 32 * 1024 * 1024, maxEntries = 64, ownerDeadlineMs = 65_000 }:
@@ -68,6 +69,9 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     const fail = (reason: ReplayPreparationReason, pending: boolean, retryAfterMs = 2000): FreshReplayPreparation => ({ ...result,
       status: pending ? 'pending' : 'unavailable', reason, ...(pending ? { retryAfterMs } : {}) });
     const reasons = [...(identity?.reasons ?? []), accounting?.coverage.reason ?? ''];
+    if (reasons.includes('historical_precision_unavailable') || reasons.includes('historical_settlement_unavailable')) {
+      result.stages.accounting = 'unavailable'; return fail('historical_evidence_unavailable', false);
+    }
     if (reasons.some(reason => /mismatch|unreconciled|contradict|negative_balance/.test(reason))) {
       result.stages.accounting = 'unavailable'; return fail('accounting_mismatch', false);
     }
@@ -124,7 +128,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     if (open && now() - to > 120_000) { result.stages.valuation = 'pending'; return fail('stale_quote', true); }
     const revision = activity.__freshRevision, issuedAt = now();
     const claims: FreshReplayManifest = { version: 1, audience: 'kollens-replay-fresh-v1', wallet: activity.kol.address.toLowerCase(), token: activity.token.address.toLowerCase(),
-      scope, scopeId: revision?.scopeId ?? 'public', correctionEpoch: String(revision?.correctionEpoch ?? '0'), membershipRevision: revision?.membershipRevision === undefined ? null : String(revision.membershipRevision),
+      scope, scopeId: revision?.scopeId ?? 'public', correctionEpoch: String(revision?.correctionEpoch ?? '0'), membershipRevision: revision?.membershipRevision === undefined ? null : String(revision.membershipRevision),...(revision?.historyPermissionDigest?{historyPermissionDigest:revision.historyPermissionDigest}:{}),
       snapshotId: identity.snapshotId, windowId: result.window.id, historyFingerprint: identity.historyFingerprint,
       cutoffBlock: accounting.inventoryBlockNumber ?? identity.coveredThroughBlock, cutoffHash: accounting.inventoryBlockHash ?? identity.valuationHash,
       valuationAt: accounting.final.timestamp, from: result.window.from, to: result.window.to, issuedAt, expiresAt: issuedAt + LEASE_MS };
@@ -146,7 +150,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
       const entry = read(snapshotId, scope); if (!entry) return null;
       const activity = entry.activity, identity = activity.accountingSnapshot!, revision = activity.__freshRevision;
       const claims: FreshReplayManifest = { version: 1, audience: 'kollens-replay-fresh-v1', wallet: activity.kol.address.toLowerCase(), token: activity.token.address.toLowerCase(),
-        scope, scopeId: revision?.scopeId ?? 'public', correctionEpoch: String(revision?.correctionEpoch ?? '0'), membershipRevision: revision?.membershipRevision === undefined ? null : String(revision.membershipRevision),
+        scope, scopeId: revision?.scopeId ?? 'public', correctionEpoch: String(revision?.correctionEpoch ?? '0'), membershipRevision: revision?.membershipRevision === undefined ? null : String(revision.membershipRevision),...(revision?.historyPermissionDigest?{historyPermissionDigest:revision.historyPermissionDigest}:{}),
         snapshotId: identity.snapshotId, windowId: entry.prepared?.window?.id ?? '', historyFingerprint: identity.historyFingerprint,
         cutoffBlock: activity.replayAccounting?.inventoryBlockNumber ?? identity.coveredThroughBlock, cutoffHash: activity.replayAccounting?.inventoryBlockHash ?? null,
         valuationAt: activity.replayAccounting?.final?.timestamp ?? identity.asOf, from: entry.prepared?.window?.from ?? identity.asOf,

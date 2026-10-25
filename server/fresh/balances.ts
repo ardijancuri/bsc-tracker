@@ -17,15 +17,18 @@ export async function refreshFreshBalances(db:Pool,rpc:Rpc,limit=64) {
   const block:FreshPriceBlock={number:Number(checkpoint.block_number),hash:checkpoint.block_hash,timestamp:new Date(Number(freshInteger(header.timestamp))*1000).toISOString()};
   const rows=(await db.query(freshBalanceWorkSql,[limit,block.number])).rows;
   const calls=new Map<string,Promise<bigint>>();let matched=0,mismatch=0,pending=0;
+  const headers=new Map<number,Promise<FreshPriceBlock>>();headers.set(block.number,Promise.resolve(block));
+  const captureBlock=(n:number)=>{let work=headers.get(n);if(!work){work=(async()=>{const h=await rpc<{number:string;hash:string;timestamp:string}>('eth_getBlockByNumber',[blockHex(n),false]);if(!h||Number(freshInteger(h.number))!==n||!freshHash(h.hash))throw Error('balance_token_capture_block_changed');return{number:n,hash:h.hash.toLowerCase(),timestamp:new Date(Number(freshInteger(h.timestamp))*1000).toISOString()};})();headers.set(n,work);}return work;};
   for(let offset=0;offset<rows.length;offset+=4)await Promise.all(rows.slice(offset,offset+4).map(async row=>{
     try{
+      const selected=Number(row.effective_capture_block??block.number);if(!Number.isSafeInteger(selected)||selected<block.number)throw Error('balance_token_capture_invalid');const target=await captureBlock(selected);
       if(row.decimals==null)throw new Error('token_decimals_unverified');
-      if(row.wallet_gap||row.registration_pending||row.decoding_pending||row.last_event_block==null||BigInt(row.last_event_block)>BigInt(block.number))throw new Error('wallet_decoding_pending');
-      const balances=await Promise.all(row.wallet_addresses.map((wallet:string)=>{const key=`${wallet}:${row.token_address}`;
-        let call=calls.get(key);if(!call){call=freshCall({rpc,block},row.token_address,abi,'balanceOf',[wallet]).then(value=>BigInt(value[0]));calls.set(key,call);}return call;}));
+      if(row.wallet_gap||row.registration_pending||row.decoding_pending||row.last_event_block==null||BigInt(row.last_event_block)>BigInt(target.number))throw new Error('wallet_decoding_pending');
+      const balances=await Promise.all(row.wallet_addresses.map((wallet:string)=>{const key=`${wallet}:${row.token_address}:${target.hash}`;
+        let call=calls.get(key);if(!call){call=freshCall({rpc,block:target},row.token_address,abi,'balanceOf',[wallet]).then(value=>BigInt(value[0]));calls.set(key,call);}return call;}));
       const quantity=new FreshRational(balances.reduce((a:bigint,b:bigint)=>a+b,0n),10n**BigInt(row.decimals));
       const equal=quantity.compare(q(row.quantity_q))===0;
-      const updated=await db.query(freshBalanceCommitSql,[row.scope_id,row.token_address,quantity.decimal(255),block.number,block.hash,block.timestamp,equal?'matched':'mismatch',row.revision,row.scope_revision]);
+      const updated=await db.query(freshBalanceCommitSql,[row.scope_id,row.token_address,quantity.decimal(255),target.number,target.hash,target.timestamp,equal?'matched':'mismatch',row.revision,row.scope_revision]);
       if(!updated.rowCount){pending++;await db.query(`UPDATE fresh.positions SET balance_status='pending' WHERE scope_id=$1 AND token_address=$2 AND revision=$3 AND balance_status IS DISTINCT FROM 'pending'`,[row.scope_id,row.token_address,row.revision]);}
       else if(equal)matched++;else mismatch++;
     }catch{pending++;await db.query(`UPDATE fresh.positions SET balance_status='pending' WHERE scope_id=$1 AND token_address=$2 AND revision=$3 AND balance_status IS DISTINCT FROM 'pending'`,[row.scope_id,row.token_address,row.revision]);}

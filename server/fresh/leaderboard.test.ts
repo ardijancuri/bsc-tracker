@@ -50,7 +50,7 @@ describe('stored UTC-day leaderboard', () => {
   });
   it('ordinary leaderboard requests read stored totals and bounded dependency identities without recalculating financial history', async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes('FROM fresh.checkpoints')) return { rows: [
+      if (sql.startsWith('SELECT key,')) return { rows: [
         { key: 'start', block_number: '100', updated_at: '2026-10-23T23:50:00Z' },
         { key: 'decode', block_number: '200', updated_at: '2026-10-24T00:20:00Z' },
       ] };
@@ -63,7 +63,8 @@ describe('stored UTC-day leaderboard', () => {
     expect(first).toMatchObject({period:'24h',windowStart:'2026-10-23T00:30:00.000Z',windowEnd:'2026-10-24T00:30:00.000Z'});
     expect(second.items[0]).toEqual(first.items[0]);
     expect(query.mock.calls).toHaveLength(4);
-    expect(query.mock.calls.every(([sql]) => !/fresh\.(financial_events|positions|open_lots)|\b(UPDATE|INSERT|DELETE|SUM)\b/i.test(sql))).toBe(true);
+    expect(query.mock.calls.every(([sql]) => !/fresh\.(positions|open_lots)|\b(UPDATE|INSERT|DELETE|SUM)\b/i.test(sql))).toBe(true);
+    expect(query.mock.calls.find(([sql])=>sql.includes('FROM fresh.kols'))?.[0]).toContain('promoted.id=pending.id OR promoted.execution_key=pending.execution_key');
   });
 });
 

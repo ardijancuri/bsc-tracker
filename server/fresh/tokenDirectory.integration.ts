@@ -9,9 +9,9 @@ if(!['127.0.0.1','localhost'].includes(url.hostname)||url.port!=='5436'||!url.pa
 const db=new Pool({connectionString:url.toString(),max:1}),client=await db.connect(),now=Date.parse('2026-10-24T12:00:00Z');
 const address=()=>`0x${randomBytes(20).toString('hex')}`,hash=()=>`0x${randomBytes(32).toString('hex')}`;
 const publicWallet=address(),privateWallet=address(),untrackedWallet=address();
-const tables=['tokens','financial_events','kols','recent_blocks','checkpoints'];
+const tables=['tokens','financial_events','kols','wallets','accounting_scopes','recent_blocks','checkpoints','launch_facts'];
 const fixtureDb={query:(sql:string,values?:unknown[])=>{for(const name of tables)sql=sql.replaceAll(`fresh.${name}`,`directory_fixture_${name}`);
-  sql=sql.replaceAll('published_kols','directory_fixture_published_kols');return client.query(sql,values);}} as unknown as Pool;
+  sql=sql.replaceAll('fresh.visible_trades','directory_fixture_visible_trades').replaceAll('published_kols','directory_fixture_published_kols');return client.query(sql,values);}} as unknown as Pool;
 let block=1;
 const token=async(options:{status?:string;launch?:string;symbol?:string;globalLast?:number}={})=>{
   const key=address();await client.query(`INSERT INTO directory_fixture_tokens(address,name,symbol,launch_status,valuation_status,last_trade_at)
@@ -26,9 +26,12 @@ const trade=async(key:string,at:number,options:{wallet?:string;kind?:string;cano
 try{
  await client.query('BEGIN');
  for(const name of tables)await client.query(`CREATE TEMP TABLE directory_fixture_${name}(LIKE fresh.${name} INCLUDING DEFAULTS) ON COMMIT DROP`);
+ await client.query("CREATE TEMP VIEW directory_fixture_visible_trades AS SELECT e.*,NULL::text AS raw_quantity,'ready'::text AS accounting_status FROM directory_fixture_financial_events e");
  await client.query(`CREATE TEMP TABLE directory_fixture_published_kols(address text,display_name text,avatar_url text,twitter text) ON COMMIT DROP`);
  await client.query(`INSERT INTO directory_fixture_checkpoints(key,block_number) VALUES('capture',1000)`);
  await client.query(`INSERT INTO directory_fixture_kols(wallet_address,is_tracked) VALUES($1,true),($2,false)`,[publicWallet,untrackedWallet]);
+ for(const wallet of[publicWallet,privateWallet,untrackedWallet])await client.query(`INSERT INTO directory_fixture_wallets(address,active,monitoring_from_block) VALUES($1,true,0)`,[wallet]);
+ await client.query(`INSERT INTO directory_fixture_accounting_scopes(id,kind,wallet_addresses,active,starts_block,starts_at) VALUES($1,'kol',$2,true,0,$3)`,['kol:'+publicWallet,[publicWallet],new Date(now-48*3600_000)]);
  await client.query(`INSERT INTO directory_fixture_published_kols(address,display_name) VALUES($1,'Public KOL')`,[publicWallet]);
  const newest=await token(),delayed=await token(),unpriced=await token({status:'pending'}),old=await token({globalLast:now+10_000}),boundary=await token(),expired=await token();
  await client.query(`UPDATE directory_fixture_tokens SET price_usd=0.01,market_cap_usd=50000,observed_at=$1 WHERE address=ANY($2::text[])`,[new Date(now-30_000),[newest,delayed]]);

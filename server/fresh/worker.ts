@@ -1,4 +1,5 @@
 import type {Pool} from 'pg';
+import{freshTrackedTokenSql}from'./tracking.js';
 import {runFreshTransferValuation} from './deferredTransferValuation.js';
 import type {Rpc} from '../rpc.js';
 import {runFreshCapture,expireFreshEvidence,readFreshCaptureState,findFreshCommonAncestor} from './capture.js';
@@ -40,7 +41,7 @@ export const freshQuoteWorkSql=`WITH work AS MATERIALIZED(SELECT t.address,to_js
   FROM fresh.tokens t
   LEFT JOIN fresh.launch_facts lf ON lf.token_address=t.address AND lf.status='eligible'
   LEFT JOIN fresh.jobs j ON j.kind='quote' AND j.reference=t.address AND j.state='pending'
-  WHERE t.launch_status='eligible' AND (j.id IS NOT NULL AND j.due_at<=$1 OR j.id IS NULL
+  WHERE ${freshTrackedTokenSql('t')} AND (j.id IS NOT NULL AND j.due_at<=$1 OR j.id IS NULL
     AND (t.observed_at IS NULL OR t.observed_at<$1::timestamptz-interval '30 seconds') AND (t.last_trade_at>=$1::timestamptz-interval '1 day'
       OR EXISTS(SELECT 1 FROM fresh.positions p JOIN fresh.accounting_scopes s ON s.id=p.scope_id WHERE s.active AND p.token_address=t.address AND p.quantity_q<>'0')))
  ),ranked AS(SELECT *,row_number() OVER(PARTITION BY priority>=100,freshness_required

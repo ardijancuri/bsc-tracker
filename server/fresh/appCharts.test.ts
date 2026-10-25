@@ -17,7 +17,7 @@ async function fixture() {
       { timestamp: new Date(Date.parse(bar.timestamp) + 60_000).toISOString(), priceUsd: bar.close }]) };
   const now = Date.now(), token = input.activity.token.address, wallet = input.activity.kol.address;
   let visible = true, approved = true;
-  const row = { address: token, launched_at: new Date(now - 100 * 86400_000), total_supply_raw: '1000000000000000000000', decimals: 18,
+  const row = { address: token, launched_at: new Date(now - 100 * 86400_000) as Date|null, total_supply_raw: '1000000000000000000000', decimals: 18,
     price_usd: '4', observed_at: new Date(now), launch_status: 'eligible', valuation_status: 'ready' };
   const query = vi.fn(async (sql: string) => {
     if (sql.startsWith('INSERT INTO fresh.jobs')) return { rows: [], rowCount: 0 };
@@ -56,6 +56,16 @@ describe('fresh public chart and replay HTTP adapters', () => {
   it('keeps private-only and unknown tokens off the public chart surface', async () => {
     const { app, token, hide, chart } = await fixture(); hide();
     expect((await app.inject(`/api/tokens/${token}/chart`)).statusCode).toBe(404); expect(chart).not.toHaveBeenCalled();
+  });
+  it('serves a bounded chart independently of unknown P&L without inventing token creation or retrying toward epoch',async()=>{
+    const{app,token,row,chart,reads,query}=await fixture();row.launched_at=null;row.launch_status='preexisting';
+    reads.activity.mockRejectedValue(new Error('Unknown purchase costs'));
+    const response=await app.inject(`/api/tokens/${token}/chart?interval=1m&history=full`),body=response.json();
+    expect(response.statusCode).toBe(200);expect(body.candles).toHaveLength(1);
+    expect(body).toMatchObject({fullHistory:true,historyComplete:false,historyPending:false,historyLoadStatus:'limited',historyRecoveryPending:false,historyRecoveryReason:'token_creation_unknown'});
+    expect(body.historyBefore).toBeUndefined();expect(chart.mock.calls[0][1].to-chart.mock.calls[0][1].from).toBe(1000*60_000);
+    expect(reads.activity).not.toHaveBeenCalled();
+    expect(query.mock.calls.find(([sql])=>sql.includes('FROM fresh.tokens t LEFT JOIN fresh.launch_facts'))?.[0]).toContain("CASE WHEN t.launch_status='preexisting' THEN NULL");
   });
   it.each([['24h', '5m',86400_000], ['7d', '1h',7*86400_000], ['30d', '4h',30*86400_000]])('preserves requested %s period independently of %s resolution', async (period, resolution,duration) => {
     const { app, token, chart } = await fixture();

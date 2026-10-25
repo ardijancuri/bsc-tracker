@@ -1,9 +1,7 @@
 import {Interface,getCreate2Address,keccak256,solidityPackedKeccak256} from 'ethers';
-import type {Rpc} from '../rpc.js';
 import {PCS_V2_FACTORY,WBNB} from '../launchpad.js';
 import {freshAddress,freshHash} from './capture.js';
 import {TRUSTED_QUOTE_FEEDS} from '../nodeMarketProtocols.js';
-import type {FreshPriceBlock} from './pricing.js';
 import {validateFreshPcsV2FactoryCode,FRESH_PCS_V2_FACTORY_RUNTIME_HASH,FRESH_PCS_V2_PAIR_INITCODE_HASH,FRESH_PCS_V2_PAIR_RUNTIME_HASH} from './flapQuoteRecovery.js';
 import {freshHistoricalValuation,type FreshValuationReadOptions} from './valuationContext.js';
 const abi=new Interface(['function decimals()view returns(uint8)','function factory()view returns(address)','function token0()view returns(address)',

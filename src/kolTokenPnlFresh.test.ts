@@ -27,6 +27,18 @@ function privateActivity(): JournalTokenActivity {
 const response = (body: unknown) => ({ ok: true, status: 200, headers: new Headers(), async json() { return body; } }) as Response;
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); }); afterEach(() => vi.useRealTimers());
 describe('fresh current-row P&L responses', () => {
+  it.each([false,true])('accepts approved mixed historical recovery for an open=%s position without adding legacy response copies', open => {
+    const body=activity(open);body.accountingSnapshot!.source='mixed';body.realizedAccounting!.source='mixed';body.realizedAccounting!.coverage.verification='mixed_history';
+    expect(verifiedTokenRealizedPnl(body)).toBe(38);expect(verifiedTokenPositionPnl(body)).toBe(open?78:38);
+    expect(body.inventory).toBeUndefined();expect(body.replayAccounting).toBeUndefined();
+  });
+  it.each(['source','incomplete','balance'] as const)('rejects mixed recovery with incompatible %s', variant => {
+    const body=activity(true);body.accountingSnapshot!.source='mixed';body.realizedAccounting!.source='mixed';
+    if(variant==='source')body.realizedAccounting!.source='node';
+    if(variant==='incomplete')body.accountingSnapshot!.complete=false;
+    if(variant==='balance')body.realizedAccounting!.coverage.balanceMatched=false;
+    expect(verifiedTokenRealizedPnl(body)).toBeNull();expect(verifiedTokenPositionPnl(body)).toBeNull();
+  });
   it('shows server-approved closed profit without a receipt history, inventory copy or fresh market quote', () => {
     const body = activity(); expect(body.inventory).toBeUndefined(); expect(body.replayAccounting).toBeUndefined();
     expect(verifiedTokenPositionPnl(body)).toBe(38); expect(displayedTokenPnl(body)).toBe(38); expect(tokenPnlExpiresAt(body)).toBeNull();

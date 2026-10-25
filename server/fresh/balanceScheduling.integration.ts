@@ -6,7 +6,7 @@ export async function runFreshBalanceSchedulingIntegration(){
  const u=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].includes(u.hostname)||u.port!=='5436'||u.pathname!=='/kollens_fresh_20261022_24h')throw Error('Exact isolated Fresh PostgreSQL required');
  const db=new Pool({connectionString:u.toString(),max:1}),client=await db.connect(),checks:string[]=[];
  const h=(n:number)=>'0x'+BigInt(n).toString(16).padStart(64,'0'),a=(n:number)=>'0x'+BigInt(n).toString(16).padStart(40,'0');
- const base=Date.parse('2026-10-23T21:00:00Z'),at=(n:number)=>new Date(base+n*1000),names=['positions','accounting_scopes','tokens','financial_events','wallets','jobs','recent_evidence','recent_blocks','checkpoints'];
+ const base=Date.parse('2026-10-23T21:00:00Z'),at=(n:number)=>new Date(base+n*1000),names=['positions','accounting_scopes','tokens','financial_events','pending_trades','wallets','kols','launch_facts','jobs','recent_evidence','recent_blocks','checkpoints'];
  const rewrite=(sql:string)=>names.reduce((s,name)=>s.replaceAll('fresh.'+name,'pg_temp.balance_'+name),sql).replaceAll('public.journal_wallets','pg_temp.balance_members');
  let serial:Promise<unknown>=Promise.resolve();
  const facade={query:(sql:string,args:unknown[])=>{const work=serial.then(()=>client.query(rewrite(sql),args));serial=work.then(()=>undefined,()=>undefined);return work;}}as unknown as Pool;
@@ -15,22 +15,25 @@ export async function runFreshBalanceSchedulingIntegration(){
   if(method==='eth_getBlockByNumber'){assert.deepEqual(params,['0x78',false]);return{number:'0x78',hash:h(120),timestamp:'0x'+Math.floor(at(120).getTime()/1000).toString(16)};}
   assert.equal(method,'eth_call');assert.deepEqual(params[1],{blockHash:h(120),requireCanonical:true});assert.ok(params[0].data.startsWith('0x70a08231'));stateCalls++;if(beforeState){const next=beforeState;beforeState=undefined;await next();}return'0x'+(1n).toString(16).padStart(64,'0');
  })as Rpc;
- async function reset(){await client.query('TRUNCATE '+names.map(n=>'balance_'+n).concat('balance_members').join(','));await client.query("INSERT INTO balance_checkpoints VALUES('capture',120,$1)",[h(120)]);for(const n of[10,50,80,100,110,120])await client.query('INSERT INTO balance_recent_blocks VALUES($1,$2,$3)',[n,h(n),at(n)]);stateCalls=0;beforeState=undefined;}
- async function scope(id:string,wallets:string[],account:string|null=null){await client.query('INSERT INTO balance_accounting_scopes VALUES($1,$2,$3,$4,$5,10,1,true)',[id,account?'portfolio_combined':'kol',wallets,account,at(10)]);for(const w of wallets)await client.query('INSERT INTO balance_wallets VALUES($1,NULL)ON CONFLICT DO NOTHING',[w]);}
- async function position(id:string,n:number,quantity='1/1',last=50){const token=a(10000+n),event=id+':'+n;await client.query('INSERT INTO balance_tokens VALUES($1,0)ON CONFLICT DO NOTHING',[token]);await client.query('INSERT INTO balance_financial_events VALUES($1,$2)',[event,last]);await client.query(`INSERT INTO balance_positions(scope_id,token_address,quantity_q,revision,balance_status,last_event_id,last_event_at)VALUES($1,$2,$3,1,'pending',$4,$5)`,[id,token,quantity,event,at(last)]);return token;}
+ async function reset(){await client.query('TRUNCATE '+names.map(n=>'balance_'+n).concat('balance_members').join(','));await client.query("INSERT INTO balance_checkpoints(key,block_number,block_hash)VALUES('capture',120,$1)",[h(120)]);for(const n of[10,50,80,100,110,120])await client.query('INSERT INTO balance_recent_blocks VALUES($1,$2,$3)',[n,h(n),at(n)]);stateCalls=0;beforeState=undefined;}
+ async function scope(id:string,wallets:string[],account:string|null=null){await client.query('INSERT INTO balance_accounting_scopes VALUES($1,$2,$3,$4,$5,10,1,true)',[id,account?'portfolio_combined':'kol',wallets,account,at(10)]);for(const w of wallets)await client.query('INSERT INTO balance_wallets(address,decode_gap_from_block)VALUES($1,NULL)ON CONFLICT DO NOTHING',[w]);}
+ async function position(id:string,n:number,quantity='1/1',last=50){const token=a(10000+n),event=id+':'+n;await client.query('INSERT INTO balance_tokens(address,decimals)VALUES($1,0)ON CONFLICT DO NOTHING',[token]);await client.query('INSERT INTO balance_financial_events(id,block_number)VALUES($1,$2)',[event,last]);await client.query(`INSERT INTO balance_positions(scope_id,token_address,quantity_q,revision,balance_status,last_event_id,last_event_at)VALUES($1,$2,$3,1,'pending',$4,$5)`,[id,token,quantity,event,at(last)]);return token;}
  async function pending(wallet:string,n=80){await client.query("INSERT INTO balance_recent_evidence(block_number,block_hash,wallet_addresses,decoder_status)VALUES($1,$2,ARRAY[$3]::text[],'repair')",[n,h(n),wallet]);}
  async function selected(){return(await facade.query(freshBalanceWorkSql,[64,120])).rows;}
  try{
   await client.query('BEGIN');await client.query("SET LOCAL statement_timeout='10s'");
   await client.query(`CREATE TEMP TABLE balance_positions(scope_id text,token_address text,quantity_q text,revision bigint,balance_status text,balance_quantity text,balance_block bigint,balance_hash text,balance_checked_at timestamptz,last_event_id text,last_event_at timestamptz,PRIMARY KEY(scope_id,token_address))ON COMMIT DROP;
    CREATE TEMP TABLE balance_accounting_scopes(id text PRIMARY KEY,kind text,wallet_addresses text[],account_id text,starts_at timestamptz,starts_block bigint,revision bigint,active boolean)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_tokens(address text PRIMARY KEY,decimals integer)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_financial_events(id text PRIMARY KEY,block_number bigint)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_wallets(address text PRIMARY KEY,decode_gap_from_block bigint)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_tokens(address text PRIMARY KEY,decimals integer,launch_status text DEFAULT 'eligible',symbol text,name text)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_financial_events(id text PRIMARY KEY,block_number bigint,execution_key text,canonical boolean DEFAULT true)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_pending_trades(id text,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_wallets(address text PRIMARY KEY,decode_gap_from_block bigint,monitoring_from_block bigint DEFAULT 0,monitoring_to_block bigint,active boolean DEFAULT true)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_kols(wallet_address text,is_tracked boolean)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_launch_facts(token_address text,status text)ON COMMIT DROP;
    CREATE TEMP TABLE balance_jobs(kind text,reference text,state text)ON COMMIT DROP;
    CREATE TEMP TABLE balance_recent_evidence(block_number bigint,block_hash text,wallet_addresses text[],decoder_status text,position_dependency_addresses text[],position_dependency_proof text)ON COMMIT DROP;
    CREATE TEMP TABLE balance_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz,PRIMARY KEY(block_number,block_hash))ON COMMIT DROP;
-   CREATE TEMP TABLE balance_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text,value jsonb DEFAULT '{}')ON COMMIT DROP;
    CREATE TEMP TABLE balance_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz,PRIMARY KEY(user_id,wallet_address))ON COMMIT DROP`);
   await reset();await scope('blocked',[a(1)]);await scope('ready',[a(2)]);await pending(a(1));
   for(let n=0;n<70;n++)await position('blocked',n,'1/1',100);const ready=await position('ready',100);
@@ -60,6 +63,12 @@ export async function runFreshBalanceSchedulingIntegration(){
   await client.query("UPDATE balance_positions SET balance_status='pending'");await client.query('UPDATE balance_recent_evidence SET position_dependency_addresses=array_append(position_dependency_addresses,$1)',[selectedToken]);
   assert.equal((await selected())[0].decoding_pending,true);stateCalls=0;assert.equal((await refreshFreshBalances(facade,rpc)).pending,1);assert.equal(stateCalls,0);checks.push('touched_token_remains_blocked');
   await client.query('UPDATE balance_recent_evidence SET position_dependency_addresses=$1,position_dependency_proof=NULL',[[a(2)]]);assert.equal((await selected())[0].decoding_pending,true);checks.push('unbound_dependency_index_remains_wallet_wide');
+  await reset();const permanentScope='kol:'+a(1);await scope(permanentScope,[a(1)]);await client.query('INSERT INTO balance_kols VALUES($1,true)',[a(1)]);const permanentToken=await position(permanentScope,1);
+  const insertPermanent=()=>client.query("INSERT INTO balance_pending_trades VALUES('pending','pending:operation:0',$1,$2,'buy',110,$3,true)",[a(1),permanentToken,at(110)]);
+  await insertPermanent();assert.equal((await selected())[0].decoding_pending,true);assert.equal((await refreshFreshBalances(facade,rpc)).pending,1);assert.equal(stateCalls,0);
+  assert.equal((await client.query('SELECT count(*)::int n FROM balance_recent_evidence')).rows[0].n,0);checks.push('compact_pending_trade_blocks_balance_after_original_receipt_expiry_without_any_state_call');
+  await client.query('TRUNCATE balance_pending_trades');beforeState=async()=>{await insertPermanent();};const pendingRace=await refreshFreshBalances(facade,rpc);assert.equal(pendingRace.matched,0);assert.equal(pendingRace.pending,1);
+  const permanentHeld=(await client.query('SELECT balance_block,balance_checked_at FROM balance_positions WHERE scope_id=$1',[permanentScope])).rows[0];assert.equal(permanentHeld.balance_block,null);assert.equal(permanentHeld.balance_checked_at,null);checks.push('commit_rechecks_permanent_pending_trade_discovered_during_balance_rpc');
   await client.query('ROLLBACK');return{ok:true,checks,fixtureWrites:'TEMP tables rolled back',financialWrites:0,realNetworkCalls:0};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();await db.end();}
 }

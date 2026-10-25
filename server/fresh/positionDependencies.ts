@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { freshAddress, freshHash, freshInteger, validateFreshReceipt, type FreshCapturedReceipt } from './capture.js';
 import { freshTraceMatchesTransaction, validateFreshTrace } from './trace.js';
+import {freshTrackedEventSql,freshScopeEventSql,freshScopeWalletMonitoringSql} from './tracking.js';
+import {kolProfileTokenSql} from '../kolProfileToken.js';
+import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 
 export interface FreshPositionDependencies { version: 1; addresses: string[]; proofHash: string }
 const callTypes = new Set(['CALL', 'STATICCALL', 'DELEGATECALL', 'CALLCODE', 'CREATE', 'CREATE2', 'SELFDESTRUCT']);
@@ -42,3 +45,33 @@ export const freshPositionReceiptOpaqueSql = (e: string) =>
   )`;
 export const freshPositionReceiptRelevantSql = (e: string, token: string) =>
   `(${freshPositionReceiptOpaqueSql(e)} OR ${token}=ANY(${e}.position_dependency_addresses))`;
+
+const pendingAlias=(value:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_alias_invalid');return value;};
+const pendingTokenExpression=(value:string)=>{if(!/^(?:[a-z_][a-z0-9_]*\.){1,2}[a-z_][a-z0-9_]*$|^\$[1-9][0-9]*$/i.test(value))throw Error('pending_trade_sql_token_invalid');return value;};
+const pendingCapture="(SELECT block_number FROM fresh.checkpoints WHERE key='capture')";
+const pendingBlockExpression=(value:string)=>{if(value!==pendingCapture&&!/^\$[1-9][0-9]*$|^[0-9]+$|^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_block_invalid');return value;};
+
+/** Compact canonical swap observations outlive the temporary receipt buffer.
+ * They cannot approve accounting until their exact execution is normalized.
+ * No raw receipt scan or valuation is performed by this indexed identity gate. */
+export function freshPendingTradeInScopeSql(pending='pending',scope='s',throughBlock=pendingCapture){
+ const e=pendingAlias(pending),s=pendingAlias(scope),capture=freshScopeTokenCaptureSql(s,e+'.token_address'),through=throughBlock===pendingCapture?capture:pendingBlockExpression(throughBlock);
+ return`(${e}.canonical AND ${e}.kind IN('buy','sell') AND ${s}.active
+  AND ${e}.wallet_address=ANY(${s}.wallet_addresses) AND ${freshScopeEventSql(e,s)}
+  AND ${e}.block_number<=${through} AND ${e}.block_number<=${capture}
+  AND NOT EXISTS(SELECT 1 FROM fresh.financial_events promoted WHERE promoted.canonical AND (promoted.id=${e}.id OR promoted.execution_key=${e}.execution_key))
+  AND EXISTS(SELECT 1 FROM fresh.tokens pending_token WHERE pending_token.address=${e}.token_address
+   AND ${freshTrackedEventSql(e,'pending_token')} AND ${kolProfileTokenSql('pending_token')})
+  AND EXISTS(SELECT 1 FROM fresh.wallets monitored WHERE monitored.address=${e}.wallet_address
+   AND ${freshScopeWalletMonitoringSql(e,s,'monitored')} AND(monitored.monitoring_to_block IS NULL OR ${e}.block_number<=monitored.monitoring_to_block))
+  AND ((${s}.kind='kol' AND ${s}.account_id IS NULL AND ${s}.id='kol:'||${e}.wallet_address
+   AND EXISTS(SELECT 1 FROM fresh.kols public_kol WHERE public_kol.wallet_address=${e}.wallet_address AND public_kol.is_tracked))
+   OR (${s}.kind IN('portfolio_wallet','portfolio_combined') AND ${s}.account_id IS NOT NULL
+    AND EXISTS(SELECT 1 FROM public.journal_wallets membership WHERE membership.user_id::text=${s}.account_id AND membership.wallet_address=${e}.wallet_address
+     AND ${e}.block_number>=greatest(${s}.starts_block,coalesce(membership.registration_block,${s}.starts_block))
+     AND ${e}.occurred_at>=greatest(${s}.starts_at,membership.activity_from)))))`;
+}
+export function freshPendingTradeScopeSql(scope='s',token='p.token_address',throughBlock=pendingCapture){
+ const s=pendingAlias(scope),t=pendingTokenExpression(token),through=pendingBlockExpression(throughBlock);
+ return`EXISTS(SELECT 1 FROM fresh.pending_trades pending WHERE pending.token_address=${t} AND ${freshPendingTradeInScopeSql('pending',s,through)})`;
+}

@@ -6,6 +6,7 @@ import { transferTopic } from '../swap.js';
 import { decodeFreshEvidence, encodeFreshEvidence, type FreshCapturedReceipt } from './capture.js';
 import { createFreshUrgentEvidenceCapture, freshUrgentTokenTargets, mergeFreshUrgentEvidence, persistFreshUrgentEvidence, FRESH_URGENT_EVIDENCE_MAX_RPC } from './urgentEvidence.js';
 import type { FreshStateReadEvidence } from './stateEvidence.js';
+import{GANG_TOKEN_ADDRESS,type FreshExistingTokenPermission}from'./tracking.js';
 
 const address = (digit: string) => `0x${digit.repeat(40)}`, hash = (digit: string) => `0x${digit.repeat(64)}`;
 const wallet = address('1'), other = address('2'), token = address('7'), intermediary = address('8'), blockHash = hash('a'), txHash = hash('b');
@@ -38,6 +39,27 @@ function memory(entries: FreshCapturedReceipt[], time = new Date()) {
 }
 
 describe('fresh urgent evidence preservation', () => {
+  it('includes the admitted existing GANG token in optional quote evidence without inventing a launch fact',async()=>{
+    const now=new Date(),entry=fixture(txHash,now);entry.receipt.logs[1].address=GANG_TOKEN_ADDRESS;const m=memory([entry],now),original=m.query.getMockImplementation()!;
+    const start={block_number:'90',block_hash:hash('9'),value:{startBlock:90,startHash:hash('9'),startTime:'2026-10-25T00:00:00.000Z'}};
+    let permission:FreshExistingTokenPermission|null={version:1,kind:'explicit_existing',chainId:56,tokenAddress:GANG_TOKEN_ADDRESS,active:true,startBlock:90,startHash:hash('9'),startTime:start.value.startTime,fromBlock:91,approvedAt:now.toISOString(),reason:'user_approved_gang_only'};
+    m.query.mockImplementation(async(sql:string,params:unknown[]=[])=>{
+      if(sql.startsWith('SELECT block_number::text,block_hash,value'))return{rows:[start]};
+      if(sql.startsWith('SELECT value FROM fresh.checkpoints WHERE key=$1'))return{rows:permission?[{value:permission}]:[]};
+      return original(sql,params);
+    });
+    const nameSelector='0x06fdde03',rpc=vi.fn(async(_method:string,params:unknown[])=>{
+      const call=params[0]as{data:string};if(call.data===abi.encodeFunctionData('decimals'))return abi.encodeFunctionResult('decimals',[18]);
+      if(call.data===abi.encodeFunctionData('totalSupply'))return abi.encodeFunctionResult('totalSupply',[10n**24n]);return'0x';
+    })as unknown as Rpc;
+    await createFreshUrgentEvidenceCapture(m.database,rpc)({now});
+    expect((rpc as any).mock.calls.some(([,params]:any[])=>params[0].to===GANG_TOKEN_ADDRESS&&params[0].data===nameSelector)).toBe(true);
+    expect(m.calls.some(call=>/INSERT INTO fresh.launch_facts|financial_events|fresh.jobs|UPDATE fresh.checkpoints/.test(call.sql))).toBe(false);
+    const n=memory([entry],now),fallback=n.query.getMockImplementation()!;permission=null;
+    n.query.mockImplementation(async(sql:string,params:unknown[]=[])=>sql.startsWith('SELECT block_number::text,block_hash,value')?{rows:[start]}:fallback(sql,params));
+    (rpc as any).mockClear();await createFreshUrgentEvidenceCapture(n.database,rpc)({now});
+    expect((rpc as any).mock.calls.some(([,params]:any[])=>params[0].to===GANG_TOKEN_ADDRESS&&params[0].data===nameSelector)).toBe(false);
+  });
   it('prioritizes wallet assets then intermediates, bounds token count and ignores malformed/spoof transfer shapes', () => {
     const entry = fixture(); expect(freshUrgentTokenTargets(entry)).toEqual([token, intermediary]);
     entry.receipt.logs[0].removed = true; expect(freshUrgentTokenTargets(entry)).toEqual([token]);

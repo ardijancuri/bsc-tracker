@@ -12,7 +12,7 @@ export async function freshStorageReport(db:Pool){
     pg_indexes_size(format('%I.%I',schemaname,tablename)::regclass)::text AS index_bytes FROM pg_tables WHERE schemaname IN('fresh','public') ORDER BY schemaname,tablename`)).rows;
   const totals={permanentFinancialDataBytes:0,temporaryEvidenceDataBytes:0,currentIdentityAndFeatureDataBytes:0,indexBytes:0};
   for(const row of relations){const bytes=Number(row.data_bytes);totals.indexBytes+=Number(row.index_bytes);
-    if(row.schemaname==='fresh'&&['financial_events','scope_event_results','positions','open_lots','accounting_scopes'].includes(row.tablename))totals.permanentFinancialDataBytes+=bytes;
+    if(row.schemaname==='fresh'&&['financial_events','pending_trades','scope_event_results','positions','open_lots','accounting_scopes'].includes(row.tablename))totals.permanentFinancialDataBytes+=bytes;
     else if(row.schemaname==='fresh'&&['recent_blocks','recent_evidence'].includes(row.tablename))totals.temporaryEvidenceDataBytes+=bytes;
     else totals.currentIdentityAndFeatureDataBytes+=bytes;
   }

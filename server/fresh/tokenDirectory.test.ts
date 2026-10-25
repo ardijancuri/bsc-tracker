@@ -1,6 +1,7 @@
 import {describe,it,expect,vi} from 'vitest';
 import type {Pool} from 'pg';
 import {freshTokenDirectoryWindow,freshTokenDirectoryWindowMs,readFreshTokenDirectory,freshTokenDirectoryIdentity} from './tokenDirectory.js';
+import {freshTrackedEventSql} from './tracking.js';
 
 describe('rolling public token directory',()=>{
   const now=Date.parse('2026-10-24T12:00:00.000Z');
@@ -19,6 +20,7 @@ describe('rolling public token directory',()=>{
     expect(args).toEqual(['2026-10-24T04:00:00.000Z','2026-10-24T12:00:00.000Z',2,0]);
     expect(sql).toContain('totals.total');expect(sql).toContain('LEFT JOIN LATERAL');expect(sql).toContain("e.kind IN('buy','sell')");
     expect(sql).toContain('b.block_hash=e.block_hash');expect(sql).toContain('tracked.is_tracked');expect(sql).not.toContain('e.observed_live');
+    expect(sql).toContain(freshTrackedEventSql('e','directory_token'));
     expect(sql).toContain("t.valuation_status<>'no_liquidity'");
   });
   it('retains the total on an offset beyond the final page',async()=>{
@@ -31,6 +33,7 @@ describe('rolling public token directory',()=>{
     const [sql,args]=query.mock.calls[1];expect(args).toEqual(['2026-10-24T04:00:00.000Z','2026-10-24T12:00:00.000Z',['token']]);
     expect(sql).toContain('e.occurred_at>=$1::timestamptz');expect(sql).toContain('e.occurred_at<=$2::timestamptz');expect(sql).toContain('LIMIT 5');
     expect(sql).toContain('b.block_hash=e.block_hash');expect(sql).not.toContain('e.observed_live');
+    expect(sql).toContain(freshTrackedEventSql('e','directory_token'));
     expect(sql).toContain('ORDER BY candidate.address,e.occurred_at DESC,e.id DESC');
   });
   it('normalizes non-finite pagination without passing invalid PostgreSQL limits',async()=>{

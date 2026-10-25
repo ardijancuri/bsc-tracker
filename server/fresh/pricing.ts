@@ -17,6 +17,7 @@ import {FRESH_CURRENT_STABLE_BRIDGE,readFreshPoolNativeConversion,readFreshPoolQ
 import{readFreshPoolStableV3Conversion}from'./currentV3Quote.js';
 import{createFreshCurrentMarketCanonicalHash,freshMarketIdentityInvalid,freshMarketLaunchDigest}from'./currentMarketAnchor.js';
 import{freshHistoricalValuation,type FreshValuationReadOptions}from'./valuationContext.js';
+import{readFreshTokenAdmission}from'./tracking.js';
 
 const tokenAbi = new Interface(['function decimals() view returns(uint8)', 'function totalSupply() view returns(uint256)', 'function name() view returns(string)', 'function symbol() view returns(string)', 'function balanceOf(address) view returns(uint256)']);
 const bytesTokenAbi = new Interface(['function name() view returns(bytes32)', 'function symbol() view returns(bytes32)']);
@@ -398,12 +399,17 @@ export async function commitFreshCurrentQuote(database:Pool,quote:FreshQuote,opt
    ||Date.parse(quote.metadata.block.timestamp)!==quoteTime)throw Error('current_quote_observation_invalid');
   const canonical=(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[quote.blockNumber])).rows[0]?.block_hash;
   if(canonical!==quote.blockHash)throw Error('current_quote_noncanonical');
-  const launch=(await client.query(`SELECT lf.block_number,lf.block_hash FROM fresh.tokens t JOIN fresh.launch_facts lf ON lf.token_address=t.address
-   WHERE t.address=$1 AND t.launch_status='eligible' AND lf.status='eligible' FOR SHARE OF t,lf`,[quote.tokenAddress])).rows[0];
-  if(!launch||!Number.isSafeInteger(Number(launch.block_number))||Number(launch.block_number)>quote.blockNumber)throw Error('current_quote_token_changed');
-  const creationHash=(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[launch.block_number])).rows[0]?.block_hash;
-  if(creationHash&&creationHash!==launch.block_hash)throw Error('current_quote_token_noncanonical');
+  const token=(await client.query('SELECT launch_status FROM fresh.tokens WHERE address=$1 FOR SHARE',[quote.tokenAddress])).rows[0];
+  const admission=await readFreshTokenAdmission(client,quote.tokenAddress,{blockNumber:quote.blockNumber,lock:true});
+  if(!token||!admission||token.launch_status!==admission.launchStatus)throw Error('current_quote_token_changed');
+  if(admission.kind==='new_launch'){
+   const launch=admission.fact;
+   const creationHash=(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[launch.block_number])).rows[0]?.block_hash;
+   if(creationHash&&creationHash!==launch.block_hash)throw Error('current_quote_token_noncanonical');
+  }
   if(quote.market.protocol==='uniswap_v4'){
+   // An explicit existing-token permission is not a launch/Initialize proof.
+   if(admission.kind!=='new_launch')throw Error('current_quote_market_admission_unsupported');
    const stored=(await client.query('SELECT token_address,protocol,identity FROM fresh.markets WHERE id=$1 FOR SHARE',[quote.market.id])).rows[0];
    const proposed=quote.market.identity,fromQuote=proposed.market;
    if(freshMarketIdentityInvalid(proposed)||freshMarketIdentityInvalid(stored?.identity))throw Error('current_quote_market_invalidated');

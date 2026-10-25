@@ -5,6 +5,7 @@ import { compareTrades, cooldownAllows, defaultSignalSettings, detectSignals, ty
 import { kolProfileTokenSql } from '../kolProfileToken.js';
 import { resolveAuthUser, authSessionSecret } from '../telegramAuth.js';
 import { hashSecret, sessionSecret } from '../watchSessionSecrets.js';
+import {freshTrackedEventSql} from './tracking.js';
 
 const address = /^0x[a-f0-9]{40}$/i, signalId = /^[a-f0-9]{64}$/i;
 const iso = (value: unknown) => value == null ? null : new Date(value as string).toISOString();
@@ -64,7 +65,7 @@ export function registerFreshFeatures(app: FastifyInstance, options: { db: Pool;
       e.kind AS side,e.occurred_at AS timestamp,e.block_number::text AS "blockNumber",e.block_hash AS "blockHash",e.transaction_index AS "transactionIndex",e.execution_index AS "executionIndex",e.log_index AS "logIndex",e.observed_live AS "observedLive",
       t.symbol AS "tokenSymbol",t.name AS "tokenName",CASE WHEN t.logo_data IS NOT NULL THEN '/api/token-image/'||t.address ELSE t.logo_url END AS "tokenLogoUrl"
       FROM fresh.financial_events e JOIN published_kols k ON k.address=e.wallet_address AND k.is_tracked JOIN fresh.tokens t ON t.address=e.token_address
-      WHERE e.canonical AND e.observed_live AND e.kind IN('buy','sell') AND t.launch_status='eligible' AND ${kolProfileTokenSql('t')}
+      WHERE e.canonical AND e.observed_live AND e.kind IN('buy','sell') AND ${freshTrackedEventSql('e','t')} AND ${kolProfileTokenSql('t')}
       AND e.occurred_at>=$1 AND e.occurred_at<=$2 AND e.block_number<=COALESCE((SELECT block_number FROM fresh.checkpoints WHERE key='capture'),0)
       ORDER BY e.occurred_at DESC,e.block_number DESC,e.transaction_index DESC,e.execution_index DESC,e.id DESC LIMIT 5001`, [from, end]);
     const limited = result.rows.length > 5000, rows = result.rows.slice(0, 5000).map(row => ({ ...row, timestamp: iso(row.timestamp)! })) as EventRow[];

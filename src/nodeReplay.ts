@@ -21,7 +21,7 @@ export function prepareNodeReplay(activity: KolTokenActivity, now: number, conte
   // contract. It does not pretend those events are GMGN recovered history.
   if (!history && identity?.version === 2 && raw?.version === 2 && activity.inventory) {
     const inventory = activity.inventory, coverage = inventory.coverage;
-    if (!identity.complete || !/^[a-f0-9]{64}$/.test(identity.snapshotId) || identity.source !== 'node' || raw.source !== 'node'
+    if (!identity.complete || !/^[a-f0-9]{64}$/.test(identity.snapshotId) || !['node','mixed'].includes(identity.source) || raw.source !== identity.source
       || raw.policy !== 'kollens_fifo_v1' || !['ready', 'estimated'].includes(raw.status) || !raw.coverage.transactionsComplete || !raw.coverage.balanceMatched
       || raw.walletAddress !== activity.kol.address.toLowerCase() || raw.tokenAddress !== activity.token.address.toLowerCase()
       || inventory.version !== 1 || !coverage.complete || !coverage.reconciled || !Array.isArray(inventory.events) || !Array.isArray(raw.events)

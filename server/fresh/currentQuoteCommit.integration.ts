@@ -26,6 +26,7 @@ try{
   VALUES($1,'evm_creation',$2,$3,$4,$5,'{}','eligible')`,[token,creation,creationHash,hash(),now]);
  for(const[number,blockHash]of[[creation,creationHash],[initial,initialHash],[observed,observedHash]]as const)await client.query('INSERT INTO fresh.recent_blocks(block_number,block_hash,parent_hash,occurred_at) VALUES($1,$2,$3,$4)',[number,blockHash,hash(),now]);
  await client.query('CREATE TEMP TABLE fresh_quote_test_capture(LIKE fresh.checkpoints INCLUDING DEFAULTS) ON COMMIT DROP');
+ await client.query("INSERT INTO fresh_quote_test_capture(key,block_number,block_hash,value) VALUES('start',$1,$2,'{}')",[creation-1,hash()]);
  await client.query("INSERT INTO fresh_quote_test_capture(key,block_number,block_hash,revision,value,updated_at) VALUES('capture',$1,$2,991,'{}',$3),('health:capture',NULL,NULL,1,'{\"ok\":true}',$3)",[observed,observedHash,now]);
  await client.query("INSERT INTO fresh.markets(id,token_address,address,protocol,quote_address,identity,status) VALUES($1,$2,NULL,'uniswap_v4',$3,$4::jsonb,'pending')",[marketId,token,quoteToken,JSON.stringify(identity)]);
  await commitFreshCurrentQuote(wrapped,quote,{captureRevision:'991'});

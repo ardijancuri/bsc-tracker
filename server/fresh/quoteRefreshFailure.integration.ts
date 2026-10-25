@@ -16,6 +16,7 @@ try{
  const block={number:base,hash:headHash,timestamp:stamp.toISOString()},marketId='pcs_v2:'+pair;
  for(const[number,blockHash,at]of[[birth,creationHash,old],[observed,oldHash,old],[base,headHash,stamp]]as const)await client.query('INSERT INTO fresh.recent_blocks(block_number,block_hash,parent_hash,occurred_at) VALUES($1,$2,$3,$4)',[number,blockHash,hash(),at]);
  await client.query('CREATE TEMP TABLE fresh_quote_failure_checkpoints(LIKE fresh.checkpoints INCLUDING DEFAULTS) ON COMMIT DROP');
+ await client.query("INSERT INTO fresh_quote_failure_checkpoints(key,block_number,block_hash,value) VALUES('start',$1,$2,'{}')",[birth-1,hash()]);
  await client.query(`INSERT INTO fresh_quote_failure_checkpoints(key,block_number,block_hash,revision,value,updated_at) VALUES('capture',$1,$2,991,'{}',$3),('health:capture',NULL,NULL,1,'{"ok":true}',$3)`,[base,headHash,stamp]);
  await client.query(`INSERT INTO fresh.tokens(address,launch_status,valuation_status,price_source,decimals,total_supply_raw,price_usd,market_cap_usd,observed_block,observed_hash,observed_at)
   VALUES($1,'eligible','ready','node',18,100000000000000000000000000000000000001,'0.00000000000000000000000000000000012345','12345',$2,$3,$4)`,[token,observed,oldHash,old]);

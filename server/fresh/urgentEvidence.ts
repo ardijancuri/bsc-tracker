@@ -11,6 +11,7 @@ import { createFreshStateEvidenceRpc, type FreshStateReadEvidence } from './stat
 import { freshCurrentQuote, freshQuoteUsd, type FreshPriceBlock } from './pricing.js';
 import {readFreshV4MarketIdentities} from './v4Discovery.js';
 import{createFreshCurrentMarketCanonicalHash}from'./currentMarketAnchor.js';
+import{readFreshTokenAdmission}from'./tracking.js';
 
 export const FRESH_URGENT_EVIDENCE_WINDOW_MS = 45_000;
 export const FRESH_URGENT_EVIDENCE_MAX_RPC = 80;
@@ -188,13 +189,14 @@ export function createFreshUrgentEvidenceCapture(database: Pool, nodeRpc: Rpc) {
       await state.settle(); await flush();
       optional.push(async () => {
         if (options.signal?.aborted || performance.now() - started > FRESH_URGENT_EVIDENCE_MAX_PASS_MS) return;
-        const eligible = (await database.query("SELECT token_address, to_jsonb(lf) AS launch_fact FROM fresh.launch_facts lf WHERE token_address=ANY($1::text[]) AND status='eligible' AND block_number<=$2 ORDER BY token_address LIMIT 1", [targets, block.number])).rows[0];
+        const admitted=await Promise.all([...targets].sort().map(async token=>({token,admission:await readFreshTokenAdmission(database,token,{blockNumber:block.number})})));
+        const eligible=admitted.find(candidate=>candidate.admission!==null);
         // Optional valuation starts only after every selected receipt's urgent
         // metadata/feed work has settled and successful siblings are durable.
         if (eligible && !options.signal?.aborted) {
-          const marketIdentities=(await readFreshV4MarketIdentities(database,[eligible.token_address])).get(eligible.token_address);
-          const canonicalHash=createFreshCurrentMarketCanonicalHash(database,{token:eligible.token_address,block});
-          await freshCurrentQuote(eligible.token_address, { rpc: savingRpc, block, launchFact: eligible.launch_fact,marketIdentities,canonicalHash }).catch(() => { unavailable++; });
+          const marketIdentities=(await readFreshV4MarketIdentities(database,[eligible.token])).get(eligible.token);
+          const canonicalHash=createFreshCurrentMarketCanonicalHash(database,{token:eligible.token,block});
+          await freshCurrentQuote(eligible.token, { rpc: savingRpc, block, launchFact: eligible.admission?.kind==='new_launch'?eligible.admission.fact:undefined,marketIdentities,canonicalHash }).catch(() => { unavailable++; });
         }
         await state.settle(); await flush();
       });

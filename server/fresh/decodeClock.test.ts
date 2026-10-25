@@ -47,7 +47,8 @@ function fixture(options: { blocks?: number; normalizationFailure?: boolean; rep
       vi.setSystemTime(at); clock.storedAsOf = at; lockTimes.push(at); return { rows: [] };
     }
     if (sql.startsWith('SELECT value FROM fresh.checkpoints')) return { rows: [{ value: { startBlock: 100 } }] };
-    if (sql.startsWith('SELECT status,block_number FROM fresh.launch_facts')) return { rows: [] };
+    if (sql.startsWith('SELECT block_number::text,block_hash,value FROM fresh.checkpoints')) return { rows: [{ block_number:'100',block_hash:hash(100),value:{startBlock:100,startHash:hash(100),startTime:new Date(initial-60000).toISOString()} }] };
+    if (sql.startsWith('SELECT * FROM fresh.launch_facts')) return { rows: [] };
     if (sql.startsWith('SELECT block_hash FROM fresh.recent_blocks')) return { rows: [{ block_hash: rows.find(row => row.block_number === params[0])!.block_hash }] };
     if (sql.startsWith('SELECT wallet_addresses,payload')) { const row = rows.find(row => row.tx_hash === params[0])!; return { rows: [{ wallet_addresses: row.wallet_addresses, payload: row.payload }] }; }
     if (sql.startsWith('SELECT id FROM fresh.accounting_scopes') || sql.startsWith('SELECT progress FROM fresh.jobs')) return { rows: [] };

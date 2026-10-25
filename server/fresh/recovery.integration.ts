@@ -54,7 +54,9 @@ try {
   for (const [number, blockHash, timestamp] of [[creationN, creationHash, iso(300)], [sourceN, sourceHash, iso(240)], [syncN, syncHash, iso(150)], [targetN, targetHash, target.timestamp], [anchorN, anchorHash, anchor.timestamp]] as const) {
     await client.query('INSERT INTO recovery_fixture_blocks(block_number,block_hash,parent_hash,occurred_at) VALUES($1,$2,$3,$4)', [number, blockHash, hash(), timestamp]);
   }
-  await client.query("INSERT INTO recovery_fixture_checkpoints(key,block_number,block_hash,value) VALUES('capture',$1,$2,$3::jsonb)", [anchorN, anchorHash, JSON.stringify({ startBlock: base - 10 })]);
+  const trackingStart={startBlock:base-10,startHash:hash(),startTime:iso(360)};
+  await client.query("INSERT INTO recovery_fixture_checkpoints(key,block_number,block_hash,value) VALUES('capture',$1,$2,$3::jsonb),('start',$4,$5,$3::jsonb)",
+    [anchorN,anchorHash,JSON.stringify(trackingStart),trackingStart.startBlock,trackingStart.startHash]);
   await client.query('INSERT INTO fresh.wallets(address,monitoring_from_block) VALUES($1,$2)', [wallet, base - 10]);
   await client.query('INSERT INTO fresh.kols(wallet_address,display_name) VALUES($1,$2)', [wallet, 'Recovery integration fixture']);
   await client.query("INSERT INTO fresh.accounting_scopes(id,kind,wallet_addresses,starts_at,starts_block) VALUES($1,'kol',$2,$3,$4)", [scope, [wallet], iso(360), base - 10]);

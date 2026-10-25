@@ -12,6 +12,7 @@ import{freshNativeBuyCost}from'./routerPayment.js';
 import{freshTraceMatchesTransaction,validateFreshTrace,type FreshCallTrace}from'./trace.js';
 import{certifyFreshCompleteCallTrace}from'./passiveIncoming.js';
 import{stockwavePoolManagerInterface}from'./stockwaveMarket.js';
+import{readFreshTokenAdmission}from'./tracking.js';
 
 export const FRESH_URGENT_TRACE_MAX_AGE_MS=12_000;
 const topicAddress=(value:string|undefined)=>value&&/^0x0{24}[\da-f]{40}$/i.test(value)?`0x${value.slice(-40).toLowerCase()}`:null;
@@ -92,8 +93,8 @@ export async function persistFreshUrgentTrace(database:Pool,selected:FreshCaptur
   const owner=options.walletAddress??selected.transaction.from.toLowerCase();if(!selected.wallets.includes(owner))throw Error('urgent_trace_wallet_changed');
   const wallet=(await client.query('SELECT active,revision,monitoring_from_block,monitoring_to_block FROM fresh.wallets WHERE address=$1 FOR SHARE',[owner])).rows[0];
   if(!wallet?.active||String(wallet.revision)!==options.walletRevision||Number(wallet.monitoring_from_block)>block||wallet.monitoring_to_block!==null&&Number(wallet.monitoring_to_block)<block)throw Error('urgent_trace_wallet_changed');
-  const fact=(await client.query("SELECT block_number FROM fresh.launch_facts WHERE token_address=$1 AND status='eligible' FOR SHARE",[options.token])).rows[0];
-  if(!fact||Number(fact.block_number)>block)throw Error('urgent_trace_token_changed');
+  const admission=await readFreshTokenAdmission(client,options.token,{blockNumber:block,lock:true});
+  if(!admission)throw Error('urgent_trace_token_changed');
   const row=(await client.query('SELECT payload,wallet_addresses FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2 FOR UPDATE',[selected.transaction.hash.toLowerCase(),hash])).rows[0];
   if(!row){await client.query('ROLLBACK');return false;}
   const latest=decodeFreshEvidence(row.payload);
@@ -135,13 +136,14 @@ export function createFreshUrgentTraceCapture(database:Pool,rpc:Rpc,load:(tx:Fre
    candidates.sort((a,b)=>Number(a.passive)-Number(b.passive));
    if(!candidates.length)return empty;
    const tokens=[...new Set(candidates.flatMap(candidate=>candidate.targets))],wallets=[...new Set(candidates.map(candidate=>candidate.walletAddress))];
-   const[launches,active]=await Promise.all([
-    database.query("SELECT token_address,block_number FROM fresh.launch_facts WHERE token_address=ANY($1::text[]) AND status='eligible' AND block_number>$2",[tokens,Number(capture.value?.startBlock)]),
+   const[admissions,active]=await Promise.all([
+    Promise.all(tokens.map(async token=>({token,admission:await readFreshTokenAdmission(database,token,{blockNumber:Number(capture.block_number)})}))),
     database.query('SELECT address,revision,monitoring_from_block,monitoring_to_block FROM fresh.wallets WHERE address=ANY($1::text[]) AND active',[wallets])
    ]);
    for(const candidate of candidates){
     const{row,entry,key}=candidate,age=clock()-new Date(row.occurred_at).getTime();if(options.signal?.aborted||age<0||age>FRESH_URGENT_TRACE_MAX_AGE_MS)continue;
-    const block=Number(row.block_number),eligible=candidate.targets.filter(token=>launches.rows.some(fact=>fact.token_address===token&&Number(fact.block_number)<=block));
+    const block=Number(row.block_number),eligible=candidate.targets.filter(token=>admissions.some(item=>item.token===token&&item.admission!==null
+      &&item.admission.fromBlock<=block&&(item.admission.kind!=='new_launch'||Number(item.admission.fact.block_number)<=block)));
     const wallet=active.rows.find(wallet=>wallet.address===candidate.walletAddress&&Number(wallet.monitoring_from_block)<=block&&(wallet.monitoring_to_block===null||Number(wallet.monitoring_to_block)>=block));
     if(eligible.length!==1||!wallet)continue;
     // The independent SSH adapter has no queued jobs, but host-key verification

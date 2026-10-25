@@ -12,6 +12,12 @@ function summary(open = false): NodeAccountingSummary {
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('server-approved compact fresh card summaries', () => {
+  it('shows verified imported-and-node totals without bypassing completeness or scope checks', () => {
+    const value=summary();value.snapshot!.source='mixed';
+    expect(nodeSummaryDisplay(value,wallet,token,now,{realizedOnly:true})).toEqual({value:38,kind:'realized'});
+    value.snapshot!.complete=false;expect(nodeSummaryDisplay(value,wallet,token,now).value).toBeNull();
+    value.snapshot!.complete=true;value.snapshot!.scope='portfolio';expect(nodeSummaryDisplay(value,wallet,token,now).value).toBeNull();
+  });
   it('shows dated closed profit immediately and uses ordinary bounded refresh instead of an old-quote rescan', () => {
     const value = summary(); expect(nodeSummaryDisplay(value, wallet, token)).toEqual({ value: 38, kind: 'realized' }); expect(nodeSummaryRefreshDelay(value)).toBe(60_000);
     const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={value.snapshot!.asOf} initialSummary={value} />);

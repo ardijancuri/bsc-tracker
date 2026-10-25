@@ -1,5 +1,5 @@
 import { freshDecimal, FreshRational } from './accounting.js';
-import { freshPositionReceiptRelevantSql, freshPositionReceiptOpaqueSql } from './positionDependencies.js';
+import { freshPositionReceiptRelevantSql, freshPositionReceiptOpaqueSql,freshPendingTradeInScopeSql } from './positionDependencies.js';
 
 type Row = Record<string, any>;
 
@@ -7,7 +7,7 @@ type Row = Record<string, any>;
  * missing canonical time, every current-day receipt, and any earlier movement
  * touching a token used today still prevent a complete daily rank. */
 export function freshDailyLeaderboardPendingSql() {
-  return `EXISTS(SELECT 1 FROM fresh.recent_evidence e
+  return `(EXISTS(SELECT 1 FROM fresh.recent_evidence e
     LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash
     WHERE e.wallet_addresses@>ARRAY[w.address]::text[] AND e.decoder_status<>'done' AND (
       h.block_number IS NULL OR h.occurred_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
@@ -17,14 +17,19 @@ export function freshDailyLeaderboardPendingSql() {
         AND daily.occurred_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
         AND daily.occurred_at < (($1::date+1)::timestamp AT TIME ZONE 'UTC')
         AND ${freshPositionReceiptRelevantSql('e', 'daily.token_address')})
-    ))`;
+    )) OR EXISTS(SELECT 1 FROM fresh.accounting_scopes pending_scope JOIN fresh.pending_trades pending ON pending.wallet_address=w.address
+     WHERE pending_scope.id='kol:'||w.address AND ${freshPendingTradeInScopeSql('pending','pending_scope')} AND(
+      pending.occurred_at>=($1::date::timestamp AT TIME ZONE 'UTC') AND pending.occurred_at<(($1::date+1)::timestamp AT TIME ZONE 'UTC')
+      OR pending.occurred_at<($1::date::timestamp AT TIME ZONE 'UTC') AND EXISTS(SELECT 1 FROM fresh.scope_event_results active
+       WHERE active.scope_id=pending_scope.id AND active.token_address=pending.token_address
+        AND active.occurred_at>=($1::date::timestamp AT TIME ZONE 'UTC') AND active.occurred_at<(($1::date+1)::timestamp AT TIME ZONE 'UTC')))))`;
 }
 
 /** A receipt inside the rolling window may contain an unrecorded realization.
  * Earlier receipts matter only when opaque or touching a token used in this
  * window: its purchase cost may predate the displayed profit period. */
 export function freshRollingLeaderboardPendingSql() {
-  return `EXISTS(SELECT 1 FROM fresh.recent_evidence e
+  return `(EXISTS(SELECT 1 FROM fresh.recent_evidence e
     LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash
     WHERE e.wallet_addresses@>ARRAY[w.address]::text[] AND e.decoder_status<>'done' AND (
       h.block_number IS NULL OR h.occurred_at > $1::timestamptz AND h.occurred_at <= $2::timestamptz
@@ -34,7 +39,12 @@ export function freshRollingLeaderboardPendingSql() {
           WHERE active.scope_id='kol:'||w.address AND active.occurred_at > $1::timestamptz AND active.occurred_at <= $2::timestamptz
           AND ${freshPositionReceiptRelevantSql('e','active.token_address')})
       )
-    ))`;
+    )) OR EXISTS(SELECT 1 FROM fresh.accounting_scopes pending_scope JOIN fresh.pending_trades pending ON pending.wallet_address=w.address
+     WHERE pending_scope.id='kol:'||w.address AND ${freshPendingTradeInScopeSql('pending','pending_scope')} AND(
+      pending.occurred_at>$1::timestamptz AND pending.occurred_at<=$2::timestamptz
+      OR pending.occurred_at<=$1::timestamptz AND EXISTS(SELECT 1 FROM fresh.scope_event_results active
+       WHERE active.scope_id=pending_scope.id AND active.token_address=pending.token_address
+        AND active.occurred_at>$1::timestamptz AND active.occurred_at<=$2::timestamptz))))`;
 }
 
 /** Current rows remain valid between events and scheduled expirations. A read

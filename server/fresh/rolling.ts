@@ -1,6 +1,7 @@
 import type {PoolClient} from 'pg';
 import type {FreshEventResult,FreshFinancialEvent,FreshScope} from '../../shared/freshAccounting.js';
 import {FreshRational} from './accounting.js';
+import{freshScopeEventSql}from'./tracking.js';
 
 export const FRESH_ROLLING_WINDOW_MS=24*60*60*1000;
 const qFields=['known_realized_q','capital_q','volume_q','fee_only_q','unallocated_fee_q'] as const;
@@ -53,10 +54,10 @@ async function rangeRows(client:PoolClient,scope:Row,from:string,to:string){
   const results=(await client.query(`SELECT r.*,e.kind FROM fresh.scope_event_results r JOIN fresh.financial_events e ON e.id=r.event_id
     WHERE r.scope_id=$1 AND r.occurred_at>$2::timestamptz AND r.occurred_at<=$3::timestamptz AND e.canonical
     ORDER BY r.occurred_at,r.event_id`,[scope.id,from,to])).rows;
-  const excluded=(await client.query(`SELECT e.*,true AS is_excluded_fee FROM fresh.financial_events e
-    WHERE e.wallet_address=$1 AND ${excludedPredicate} AND e.canonical AND e.block_number >= $2 AND e.occurred_at >= $3::timestamptz
-      AND e.occurred_at>$4::timestamptz AND e.occurred_at<=$5::timestamptz ORDER BY e.occurred_at,e.id`,
-    [scope.wallet_addresses[0],scope.starts_block,scope.starts_at,from,to])).rows;
+  const excluded=(await client.query(`SELECT e.*,true AS is_excluded_fee FROM fresh.financial_events e JOIN fresh.accounting_scopes s ON s.id=$1
+    WHERE e.wallet_address=ANY(s.wallet_addresses) AND ${excludedPredicate} AND e.canonical AND ${freshScopeEventSql('e','s')}
+      AND e.occurred_at>$2::timestamptz AND e.occurred_at<=$3::timestamptz ORDER BY e.occurred_at,e.id`,
+    [scope.id,from,to])).rows;
   return[...results,...excluded];
 }
 async function countTokens(client:PoolClient,scope:string,from:string,to:string){return Number((await client.query(`SELECT count(DISTINCT r.token_address)::int AS n
@@ -72,12 +73,12 @@ async function nextExpiry(client:PoolClient,scope:Row,from:string,to:string){
       WHERE r.scope_id=$1 AND r.occurred_at>$3::timestamptz AND e.canonical ORDER BY r.occurred_at LIMIT 1)
     UNION ALL
     (SELECT e.occurred_at+interval '24 hours' AS due_at
-      FROM fresh.financial_events e WHERE e.wallet_address=$4 AND ${excludedPredicate} AND e.canonical
-      AND e.block_number >= $5 AND e.occurred_at >= $6::timestamptz AND e.occurred_at>$2::timestamptz AND e.occurred_at<=$3::timestamptz ORDER BY e.occurred_at LIMIT 1)
+      FROM fresh.financial_events e JOIN fresh.accounting_scopes s ON s.id=$1 WHERE e.wallet_address=ANY(s.wallet_addresses) AND ${excludedPredicate} AND e.canonical
+      AND ${freshScopeEventSql('e','s')} AND e.occurred_at>$2::timestamptz AND e.occurred_at<=$3::timestamptz ORDER BY e.occurred_at LIMIT 1)
     UNION ALL
-    (SELECT e.occurred_at AS due_at FROM fresh.financial_events e WHERE e.wallet_address=$4 AND ${excludedPredicate} AND e.canonical
-      AND e.block_number >= $5 AND e.occurred_at >= $6::timestamptz AND e.occurred_at>$3::timestamptz ORDER BY e.occurred_at LIMIT 1)
-  ) due`,[scope.id,from,to,scope.wallet_addresses[0],scope.starts_block,scope.starts_at])).rows[0];
+    (SELECT e.occurred_at AS due_at FROM fresh.financial_events e JOIN fresh.accounting_scopes s ON s.id=$1 WHERE e.wallet_address=ANY(s.wallet_addresses) AND ${excludedPredicate} AND e.canonical
+      AND ${freshScopeEventSql('e','s')} AND e.occurred_at>$3::timestamptz ORDER BY e.occurred_at LIMIT 1)
+  ) due`,[scope.id,from,to])).rows[0];
   return row?.due_at?new Date(row.due_at).toISOString():null;
 }
 async function persist(client:PoolClient,wallet:string,totals:FreshRollingTotals,asOf:string,next:string|null){

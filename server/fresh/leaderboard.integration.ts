@@ -17,17 +17,25 @@ let checks = 0;
 try {
   await client.query('BEGIN');
   // Session-only fixture tables shadow the explicitly rewritten helper tables.
-  await client.query(`CREATE TEMP TABLE board_wallets(address text);
+  await client.query(`CREATE TEMP TABLE board_wallets(address text,monitoring_from_block bigint,monitoring_to_block bigint,active boolean DEFAULT true);
     CREATE TEMP TABLE board_evidence(tx_hash text,block_hash text,block_number bigint,wallet_addresses text[],decoder_status text,
       position_dependency_addresses text[],position_dependency_proof text);
     CREATE TEMP TABLE board_blocks(block_number bigint,block_hash text,occurred_at timestamptz);
-    CREATE TEMP TABLE board_results(scope_id text,token_address text,occurred_at timestamptz);`);
-  await client.query('INSERT INTO board_wallets VALUES($1)', [wallet]);
+    CREATE TEMP TABLE board_results(scope_id text,token_address text,occurred_at timestamptz);
+    CREATE TEMP TABLE board_pending(id text,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean);
+    CREATE TEMP TABLE board_financial(id text,execution_key text,canonical boolean);
+    CREATE TEMP TABLE board_scopes(id text,kind text,wallet_addresses text[],account_id text,starts_block bigint,starts_at timestamptz,active boolean);
+    CREATE TEMP TABLE board_tokens(address text,launch_status text,symbol text,name text);
+    CREATE TEMP TABLE board_kols(wallet_address text,is_tracked boolean);
+    CREATE TEMP TABLE board_launch(token_address text,status text);
+    CREATE TEMP TABLE board_checkpoints(key text,block_number bigint,block_hash text,value jsonb);
+    CREATE TEMP TABLE board_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz);`);
+  await client.query('INSERT INTO board_wallets(address)VALUES($1)', [wallet]);
   await client.query('INSERT INTO board_results VALUES($1,$2,$3)', [scope, token, `${day}T00:30:00Z`]);
-  const predicate = freshDailyLeaderboardPendingSql()
-    .replaceAll('fresh.recent_evidence', 'board_evidence')
-    .replaceAll('fresh.recent_blocks', 'board_blocks')
-    .replaceAll('fresh.scope_event_results', 'board_results');
+  const rewrite=(sql:string)=>Object.entries({recent_evidence:'board_evidence',recent_blocks:'board_blocks',scope_event_results:'board_results',pending_trades:'board_pending',
+    financial_events:'board_financial',accounting_scopes:'board_scopes',tokens:'board_tokens',wallets:'board_wallets',kols:'board_kols',launch_facts:'board_launch',checkpoints:'board_checkpoints'})
+    .reduce((s,[name,target])=>s.replaceAll('fresh.'+name,target),sql).replaceAll('public.journal_wallets','board_members');
+  const predicate = rewrite(freshDailyLeaderboardPendingSql());
   const pending = async () => (await client.query(`SELECT ${predicate} AS pending FROM board_wallets w`, [day])).rows[0].pending;
   assert.equal(await pending(), false); checks++;
   const blockHash = hash();
@@ -49,8 +57,7 @@ try {
   assert.equal(await pending(), true, 'Orphaned or unavailable header time is not classified as an older unrelated receipt'); checks++;
   await client.query('UPDATE board_evidence SET decoder_status=$1', ['done']);
   assert.equal(await pending(), false); checks++;
-  const rollingPredicate=freshRollingLeaderboardPendingSql().replaceAll('fresh.recent_evidence','board_evidence')
-    .replaceAll('fresh.recent_blocks','board_blocks').replaceAll('fresh.scope_event_results','board_results');
+  const rollingPredicate=rewrite(freshRollingLeaderboardPendingSql());
   const rollingPending=async()=> (await client.query(`SELECT ${rollingPredicate} AS pending FROM board_wallets w`,
     ['2026-10-23T12:30:00Z','2026-10-24T12:30:00Z'])).rows[0].pending;
   await client.query('UPDATE board_blocks SET block_hash=$1,occurred_at=$2',[blockHash,'2026-10-23T23:50:00Z']);

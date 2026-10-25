@@ -352,7 +352,7 @@ function verifiedFreshNodeAccounting(activity: KolTokenActivity, now: number) {
   const height = (value: unknown): value is string => typeof value === 'string' && /^\d+$/.test(value);
   if (!raw || !snapshot || tracking?.version !== 1 || tracking.source !== 'fresh' || !height(tracking.fromBlock)
     || !/^\d{4}-\d{2}-\d{2}$/.test(tracking.utcDay) || !Number.isFinite(Date.parse(`${tracking.utcDay}T00:00:00Z`))
-    || snapshot.version !== 2 || snapshot.source !== 'node' || raw.source !== 'node' || raw.policy !== 'kollens_fifo_v1' || raw.version !== 2
+    || snapshot.version !== 2 || !['node','mixed'].includes(snapshot.source) || raw.source !== snapshot.source || raw.policy !== 'kollens_fifo_v1' || raw.version !== 2
     || snapshot.complete !== true && tracking.realizedComplete !== true || raw.status !== 'ready' || raw.coverage?.transactionsComplete !== true || raw.coverage.balanceMatched !== true
     || !digest.test(snapshot.snapshotId) || !digest.test(snapshot.historyFingerprint) || !height(snapshot.coveredThroughBlock)
     || BigInt(snapshot.coveredThroughBlock) < BigInt(tracking.fromBlock)

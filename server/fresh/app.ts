@@ -20,10 +20,12 @@ import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
 import {registerChampionshipRoutes} from '../championshipApi.js';
 import {createChampionshipService} from '../championship.js';
-import {freshPublicTokenSql} from './publicTokens.js';
-import {freshPositionReceiptRelevantSql} from './positionDependencies.js';
+import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
+import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
 import {freshPositionWalletGapSql} from './balanceScheduling.js';
 import {readFreshTokenDirectory} from './tokenDirectory.js';
+import {freshTrackedEventSql,freshScopeTokenBoundarySql} from './tracking.js';
+import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 
 const address=(s:string)=>/^0x[0-9a-f]{40}$/i.test(s)?s.toLowerCase():null;
 const num=(s:unknown,defaultValue=50,max=100)=>Number.isInteger(Number(s))&&Number(s)>0?Math.min(Number(s),max):defaultValue;
@@ -66,9 +68,14 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   app.get<{Querystring:{limit?:string;cursor?:string;kol?:string;token?:string;window?:string}}>('/api/trades',async req=>reads.trades({limit:num(req.query.limit),cursor:req.query.cursor,
     wallet:req.query.kol?address(req.query.kol)??'invalid':undefined,token:req.query.token?address(req.query.token)??'invalid':undefined,today:req.query.window==='today',window:req.query.window==='24h'?'24h':undefined}));
   const publicToken=freshPublicTokenSql();
+  async function visibleTokenCounters(token:string){return(await db.query(`SELECT count(DISTINCT e.wallet_address)::int AS today_kol_count,
+    count(*) FILTER(WHERE e.kind='buy')::int AS today_buy_count,count(*) FILTER(WHERE e.kind='sell')::int AS today_sell_count,
+    COALESCE(sum(e.amount_usd::numeric),0)::text AS today_volume_q FROM fresh.visible_trades e JOIN fresh.tokens t ON t.address=e.token_address
+    WHERE e.token_address=$1 AND ${freshPublicTradeScopeSql('e')} AND ${freshTrackedEventSql('e','t')}
+    AND e.occurred_at>=$2::timestamptz AND e.occurred_at<=$3::timestamptz`,[token,`${freshUtcDay()}T00:00:00.000Z`,new Date().toISOString()])).rows[0];}
   async function tokens(wallet?:string,limit=150,offset=0){
-    const values:unknown[]=[];let join='',walletTrade='';if(wallet){values.push(publicScope(wallet),wallet);join='JOIN fresh.positions p ON p.token_address=t.address AND p.scope_id=$1';
-      walletTrade="AND EXISTS(SELECT 1 FROM fresh.financial_events e WHERE e.token_address=t.address AND e.wallet_address=$2 AND e.canonical AND e.kind IN('buy','sell'))";}
+    const values:unknown[]=[];let join='',walletTrade='';if(wallet){values.push(wallet);
+      walletTrade=`AND EXISTS(SELECT 1 FROM fresh.visible_trades e WHERE e.token_address=t.address AND e.wallet_address=$1 AND ${freshPublicTradeScopeSql('e')} AND ${freshTrackedEventSql('e','t')})`;}
     values.push(limit+1,offset);
     const result=await db.query(`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t ${join} WHERE ${publicToken} ${walletTrade}
       ORDER BY t.last_trade_at DESC NULLS LAST,t.address LIMIT $${values.length-1} OFFSET $${values.length}`,values);
@@ -114,17 +121,21 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   });
   app.get<{Params:{address:string}}>('/api/tokens/:address',async(req,reply)=>{
     const key=address(req.params.address);if(!key)return reply.code(400).send({error:'Invalid token'});
-    const row=(await db.query(`SELECT t.* FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
+    const row=(await db.query(`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
     if(!row)return{token:null,trades:[],kols:[]};
     await selectFreshQuote(db,key);
-    const [trades,kols]=await Promise.all([reads.trades({token:key,limit:20}),db.query(`SELECT p.* FROM fresh.positions held JOIN fresh.accounting_scopes s ON s.id=held.scope_id JOIN published_kols p ON s.id='kol:'||p.address WHERE held.token_address=$1 AND s.active AND p.is_tracked ORDER BY p.display_name`,[key])]);
-    return{token:tokenIdentity(row),trades:trades.items,tradesNextCursor:trades.nextCursor,kols:kols.rows.map(kolIdentity)};
+    const [trades,kols,counts]=await Promise.all([reads.trades({token:key,limit:20}),db.query(`SELECT p.* FROM published_kols p WHERE p.is_tracked
+      AND EXISTS(SELECT 1 FROM fresh.visible_trades trader_event JOIN fresh.tokens traded_token ON traded_token.address=trader_event.token_address
+        WHERE trader_event.wallet_address=p.address AND trader_event.token_address=$1 AND ${freshPublicTradeScopeSql('trader_event')}
+        AND ${freshTrackedEventSql('trader_event','traded_token')}) ORDER BY p.display_name`,[key]),
+      visibleTokenCounters(key)]);
+    return{token:tokenIdentity({...row,...counts,utc_date:freshUtcDay()}),trades:trades.items,tradesNextCursor:trades.nextCursor,kols:kols.rows.map(kolIdentity)};
   });
   app.get<{Params:{address:string};Querystring:{interval?:string;period?:string;before?:string;history?:string;priority?:string;workload?:string}}>('/api/tokens/:address/chart',async(req,reply)=>{
     const key=address(req.params.address),resolution=(req.query.interval??({'24h':'5m','7d':'1h','30d':'4h'}[req.query.period??'24h'])??'1m') as FreshResolution;
     if(!key||!Object.hasOwn(freshChartIntervals,resolution))return reply.code(400).send({error:'Invalid chart interval'});
     if(req.query.period&&!Object.hasOwn(freshChartPeriods,req.query.period)||req.query.workload&&!['browse','replay'].includes(req.query.workload))return reply.code(400).send({error:'Invalid chart request'});
-    const token=(await db.query(`SELECT t.*,l.launched_at FROM fresh.tokens t LEFT JOIN fresh.launch_facts l ON l.token_address=t.address WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
+    const token=(await db.query(`SELECT t.*,CASE WHEN t.launch_status='preexisting' THEN NULL ELSE l.launched_at END AS launched_at FROM fresh.tokens t LEFT JOIN fresh.launch_facts l ON l.token_address=t.address WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
     if(!token)return reply.code(404).send({error:'Token not found'});
     if(req.query.priority!=='prefetch')await selectFreshQuote(db,key);
     const to=req.query.before?Number(req.query.before)*1000:Date.now(),seconds=freshChartIntervals[resolution];
@@ -134,8 +145,9 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     req.raw.once('aborted',abort);reply.raw.once('close',closed);
     try{const chart=await charts.chart(key,{from,to,resolution,period:(req.query.interval??req.query.period??'24h') as import('../../shared/intelligence.js').ChartRange,
       foreground:req.query.priority!=='prefetch',workload:req.query.workload==='replay'?'replay':'browse',signal:controller.signal,quote:{priceUsd:token.valuation_status==='ready'?token.price_usd:null,supply,timestamp:iso(token.observed_at)}});
-      const full=req.query.history==='full',complete=from<=launchedAt;return{...chart,fullHistory:full,historyComplete:full?complete:chart.historyComplete,
-        historyPending:full&&!complete,historyBefore:full&&!complete?Math.floor(from/1000):undefined};}
+      const full=req.query.history==='full',creationKnown=token.launched_at!=null,complete=creationKnown&&from<=launchedAt;return{...chart,fullHistory:full,historyComplete:full?complete:chart.historyComplete,
+        historyPending:full&&creationKnown&&!complete,historyBefore:full&&creationKnown&&!complete?Math.floor(from/1000):undefined,
+        ...(!creationKnown?{historyLoadStatus:'limited' as const,historyRecoveryPending:false,historyRecoveryReason:'token_creation_unknown'}:{})};}
     catch(error){if(!(error instanceof FreshChartError))throw error;return reply.header('Retry-After',String(Math.ceil((error.retryAfterMs||5000)/1000))).send({address:key,period:req.query.interval??req.query.period??'24h',source:'unavailable',candles:[],points:[],updatedAt:null,resolution,pending:error.reason!=='chart_unavailable',stale:true,
       fullHistory:req.query.history==='full',historyComplete:false,historyPending:req.query.history==='full'&&error.reason!=='chart_unavailable',
       ...(req.query.history==='full'?{historyLoadStatus:error.reason==='provider_cooldown'?'rate_limited':error.reason==='chart_unavailable'?'limited':'provider_error',
@@ -150,14 +162,14 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     const key=address(req.params.address),row=(await db.query(`SELECT website_url FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
     return kind==='website'?{tokenAddress:key,websiteUrl:row?.website_url??null}:{tokenAddress:key,englishName:null};});
   app.get<{Params:{address:string}}>('/api/tokens/:address/market',async req=>{const row=(await db.query(`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[address(req.params.address)??'invalid'])).rows[0];
-    const token=row?tokenIdentity(row):null;if(token)await selectFreshQuote(db,token.address);
+    const token=row?tokenIdentity({...row,...await visibleTokenCounters(row.address),utc_date:freshUtcDay()}):null;if(token)await selectFreshQuote(db,token.address);
     return{period:'24h',utcDay:freshUtcDay(),token:token?{...token,kind:'token',periodVolumeUsd:token.volume24hUsd,periodKolCount:token.kolCount24h,priceHistory:[]}:null};});
   for(const mode of ['kols','tokens']as const)app.get<{Params:{address:string}}>(`/api/${mode}/:address/positions`,async req=>{
     const key=address(req.params.address)??'invalid',rows=(await db.query(`SELECT p.*,s.wallet_addresses,last.block_number AS last_event_block,
-      (SELECT block_number FROM fresh.checkpoints WHERE key='capture') AS capture_block,
+      ${freshScopeTokenCaptureSql('s','p.token_address')} AS capture_block,
       ${freshPositionWalletGapSql("(SELECT block_number FROM fresh.checkpoints WHERE key='capture')")} AS wallet_gap,
-      EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.wallet_addresses&&s.wallet_addresses AND e.block_number>=s.starts_block AND e.decoder_status<>'done'
-        AND ${freshPositionReceiptRelevantSql('e','p.token_address')}) AS decoding_pending,
+      (EXISTS(SELECT 1 FROM fresh.recent_evidence e LEFT JOIN fresh.recent_blocks h USING(block_number,block_hash) WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.decoder_status<>'done'
+        AND ${freshPositionReceiptRelevantSql('e','p.token_address')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending,
       EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='registration_capture' AND j.reference=ANY(s.wallet_addresses) AND j.state NOT IN('done','cancelled')) AS registration_pending
       FROM fresh.positions p JOIN fresh.accounting_scopes s ON s.id=p.scope_id JOIN fresh.kols k ON s.id='kol:'||k.wallet_address
       JOIN fresh.tokens t ON t.address=p.token_address LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id
@@ -165,7 +177,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     return{items:rows.map(freshPublicPosition)};});
   app.get<{Querystring:{q?:string}}>('/api/search',async req=>{const term=(req.query.q??'').trim().slice(0,120);if(!term)return{kols:[],tokens:[]};const[kols,tokens]=await Promise.all([
     db.query(`SELECT * FROM published_kols WHERE is_tracked AND (address ILIKE $1 OR display_name ILIKE $1) LIMIT 12`,[`%${term}%`]),
-    db.query(`SELECT t.* FROM fresh.tokens t WHERE ${publicToken} AND (t.address ILIKE $1 OR t.symbol ILIKE $1 OR t.name ILIKE $1) LIMIT 12`,[`%${term}%`])]);return{kols:kols.rows.map(kolIdentity),tokens:tokens.rows.map(tokenIdentity)};});
+    db.query(`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t WHERE ${publicToken} AND (t.address ILIKE $1 OR t.symbol ILIKE $1 OR t.name ILIKE $1) LIMIT 12`,[`%${term}%`])]);return{kols:kols.rows.map(kolIdentity),tokens:tokens.rows.map(tokenIdentity)};});
   app.get('/api/stream',async(req,reply)=>{reply.hijack();reply.raw.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});reply.raw.write('data: update\n\n');
     const timer=setInterval(()=>reply.raw.write('data: update\n\n'),5000);req.raw.once('close',()=>clearInterval(timer));});
   return{app,services,alerts};

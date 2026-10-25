@@ -8,6 +8,7 @@ import {FreshRational} from './accounting.js';
 import {FreshMetadataReadError,FreshNoLiquidityError,type FreshPriceBlock} from './pricing.js';
 import {createFreshCurrentMarketCanonicalHash,freshMarketIdentityInvalid,freshMarketLaunchDigest} from './currentMarketAnchor.js';
 import {stockwavePoolManagerInterface,freshStockwaveStorageSlots,validFreshStockwaveMarketIdentity} from './stockwaveMarket.js';
+import{GANG_TOKEN_ADDRESS,readFreshTokenAdmission}from'./tracking.js';
 
 const tokenAbi=new Interface(['function decimals() view returns(uint8)','function totalSupply() view returns(uint256)']);
 const tokenFields=['address','launch_status','valuation_status','price_source','price_usd','market_cap_usd','decimals','total_supply_raw','observed_block','observed_hash','observed_at'] as const;
@@ -81,8 +82,10 @@ export type FreshQuoteRefreshEvidence=ReturnType<typeof observeFreshQuoteRefresh
 /** Missing calls are allowed only after a genuine transient failure. A raw
  * call that succeeded must still agree with the original precision/identity. */
 export function freshQuoteRefreshCanRetain(state:FreshQuoteRefreshState|undefined,evidence:FreshQuoteRefreshEvidence,error:unknown,now:number){
- if(!state||state.token.valuation_status!=='ready'||state.token.price_source!=='node'||state.token.launch_status!=='eligible'||state.markets.length<1||state.markets.length>8
+ if(!state||state.token.valuation_status!=='ready'||state.token.price_source!=='node'||!(state.token.launch_status==='eligible'||state.token.address===GANG_TOKEN_ADDRESS&&state.token.launch_status==='preexisting')||state.markets.length<1||state.markets.length>8
   ||error instanceof FreshNoLiquidityError||evidence.invalid||!(temporary(error)||error instanceof Error&&error.message==='authenticated_market_quote_unavailable'&&evidence.transient))return false;
+ // Admission is not a substitute for genuine V4 launch/Initialize evidence.
+ if(state.token.launch_status==='preexisting'&&state.markets.some(m=>m.protocol==='uniswap_v4'))return false;
  const t=state.token,age=now-Date.parse(t.observed_at);
  try{
   if(!Number.isFinite(age)||age<0||age>120000||FreshRational.parse(t.price_usd).n<=0n||FreshRational.parse(t.market_cap_usd).n<=0n||!freshHash(t.observed_hash))return false;
@@ -173,7 +176,8 @@ export async function commitFreshQuoteRefreshFailure(database:Pool,token:string,
   const current=(await client.query(`SELECT ${tokenJson} AS token,to_jsonb(lf) AS launch FROM fresh.tokens t LEFT JOIN fresh.launch_facts lf ON lf.token_address=t.address
    WHERE t.address=$1 FOR UPDATE OF t`,[token])).rows[0];
   if(!options.prior){await client.query('ROLLBACK');return{retained:false,updated:false,reason:'quote_snapshot_missing'};}
-  if(!current||current.token.launch_status!=='eligible'||current.launch?.status!=='eligible'||Number(current.launch.block_number)>options.block.number
+  const admission=current?await readFreshTokenAdmission(client,token,{blockNumber:options.block.number,lock:true}):null;
+  if(!current||!admission||current.token.launch_status!==admission.launchStatus
    ||Number(current.token.observed_block)>options.block.number){await client.query('ROLLBACK');return{retained:false,updated:false,reason:'quote_changed'};}
   // A newer success or canonical correction always wins over an older failure.
   // Status-only changes also count: a previous failure must never be promoted.
@@ -187,9 +191,9 @@ export async function commitFreshQuoteRefreshFailure(database:Pool,token:string,
   let retain=freshQuoteRefreshCanRetain(options.prior,options.evidence,error,now)&&equal(project(current.token,tokenFields),options.prior?.token);
   if(retain){
    const canonical=(await client.query('SELECT block_hash,occurred_at FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[current.token.observed_block])).rows[0];
-   const birth=(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[current.launch.block_number])).rows[0]?.block_hash;
+   const birth=admission.kind==='new_launch'?(await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE',[admission.fact.block_number])).rows[0]?.block_hash:null;
    if(canonical?.block_hash!==current.token.observed_hash||new Date(canonical?.occurred_at).getTime()!==Date.parse(current.token.observed_at)
-    ||Number(current.token.observed_block)>Number(capture.block_number)||birth&&birth!==current.launch.block_hash)retain=false;
+    ||Number(current.token.observed_block)>Number(capture.block_number)||birth&&admission.kind==='new_launch'&&birth!==admission.fact.block_hash)retain=false;
    const markets=(await client.query('SELECT * FROM fresh.markets WHERE id=ANY($1::text[]) ORDER BY id FOR SHARE',[options.prior!.markets.map(m=>m.id)])).rows;
    if(!equal(markets.map((row:Row)=>project(row,marketFields)),options.prior!.markets))retain=false;
    for(const market of markets)if(market.protocol==='uniswap_v4'){

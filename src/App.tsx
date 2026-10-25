@@ -48,7 +48,7 @@ function tradeTokenAmount(value: string | null) {
 }
 function TradeValue({trade}:{trade:Trade}) {
   const value=nativeTradeDisplay(trade,getLocale());
-  return <span title={t(value.titleKey,{symbol:value.symbol??'',amount:value.amount??'',quoteAmount:trade.quoteAmount??'',quoteSymbol:trade.quoteSymbol??''})}>{value.kind==='pending'?t(value.text):value.text}</span>;
+  return <span className={value.kind==='pending'?'trade-value-pending':undefined} title={t(value.titleKey,{symbol:value.symbol??'',amount:value.amount??'',quoteAmount:trade.quoteAmount??'',quoteSymbol:trade.quoteSymbol??''})}>{value.kind==='pending'?t(value.text):value.text}</span>;
 }
 
 function useData<T>(url: string, initial: T, interval = 15000) {
@@ -198,7 +198,7 @@ function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: 
   return <div className="trade-row">
     <div className="trade-kol"><Link to={`/kol/${trade.walletAddress}`} title={trade.kolName || trade.walletAddress}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} twitter={trade.kolTwitter} subtitle={false} /></Link></div>
     <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{t(trade.side)}</span>}<Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={t('View token details')}>{tokenIdentity}</Link></div>
-    <div className={`trade-value ${trade.side}`}><strong><TradeValue trade={trade} /></strong><span className="trade-amount">{tradeTokenAmount(trade.tokenAmount)}</span></div>
+    <div className={`trade-value ${trade.side}`}><strong><TradeValue trade={trade} /></strong><span className="trade-amount" title={trade.accountingStatus==='pending_precision'?t('Token quantity is pending verification'):undefined}>{trade.tokenAmount==null&&trade.accountingStatus==='pending_precision'?t('Quantity pending'):tradeTokenAmount(trade.tokenAmount)}</span></div>
     <div className="trade-time">{linkTimeToToken ? <Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={`${localDate(trade.timestamp)} · ${t('View token details')}`} aria-label={t('View {token} details, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}</Link> : <a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title={`${localDate(trade.timestamp)} · ${t('View token activity on GMGN')}`} aria-label={t('View {token} activity on GMGN, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}<ExternalLink size={13} /></a>}</div>
   </div>;
 }

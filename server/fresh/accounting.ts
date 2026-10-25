@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {queueFreshTransferValuation} from './deferredTransferValuation.js';
 import type { PoolClient } from 'pg';
 import type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshPositionSummary, FreshScope,FreshFeeExclusions } from '../../shared/freshAccounting.js';
+import{GANG_TOKEN_ADDRESS,FRESH_GANG_HISTORY_FROM_BLOCK,FRESH_GANG_CREATION_TIME,readFreshGangHistoryAdmission,freshScopeEventSql}from'./tracking.js';
 import {advanceFreshRollingKolTotals,addFreshRollingKolResult,addFreshRollingKolExcludedFee,rebuildFreshRollingKolTotals} from './rolling.js';
 export type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshScope } from '../../shared/freshAccounting.js';
 
@@ -62,9 +63,22 @@ const nullable = (value: string | null) => value === null ? null : positive(valu
 const sum = (values: string[]) => values.reduce((v, next) => v.add(q(next)), zero);
 export const freshRationalSum = (values: string[]) => sum(values).exact();
 const inScope = (scope: FreshScope, event: FreshFinancialEvent) => {
-  const boundary = scope.walletStarts?.[event.walletAddress] ?? scope;
+  const history=event.tokenAddress===GANG_TOKEN_ADDRESS&&scope.kind==='kol'&&scope.accountId===null&&scope.walletAddresses.length===1&&scope.id==='kol:'+scope.walletAddresses[0]
+    ?scope.tokenHistoryStarts?.[GANG_TOKEN_ADDRESS]:undefined;
+  const allowedHistory=history?.policy==='gmgn_gang_only_history_v1'&&history.startsBlock===String(FRESH_GANG_HISTORY_FROM_BLOCK)&&history.startsAt===FRESH_GANG_CREATION_TIME&&/^[0-9a-f]{64}$/.test(history.permissionDigest);
+  const boundary = allowedHistory?history!:(scope.walletStarts?.[event.walletAddress] ?? scope);
   return scope.walletAddresses.includes(event.walletAddress) && BigInt(event.blockNumber) >= BigInt(boundary.startsBlock) && Date.parse(event.occurredAt) >= Date.parse(boundary.startsAt);
 };
+/** Hydrate only trusted public books from a source-bound permission. This is
+ * done in ingestion/repair and selected replay reconstruction, never a scan. */
+export async function hydrateFreshScopeTokenHistory(client:Pick<PoolClient,'query'>,scope:FreshScope,options:{lock?:boolean}={}){
+ delete scope.tokenHistoryStarts;
+ if(scope.kind!=='kol'||scope.accountId!==null||scope.walletAddresses.length!==1||scope.id!=='kol:'+scope.walletAddresses[0])return scope;
+ const admission=await readFreshGangHistoryAdmission(client,options);if(!admission)return scope;
+ const role=(await client.query(`SELECT 1 FROM fresh.kols k JOIN fresh.wallets w ON w.address=k.wallet_address WHERE k.wallet_address=$1 AND k.is_tracked AND w.active${options.lock?' FOR SHARE OF k,w':''}`,[scope.walletAddresses[0]])).rows[0];
+ if(role)scope.tokenHistoryStarts={[GANG_TOKEN_ADDRESS]:{startsAt:admission.permission.historyFromTime,startsBlock:String(admission.permission.historyFromBlock),permissionDigest:admission.digest,policy:admission.permission.policy}};
+ return scope;
+}
 export function freshEmptyPosition(scopeId: string, tokenAddress: string): FreshPosition {
   return { scopeId, tokenAddress, quantityQ: '0', investedQ: '0', soldQ: '0', incomingQ: '0', outgoingQ: '0', feesQ: '0', capitalQ: '0', realizedQ: '0', unknownCost: false, unknownFee: false,
     unknownPurchaseValue:false,unknownSaleValue:false,unknownIncomingValue:false,unknownOutgoingValue:false,lastEventId: null, lastEventAt: null, revision: '0' };
@@ -267,6 +281,7 @@ export async function applyFreshFinancialEvents(client: PoolClient, incoming: Fr
   for (const event of events) validateFreshFinancialEvent(event);
   const wallets = [...new Set(events.map(v => v.walletAddress))];
   const scopes = (options.scopes ?? (await client.query('SELECT * FROM fresh.accounting_scopes WHERE active AND wallet_addresses && $1::text[] ORDER BY id', [wallets])).rows.map(freshScopeFromRow)).sort((a, b) => a.id.localeCompare(b.id));
+  if(events.some(event=>event.tokenAddress===GANG_TOKEN_ADDRESS))for(const scope of scopes)await hydrateFreshScopeTokenHistory(client,scope,{lock:true});
   for (const scope of scopes) if (scope.accountId && !scope.walletStarts) {
     const members = (await client.query('SELECT wallet_address,activity_from,registration_block FROM public.journal_wallets WHERE user_id::text=$1', [scope.accountId])).rows;
     scope.walletStarts = Object.fromEntries(members.map(row => [row.wallet_address, { startsAt: new Date(row.activity_from).toISOString(), startsBlock: `${row.registration_block ?? scope.startsBlock}` }]));
@@ -403,6 +418,7 @@ export async function rolloverFreshUtcDay(client: PoolClient, now: string | Date
 /** Exceptional repair only: replay compact retained facts, never RPC or archived responses. */
 export async function rebuildFreshScopesAfterReorg(client: PoolClient, scopeIds: string[], now: string | Date | number = Date.now()) {
   const scopes = (await client.query('SELECT * FROM fresh.accounting_scopes WHERE id=ANY($1::text[]) ORDER BY id', [scopeIds])).rows.map(freshScopeFromRow);
+  for(const scope of scopes)await hydrateFreshScopeTokenHistory(client,scope,{lock:true});
   for (const scope of scopes) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`fresh-scope:${scope.id}`]);
   const affectedTokens = new Set<string>();
   for (const scope of scopes) {
@@ -413,8 +429,8 @@ export async function rebuildFreshScopesAfterReorg(client: PoolClient, scopeIds:
     await client.query("UPDATE fresh.accounting_scopes SET revision=revision+1,correction_epoch=correction_epoch+1,fee_only_realized_q='0',fee_only_fees_q='0',fee_only_unknown_count=0,unallocated_fee_count=0,unallocated_fee_q='0',unallocated_fee_unknown_count=0,unattributed_fee_count=0 WHERE id=$1", [scope.id]);
     if (scope.kind === 'kol') await client.query(`UPDATE fresh.kols SET rolling_as_of=NULL,today_utc=$2,today_realized_q='0',today_known_realized_q='0',today_capital_q='0',today_volume_q='0',today_trade_count=0,today_buy_count=0,today_sell_count=0,today_token_count=0,today_unknown_count=0,last_trade_at=NULL,
       today_valued_sell_count=0,today_unknown_sell_count=0,today_valued_transfer_count=0,today_unknown_transfer_count=0,today_valued_fee_count=0,today_unknown_fee_count=0,today_fee_only_q='0',today_unallocated_fee_count=0,today_unallocated_fee_q='0',today_unallocated_fee_unknown_count=0,today_unattributed_fee_count=0,metrics_updated_at=clock_timestamp(),revision=revision+1 WHERE wallet_address=$1`, [scope.walletAddresses[0], freshUtcDay(now)]);
-    const events = (await client.query(`SELECT * FROM fresh.financial_events WHERE canonical AND wallet_address=ANY($1::text[]) AND block_number >= $2 AND occurred_at >= $3 ORDER BY block_number,transaction_index,execution_index,log_index NULLS FIRST,id`,
-      [scope.walletAddresses,scope.startsBlock,scope.startsAt])).rows.map(freshEventFromRow);
+    const events = (await client.query(`SELECT e.* FROM fresh.financial_events e JOIN fresh.accounting_scopes s ON s.id=$1 WHERE e.canonical AND e.wallet_address=ANY(s.wallet_addresses) AND ${freshScopeEventSql('e','s')} ORDER BY e.block_number,e.transaction_index,e.execution_index,e.log_index NULLS FIRST,e.id`,
+      [scope.id])).rows.map(freshEventFromRow);
     for (const event of events) if (event.tokenAddress) affectedTokens.add(event.tokenAddress);
     await applyFreshFinancialEvents(client, events, { scopes: [scope], now, updateTokenCounters: false });
     for(const event of events)if(!freshEventAccountingEligible(event)&&inScope(scope,event))await recordUnallocatedFee(client,event,[scope],freshUtcDay(now));

@@ -14,6 +14,7 @@ try{
  await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(73621941)');
  const start=(await c.query("SELECT block_number,value FROM fresh.checkpoints WHERE key='capture'")).rows[0],number=Number(start.block_number)+500;
  for(const[table,source]of[['fresh_budget_blocks','recent_blocks'],['fresh_budget_evidence','recent_evidence'],['fresh_budget_jobs','jobs'],['fresh_budget_checkpoints','checkpoints']])await c.query(`CREATE TEMP TABLE ${table}(LIKE fresh.${source} INCLUDING ALL) ON COMMIT DROP`);
+ assert.equal((await c.query("INSERT INTO fresh_budget_checkpoints SELECT * FROM fresh.checkpoints WHERE key='start'")).rowCount,1,'the isolated checkpoint mirror retains the authentic original tracking boundary');
  await c.query("INSERT INTO fresh_budget_checkpoints(key,block_number,block_hash,value) VALUES('capture',$1,$2,$3::jsonb),('decode',$1,$2,$3::jsonb)",[number+2,hash(),JSON.stringify({startBlock:start.value.startBlock})]);
  for(const wallet of[a,b]){
   await c.query('INSERT INTO fresh.wallets(address,monitoring_from_block) VALUES($1,$2)',[wallet,number-3]);await c.query('INSERT INTO fresh.kols(wallet_address) VALUES($1)',[wallet]);

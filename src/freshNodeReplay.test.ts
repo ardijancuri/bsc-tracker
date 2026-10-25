@@ -16,6 +16,12 @@ function fixture(privateScope = false) {
   return value;
 }
 describe('fresh compact node replay browser adapter', () => {
+  it('accepts reconciled mixed history while requiring the frozen financial sources to agree', () => {
+    const {activity,now}=fixture();activity.accountingSnapshot!.source='mixed';activity.replayAccounting!.source='mixed';
+    expect(prepareNodeReplay(activity,now)?.accounting.source).toBe('mixed');
+    activity.replayAccounting!.source='node';expect(prepareNodeReplay(activity,now)).toBeUndefined();
+    activity.replayAccounting!.source='mixed';activity.accountingSnapshot!.complete=false;expect(prepareNodeReplay(activity,now)).toBeUndefined();
+  });
   it('includes zero-quantity gas fees in the frozen ending without a buy/sell marker', async () => {
     const { activity, now, chartPoints } = fixture(), raw = activity.replayAccounting!, inventory = activity.inventory!;
     const timestamp = new Date(Date.parse(raw.events.at(-1)!.timestamp) + 60_000).toISOString();

@@ -8,7 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/index.ts",
     "dev:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/worker.ts",
-    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts server/championshipImport.ts server/freshGangHistoryImport.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "import:charts": "node --env-file-if-exists=.env --import tsx server/importSavedTokenCharts.ts",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",

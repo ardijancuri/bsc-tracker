@@ -156,6 +156,8 @@ export const chinese: Record<string, string> = {
   'Recorded USD trade value: ${amount}': '已记录的美元交易价值：${amount}',
   'BNB equivalent at trade time: {amount} BNB · Settled: {quoteAmount} {quoteSymbol}': '交易时的 BNB 等值：{amount} BNB · 实际结算：{quoteAmount} {quoteSymbol}',
   'Trade amount is pending verification': '交易金额正在等待核实', 'Amount pending': '金额待核实',
+  'Token quantity is pending verification': '代币数量正在等待核实', 'Quantity pending': '数量待核实',
+  'Historical token precision or payment evidence is unavailable. Recorded trades remain visible, but this replay cannot be verified.': '历史代币精度或付款凭证不可用。已记录的交易仍可查看，但无法验证此次回放。',
   'View token activity on GMGN': '在 GMGN 查看代币动态', 'View {token} activity on GMGN, {time}': '在 GMGN 查看 {token} 动态，{time}',
   'View token details': '查看代币详情', 'View {token} details, {time}': '查看 {token} 详情，{time}',
   'Recent {token} trades': '{token} 的最新交易', 'token': '代币',

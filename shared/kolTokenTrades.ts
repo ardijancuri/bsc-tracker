@@ -159,6 +159,9 @@ export interface KolTokenTrade {
   priceUsd: string | null; marketCapUsd: string | null; timestamp: string;
   source: string; blockNumber: string | null; transactionIndex: number | null;
   valuationStatus: 'valued' | 'unpriced' | 'shared_quote' | 'invalid_quantity';
+  /** Confirmed swaps remain visible before historical accounting evidence is complete. */
+  accountingStatus?: 'ready' | 'pending_precision' | 'pending_settlement';
+  accountingReason?: string;
   /** FIFO results exclude gas and are null when the observed cost basis cannot be matched. */
   realizedProfitUsd: string | null; cumulativeRealizedProfitUsd: string | null;
 }

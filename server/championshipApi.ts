@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { championshipLastDay, validChampionshipDate, type ChampionshipPeriod } from '../shared/championship.js';
 import { createChampionshipService } from './championship.js';
+import { championshipAutoRefreshHours, createChampionshipRefresh } from './championshipRefresh.js';
 import { pool } from './db.js';
 
 export function registerChampionshipRoutes(app: FastifyInstance, service = createChampionshipService({ store: {
@@ -12,6 +13,19 @@ export function registerChampionshipRoutes(app: FastifyInstance, service = creat
       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [`championship:ggc-s1:${key}`, JSON.stringify(value)]);
   },
 } })) {
+  const refresh = createChampionshipRefresh({ service,
+    intervalHours: championshipAutoRefreshHours(process.env.CHAMPIONSHIP_AUTO_REFRESH_HOURS),
+    onCycle(status) {
+      const detail = { event: 'championship_auto_refresh', outcome: status.lastOutcome,
+        lastAttemptAt: status.lastAttemptAt, nextAttemptAt: status.nextAttemptAt };
+      if (status.lastOutcome === 'success') app.log.info(detail, 'Championship rankings refreshed');
+      else app.log.warn(detail, 'Championship refresh retained saved or unavailable rankings');
+    },
+  });
+  app.addHook('onReady', async () => { refresh.start(); });
+  app.addHook('onClose', async () => { await refresh.stop(); });
+  app.get('/api/championship/status', async (_request, reply) =>
+    reply.header('Cache-Control', 'no-store').send(refresh.status()));
   app.get<{ Querystring: { period?: string; date?: string; refresh?: string } }>('/api/championship', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     const period = request.query.period ?? 'daily';

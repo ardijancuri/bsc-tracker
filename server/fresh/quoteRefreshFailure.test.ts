@@ -5,6 +5,7 @@ import{FLAP_PORTAL,flapInterface,WBNB,PCS_V2_FACTORY}from'../launchpad.js';
 import{poolMarketAbi,oracleMarketAbi,TRUSTED_QUOTE_FEEDS}from'../nodeMarketProtocols.js';
 import{FreshNoLiquidityError}from'./pricing.js';
 import{observeFreshQuoteRefresh,freshQuoteRefreshCanRetain,readFreshQuoteRefreshAnchor,commitFreshQuoteRefreshFailure,type FreshQuoteRefreshState}from'./quoteRefreshFailure.js';
+import{GANG_TOKEN_ADDRESS}from'./tracking.js';
 
 const at=Date.parse('2026-10-24T00:00:00.000Z'),token='0x'+'1'.repeat(40),pair='0x'+'2'.repeat(40),quote='0x'+'3'.repeat(40),hash='0x'+'a'.repeat(64);
 const block={number:101,hash,timestamp:new Date(at).toISOString()},transient=new RpcRequestError('rpc_unavailable','transport');
@@ -28,6 +29,13 @@ describe('dated valid quotes during transient refresh failure',()=>{
   }expect(db.connect).not.toHaveBeenCalled();
  });
  it('retains a previously ready88second observation without issuing additional RPC',async()=>{const{result,rpc}=await evidence(),before=JSON.stringify(state());expect(valid(state(),result)).toBe(true);expect(rpc).toHaveBeenCalledTimes(1);expect(JSON.stringify(state())).toBe(before);});
+ it('considers only exact preexisting GANG for locked permission checking and keeps its original expiry',async()=>{
+  const{result}=await evidence(),s=state();s.token.address=GANG_TOKEN_ADDRESS;s.token.launch_status='preexisting';
+  expect(valid(s,result)).toBe(true);expect(valid(s,result,transient,at+32001)).toBe(false);
+  s.markets[0].protocol='uniswap_v4';expect(valid(s,result)).toBe(false);s.markets[0].protocol='flap';
+  s.token.address=token;expect(valid(s,result)).toBe(false);
+  s.token.address=GANG_TOKEN_ADDRESS;s.token.launch_status='unverified';expect(valid(s,result)).toBe(false);
+ });
  it('keeps the original strict120second expiry and never promotes unavailable/no-liquidity/reorg',async()=>{const{result}=await evidence();expect(valid(state(),result,transient,at+32000)).toBe(true);expect(valid(state(),result,transient,at+32001)).toBe(false);
   for(const status of['quote_unavailable','no_liquidity','reorg']){const s=state();s.token.valuation_status=status;expect(valid(s,result)).toBe(false);}for(const source of[null,'gmgn']){const s=state();s.token.price_source=source;expect(valid(s,result)).toBe(false);}expect(valid(state(),result,new FreshNoLiquidityError())).toBe(false);expect(valid(state(),result,new Error('pool_identity_mismatch'))).toBe(false);});
  it('allows the swallowed market aggregate only with an observed temporary RPC failure',async()=>{const{result}=await evidence();expect(valid(state(),result,new Error('authenticated_market_quote_unavailable'))).toBe(true);

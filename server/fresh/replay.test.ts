@@ -21,6 +21,22 @@ function chart(input: FreshReplayActivity): ReplayMarketChart {
 }
 
 describe('fresh frozen replay preparation', () => {
+  it('signs the exact historical permission and rechecks it for issued and remembered financial objects',async()=>{
+    const value=activity(),digest='c'.repeat(64);value.__freshRevision!.historyPermissionDigest=digest;let active=digest;
+    const service=createFreshReplay({charts:{replayChart:async()=>chart(value)},secret,validateRevision:async claims=>claims.historyPermissionDigest===active,now:()=>frozen});
+    const ready=await service.prepare(value),claims=JSON.parse(Buffer.from(ready.manifest!.split('.')[0],'base64url').toString())as FreshReplayManifest;
+    expect(ready.status).toBe('ready');expect(claims.historyPermissionDigest).toBe(digest);expect(await service.authorizedSaved(ready.snapshotId!)).not.toBeNull();
+    active='d'.repeat(64);expect(await service.validate(ready.manifest!)).toMatchObject({valid:false,reason:'accounting_changed'});expect(await service.authorizedSaved(ready.snapshotId!)).toBeNull();
+  });
+  it('stops retrying when historical precision is missing while retaining the recorded trades', async () => {
+    const value=activity(),replayChart=vi.fn(async()=>chart(value));
+    value.accountingSnapshot!.complete=false;value.accountingSnapshot!.reasons=['historical_precision_unavailable'];
+    const service=createFreshReplay({charts:{replayChart},secret,validateRevision:async()=>true,now:()=>frozen});
+    const result=await service.prepare(value);
+    expect(result).toMatchObject({status:'unavailable',reason:'historical_evidence_unavailable',stages:{accounting:'unavailable'}});
+    expect(result.activity!.trades).toEqual(value.trades);expect(result.retryAfterMs).toBeUndefined();expect(result.manifest).toBeUndefined();
+    expect(replayChart).not.toHaveBeenCalled();
+  });
   it('freezes one accounting object for modal/export and shares selected preparation', async () => {
     const value = activity(), replayChart = vi.fn(async () => chart(value)), validateRevision = vi.fn(async () => true);
     const service = createFreshReplay({ charts: { replayChart }, secret, validateRevision, now: () => frozen });

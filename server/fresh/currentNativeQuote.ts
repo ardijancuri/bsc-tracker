@@ -1,7 +1,5 @@
 import { Interface, getCreate2Address, keccak256, solidityPackedKeccak256 } from 'ethers';
-import type { Rpc } from '../rpc.js';
 import { PCS_V2_FACTORY, WBNB } from '../launchpad.js';
-import type { FreshPriceBlock } from './pricing.js';
 import { FRESH_PCS_V2_FACTORY_RUNTIME_HASH, FRESH_PCS_V2_PAIR_INITCODE_HASH, FRESH_PCS_V2_PAIR_RUNTIME_HASH } from './flapQuoteRecovery.js';
 import {freshHistoricalValuation,type FreshValuationReadOptions} from './valuationContext.js';
 
