@@ -1,23 +1,27 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { candleIntervals, defaultCandleInterval, type CandleInterval, type ChartRange, type TokenChart } from '../shared/intelligence';
 import { createTokenChartRequests, tokenChartNeedsForeground, tokenChartRefreshDelay, type TokenChartPriority } from './tokenChartRequest';
+import { privateTokenChartRequests, tokenChartContextKey, type TokenChartRequestContext } from './privateTokenCharts';
 
-const charts = createTokenChartRequests();
+const publicCharts = createTokenChartRequests();
 
 export function preloadTokenChart(address: string, period: ChartRange = defaultCandleInterval) {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(address) || charts.isForegroundLoading() ||
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address) || publicCharts.isForegroundLoading() ||
     (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
-  void charts.request(address, period, 'prefetch').catch(() => { /* The mounted chart handles retry and error display. */ });
+  void publicCharts.request(address, period, 'prefetch').catch(() => { /* The mounted chart handles retry and error display. */ });
 }
 
-export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true, priority: TokenChartPriority = 'chart', fullHistory = false) {
-  const key = `${address?.toLowerCase()}-${period}${fullHistory ? '-full' : ''}`;
+export function useTokenChart(address: string | undefined, period: ChartRange, enabled = true, priority: TokenChartPriority = 'chart', fullHistory = false,
+  requestContext?: TokenChartRequestContext) {
+  const scope = tokenChartContextKey(requestContext);
+  const charts = useMemo(() => requestContext ? privateTokenChartRequests(requestContext) : publicCharts, [scope]);
+  const key = `${scope}:${address?.toLowerCase()}-${period}${fullHistory ? '-full' : ''}`;
   const [failure, setFailure] = useState<{ key: string; chart: TokenChart | null; latestRevision: number } | null>(null);
   const refreshNow = useRef<(() => void) | null>(null);
   const refreshHistoryNow = useRef<(() => void) | null>(null);
   const retry = useCallback(() => { refreshNow.current?.(); refreshHistoryNow.current?.(); }, []);
-  const subscribe = useCallback((listener: () => void) => address ? charts.subscribe(address, listener) : () => {}, [address]);
-  const snapshot = useCallback(() => address ? charts.peek(address, period, fullHistory) : null, [address, period, fullHistory]);
+  const subscribe = useCallback((listener: () => void) => address ? charts.subscribe(address, listener) : () => {}, [address, charts]);
+  const snapshot = useCallback(() => address ? charts.peek(address, period, fullHistory) : null, [address, period, fullHistory, charts]);
   const chart = useSyncExternalStore(subscribe, snapshot, () => null);
   useEffect(() => {
     if (!address || !enabled) return;
@@ -71,7 +75,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       release();
       document.removeEventListener('visibilitychange', visibilityChanged);
     };
-  }, [address, period, key, enabled, priority, fullHistory]);
+  }, [address, period, key, enabled, priority, fullHistory, charts]);
   useEffect(() => {
     if (!address || !enabled || !fullHistory || !candleIntervals.includes(period as CandleInterval)) return;
     let stopped = false, loading = false;
@@ -111,7 +115,7 @@ export function useTokenChart(address: string | undefined, period: ChartRange, e
       unsubscribeChart(); unsubscribePriority();
       document.removeEventListener('visibilitychange', visibilityChanged);
     };
-  }, [address, period, enabled, fullHistory, priority]);
+  }, [address, period, enabled, fullHistory, priority, charts]);
   // Another viewer or preload can repair the shared chart without this hook's own timer firing.
   const failedCurrentSnapshot = fullHistory && address ? failure?.latestRevision === charts.latestRevision(address, period, true) : failure?.chart === chart;
   return { chart, error: failure?.key === key && failedCurrentSnapshot, retry };

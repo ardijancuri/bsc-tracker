@@ -1,9 +1,9 @@
-import { t, localDate } from './i18n';
+import { t } from './i18n';
 import { TelegramKolBell } from './TelegramNotifications';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ExternalLink, Star } from 'lucide-react';
-import { api, compact, relativeTime, shortAddress } from './lib';
+import { api, relativeTime, shortAddress } from './lib';
 import { TokenName } from './TokenName';
 import { WatchTokenDetails } from './WatchTokenVisuals';
 import { tokenChartIntent } from './tokenChartIntent';
@@ -12,7 +12,7 @@ import { createCoalescedRefresh } from './coalescedRefresh';
 import { accountCheckEvent, notifyWatchlistTabs, useAccount, watchlistSyncKey } from './Account';
 import { loadWatchlist, mutateWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import './tokenWatchlist.css';
-import { signalLabels, type LaunchItem, type LaunchState, type Position, type Signal, type Watchlist } from '../shared/intelligence';
+import { signalLabels, type Position, type Signal, type Watchlist } from '../shared/intelligence';
 
 const emptyWatchlist: Watchlist = { items: [] };
 type WatchContextValue = { data: Watchlist; busy: boolean; loaded: boolean; error: string | null; refresh: () => Promise<void>; toggle: (kind: 'kol' | 'token', address: string) => Promise<void> };
@@ -75,12 +75,12 @@ export function KolAlertButton({ address, label }: { address: string; label?: st
   const followed = watch.loaded && watch.data.items.some(item => item.kind === 'kol' && item.address === address.toLowerCase());
   return followed ? <TelegramKolBell address={address} label={label || shortAddress(address)} /> : null;
 }
-export function FeatureTabs({ page }: { page: 'trades' | 'tokens' }) {
+export function FeatureTabs({ page }: { page: 'trades' }) {
   const [params] = useSearchParams();
-  const tabs = page === 'trades' ? [['trades', 'Trades'], ['radar', 'Radar'], ['watchlist', 'Watchlist']] : [['tokens', 'Tokens'], ['launches', 'Launches']];
+  const tabs = [['trades', 'Trades'], ['radar', 'Radar'], ['watchlist', 'Watchlist']];
   const value = params.get('view');
   const selected = tabs.some(([key]) => key === value) ? value : page;
-  return <nav className="feature-tabs" aria-label={page === 'trades' ? t("Activity views") : t("Token views")}>{tabs.map(([key, title]) => <Link key={key} className={selected === key ? 'selected' : ''} aria-current={selected === key ? 'page' : undefined} to={`/${page}${key === page ? '' : `?view=${key}`}`}>{t(title)}</Link>)}</nav>;
+  return <nav className="feature-tabs" aria-label={t("Activity views")}>{tabs.map(([key, title]) => <Link key={key} className={selected === key ? 'selected' : ''} aria-current={selected === key ? 'page' : undefined} to={`/${page}${key === page ? '' : `?view=${key}`}`}>{t(title)}</Link>)}</nav>;
 }
 export function FeatureIdentity({ address, name, symbol, image, token = false }: { address: string; name: string | null; symbol?: string | null; image?: string | null; token?: boolean }) {
   return <span className="identity"><span className={token ? 'token-avatar' : 'avatar'}><span>{(symbol || name || '?').slice(0, 1).toUpperCase()}</span>{image && <img src={image} alt="" onError={event => { event.currentTarget.style.display = 'none'; }} />}</span>{token ? <TokenName token={{ address, symbol, name }} addressSubtitle /> : <span className="identity-copy"><strong>{name || shortAddress(address)}</strong><small>{shortAddress(address)}</small></span>}</span>;
@@ -159,21 +159,7 @@ export function usePositions(kind: 'kol' | 'token', address: string, tokens?: st
   return useMemo(() => new Map(result.data.items.map(position => [kind === 'kol' ? position.tokenAddress : position.walletAddress, position])), [result.data.items, kind]);
 }
 export function PositionBadge({ position }: { position?: Position }) {
-  const fresh = position?.checkedAt && Date.now() - Date.parse(position.checkedAt) <= 300_000;
+  const fresh = position?.confirmed === true || position?.confirmed === undefined && position?.checkedAt && Date.now() - Date.parse(position.checkedAt) <= 300_000;
   const status = fresh ? position.status : 'Unknown';
   return <details className="position-status"><summary className={`position-badge status-${status.toLowerCase()}`}>{t(status)}</summary><div className="position-popover"><span>{t("Balance")}<strong title={position?.balance || ''}>{position?.balance ?? '—'}</strong></span><span>{t("Checked")}<strong>{relativeTime(position?.checkedAt)}</strong></span>{position?.lastMovementAt && <span>{t("Last movement")}<strong>{relativeTime(position.lastMovementAt)}</strong></span>}</div></details>;
-}
-const stageLabel = { bonding: 'Bonding', near_graduation: 'Near graduation', graduated: 'Graduated', unavailable: 'Unavailable' };
-function Progress({ launch }: { launch: LaunchState }) { return <div className="launch-progress" title={launch.checkedAt ? t('Checked {time}', { time: relativeTime(launch.checkedAt) }) : t("Not checked")}><span><i style={{ width: `${launch.progress ?? 0}%` }} /></span><strong>{launch.progress == null ? '—' : `${Number(launch.progress).toFixed(1)}%`}</strong></div>; }
-export function LaunchesView() {
-  const [platform, setPlatform] = useState(''), [stage, setStage] = useState('');
-  const list = useFeatureList<LaunchItem>(`/api/launches?limit=20&platform=${platform}&stage=${stage}`);
-  return <><div className="table-toolbar launch-filters"><span>{t("Tracked KOL tokens")}</span><div><select aria-label={t("Launchpad")} value={platform} onChange={event => setPlatform(event.target.value)}><option value="">{t("All launchpads")}</option><option value="fourmeme">Four.meme</option><option value="flap">Flap</option></select><select aria-label={t("Launch stage")} value={stage} onChange={event => setStage(event.target.value)}><option value="">{t("All stages")}</option><option value="bonding">{t("Bonding")}</option><option value="near_graduation">{t("Near graduation")}</option><option value="graduated">{t("Graduated")}</option></select></div></div><div className="data-table feature-table">{list.items.map(launch => <div className="launch-row" key={launch.tokenAddress}><Link to={`/token/${launch.tokenAddress}`} {...tokenChartIntent(launch.tokenAddress)}><FeatureIdentity token address={launch.tokenAddress} name={launch.name} symbol={launch.symbol} image={launch.logoUrl} /></Link><span className="launch-source">{launch.platform === 'fourmeme' ? 'Four.meme' : 'Flap'}<small>{t(stageLabel[launch.stage])}</small></span><Progress launch={launch} /><span className="launch-liquidity" title={launch.liquidityAt ? t('Observed {time}', { time: relativeTime(launch.liquidityAt) }) : t("Liquidity unavailable")}>{compact(launch.liquidityUsd, true)}<small>{t("Liquidity")}</small></span><FollowButton kind="token" address={launch.tokenAddress} label={launch.symbol} /></div>)}{!list.items.length && <FeatureEmpty>{list.loading ? t("Loading launches…") : list.error ? t("Launches unavailable") : t("No tracked launches yet")}</FeatureEmpty>}</div>{list.more && <button className="profile-load-more" disabled={list.busy} onClick={() => void list.loadMore()}>{list.busy ? t("Loading…") : t("Load more")}</button>}{list.moreError && <p className="profile-more-error">{t("Could not load more. Try again.")}</p>}</>;
-}
-export function LaunchJourney({ address }: { address: string }) {
-  const { data } = useFeatureData<{ launch: LaunchState | null }>(`/api/tokens/${address}/launch`, { launch: null });
-  const launch = data.launch;
-  if (!launch) return null;
-  const change = launch.liquidityUsd != null && Number(launch.liquidityBaselineUsd) > 0 ? (Number(launch.liquidityUsd) / Number(launch.liquidityBaselineUsd) - 1) * 100 : null;
-  return <section className="launch-journey"><div className="table-toolbar"><h2>{launch.platform === 'fourmeme' ? 'Four.meme' : launch.platform === 'flap' ? 'Flap' : t("Launch")}</h2><span>{t(stageLabel[launch.stage])}</span></div>{launch.platform && <><Progress launch={launch} /><div className="launch-milestones">{[[t("Launch"), launch.launchedAt], [t("First KOL"), launch.firstKolAt], [t("Graduated"), launch.graduatedAt]].map(([label, date]) => <div key={label} className={date ? 'complete' : ''}><i /><span>{label}<strong title={date ? localDate(date) : t("Time unavailable")}>{relativeTime(date)}</strong></span></div>)}</div><details className="launch-details"><summary>{t("Liquidity")}<ChevronDown size={13} /></summary><div><span>{t("Observed")}<strong>{compact(launch.liquidityUsd, true)}</strong></span><span>{t("Since first observation")}<strong className={change == null ? '' : change >= 0 ? 'positive' : 'negative'}>{change == null ? '—' : `${change > 0 ? '+' : ''}${change.toFixed(1)}%`}</strong></span><span>{t("First observation")}<strong>{relativeTime(launch.liquidityBaselineAt)}</strong></span><span>{t("Checked")}<strong>{relativeTime(launch.liquidityAt)}</strong></span>{launch.graduationTxHash && <a href={`https://bscscan.com/tx/${launch.graduationTxHash}`} target="_blank" rel="noopener noreferrer">{t("Migration")}<ExternalLink size={12} /></a>}{launch.poolAddress && <a href={`https://bscscan.com/address/${launch.poolAddress}`} target="_blank" rel="noopener noreferrer">{t("Pool")}<ExternalLink size={12} /></a>}{launch.poolId && <span title={launch.poolId}>{t("Pool ID")}<strong>{shortAddress(launch.poolId)}</strong></span>}</div></details></>}</section>;
 }

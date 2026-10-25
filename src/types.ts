@@ -24,7 +24,9 @@ export interface Trade {
   side: TradeSide;
   tokenAmount: string | null;
   quoteSymbol: string | null;
+  quoteTokenAddress?: string | null;
   quoteAmount: string | null;
+  bnbEquivalentAmount?: string | null;
   amountUsd: string | null;
   priceUsd: string | null;
   timestamp: string;
@@ -40,6 +42,8 @@ export interface Token {
   logoUrl: string | null;
   priceUsd: string | null;
   marketCapUsd: string | null;
+  /** Current node valuation state, independent of position accounting. */
+  valuationStatus?: string;
   change24h: string | null;
   kolCount24h: number;
   buys24h: number;
@@ -49,6 +53,11 @@ export interface Token {
 }
 
 export interface LeaderboardRow extends Kol {
+  /** Complete rolling-24-hour realized P&L only. Incomplete/inactive rows are unranked. */
+  rank?: number | null;
+  period?: '24h';
+  windowStart?: string | null;
+  windowEnd?: string | null;
   accounting?: import('../shared/nodeLeaderboard').NodeLeaderboardSnapshot | null;
   knownRealizedProfitUsd?: string | null;
   realizedProfitUsd: string | null;
@@ -62,7 +71,16 @@ export interface LeaderboardRow extends Kol {
   excludedSellCount: number | null;
 }
 
+export interface LeaderboardResponse {
+  items: LeaderboardRow[];
+  period?: '24h';
+  windowStart?: string | null;
+  windowEnd?: string | null;
+}
+
 export interface Overview {
+  trackingBoundary?: { block_number: string; block_hash: string; value: { startTime: string } } | null;
+  utcDay?: string;
   trackedKols: number;
   trades24h: number;
   tokens24h: number;

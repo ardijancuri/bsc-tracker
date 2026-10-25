@@ -6,6 +6,7 @@ dist-server
 *.log
 coverage
 .cache
+.cutover
 .env.*
 !.env.example
 output

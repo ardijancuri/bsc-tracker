@@ -8,11 +8,12 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Share2, X } from 'lucide-react';
 import { candleIntervals, defaultCandleInterval, type CandleInterval } from '../shared/intelligence';
 import type { JournalTokenActivity } from '../shared/journal';
-import type { KolTokenActivity, KolTokenTrade } from '../shared/kolTokenTrades';
+import type { KolTokenActivity } from '../shared/kolTokenTrades';
+import { KolTokenTradeReceipt } from './KolTokenTradeReceipt';
 import type { Kol, Token } from './types';
 import { FollowButton, usePositions } from './Intelligence';
-import { getLocale, localDate, t, useLanguage } from './i18n';
-import { compact, shortAddress } from './lib';
+import { getLocale, t, useLanguage } from './i18n';
+import { compact } from './lib';
 import { TokenPriceChart } from './TokenPriceChart';
 import { useTokenChart } from './useTokenChart';
 import { tokenChartIntent } from './tokenChartIntent';
@@ -51,7 +52,10 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
   const transactionList = useRef<HTMLDivElement>(null);
   const fittedPageSize = useRef(6);
   const positions = usePositions('kol', kol.address, [token.address], !journalAccountId);
-  const { chart } = useTokenChart(token.address, interval, !shareSnapshot);
+  const membershipRevision = (activity as JournalTokenActivity | null)?.journal?.membershipRevision;
+  const chartContext = useMemo(() => journalAccountId ? { accountId: journalAccountId, walletAddress: kol.address, membershipRevision } : undefined,
+    [journalAccountId, kol.address, membershipRevision]);
+  const { chart } = useTokenChart(token.address, interval, !shareSnapshot, 'chart', false, chartContext);
   const replay = useMemo(() => activity ? (() => { const value = prepareTradeReplayData(activity, chart, journalAccountId ? null : positions.get(token.address), Date.now(), requestContext); return value && requestContext ? { ...value, requestContext: { ...requestContext, snapshotId: (activity as JournalTokenActivity).journal?.snapshotId } } : value; })() : null, [activity, chart, positions, token.address, requestContext]);
   const retry = useCallback(() => { setError(false); setRefresh(value => value + 1); }, []);
   const backToTrades = useCallback(() => {
@@ -154,7 +158,7 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
       <section className="kol-trade-market" aria-label={t('Token chart and trades')}>
         <div className="kol-trade-token-header"><div className="kol-trade-token-identity">{tokenIdentity}</div><div className="kol-trade-contract">{tokenAddress}<FollowButton kind="token" address={token.address} label={token.symbol} /><Link to={`/token/${token.address}`} {...tokenChartIntent(token.address)} onClick={onClose} aria-label={t('Open token page')} title={t('Open token page')}><ExternalLink size={13} /></Link><div className="kol-trade-current-cap" title={t('Market cap')}><span>{t('MCAP')}</span><strong>{compact(activity?.token.marketCapUsd ?? token.marketCapUsd, true)}</strong></div></div></div>
         <div className="kol-trade-chart-toolbar"><div className="kol-trade-marker-key"><span className="positive">B {summary?.buyCount ?? '—'}</span><span className="negative">S {summary?.sellCount ?? '—'}</span><span>{t('KOL trades')}</span></div><div className="candle-interval-tabs" aria-label={t('Chart interval')}>{candleIntervals.map(value => <button type="button" key={value} aria-pressed={interval === value} {...tokenChartIntent(token.address, value)} onClick={() => setInterval(value)}>{value}</button>)}</div></div>
-        <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades />
+        <TokenPriceChart address={token.address} interval={interval} trades={activity?.trades} focusTrades requestContext={chartContext} />
       </section>
       <aside className="kol-trade-details" aria-label={t('Trade details')}>
         <div className="kol-trade-profit" aria-busy={activityBusy} title={profitDescription}><span>{t(requestContext ? activity?.realizedAccounting?.position?.status === 'closed' ? 'Realized P&L' : 'Est. profit' : tokenPositionPnlLabel(activity))}</span><strong className={profitClass}>{profit === null && activityDelayed ? t('Pending') : profit === null && activityBusy ? '…' : money(profit === null ? null : String(profit), true)}</strong></div>
@@ -167,18 +171,10 @@ export default function KolTokenTradeModal({ kol, token, kolIdentity, tokenIdent
         <div className="kol-trade-transactions-heading"><h2>{t('Transactions')} <span>({activity?.coverage.indexedTradeCount ?? '—'}) · UTC</span></h2><button type="button" onClick={retry} title={t('Refresh trades')} aria-label={t('Refresh trades')}><RefreshCw size={14} /></button></div>
         <div className="kol-trade-filters" aria-label={t('Filter transactions')}>{(['all', 'buy', 'sell'] as const).map(value => <button type="button" key={value} aria-pressed={side === value} onClick={() => { setSide(value); setPage(0); }}>{t(value === 'all' ? 'All' : value === 'buy' ? 'Buys' : 'Sells')}</button>)}</div>
         {error ? <div className="kol-trade-state" role="alert">{t('Trade history unavailable')}<button type="button" onClick={retry}>{t('Try again')}</button></div> : !activity ? <div className="kol-trade-state" role="status">{activityDelayed ? <button type="button" onClick={retry}>{t('Try again')}</button> : t('Loading trade history…')}</div> : !trades.length ? <div className="kol-trade-state">{t('No indexed trades for this selection')}</div> : <>
-          <div ref={transactionList} className="kol-trade-transactions">{trades.slice(currentPage * pageSize, currentPage * pageSize + pageSize).map(trade => <TradeReceipt key={trade.id} trade={trade} />)}</div>
+          <div ref={transactionList} className="kol-trade-transactions">{trades.slice(currentPage * pageSize, currentPage * pageSize + pageSize).map(trade => <KolTokenTradeReceipt key={trade.id} trade={trade} />)}</div>
           <nav className="kol-trade-pagination" aria-label={t('Transaction pagination')}><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label={t('Previous trades')}><ChevronLeft size={15} /></button><span aria-live="polite">{t('{page} of {pages}', { page: currentPage + 1, pages: pageCount })}</span><button type="button" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label={t('Next trades')}><ChevronRight size={15} /></button></nav>
         </>}
       </aside>
     </div>
   </dialog>, document.body);
-}
-
-function TradeReceipt({ trade }: { trade: KolTokenTrade }) {
-  const amount = trade.valuationStatus === 'valued' ? trade.amountUsd : null;
-  const valuationNote = trade.valuationStatus === 'shared_quote' ? t('Transaction spend could not be allocated to this token') : amount == null ? t('Trade valuation unavailable') : undefined;
-  return <div className="kol-trade-receipt">
-    <span className={`kol-trade-side ${trade.side}`}>{t(trade.side)}</span><span className="kol-trade-receipt-values"><strong title={valuationNote}>{money(amount)}</strong><span>{t('at {value} MCAP', { value: compact(trade.marketCapUsd, true) })}</span></span><span className="kol-trade-receipt-time"><time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{new Date(trade.timestamp).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</time><span>{shortAddress(trade.txHash)}</span></span>
-  </div>;
 }

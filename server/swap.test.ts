@@ -11,6 +11,17 @@ const transfer = (token: string, from: string, to: string, amount: bigint): Tran
 const swap = (topic: string): TransferLog => ({ address: router, topics: [topic], data: '0x' });
 
 describe('wallet swap classification', () => {
+  it('uses outer net native proceeds over a nested aggregator gross payment',()=>{
+    const outer='0x1de460f363af910f51726def188f9004276bf4bc',inner='0x5994814f2c4040b863a0125a45de152a8c2a4dec';
+    const word=(v:bigint|string)=>typeof v==='bigint'?v.toString(16).padStart(64,'0'):v.slice(2).padStart(64,'0');
+    const net:TransferLog={address:outer,topics:['0x8619026a40d38bedb4002fe511cea4bc4a9b336710efe8f21a61869a7ee0f02a',indexed(wallet),indexed(wallet),indexed('0x'+'0'.repeat(40))],
+      data:'0x'+[100n,90n,96n,1n,32n,7n,tokenA,'0x'+'0'.repeat(40),inner,0n,0n,0n,320n,0n,0n,0n].map(word).join('')};
+    const gross:TransferLog={address:inner,topics:['0x1bb43f2da90e35f7b0cf38521ca95a49e68eb42fac49924930a5bd73cdf7576c'],data:'0x'+[tokenA,'0x'+'0'.repeat(40),wallet,100n,95n].map(word).join('')};
+    expect(nativeSellProceeds(wallet,100n,[gross,net],outer,tokenA)).toBe(90n);
+    expect(nativeSellProceeds(wallet,100n,[gross,net,net],outer,tokenA)).toBeNull();
+    expect(nativeSellProceeds(wallet,101n,[gross,net],outer,tokenA)).toBeNull();
+    expect(nativeSellProceeds(wallet,100n,[gross,{...net,data:'0x12'}],outer,tokenA)).toBeNull();
+  });
   it('uses the canonical V2 and V3 event signatures', () => {
     expect([...swapTopics]).toEqual([
       '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822',

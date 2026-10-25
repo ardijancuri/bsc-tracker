@@ -76,7 +76,7 @@ export function tokenChartHistoryRefreshDelay(chart: TokenChart | null) {
 
 /** One browser request per token/interval; transient loading responses retain real cached history. */
 export function createTokenChartRequests({ fetcher = fetch, now = Date.now, timeoutMs = 12_000, storage = browserStorage() }: {
-  fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; storage?: ChartStorage;
+  fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; storage?: ChartStorage | null;
 } = {}) {
   const saved = new Map<string, { chart: TokenChart; checked: number; priority?: TokenChartPriority; historyChecked?: number;
     historyRecoveryBefore?: number; latestPartialHistory?: boolean; historyPartialPages?: number[]; latestRevision?: number }>();

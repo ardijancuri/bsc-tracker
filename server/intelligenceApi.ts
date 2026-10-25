@@ -112,10 +112,6 @@ function pageCursor(value: unknown) {
   return decoded as { ts: string; id: string };
 }
 function limit(value: unknown) { const number = Number(value); return Number.isInteger(number) && number > 0 ? Math.min(number, 100) : 20; }
-export const launchColumns = `l.token_address AS "tokenAddress",l.platform,l.stage,l.progress,l.launched_at AS "launchedAt",l.first_kol_at AS "firstKolAt",l.graduated_at AS "graduatedAt",
-  l.graduation_tx_hash AS "graduationTxHash",l.quote_address AS "quoteAddress",l.pool_address AS "poolAddress",l.pool_id AS "poolId",
-  l.liquidity_usd AS "liquidityUsd",l.liquidity_baseline_usd AS "liquidityBaselineUsd",l.liquidity_baseline_at AS "liquidityBaselineAt",l.liquidity_at AS "liquidityAt",l.liquidity_reason AS "liquidityReason",l.checked_at AS "checkedAt"`;
-
 export function registerIntelligenceRoutes(app: FastifyInstance) {
   registerKolTokenTradesRoutes(app);
   // Market history is independent of which KOL wallets happened to trade.
@@ -301,7 +297,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     if (session || request.query.watched === '1') privateResponse(reply);
     if (request.query.watched === '1' && !session) return { items: [], nextCursor: null };
     const values: unknown[] = [];
-    const where: string[] = [nonStockTokenSql(), `cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`];
+    const where: string[] = [nonStockTokenSql(), "s.kind NOT IN('near_graduation','graduated')", `cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`];
     values.push(defaultSignalSettings.windowMinutes, defaultSignalSettings.minBuyers);
     where.push('(s.window_minutes=0 OR s.window_minutes=$1 AND s.min_buyers=$2)');
     if (session) {
@@ -332,7 +328,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "tokenLogoUrl",
       s.wallet_addresses AS "walletAddresses",s.window_minutes AS "windowMinutes",s.min_buyers AS "minBuyers",s.timestamp,s.published_at AS "publishedAt",s.corrected,s.evidence,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('address',k.address,'name',k.display_name,'avatarUrl',k.avatar_url)) FROM published_kols k WHERE k.is_tracked AND k.address=ANY(s.wallet_addresses)),'[]'::jsonb) AS kols
-      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1 AND ${nonStockTokenSql()} AND cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`, [request.params.id]);
+      FROM radar_signals s JOIN tokens v ON v.address=s.token_address WHERE s.id=$1 AND s.kind NOT IN('near_graduation','graduated') AND ${nonStockTokenSql()} AND cardinality(s.wallet_addresses)>0 AND NOT EXISTS(SELECT 1 FROM unnest(s.wallet_addresses) AS candidate(address) LEFT JOIN kols roster ON roster.address=candidate.address WHERE NOT COALESCE(roster.is_tracked,false))`, [request.params.id]);
     return { signal: result.rows[0] ?? null };
   });
   for (const mode of ['kols', 'tokens'] as const) {
@@ -362,28 +358,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       }) };
     });
   }
-  app.get<{ Params: { address: string } }>('/api/tokens/:address/launch', async (request, reply) => {
-    const parsed = addressSchema.safeParse(request.params.address);
-    if (!parsed.success) return reply.code(400).send({ error: 'Invalid address' });
-    const result = await pool.query(`SELECT ${launchColumns} FROM token_launches l JOIN tokens v ON v.address=l.token_address WHERE token_address=$1 AND ${nonStockTokenSql()}`, [parsed.data]);
-    return { launch: result.rows[0] ? { ...result.rows[0], progress: result.rows[0].progress == null ? null : Number(result.rows[0].progress) } : null };
-  });
-  app.get<{ Querystring: { limit?: string; cursor?: string; platform?: string; stage?: string } }>('/api/launches', async (request, reply) => {
-    const values: unknown[] = [], where = [nonStockTokenSql(), 'l.platform IS NOT NULL', 'EXISTS(SELECT 1 FROM trades t JOIN published_kols k ON k.address=t.wallet_address WHERE t.token_address=l.token_address AND k.is_tracked AND t.block_number IS NOT NULL)'];
-    if (request.query.platform && ['fourmeme', 'flap'].includes(request.query.platform)) { values.push(request.query.platform); where.push(`l.platform=$${values.length}`); }
-    if (request.query.stage && ['bonding', 'near_graduation', 'graduated', 'unavailable'].includes(request.query.stage)) { values.push(request.query.stage); where.push(`l.stage=$${values.length}`); }
-    try { const cursor = pageCursor(request.query.cursor); if (cursor) { values.push(cursor.ts, cursor.id); where.push(`(COALESCE(l.first_kol_at,l.launched_at,to_timestamp(0)),l.token_address)<($${values.length - 1}::timestamptz,$${values.length}::text)`); } }
-    catch { return reply.code(400).send({ error: 'Invalid cursor' }); }
-    const count = limit(request.query.limit); values.push(count + 1);
-    const result = await pool.query(`SELECT ${launchColumns},v.symbol,v.name,CASE WHEN v.logo_data IS NOT NULL THEN '/api/token-image/'||v.address||'?v='||md5(v.logo_data) END AS "logoUrl"
-      FROM token_launches l JOIN tokens v ON v.address=l.token_address WHERE ${where.join(' AND ')}
-      ORDER BY COALESCE(l.first_kol_at,l.launched_at,to_timestamp(0)) DESC NULLS LAST,l.token_address DESC LIMIT $${values.length}`, values);
-    const items = result.rows.slice(0, count).map(row => ({ ...row, progress: row.progress == null ? null : Number(row.progress) })), last = items.at(-1);
-    const date = last?.firstKolAt ?? last?.launchedAt ?? new Date(0).toISOString();
-    return { items, nextCursor: result.rows.length > count && last && date ? Buffer.from(JSON.stringify({ ts: new Date(date).toISOString(), id: last.tokenAddress })).toString('base64url') : null };
-  });
   app.get('/api/intelligence/health', async () => {
-    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','launches','telegram_notifications','intelligence_radar_error','intelligence_positions_error','intelligence_launches_error')`);
+    const states = await pool.query(`SELECT key,value,updated_at FROM worker_state WHERE key IN('radar','positions','telegram_notifications','intelligence_radar_error','intelligence_positions_error')`);
     const metrics = await pool.query(`SELECT
       (SELECT COUNT(*)::int FROM trades WHERE EXISTS(SELECT 1 FROM kols public_kol WHERE public_kol.address=trades.wallet_address AND public_kol.is_tracked) AND ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "pendingTrades",
       (SELECT EXTRACT(epoch FROM now()-MIN(timestamp))::int FROM trades WHERE EXISTS(SELECT 1 FROM kols public_kol WHERE public_kol.address=trades.wallet_address AND public_kol.is_tracked) AND ${nonStockTokenSql('token_address')} AND NOT intelligence_processed AND observed_live AND block_number IS NOT NULL AND timestamp>now()-interval '24 hours') AS "processingLagSeconds",

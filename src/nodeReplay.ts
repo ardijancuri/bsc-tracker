@@ -17,6 +17,44 @@ const quantityKey = (value: unknown) => {
 export function prepareNodeReplay(activity: KolTokenActivity, now: number, context?: TradeRequestContext): { inventory: ReplayInventory; accounting: ReplayAccounting } | undefined {
   const identity = activity.accountingSnapshot, raw = activity.replayAccounting, history = raw?.history, proof = history?.balanceProof;
   const journal = (activity as JournalTokenActivity).journal;
+  // Fresh node accounting has canonical compact events and one inventory
+  // contract. It does not pretend those events are GMGN recovered history.
+  if (!history && identity?.version === 2 && raw?.version === 2 && activity.inventory) {
+    const inventory = activity.inventory, coverage = inventory.coverage;
+    if (!identity.complete || !/^[a-f0-9]{64}$/.test(identity.snapshotId) || identity.source !== 'node' || raw.source !== 'node'
+      || raw.policy !== 'kollens_fifo_v1' || !['ready', 'estimated'].includes(raw.status) || !raw.coverage.transactionsComplete || !raw.coverage.balanceMatched
+      || raw.walletAddress !== activity.kol.address.toLowerCase() || raw.tokenAddress !== activity.token.address.toLowerCase()
+      || inventory.version !== 1 || !coverage.complete || !coverage.reconciled || !Array.isArray(inventory.events) || !Array.isArray(raw.events)
+      || raw.inventoryBlockNumber !== coverage.toBlock || raw.inventoryBlockHash !== coverage.blockHash
+      || !/^0x[0-9a-f]{64}$/i.test(coverage.blockHash ?? '') || !/^\d+$/.test(coverage.toBlock ?? '')
+      || (context ? identity.scope !== 'portfolio' || !journal || !journal.private || journal.accountId !== context.accountId
+        || journal.walletAddress !== raw.walletAddress || context.snapshotId && context.snapshotId !== journal.snapshotId : identity.scope !== 'public')) return;
+    const checked = [identity.asOf, raw.checkedAt, coverage.checkedAt].map(value => Date.parse(value ?? ''));
+    if (checked.some(value => !Number.isFinite(value) || value > now + 1000) || raw.events.length !== inventory.events.length || raw.events.length > 100_000) return;
+    const seen = new Set<string>(), byId = new Map(inventory.events.map(event => [event.id, event]));
+    const events: ReplayAccounting['events'] = [], inventoryEvents: ReplayInventory['events'] = [];
+    let last = -Infinity;
+    for (const event of raw.events) {
+      const movement = byId.get(event.id), time = Date.parse(event.timestamp);
+      if (!movement || seen.has(event.id) || event.kind !== movement.kind || event.txHash !== movement.txHash || event.timestamp !== movement.timestamp
+        || !/^0x[0-9a-f]{64}$/i.test(event.txHash) || !/^\d+$/.test(event.blockNumber) || !Number.isFinite(time) || time < last || time > now
+        || !['buy', 'sell', 'transfer_in', 'transfer_out', 'fee'].includes(event.kind)) return;
+      const amount = numeric(movement.tokenAmount);
+      if (amount === null || (event.kind === 'fee' ? amount !== 0 : amount <= 0)) return;
+      const values = Object.fromEntries(fields.map(field => [field, numeric(event[field])])) as { [Key in keyof ReplayAccountingSnapshot]: number | null };
+      if (fields.some(field => event[field] !== null && values[field] === null)) return;
+      events.push({ ...event, ...values }); inventoryEvents.push({ ...movement, ...values, tokenAmount: amount }); seen.add(event.id); last = time;
+    }
+    let final: ReplayAccounting['final'] = null;
+    if (raw.final) {
+      const values = Object.fromEntries(fields.map(field => [field, numeric(raw.final![field])])) as { [Key in keyof ReplayAccountingSnapshot]: number | null };
+      const profit = numeric(raw.final.reportedProfitUsd), roi = numeric(raw.final.reportedRoi), price = numeric(raw.final.priceUsd), timestamp = Date.parse(raw.final.timestamp);
+      if (fields.some(field => raw.final![field] !== null && values[field] === null) || profit === null || roi === null || !Number.isFinite(timestamp)
+        || timestamp < last || timestamp > now + 1000 || values.remainingTokenAmount! > 0 && (price === null || price <= 0)) return;
+      final = { ...raw.final, ...values, reportedProfitUsd: profit, reportedRoi: roi, priceUsd: price };
+    }
+    return { inventory: { ...inventory, events: inventoryEvents }, accounting: { ...raw, events, final } };
+  }
   if (!identity || identity.version !== 2 || !identity.complete || !/^[a-f0-9]{64}$/.test(identity.snapshotId)
     || !['node', 'mixed', 'imported'].includes(identity.source) || !raw || raw.version !== 2 || raw.source !== identity.source
     || raw.policy !== 'kollens_fifo_v1' || !['ready', 'estimated'].includes(raw.status) || !raw.coverage.transactionsComplete || !raw.coverage.balanceMatched

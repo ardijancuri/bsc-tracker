@@ -145,7 +145,8 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       await definition.validateAccess?.();
       await definition.shareFile(file);
     } catch (problem) {
-      if (alive.current && !(problem instanceof DOMException && problem.name === 'AbortError')) setError(t('Sharing was unavailable. Download the video and attach it on X.'));
+      if (alive.current && !(problem instanceof DOMException && problem.name === 'AbortError')) setError(t(problem instanceof Error && problem.message.startsWith('Replay ')
+        ? problem.message : 'Sharing was unavailable. Download the video and attach it on X.'));
     } finally {
       sharing.current = false;
       if (alive.current) setSharePending(false);
@@ -155,7 +156,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   async function download() {
     if (!file) return;
     try { if (definition.validateAccess) await definition.validateAccess(); downloadTradeReplay(file); setNotice(t('Download started.')); }
-    catch { setError(t(definition.validateAccess ? 'Portfolio access changed. Close this replay and try again.' : 'Video download failed. Try again.')); setFile(null); }
+    catch (problem) { setError(t(problem instanceof Error ? problem.message : 'Video download failed. Try again.')); setFile(null); }
   }
 
   function captureImage() {

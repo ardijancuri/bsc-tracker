@@ -1,0 +1,6 @@
+{
+  "services": {
+    "app": {"environment": {"TELEGRAM_BOT_TOKEN": "${FRESH_TELEGRAM_BOT_TOKEN:?Set only after the approved notification handoff}", "FRESH_TELEGRAM_ACTIVE": "true"}},
+    "worker": {"environment": {"TELEGRAM_BOT_TOKEN": "${FRESH_TELEGRAM_BOT_TOKEN:?Set only after the approved notification handoff}", "FRESH_TELEGRAM_ACTIVE": "true"}}
+  }
+}

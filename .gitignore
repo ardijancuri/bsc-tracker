@@ -16,3 +16,4 @@ __pycache__/
 # Upload packs duplicate the retained artwork; v2 is the current feature series.
 /branding/x/**/*.zip
 /branding/x/kollens-feature-series-20261012/
+.cutover/

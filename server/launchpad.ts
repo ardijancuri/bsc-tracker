@@ -68,11 +68,6 @@ export function graduationPool(pool: string | null, poolId: string | null, migra
   // Infinity's event pool field is a vault, not the actual pool. Never use it as a pair.
   return poolId || (migrator === 2 || migrator === 3 ? null : pool);
 }
-export function launchTransition(previous: LaunchStage | null, next: LaunchStage): 'near_graduation' | 'graduated' | null {
-  if (!previous || previous === next || previous === 'unavailable') return null;
-  if (next === 'graduated') return 'graduated';
-  return next === 'near_graduation' && previous === 'bonding' ? 'near_graduation' : null;
-}
 export const launchEventTopics = [
   ...[fourInterface, fourV1Interface].flatMap(abi => abi.fragments.filter(fragment => fragment.type === 'event').map(fragment => id(fragment.format('sighash')))),
   ...flapInterface.fragments.filter(fragment => fragment.type === 'event').map(fragment => id(fragment.format('sighash'))),

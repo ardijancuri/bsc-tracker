@@ -151,7 +151,7 @@ describe('market cap candle chart', () => {
     expect(html).toContain('id="token-market-1m" aria-selected="true"');
     expect(html).toContain('class="price-chart-canvas"');
     expect(html).not.toContain('token-area-chart-line');
-    expect(state.useTokenChart.mock.calls).toEqual([[address, '1m', true, 'chart', true]]);
+    expect(state.useTokenChart.mock.calls).toEqual([[address, '1m', true, 'chart', true, undefined]]);
   });
   it.each([
     ['queued', 'Waiting for market data…'],
@@ -215,7 +215,7 @@ describe('market cap candle chart', () => {
   });
   it('keeps full-history paging opt-in so trade-focused charts use the recent window', () => {
     renderToStaticMarkup(<TokenPriceChart address={address} interval="1m" focusTrades />);
-    expect(state.useTokenChart.mock.calls).toEqual([[address, '1m', true, 'chart', false]]);
+    expect(state.useTokenChart.mock.calls).toEqual([[address, '1m', true, 'chart', false, undefined]]);
   });
   it('keeps current candles visible while fetching earlier history and removes the limit when complete', () => {
     state.chart = { address, period: '5m', source: 'gmgn', candles: [{ time: 1791586800, open: .001, high: .002, low: .0005, close: .0015, volume: 10 }], points: [], pending: false, stale: false, updatedAt: null, resolution: '5m', marketCapSupply: '1000000000', partialHistory: true, historyPending: true };

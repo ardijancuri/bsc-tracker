@@ -1,0 +1,88 @@
+{
+  "name": "kollens-fresh-v14",
+  "services": {
+    "fresh-db": {
+      "image": "postgres:17-alpine",
+      "restart": "unless-stopped",
+      "environment": {
+        "POSTGRES_DB": "kollens_fresh_v14",
+        "POSTGRES_USER": "kollens_fresh",
+        "POSTGRES_PASSWORD": "${FRESH_DB_PASSWORD:?Set a new URL-safe Fresh database password}"
+      },
+      "ports": ["127.0.0.1:5437:5432"],
+      "volumes": ["fresh_pgdata:/var/lib/postgresql/data"],
+      "healthcheck": {
+        "test": ["CMD-SHELL", "pg_isready -U kollens_fresh -d kollens_fresh_v14"],
+        "interval": "5s", "timeout": "5s", "retries": 10
+      }
+    },
+    "app": {
+      "profiles": ["runtime"],
+      "build": ".",
+      "image": "kollens-fresh:${FRESH_RELEASE_ID:?Set an explicit release candidate identifier}",
+      "restart": "unless-stopped",
+      "network_mode": "host",
+      "environment": {
+        "NODE_ENV": "production", "HOST": "127.0.0.1", "PORT": "${FRESH_APP_PORT:-3303}",
+        "FRESH_LOCAL_ONLY": "false",
+        "DATABASE_URL": "postgres://kollens_fresh:${FRESH_DB_PASSWORD:?Set a new URL-safe Fresh database password}@127.0.0.1:5437/kollens_fresh_v14",
+        "PUBLIC_APP_URL": "${PUBLIC_APP_URL:-https://kollens.com}",
+        "GMGN_API_KEY": "${GMGN_API_KEY:-}",
+        "GMGN_CHART_API_KEY": "${GMGN_CHART_API_KEY:-${GMGN_API_KEY:-}}",
+        "GMGN_ACCOUNTING_API_KEY": "${GMGN_ACCOUNTING_API_KEY:-}",
+        "GMGN_REQUEST_DIAGNOSTICS": "false",
+        "GMGN_CHART_CACHE_DIR": "/app/.cache/fresh/charts",
+        "FRESH_REPLAY_SECRET": "${FRESH_REPLAY_SECRET:?Set a stable server-only replay signing secret}",
+        "TELEGRAM_CLIENT_ID": "${TELEGRAM_CLIENT_ID:-}",
+        "TELEGRAM_CLIENT_SECRET": "${TELEGRAM_CLIENT_SECRET:-}",
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_WEBHOOK_SECRET": "${TELEGRAM_WEBHOOK_SECRET:-}",
+        "FRESH_TELEGRAM_ACTIVE": "false",
+        "FRONTEND_ASSET_CACHE_DIR": "/app/.cache/frontend-assets"
+      },
+      "volumes": ["fresh_chartcache:/app/.cache/fresh/charts", "fresh_frontendassets:/app/.cache/frontend-assets"],
+      "depends_on": {"fresh-db": {"condition": "service_healthy"}},
+      "healthcheck": {
+        "test": ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"],
+        "interval": "5s", "timeout": "5s", "retries": 12
+      },
+      "command": ["node", "dist-server/index.js"]
+    },
+    "worker": {
+      "profiles": ["runtime"],
+      "image": "kollens-fresh:${FRESH_RELEASE_ID:?Set an explicit release candidate identifier}",
+      "restart": "unless-stopped",
+      "network_mode": "host",
+      "environment": {
+        "NODE_ENV": "production", "FRESH_LOCAL_ONLY": "false",
+        "DATABASE_URL": "postgres://kollens_fresh:${FRESH_DB_PASSWORD:?Set a new URL-safe Fresh database password}@127.0.0.1:5437/kollens_fresh_v14",
+        "PUBLIC_APP_URL": "${PUBLIC_APP_URL:-https://kollens.com}",
+        "BSC_RPC_HTTP": "http://127.0.0.1:8545", "BSC_RPC_WS": "ws://127.0.0.1:8546",
+        "BSC_TRACE_IPC": "/run/bsc/geth.ipc",
+        "TELEGRAM_CLIENT_ID": "${TELEGRAM_CLIENT_ID:-}", "TELEGRAM_BOT_TOKEN": "",
+        "FRESH_TELEGRAM_ACTIVE": "false"
+      },
+      "volumes": [{"type": "bind", "source": "${BSC_TRACE_HOST_IPC:-/var/lib/bsc/geth.ipc}", "target": "/run/bsc/geth.ipc", "read_only": true, "bind": {"create_host_path": false}}],
+      "depends_on": {"fresh-db": {"condition": "service_healthy"}, "app": {"condition": "service_healthy"}},
+      "command": ["node", "dist-server/worker.js"]
+    },
+    "cutover": {
+      "profiles": ["operators"],
+      "image": "kollens-fresh:${FRESH_RELEASE_ID:?Set an explicit release candidate identifier}",
+      "restart": "no",
+      "network_mode": "host",
+      "environment": {
+        "NODE_ENV": "production", "FRESH_CUTOVER_MODE": "production", "FRESH_CUTOVER_DIR": "/app/.cutover",
+        "FRESH_CUTOVER_SOURCE_DATABASE_URL": "${FRESH_CUTOVER_SOURCE_DATABASE_URL:-}",
+        "FRESH_CUTOVER_DEST_DATABASE_URL": "postgres://kollens_fresh:${FRESH_DB_PASSWORD:?Set a new URL-safe Fresh database password}@127.0.0.1:5437/kollens_fresh_v14",
+        "FRESH_CUTOVER_DEST_DATABASE_NAME": "kollens_fresh_v14",
+        "BSC_RPC_HTTP": "http://127.0.0.1:8545"
+      },
+      "volumes": [{"type": "bind", "source": "${FRESH_CUTOVER_DIR:-./.cutover}", "target": "/app/.cutover", "bind": {"create_host_path": false}}],
+      "depends_on": {"fresh-db": {"condition": "service_healthy"}},
+      "entrypoint": ["node", "dist-server/freshCutover.js"],
+      "command": ["plan"]
+    }
+  },
+  "volumes": {"fresh_pgdata": {}, "fresh_chartcache": {}, "fresh_frontendassets": {}}
+}

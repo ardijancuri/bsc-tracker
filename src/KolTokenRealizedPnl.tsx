@@ -1,7 +1,7 @@
 import { useEffect, useState, type Ref } from 'react';
 import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import type { NodeAccountingSummary } from '../shared/nodeAccounting';
-import { requestNodePnlSummary } from './nodePnlSummaryRequest';
+import { requestNodePnlSummary, nodeSummaryDisplay, validNodeSummaryIdentity } from './nodePnlSummaryRequest';
 import { getLocale, t } from './i18n';
 import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
 import { displayedTokenPnl, historicalAccountingMismatchNotice, terminalTokenInventoryFailure, tokenPnlMayRetainDuringProviderRetry, tokenPnlMovementsMatch, tokenPositionPnlDelayedNotice, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, type KolTokenPnlResult } from './kolTokenPnlRequest';
@@ -18,6 +18,7 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
   walletAddress: string; tokenAddress: string; lastTradeAt: string | null; eager?: boolean; initialSummary?: NodeAccountingSummary;
 }) {
   const [summary, setSummary] = useState(initialSummary);
+  const [, refreshClock] = useState(0);
   useEffect(() => {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
@@ -30,35 +31,62 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
       if (!controller.signal.aborted) timer = setTimeout(() => void refresh(), delay);
     };
     setSummary(initialSummary);
-    const recent = initialSummary?.snapshot && Date.now() - Date.parse(initialSummary.snapshot.asOf) < 20_000;
+    const recent = validNodeSummaryIdentity(initialSummary, walletAddress, tokenAddress)
+      && (initialSummary?.tracking?.source === 'fresh' && initialSummary.position === 'closed' && initialSummary.realizedStatus === 'ready'
+        || initialSummary?.snapshot && Date.now() - Date.parse(initialSummary.snapshot.asOf) < 20_000);
     timer = setTimeout(() => void refresh(), recent ? nodeSummaryRefreshDelay(initialSummary) : 0);
     return () => { controller.abort(); clearTimeout(timer); };
   }, [walletAddress, tokenAddress, lastTradeAt, initialSummary]);
-  const raw = summary?.position === 'open' ? summary.estimatedProfitUsd : summary?.realizedProfitUsd;
-  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
-  const valid = Number.isFinite(value);
+  const fresh = summary?.tracking?.source === 'fresh';
+  const display = nodeSummaryDisplay(summary, walletAddress, tokenAddress, Date.now(), { realizedOnly: fresh }), value = display.value ?? NaN, valid = display.value !== null;
+  useEffect(() => {
+    if (display.kind !== 'estimated') return;
+    const fresh = summary?.tracking?.source === 'fresh', at = Date.parse((fresh ? summary?.quotedAt : summary?.snapshot?.asOf) ?? '');
+    if (!Number.isFinite(at)) return;
+    // Expire only the rendered market mark. A stalled refresh must not leave an
+    // old estimate painted indefinitely or start another provider request.
+    const timer = setTimeout(() => refreshClock(value => value + 1), Math.max(1, at + (fresh ? 120_001 : 180_001) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [summary, display.kind]);
   const contradictory = [summary?.reason, ...(summary?.snapshot?.reasons ?? [])].includes('historical_accounting_mismatch');
   const asOf = summary?.snapshot?.asOf;
   const retained = summary?.snapshot?.refreshStatus === 'pending';
   const title = valid ? `${capturedPositionDescription(summary?.snapshot) ?? t('Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.')}${asOf ? ` ${t('As of')} ${new Date(asOf).toLocaleString(getLocale())}` : ''}`
     : t(nodeSummaryPendingDescription(summary));
   const tracked = isCapturedPosition(summary?.snapshot);
-  return <span className="token-card-profit" title={title} aria-busy={!valid && !contradictory && summary?.status !== 'unavailable'}>
-    <span>{t(summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
+  const unavailable = nodeSummaryUnavailableLabel(summary);
+  return <span className="token-card-profit" title={title} aria-busy={!valid && !contradictory && unavailable === 'Pending'}>
+    <span>{t(fresh || display.kind === 'realized' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
     <strong className={valid ? value > 0 ? 'positive' : value < 0 ? 'negative' : '' : ''}>{valid ? new Intl.NumberFormat(getLocale(), {
       style: 'currency', currency: 'USD', notation: Math.abs(value) >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 2, signDisplay: 'exceptZero',
-    }).format(value) : contradictory ? t('Unverified') : summary?.status === 'unavailable' ? '—' : summary ? t('Pending') : '…'}</strong>
+    }).format(value) : contradictory ? t('Unverified') : summary ? t(unavailable) : '…'}</strong>
   </span>;
 }
 
 export function nodeSummaryRefreshDelay(summary: NodeAccountingSummary | undefined) {
+  if (summary?.tracking?.source === 'fresh' && summary.position === 'closed' && summary.realizedStatus === 'ready') return 60_000;
   return summary?.status === 'pending' || summary?.snapshot?.refreshStatus === 'pending'
     ? Math.max(3000, Math.min(30_000, summary.retryAfterMs ?? 3000)) : 20_000;
+}
+
+export function nodeSummaryUnavailableLabel(summary: NodeAccountingSummary | undefined) {
+  const reasons = [summary?.reason, ...(summary?.snapshot?.reasons ?? [])].filter(Boolean).join(' ');
+  if (/unknown_cost|unknown_purchase|unknown_incoming/.test(reasons)) return 'Cost unknown';
+  if (/unknown_fee/.test(reasons)) return 'Fee unknown';
+  if (/balance_mismatch/.test(reasons)) return 'Balance mismatch';
+  if (/wallet_decode_gap|historical_gap|historical_baseline_required/.test(reasons)) return 'History incomplete';
+  if (/decoding_pending|native_trace_required/.test(reasons)) return 'Evidence needed';
+  return summary?.realizedStatus === 'unavailable' || summary?.status === 'unavailable' ? '—' : 'Pending';
 }
 
 function nodeSummaryPendingDescription(summary: NodeAccountingSummary | undefined) {
   const reasons = [summary?.reason, ...(summary?.snapshot?.reasons ?? [])].filter(Boolean).join(' ');
   if (/historical_accounting_mismatch/.test(reasons)) return historicalAccountingMismatchNotice;
+  if (/wallet_decode_gap/.test(reasons)) return 'Recorded wallet history has a coverage gap. Unknown amounts are not counted as zero.';
+  if (/unknown_fee/.test(reasons)) return 'The wallet-paid fee for this position has not been verified.';
+  if (/balance_mismatch/.test(reasons)) return 'Recorded token movements do not match the confirmed wallet balance.';
+  if (/balance_pending/.test(reasons)) return 'Waiting for a confirmed wallet balance check.';
+  if (/decoding_pending/.test(reasons)) return 'A captured transaction still needs execution evidence before this position can be verified.';
   if (/native_trace_required/.test(reasons)) return 'Waiting for the node to verify native BNB spent or received.';
   if (/collection_pending|indexing_lag|node_indexer_lag/.test(reasons)) return 'The indexer is catching up with confirmed wallet transactions.';
   if (/historical_baseline_required|historical_gap/.test(reasons)) return 'Older transaction history needs recovery before profit can be calculated.';

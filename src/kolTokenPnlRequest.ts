@@ -21,6 +21,9 @@ function isNodeAccounting(activity: KolTokenActivity | null) {
   const accounting = activity?.realizedAccounting;
   return accounting?.version === 2 && ['node', 'mixed', 'imported'].includes(accounting.source) && accounting.policy === 'kollens_fifo_v1';
 }
+function isFreshNodeAccounting(activity: KolTokenActivity | null) {
+  return isNodeAccounting(activity) && activity?.tracking?.version === 1 && activity.tracking.source === 'fresh';
+}
 function nodePnlDescription(activity: KolTokenActivity) {
   const identity = activity.accountingSnapshot;
   const scope = capturedPositionDescription(identity);
@@ -65,6 +68,7 @@ export const tokenPositionPnlDelayedNotice = 'Profit data is taking longer to ve
 
 export function tokenPnlRefreshDelay(result: KolTokenPnlResult, consecutivePending: number) {
   if (isNodeAccounting(result.activity)) return result.activity?.accountingSnapshot?.refreshStatus === 'pending' || result.status === 'pending'
+    || isFreshNodeAccounting(result.activity) && tokenPnlNeedsRetry(result.activity!)
     ? Math.max(1500, Math.min(30_000, result.retryAfterMs ?? 2000)) : 20_000;
   if (result.status !== 'pending') {
     if (result.status === 'ready' && result.activity?.realizedAccounting?.source === 'onchain') {
@@ -106,6 +110,12 @@ export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now 
   const accounting = verifiedTokenAccounting(activity, now);
   if (!accounting) return null;
   if (isNodeAccounting(activity)) {
+    if (isFreshNodeAccounting(activity) && accounting.position?.status === 'open') {
+      const quotedAt = Date.parse(accounting.position.pricedAt ?? '');
+      const price = accounting.position.priceUsd;
+      if (activity?.accountingSnapshot?.complete !== true || !Number.isFinite(quotedAt) || quotedAt > now + 1000 || now - quotedAt > 120_000
+        || typeof price !== 'string' || !decimal.test(price) || !Number.isFinite(Number(price)) || Number(price) <= 0) return null;
+    }
     const raw = accounting.position?.status === 'open' ? accounting.position.estimatedProfitUsd : accounting.realizedProfitUsd;
     return typeof raw === 'string' && decimal.test(raw) && Number.isFinite(Number(raw)) ? Number(raw) : null;
   }
@@ -151,6 +161,11 @@ export function displayedTokenPnl(activity: KolTokenActivity | null, now = Date.
 export function tokenPnlExpiresAt(activity: KolTokenActivity | null, now = Date.now()) {
   if (displayedTokenPnl(activity, now) === null) return null;
   if (isNodeAccounting(activity)) {
+    if (isFreshNodeAccounting(activity)) {
+      const position = activity!.realizedAccounting?.position;
+      return position?.status === 'open' && verifiedTokenPositionPnl(activity, now) !== null
+        ? Date.parse(position.pricedAt!) + 120_001 : null;
+    }
     if (activity?.accountingSnapshot?.refreshStatus === 'pending') return null;
     return Date.parse(activity!.accountingSnapshot!.asOf) + 180_001;
   }
@@ -232,6 +247,8 @@ function tokenPnlVerificationFailureNotice(activity: KolTokenActivity | null) {
 }
 
 export function tokenPnlNeedsRetry(activity: KolTokenActivity) {
+  if (isFreshNodeAccounting(activity)) return activity.realizedAccounting?.status === 'pending' || activity.accountingSnapshot?.refreshStatus === 'pending'
+    || activity.realizedAccounting?.position?.status === 'open' && verifiedTokenPositionPnl(activity) === null;
   if (isNodeAccounting(activity)) return activity.realizedAccounting?.status === 'pending' || activity.accountingSnapshot?.refreshStatus === 'pending';
   if (terminalTokenInventoryFailure(activity)) return false;
   const proof = activity.inventory?.coverage, accounting = activity.realizedAccounting, position = accounting?.position;
@@ -300,6 +317,7 @@ function verifiedTokenAccounting(activity: KolTokenActivity | null, now = Date.n
 /** The server decides financial eligibility. The browser validates the version,
  * selected identity, immutable snapshot agreement and dated evidence only. */
 function verifiedNodeAccounting(activity: KolTokenActivity, now: number) {
+  if (activity.tracking !== undefined) return verifiedFreshNodeAccounting(activity, now);
   const raw = activity.realizedAccounting!, snapshot = activity.accountingSnapshot, proof = raw.coverage?.balanceProof;
   const fingerprint = /^[a-f0-9]{64}$/i, hash = /^0x[a-f0-9]{64}$/i;
   const dated = snapshot?.refreshStatus === 'pending';
@@ -321,6 +339,37 @@ function verifiedNodeAccounting(activity: KolTokenActivity, now: number) {
     || position.status === 'open' && (actual === '0' || !time(position.pricedAt, true) || !position.priceUsd || !decimal.test(position.priceUsd)
       || !Number.isFinite(Number(position.priceUsd)) || Number(position.priceUsd) <= 0)) return null;
   if (snapshot.scope === 'portfolio' && !('journal' in activity)) return null;
+  return raw;
+}
+
+/** Current-row accounting is approved by the server. Light profile responses
+ * deliberately omit receipt histories and balance-proof response copies. A
+ * closed result is dated financial history, not a quote that expires in 3m. */
+function verifiedFreshNodeAccounting(activity: KolTokenActivity, now: number) {
+  const raw = activity.realizedAccounting, snapshot = activity.accountingSnapshot, tracking = activity.tracking;
+  const digest = /^[a-f0-9]{64}$/i, blockHash = /^0x[a-f0-9]{64}$/i;
+  const time = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) && Date.parse(value) <= now + 1000;
+  const height = (value: unknown): value is string => typeof value === 'string' && /^\d+$/.test(value);
+  if (!raw || !snapshot || tracking?.version !== 1 || tracking.source !== 'fresh' || !height(tracking.fromBlock)
+    || !/^\d{4}-\d{2}-\d{2}$/.test(tracking.utcDay) || !Number.isFinite(Date.parse(`${tracking.utcDay}T00:00:00Z`))
+    || snapshot.version !== 2 || snapshot.source !== 'node' || raw.source !== 'node' || raw.policy !== 'kollens_fifo_v1' || raw.version !== 2
+    || snapshot.complete !== true && tracking.realizedComplete !== true || raw.status !== 'ready' || raw.coverage?.transactionsComplete !== true || raw.coverage.balanceMatched !== true
+    || !digest.test(snapshot.snapshotId) || !digest.test(snapshot.historyFingerprint) || !height(snapshot.coveredThroughBlock)
+    || BigInt(snapshot.coveredThroughBlock) < BigInt(tracking.fromBlock)
+    || typeof raw.walletAddress !== 'string' || typeof raw.tokenAddress !== 'string'
+    || !address.test(activity.kol.address) || !address.test(activity.token.address)
+    || raw.walletAddress.toLowerCase() !== activity.kol.address.toLowerCase() || raw.tokenAddress.toLowerCase() !== activity.token.address.toLowerCase()
+    || !time(snapshot.asOf) || !time(raw.checkedAt) || Date.parse(raw.checkedAt) !== Date.parse(snapshot.asOf)
+    || raw.coverage.historyFingerprint !== undefined && raw.coverage.historyFingerprint !== snapshot.historyFingerprint) return null;
+  const position = raw.position, quantity = position?.remainingTokenAmount;
+  if (!position || !['open', 'closed'].includes(position.status) || typeof quantity !== 'string' || !decimal.test(quantity)
+    || !Number.isFinite(Number(quantity)) || Number(quantity) < 0 || (position.status === 'closed') !== (Number(quantity) === 0)) return null;
+  if (position.status === 'open' && position.estimatedProfitUsd !== null && (!height(snapshot.valuationBlock) || !blockHash.test(snapshot.valuationHash ?? ''))) return null;
+  if (snapshot.scope === 'portfolio') {
+    const membership = 'journal' in activity ? activity.journal as { accountId?: string; walletAddress?: string; membershipRevision?: string; private?: boolean } : null;
+    if (!membership || membership.private !== true || typeof membership.accountId !== 'string' || !membership.accountId
+      || membership.walletAddress !== activity.kol.address.toLowerCase() || !/^[a-f0-9-]{36}$/i.test(membership.membershipRevision ?? '')) return null;
+  } else if (snapshot.scope !== 'public' || 'journal' in activity) return null;
   return raw;
 }
 
@@ -624,6 +673,8 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
                   || job.selection.requestContext.snapshotId && membership.snapshotId !== job.selection.requestContext.snapshotId)
                   return { activity: null, status: 'unavailable' };
               }
+              if (isFreshNodeAccounting(body) && !job.selection.requestContext && body.accountingSnapshot?.scope !== 'public')
+                return { activity: null, status: 'unavailable' };
               activity = body;
               for (const client of job.clients) client.onActivity?.(body);
               if (!isNodeAccounting(body) && job.selection.requestContext && journalTokenProfit(body, job.selection.requestContext, now()) !== null)
@@ -637,6 +688,8 @@ export function createKolTokenPnlLoader({ fetcher = (input, init) => fetch(input
               if (verifiedTokenPositionPnl(body, now()) !== null && (!provisional || accounting?.source === 'onchain')) {
                 return { activity: body, status: 'ready', ...(provisional ? { retryAfterMs: retryAfter } : {}) };
               }
+              if (isFreshNodeAccounting(body) && displayedTokenPnl(body, now()) !== null)
+                return { activity: body, status: 'ready', ...(tokenPnlNeedsRetry(body) ? { retryAfterMs: Math.max(2000, retryAfter) } : {}) };
               pending = tokenPnlNeedsRetry(body);
               if (Number.isFinite(retryAfter) && retryAfter > 0) providerDelay = Math.max(1000, retryAfter);
               if (!pending) return { activity, status: 'unavailable' };

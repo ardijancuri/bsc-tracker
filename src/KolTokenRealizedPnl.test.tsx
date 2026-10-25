@@ -42,7 +42,7 @@ describe('KOL token realized profit display', () => {
   });
   it('does not claim older history is actively importing when recovery is unavailable or paused', () => {
     const html = renderToStaticMarkup(<KolTokenRealizedPnl walletAddress={wallet} tokenAddress={token} lastTradeAt={date} initialSummary={pendingSummary('historical_baseline_required')} />);
-    expect(html).toContain('Older transaction history needs recovery'); expect(html).toContain('Pending');
+    expect(html).toContain('Older transaction history needs recovery'); expect(html).toContain('History incomplete'); expect(html).toContain('aria-busy="false"');
     expect(html).not.toContain('being imported');
   });
   it('explains conflicting historical totals on cards and details without blaming a reconciled balance', () => {

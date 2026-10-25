@@ -233,10 +233,11 @@ main { min-height: 0; flex: 1; }
 .profile-trades .trade-row + .trade-row::before { content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 1px; background: var(--line); pointer-events: none; transition: opacity .15s; }
 .profile-trades .trade-row:hover::before, .profile-trades .trade-row:hover + .trade-row::before { opacity: 0; }
 .profile-trades .trade-amount { display: block; }
+.profile-trades .trade-kol > a { display: flex; min-width: 0; max-width: 100%; }
+.profile-trades .trade-kol .identity { width: 100%; max-width: 100%; }
+.profile-trades .trade-kol .identity-copy { flex: 1; min-width: 0; }
+.profile-trades .trade-kol .identity-copy strong { display: block; max-width: 100%; }
 .token-detail-page .profile-trades .trade-row { grid-template-columns: minmax(190px, 1.45fr) minmax(190px, 1.25fr) minmax(125px, .55fr) 75px; }
-.token-detail-page .trade-kol .identity { max-width: 100%; }
-.token-detail-page .trade-kol .identity-copy { flex: 1; min-width: 0; }
-.token-detail-page .trade-kol .identity-copy strong { display: block; max-width: 100%; }
 .kol-list a { background: #191d20; border: 0; font-size: 14px; padding: 12px; }
 .kol-list a:hover { background: #22282b; border: 0; }
 .footer { flex-direction: row; align-items: center; justify-content: center; gap: 10px; border-top: 0; padding: 22px 28px; font-size: 11px; text-align: center; white-space: nowrap; }
@@ -295,7 +296,7 @@ main { min-height: 0; flex: 1; }
   .section-title h1 { font-size: 29px; }
   .section-title p { font-size: 12px; }
   .trade-row, .profile-trades .trade-row { grid-template-columns: minmax(0, 1fr) 92px; gap: 6px 12px; min-height: 77px; padding: 10px 7px; }
-  .trades-table .trade-row { grid-template-columns: minmax(0, 1fr) 140px; min-height: 72px; padding: 7px; row-gap: 4px; }
+  .trades-table .trade-row { grid-template-columns: minmax(0, 1fr) 180px; min-height: 72px; padding: 7px; row-gap: 4px; }
   .trades-table .trade-kol .avatar { width: 35px; height: 35px; }
   .trades-table .trade-activity .token-avatar { width: 29px; height: 29px; }
   .token-detail-page .profile-trades .trade-row { grid-template-columns: minmax(0, 1fr) 92px; }

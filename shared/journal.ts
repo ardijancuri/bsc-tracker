@@ -1,4 +1,5 @@
 import type { KolTokenActivity } from './kolTokenTrades.js';
+import type { FreshFeeExclusions } from './freshAccounting.js';
 
 export const journalWalletLimit = 3;
 export interface JournalWallet {
@@ -21,6 +22,7 @@ export interface JournalTotals {
   feeInclusiveCapitalUsd: string | null; feesUsd: string | null;
 }
 export interface JournalSummary {
+  exclusions?: { feeOnly: FreshFeeExclusions };
   version: 1; snapshotId: string; selectedWallets: string[]; asOf: string;
   activityFrom: string | null; coverage: 'since_wallet_added';
   complete: boolean; preparing: boolean; reasons: string[]; positions: JournalPosition[];
@@ -30,7 +32,7 @@ export interface JournalSummary {
 export interface JournalTrade {
   id: string; walletAddress: string; tokenAddress: string; tokenSymbol: string | null; tokenName: string | null;
   tokenLogoUrl: string | null; side: 'buy' | 'sell'; tokenAmount: string | null; amountUsd: string | null;
-  quoteAmount: string | null; quoteSymbol: string | null; txHash: string; timestamp: string;
+  quoteAmount: string | null; quoteSymbol: string | null; quoteTokenAddress?: string | null; bnbEquivalentAmount?: string | null; txHash: string; timestamp: string;
   source: 'node' | 'gmgn' | 'node+gmgn';
 }
 export interface JournalActivity { trades: JournalTrade[]; cursor: string | null; activityFrom: string | null; preparing: boolean }

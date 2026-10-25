@@ -1,9 +1,9 @@
 import type { PoolClient } from 'pg';
 import { pool, notifyUpdate, setState } from './db.js';
 import type { SignalEvidence } from '../shared/intelligence.js';
-import { classifyPosition, compareTrades, cooldownAllows, defaultSignalSettings, detectSignals, profileKey, signalId, type ObservedTrade, type PositionMovement } from './intelligenceLogic.js';
+import { classifyPosition, compareTrades, cooldownAllows, defaultSignalSettings, detectSignals, profileKey, type ObservedTrade, type PositionMovement } from './intelligenceLogic.js';
 import { blockHex, chainRpc } from './rpc.js';
-import { decodeFlapState, decodeFourState, flapInterface, fourInterface, FOUR_HELPER, FOUR_MANAGERS, FLAP_PORTAL, migrationPair, pairInterface, PCS_V2_FACTORY, WBNB, launchEventTopics, launchTransition, parseLaunchLog } from './launchpad.js';
+import { FOUR_MANAGERS, FLAP_PORTAL, launchEventTopics, parseLaunchLog } from './launchpad.js';
 import { hasRecognizedSwap, transferTopic } from './swap.js';
 import { nonStockTokenSql } from './stockToken.js';
 import { transactionWallets, walletTransactionContext } from './smartAccountTrades.js';
@@ -81,9 +81,7 @@ export async function rollbackIntelligence(client: PoolClient, from: number) {
   await client.query('DELETE FROM wallet_transfers WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM position_snapshots WHERE block_number >= $1', [from]);
   await client.query('DELETE FROM launch_events WHERE block_number >= $1', [from]);
-  await client.query(`UPDATE token_launches SET stage='unavailable',progress=NULL,launched_at=NULL,graduated_at=NULL,graduation_tx_hash=NULL,
-    pool_address=NULL,pool_id=NULL,migrator_type=NULL,block_number=NULL,block_hash=NULL,checked_at=NULL,
-    first_kol_at=NULL,liquidity_usd=NULL,liquidity_baseline_usd=NULL,liquidity_baseline_at=NULL,liquidity_at=NULL WHERE block_number >= $1`, [from]);
+
 }
 
 export async function collectSignals() {
@@ -223,117 +221,8 @@ export async function collectPositions() {
   if (pairs.rows.length) { await setState('positions', { checkedAt: new Date().toISOString(), checked: pairs.rows.length }); await notifyUpdate(); }
 }
 
-async function lookupLaunch(token: string, height: number) {
-  const four = await chainRpc<string>('eth_call', [{ to: FOUR_HELPER, data: fourInterface.encodeFunctionData('getTokenInfo', [token]) }, blockHex(height)]).then(decodeFourState).catch(() => null);
-  if (four) return four;
-  for (const method of ['getTokenV8Safe', 'getTokenV7'] as const) {
-    try {
-      const raw = await chainRpc<string>('eth_call', [{ to: FLAP_PORTAL, data: flapInterface.encodeFunctionData(method, [token]) }, blockHex(height)]);
-      return decodeFlapState(raw, method);
-    } catch { /* Try the legacy supported interface, otherwise leave this token unavailable. */ }
-  }
-  return null;
-}
-
-export async function collectLaunches() {
-  const node = await pool.query(`SELECT (value->>'blockNumber')::bigint AS height FROM worker_state WHERE key='node'`);
-  if (!node.rows[0]?.height) return;
-  const height = Number(node.rows[0].height);
-  const block = await chainRpc<Block>('eth_getBlockByNumber', [blockHex(height), false]);
-  if (Date.now() - Number(BigInt(block.timestamp)) * 1000 > 300_000) return;
-  const candidates = await pool.query(`SELECT v.address,l.* FROM tokens v LEFT JOIN token_launches l ON l.token_address=v.address
-    WHERE EXISTS(SELECT 1 FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND token_address=v.address AND block_number IS NOT NULL)
-    AND (l.checked_at IS NULL OR l.checked_at<now()-CASE WHEN l.platform IS NULL THEN interval '1 hour' ELSE interval '60 seconds' END)
-    ORDER BY CASE WHEN EXISTS(SELECT 1 FROM launch_events e WHERE e.token_address=v.address AND e.block_number>COALESCE(l.block_number,0) AND e.kind IN('graduated','pool')) THEN 0
-      WHEN EXISTS(SELECT 1 FROM active_watch_entries w WHERE w.kind='token' AND w.address=v.address) THEN 1
-      WHEN l.checked_at IS NULL AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND timestamp>now()-interval '5 minutes' AND block_number IS NOT NULL) THEN 2
-      WHEN l.stage='near_graduation' THEN 3
-      WHEN l.stage='bonding' AND EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND timestamp>now()-interval '24 hours' AND block_number IS NOT NULL) THEN 4
-      WHEN EXISTS(SELECT 1 FROM trades WHERE token_address=v.address AND timestamp>now()-interval '24 hours' AND block_number IS NOT NULL) THEN 5 ELSE 6 END,
-      l.checked_at ASC NULLS FIRST,(SELECT MAX(timestamp) FROM trades WHERE token_address=v.address AND block_number IS NOT NULL) DESC LIMIT 8`);
-  for (const previous of candidates.rows) {
-    const token = previous.address;
-    const state = await lookupLaunch(token, height);
-    const client = await pool.connect();
-    try {
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock_shared(782319)');
-    const canonical = await client.query('SELECT 1 FROM processed_blocks WHERE block_number=$1 AND lower(block_hash)=lower($2)', [height, block.hash]);
-    if (!canonical.rowCount) { await client.query('ROLLBACK'); continue; }
-    const events = await client.query('SELECT * FROM launch_events WHERE token_address=$1 AND block_number<=$2 ORDER BY block_number DESC', [token, height]);
-    const created = events.rows.find(row => row.kind === 'created');
-    const graduated = events.rows.find(row => row.kind === 'graduated') ?? (state?.stage === 'graduated' ? events.rows.find(row => row.kind === 'stopped') : undefined);
-    const poolEvent = events.rows.find(row => row.kind === 'pool');
-    const migrator = events.rows.find(row => row.kind === 'migrator')?.details?.migratorType ?? previous.migrator_type ?? null;
-    const poolId = poolEvent?.details?.poolId ?? previous.pool_id ?? null;
-    let poolAddress: string | null = state?.poolAddress ?? graduated?.details?.pool ?? previous.pool_address ?? null;
-    if (state?.platform === 'flap' && poolAddress && !poolId && migrator == null) {
-      // Verify a conventional pair before using a pool-shaped field from Flap.
-      try {
-        const constituents = await Promise.all(['0x0dfe1681', '0xd21220a7'].map(data => chainRpc<string>('eth_call', [{ to: poolAddress, data }, blockHex(height)])));
-        if (!constituents.some(raw => /^0x[0-9a-f]{64}$/i.test(raw) && `0x${raw.slice(-40)}`.toLowerCase() === token)) poolAddress = null;
-      } catch { poolAddress = null; }
-    }
-    if (poolId || migrator === 2 || migrator === 3) poolAddress = null;
-    if (state?.platform === 'fourmeme' && state.stage === 'graduated' && !poolAddress) {
-      const quote = state.quoteAddress || WBNB;
-      try {
-        if (graduated?.tx_hash) {
-          const receipt = await chainRpc<{ blockHash: string; logs: ChainLog[] }>('eth_getTransactionReceipt', [graduated.tx_hash]);
-          if (receipt.blockHash.toLowerCase() === graduated.block_hash.toLowerCase()) poolAddress = migrationPair(receipt.logs, token, quote);
-        }
-        if (!poolAddress) {
-          const raw = await chainRpc<string>('eth_call', [{ to: PCS_V2_FACTORY, data: pairInterface.encodeFunctionData('getPair', [token, quote]) }, blockHex(height)]);
-          const pair = String(pairInterface.decodeFunctionResult('getPair', raw)[0]).toLowerCase();
-          if (pair !== '0x0000000000000000000000000000000000000000') poolAddress = pair;
-        }
-      } catch { /* No verified migration destination yet. */ }
-    }
-    const first = await client.query(`SELECT MIN(timestamp) AS at FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND token_address=$1 AND side='buy' AND block_number IS NOT NULL AND block_number<=$2`, [token, height]);
-    const stage = state?.stage ?? (graduated ? 'graduated' : 'unavailable');
-    const saved = await client.query(`INSERT INTO token_launches(token_address,platform,stage,progress,launched_at,first_kol_at,graduated_at,graduation_tx_hash,
-      quote_address,pool_address,pool_id,migrator_type,block_number,block_hash,checked_at)
-      SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()
-      WHERE EXISTS(SELECT 1 FROM processed_blocks WHERE block_number=$13 AND lower(block_hash)=lower($14))
-      ON CONFLICT(token_address) DO UPDATE SET platform=EXCLUDED.platform,stage=EXCLUDED.stage,progress=EXCLUDED.progress,
-      launched_at=COALESCE(EXCLUDED.launched_at,token_launches.launched_at),first_kol_at=EXCLUDED.first_kol_at,
-      graduated_at=EXCLUDED.graduated_at,graduation_tx_hash=EXCLUDED.graduation_tx_hash,
-      quote_address=EXCLUDED.quote_address,pool_address=EXCLUDED.pool_address,pool_id=EXCLUDED.pool_id,migrator_type=EXCLUDED.migrator_type,
-      block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,checked_at=now() RETURNING token_address`,
-    [token, state?.platform ?? previous.platform ?? graduated?.platform ?? created?.platform ?? null, stage, state?.progress ?? null, state?.launchedAt ?? created?.details?.launchedAt ?? created?.timestamp ?? previous.launched_at ?? null,
-      first.rows[0]?.at ?? null, graduated?.timestamp ?? previous.graduated_at ?? null, graduated?.tx_hash ?? previous.graduation_tx_hash ?? null,
-      state?.quoteAddress ?? null, poolAddress, poolId, migrator, height, block.hash]);
-    if (!saved.rowCount) { await client.query('ROLLBACK'); continue; }
-    const transition = launchTransition(previous.stage ?? null, stage);
-    if (transition) {
-      const participants = await client.query(`SELECT DISTINCT wallet_address FROM trades t JOIN kols k ON k.address=t.wallet_address WHERE k.is_tracked AND token_address=$1 AND block_number IS NOT NULL AND block_number<=$2`, [token, height]);
-      const milestone = transition === 'graduated' ? graduated : null;
-      const timestamp = milestone?.timestamp ? new Date(milestone.timestamp).toISOString() : new Date(Number(BigInt(block.timestamp)) * 1000).toISOString();
-      const sourceHeight = milestone?.block_number ?? height;
-      const sourceHash = milestone?.block_hash ?? block.hash;
-      const live = Boolean(previous.checked_at && Date.now() - new Date(previous.checked_at).getTime() <= 300_000 && Date.now() - Date.parse(timestamp) <= 300_000);
-      const source: SignalEvidence = { id: `${token}:${sourceHeight}`, txHash: milestone?.tx_hash ?? '', walletAddress: '', kolName: null, side: 'state', timestamp, blockNumber: String(sourceHeight), blockHash: sourceHash };
-      await client.query(`INSERT INTO radar_signals(id,kind,entity,token_address,wallet_addresses,evidence,window_minutes,min_buyers,timestamp,source_block,source_hash,live)
-        SELECT $1,$2,$3,$3,$4,$5::jsonb,0,0,$6,$7,$8,$9 WHERE EXISTS(SELECT 1 FROM processed_blocks WHERE block_number=$10 AND lower(block_hash)=lower($11))
-        AND NOT EXISTS(SELECT 1 FROM radar_signals WHERE entity=$3 AND kind=$2 AND NOT corrected AND timestamp>$6::timestamptz-interval '10 minutes' AND timestamp<=$6)
-        ON CONFLICT(id) DO NOTHING`,
-      [signalId(transition, token, `${sourceHeight}:${sourceHash}`, 'launch'), transition, token, participants.rows.map(row => row.wallet_address), JSON.stringify([source]), timestamp, sourceHeight, sourceHash, live, height, block.hash]);
-    }
-    // Pool-state liquidity requires authenticated reserves and independent USD
-    // valuation. Keep the original observation date while that node decoder is
-    // unavailable; a fresh check must not turn a saved provider value into a
-    // supposedly current on-chain result.
-    if (stage === 'graduated') await client.query(`UPDATE token_launches SET liquidity_reason='node_liquidity_unavailable'
-      WHERE token_address=$1 AND block_number=$2 AND block_hash=$3`, [token, height, block.hash]);
-    await client.query('COMMIT');
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
-  }
-  if (candidates.rows.length) { await setState('launches', { checkedAt: new Date().toISOString(), checked: candidates.rows.length }); await notifyUpdate(); }
-}
-
 export async function intelligenceLoop() {
-  await Promise.all(([['radar', collectSignals], ['positions', collectPositions], ['launches', collectLaunches],
+  await Promise.all(([['radar', collectSignals], ['positions', collectPositions],
     ['position_retention', () => prunePositionSnapshots(pool)]] as const).map(async ([name, collect]) => {
     for (;;) {
       try { await collect(); }

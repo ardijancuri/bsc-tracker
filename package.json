@@ -8,7 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/index.ts",
     "dev:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/worker.ts",
-    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/compressTokenImages.ts server/importSavedTokenCharts.ts server/databaseMaintenance.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "import:charts": "node --env-file-if-exists=.env --import tsx server/importSavedTokenCharts.ts",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",
@@ -23,7 +23,15 @@
     "test:integration:creator-public": "tsx server/creatorPublic.integration.ts",
     "test:integration:journal": "tsx server/journal.integration.ts",
     "test:integration:node-owned": "node --env-file-if-exists=.env scripts/test-node-owned.mjs",
-    "db:maintenance": "node --env-file-if-exists=.env --import tsx server/databaseMaintenance.ts"
+    "db:maintenance": "node --env-file-if-exists=.env --import tsx server/databaseMaintenance.ts",
+    "fresh:init": "node --env-file-if-exists=.env --import tsx server/freshInit.ts",
+    "fresh:storage": "node --env-file-if-exists=.env --import tsx server/freshStorage.ts",
+    "test:fresh": "vitest run server/fresh",
+    "test:fresh:accounting": "node --env-file=.env --import tsx server/fresh/accounting.integration.ts",
+    "test:fresh:portfolio": "node --env-file=.env --import tsx server/fresh/portfolio.integration.ts",
+    "test:fresh:integration": "node scripts/fresh/test-integrations.mjs",
+    "fresh:trial": "node --env-file=.env --import tsx server/freshTrial.ts",
+    "fresh:trial:review": "node --env-file=.env --import tsx server/freshTrialReview.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

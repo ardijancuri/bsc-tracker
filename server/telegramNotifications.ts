@@ -5,6 +5,7 @@ import { kolProfileTokenSql } from './kolProfileToken.js';
 import { createTelegramBot, telegramBotConfig, type TelegramBotConfig } from './telegramBot.js';
 import { formatTelegramTradeMessage, formatActivationMessage, formatCorrectionMessage, type TelegramFormattedMessage, type TelegramMessageTrade } from './telegramNotificationMessage.js';
 import type { TelegramNotificationState } from '../shared/telegramNotifications.js';
+import {freshNotificationProductionPolicy,readFreshNotificationActivation} from './fresh/notificationActivation.js';
 
 export const telegramTradeMaxAgeMs = 300_000;
 type Language = 'en' | 'zh-CN';
@@ -18,16 +19,21 @@ export class TelegramNotificationInputError extends Error {
 }
 export type TelegramNotificationPatch = { enabled?: boolean; buys?: boolean; sells?: boolean; language?: Language };
 export type TelegramNotificationUpdate = { updateId: string; telegramId: string; command: 'stop' | 'start' | 'status' | null; blocked?: boolean };
-type Options = { db?: Pool; now?: () => number; config?: TelegramBotConfig | null; bot?: Pick<ReturnType<typeof createTelegramBot>, 'verifyIdentity' | 'send' | 'edit'> | null };
+type Options = { db?: Pool; now?: () => number; config?: TelegramBotConfig | null; stateTable?: 'worker_state' | 'fresh.checkpoints'; productionActivation?:{enabled:boolean}; bot?: Pick<ReturnType<typeof createTelegramBot>, 'verifyIdentity' | 'send' | 'edit'> | null };
 const date = (milliseconds: number) => new Date(milliseconds).toISOString();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /** One durable event/outbox flow. It never requests accounting, market data or GMGN. */
 export function createTelegramNotifications(options: Options = {}) {
   const db = options.db ?? pool, now = options.now ?? Date.now;
+  const stateTable = options.stateTable === 'fresh.checkpoints' ? 'fresh.checkpoints' : 'worker_state';
+  const confirmedCutoff = stateTable === 'fresh.checkpoints'
+    ? "COALESCE((SELECT block_number FROM fresh.checkpoints WHERE key='capture'),0)"
+    : "COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)";
   const config = options.config === undefined ? telegramBotConfig() : options.config;
   const bot = options.bot === undefined ? (config ? createTelegramBot(config) : null) : options.bot;
-  const available = () => !!config && !!bot;
+  const activationPolicy=options.productionActivation??freshNotificationProductionPolicy(stateTable,process.env.NODE_ENV,process.env.FRESH_TELEGRAM_ACTIVE);
+  const available = () => !!config && !!bot && activationPolicy?.enabled!==false;
   async function transaction<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await db.connect();
     try {
@@ -131,6 +137,8 @@ export function createTelegramNotifications(options: Options = {}) {
   async function collect() {
     if (!available()) return { events: 0, recipients: 0 };
     return transaction(async client => {
+      const activation=activationPolicy?await readFreshNotificationActivation(client,now()):null;
+      if(activationPolicy&&!activation)return{events:0,recipients:0};
       const cutoff = date(now() - telegramTradeMaxAgeMs);
       // Expired work stays silent, including the initial migration of previously live rows.
       await client.query(`WITH old AS (SELECT id FROM trades WHERE observed_live AND NOT telegram_notification_processed
@@ -142,27 +150,32 @@ export function createTelegramNotifications(options: Options = {}) {
         FROM trades t JOIN published_kols k ON k.address=t.wallet_address JOIN tokens v ON v.address=t.token_address
         WHERE t.observed_live AND NOT t.telegram_notification_processed AND t.timestamp>=$1 AND t.timestamp<=$2
         AND t.block_number IS NOT NULL AND t.block_hash IS NOT NULL
-        AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
-        ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id LIMIT 50 FOR SHARE OF t`, [cutoff, date(now())]);
+        AND ($3::bigint IS NULL OR t.block_number>$3::bigint)
+        AND t.block_number<=${confirmedCutoff}
+        ORDER BY t.block_number,t.transaction_index NULLS FIRST,t.id LIMIT 50 FOR SHARE OF t`, [cutoff, date(now()),activation?.alertStartBlock??null]);
       let recipients = 0;
       for (const row of pending.rows) {
         if (!row.eligible || !['buy', 'sell'].includes(row.side)) continue;
         const payload: TelegramMessageTrade = { id: row.id, txHash: row.txHash, walletAddress: row.walletAddress, tokenAddress: row.tokenAddress,
           kolName: row.kolName, tokenSymbol: row.tokenSymbol, side: row.side, tokenAmount: row.tokenAmount,
           quoteAmount: row.quoteAmount, quoteSymbol: row.quoteSymbol, amountUsd: row.amountUsd, timestamp: new Date(row.timestamp).toISOString() };
-        await client.query(`INSERT INTO telegram_trade_events(trade_id,block_hash,block_number,trade_timestamp,wallet_address,payload)
-          VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`, [row.id, row.blockHash, row.blockNumber, payload.timestamp, row.walletAddress, JSON.stringify(payload)]);
         const subscribers = await client.query<Settings>(`SELECT s.* FROM telegram_notification_settings s
           JOIN account_watch_entries f ON f.user_id=s.user_id AND f.kind='kol' AND f.address=$1
           LEFT JOIN telegram_kol_notification_settings m ON m.user_id=s.user_id AND m.wallet_address=f.address
           WHERE s.enabled AND s.connection='connected' AND s.chat_id IS NOT NULL AND NOT COALESCE(m.muted,false)
           AND $2::timestamptz>GREATEST(s.enabled_since,f.added_at,COALESCE(m.resumed_since,s.enabled_since))
           AND (($3='buy' AND s.buys) OR ($3='sell' AND s.sells)) ORDER BY s.user_id FOR UPDATE OF s`, [row.walletAddress, payload.timestamp, row.side]);
+        // Preserve delivery evidence only when someone can receive it. The
+        // canonical financial event already stores every unnotified trade.
+        if (!subscribers.rowCount) continue;
+        await client.query(`INSERT INTO telegram_trade_events(trade_id,block_hash,block_number,trade_timestamp,wallet_address,payload)
+          VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`, [row.id, row.blockHash, row.blockNumber, payload.timestamp, row.walletAddress, JSON.stringify(payload)]);
         for (const settings of subscribers.rows) {
           const exists = await client.query('SELECT 1 FROM telegram_notification_items WHERE user_id=$1 AND trade_id=$2 AND block_hash=$3', [settings.user_id, row.id, row.blockHash]);
           if (exists.rowCount) continue;
           const last = (await client.query<Outbox>(`SELECT * FROM telegram_notification_outbox WHERE user_id=$1 AND wallet_address=$2
-            AND generation=$3 AND kind='trades' AND status IN ('pending','leased','sent') ORDER BY created_at DESC,id DESC LIMIT 1`, [settings.user_id, row.walletAddress, settings.generation])).rows[0];
+            AND generation=$3 AND kind='trades' AND status IN ('pending','leased','sent')
+            AND ($4::timestamptz IS NULL OR created_at>=$4::timestamptz) ORDER BY created_at DESC,id DESC LIMIT 1`, [settings.user_id, row.walletAddress, settings.generation,activation?.activatedAt??null])).rows[0];
           const windowEnd = last?.window_ends_at?.getTime() ?? 0;
           let outboxId = last?.status === 'pending' && windowEnd > now() ? last.id : null;
           if (!outboxId) {
@@ -181,10 +194,13 @@ export function createTelegramNotifications(options: Options = {}) {
     });
   }
   async function eligibleItems(client: PoolClient, job: Outbox) {
+    const activation=activationPolicy?await readFreshNotificationActivation(client,now()):null;
+    if(activationPolicy&&!activation)return[];
     const result = await client.query<{ payload: TelegramMessageTrade; trade_id: string; block_hash: string; eligible: boolean }>(`SELECT e.payload || jsonb_build_object('kolName',k.display_name) AS payload,e.trade_id,e.block_hash,
       (t.id IS NOT NULL AND NOT e.orphaned AND k.is_tracked AND ${kolProfileTokenSql('v')}
         AND t.observed_live AND t.side IN ('buy','sell') AND t.side=e.payload->>'side'
-        AND t.block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)
+        AND t.block_number<=${confirmedCutoff}
+        AND ($6::bigint IS NULL OR e.block_number>$6::bigint)
         AND s.enabled AND s.connection='connected' AND s.generation=$2 AND s.chat_id=$3
         AND f.address IS NOT NULL AND NOT COALESCE(m.muted,false)
         AND e.trade_timestamp>GREATEST(s.enabled_since,f.added_at,COALESCE(m.resumed_since,s.enabled_since))
@@ -197,22 +213,26 @@ export function createTelegramNotifications(options: Options = {}) {
       LEFT JOIN account_watch_entries f ON f.user_id=s.user_id AND f.kind='kol' AND f.address=e.wallet_address
       LEFT JOIN telegram_kol_notification_settings m ON m.user_id=s.user_id AND m.wallet_address=e.wallet_address
       WHERE i.outbox_id=$1 AND NOT i.cancelled ORDER BY e.block_number,e.trade_timestamp,e.trade_id`,
-    [job.id, job.generation, job.chat_id, date(now() - telegramTradeMaxAgeMs), date(now())]);
+    [job.id, job.generation, job.chat_id, date(now() - telegramTradeMaxAgeMs), date(now()),activation?.alertStartBlock??null]);
     for (const item of result.rows) if (!item.eligible) await client.query('UPDATE telegram_notification_items SET cancelled=true WHERE user_id=$1 AND trade_id=$2 AND block_hash=$3', [job.user_id, item.trade_id, item.block_hash]);
     return result.rows.filter(item => item.eligible).map(item => item.payload);
   }
   async function claim(): Promise<Outbox | null> {
     return transaction(async client => {
+      const activation=activationPolicy?await readFreshNotificationActivation(client,now()):null;
+      if(activationPolicy&&!activation)return null;
       await client.query(`UPDATE telegram_notification_outbox SET status=CASE WHEN dispatch_started_at IS NULL THEN 'pending' ELSE 'uncertain' END,
         last_error=CASE WHEN dispatch_started_at IS NULL THEN 'lease_expired' ELSE 'delivery_unconfirmed' END,lease_id=NULL,lease_until=NULL
-        WHERE status='leased' AND lease_until<$1`, [date(now())]);
+        WHERE status='leased' AND lease_until<$1 AND ($2::timestamptz IS NULL OR created_at>=$2::timestamptz)`, [date(now()),activation?.activatedAt??null]);
       await client.query(`UPDATE telegram_notification_settings s SET connection='error',enabled=false,last_error='delivery_unconfirmed'
         WHERE s.connection='pending' AND EXISTS(SELECT 1 FROM telegram_notification_outbox o WHERE o.user_id=s.user_id
         AND o.generation=s.generation AND o.kind='activation' AND o.status='uncertain')`);
       const candidates = await client.query<Outbox>(`SELECT * FROM telegram_notification_outbox o WHERE status='pending' AND due_at<=$1
+        AND ($2::timestamptz IS NULL OR o.created_at>=$2::timestamptz)
         AND NOT EXISTS(SELECT 1 FROM telegram_notification_outbox x WHERE x.chat_id=o.chat_id
+          AND ($2::timestamptz IS NULL OR x.created_at>=$2::timestamptz)
           AND (x.status='leased' OR (x.status='cancelled' AND x.lease_until>$1)))
-        ORDER BY due_at,created_at,id LIMIT 20 FOR UPDATE SKIP LOCKED`, [date(now())]);
+        ORDER BY due_at,created_at,id LIMIT 20 FOR UPDATE SKIP LOCKED`, [date(now()),activation?.activatedAt??null]);
       for (const job of candidates.rows) {
         const settings = (await client.query<Settings>('SELECT * FROM telegram_notification_settings WHERE user_id=$1 FOR UPDATE', [job.user_id])).rows[0];
         let invalid = !settings || settings.chat_id !== job.chat_id;
@@ -238,6 +258,8 @@ export function createTelegramNotifications(options: Options = {}) {
   }
   async function deliverOne() {
     if (!available()) return false;
+    // No bot identity/send call is made by an unsealed preview deployment.
+    if(activationPolicy&&!await readFreshNotificationActivation(db,now()))return false;
     if (!await bot!.verifyIdentity()) {
       await db.query(`UPDATE telegram_notification_settings SET connection='error',enabled=false,last_error='bot_identity_unavailable' WHERE connection='pending'`);
       return false;
@@ -247,6 +269,12 @@ export function createTelegramNotifications(options: Options = {}) {
     const prepared = await transaction(async client => {
       const current = (await client.query<Outbox>('SELECT * FROM telegram_notification_outbox WHERE id=$1 AND lease_id=$2 AND status=\'leased\' FOR UPDATE', [job.id, job.lease_id])).rows[0];
       if (!current) return null;
+      // A reorg may invalidate the handoff after claim. Every message kind,
+      // including connection/status/correction jobs, must pass this last gate.
+      if(activationPolicy&&!await readFreshNotificationActivation(client,now())){
+        await client.query("UPDATE telegram_notification_outbox SET status='pending',lease_id=NULL,lease_until=NULL,last_error='activation_invalidated' WHERE id=$1",[job.id]);
+        return null;
+      }
       let message: TelegramFormattedMessage;
       if (job.kind === 'trades') {
         const trades = await eligibleItems(client, job);
@@ -302,7 +330,7 @@ export function createTelegramNotifications(options: Options = {}) {
     const lag = await db.query(`SELECT
       (SELECT EXTRACT(epoch FROM ($1::timestamptz-MIN(created_at)))*1000 FROM telegram_notification_outbox WHERE status='pending') AS age,
       (SELECT EXTRACT(epoch FROM ($1::timestamptz-MIN(timestamp)))*1000 FROM trades WHERE observed_live AND NOT telegram_notification_processed
-        AND timestamp>=$2 AND block_number<=COALESCE((SELECT (value->>'blockNumber')::bigint FROM worker_state WHERE key='node'),0)) AS collection_lag`,
+        AND timestamp>=$2 AND block_number<=${confirmedCutoff}) AS collection_lag`,
     [date(now()), date(now() - telegramTradeMaxAgeMs)]);
     return { configured: available(), counts: Object.fromEntries(counts.rows.map(row => [row.status, row.count])),
       oldestPendingMs: Math.max(0, Number(lag.rows[0]?.age ?? 0)), collectionLagMs: Math.max(0, Number(lag.rows[0]?.collection_lag ?? 0)) };
@@ -310,7 +338,7 @@ export function createTelegramNotifications(options: Options = {}) {
   async function run(signal?: AbortSignal) {
     if (!available()) return;
     await Promise.all([
-      (async () => { while (!signal?.aborted) { try { const counts = await collect(); await db.query(`INSERT INTO worker_state(key,value,updated_at) VALUES('telegram_notifications',$1::jsonb,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({ ...counts, ...await health(), at: date(now()) })]); }
+      (async () => { while (!signal?.aborted) { try { const counts = await collect(); await db.query(`INSERT INTO ${stateTable}(key,value,updated_at) VALUES('telegram_notifications',$1::jsonb,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, [JSON.stringify({ ...counts, ...await health(), at: date(now()) })]); }
         catch { console.warn(JSON.stringify({ event: 'telegram_collection_failed' })); } await sleep(1000); } })(),
       (async () => { while (!signal?.aborted) { try { const dispatched = await deliverOne(); await sleep(dispatched ? 40 : 500); }
         catch { console.warn(JSON.stringify({ event: 'telegram_delivery_failed' })); await sleep(1000); } } })(),

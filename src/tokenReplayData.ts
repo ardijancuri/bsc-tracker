@@ -93,7 +93,7 @@ export async function loadTokenReplay(token: Token, period: WatchPeriod, signal:
     const timer = setTimeout(abort, Math.min(12_000, Math.max(1, deadline - now())));
     let problem = new TokenReplayPreparationError('Token market history is still loading. Retry shortly.', 1500);
     try {
-      const response = await fetcher(`/api/tokens/${encodeURIComponent(token.address.toLowerCase())}/chart?period=${period}&priority=chart`,
+      const response = await fetcher(`/api/tokens/${encodeURIComponent(token.address.toLowerCase())}/chart?period=${period}&priority=chart&workload=replay`,
         { signal: controller.signal, cache: 'no-store' });
       const retry = response.headers.get('Retry-After'), seconds = retry ? Number(retry) : NaN;
       const retryMs = Number.isFinite(seconds) ? seconds * 1000 : retry ? Date.parse(retry) - now() : 0;

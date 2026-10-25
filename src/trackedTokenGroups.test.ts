@@ -16,6 +16,23 @@ describe('tracked token visibility while node valuations are pending', () => {
     expect(grouped.low).toEqual(tokens.slice(0, 2)); expect(grouped.mid).toEqual(tokens.slice(2, 4)); expect(grouped.high).toEqual(tokens.slice(4));
     expect(groupTrackedTokens([{ marketCapUsd: '125000' }]).unpriced).toEqual([]);
   });
+  it('omits tokens without liquidity instead of placing them under pending valuations', () => {
+    const noLiquidity = { address: 'bi', marketCapUsd: null, valuationStatus: 'no_liquidity', recentTrades: [{ id: 'sell' }] };
+    const pending = { address: 'pending', marketCapUsd: null, valuationStatus: 'pending' };
+    const unknown = { address: 'unknown', marketCapUsd: null };
+    const grouped = groupTrackedTokens([noLiquidity, pending, unknown]);
+    expect(Object.keys(grouped)).toEqual(['low', 'mid', 'high', 'unpriced']);
+    expect(grouped.unpriced).toEqual([pending, unknown]);
+    expect(grouped.low).toEqual([]);
+  });
+  it('does not display a retained old cap when liquidity is absent, and restores its bucket after a fresh valuation', () => {
+    const retained = { marketCapUsd: '125000', valuationStatus: 'no_liquidity' };
+    expect(Object.values(groupTrackedTokens([retained])).flat()).toEqual([]);
+    expect(groupTrackedTokens([retained]).mid).toEqual([]);
+    const refreshed = { ...retained, valuationStatus: 'ready' };
+    expect(groupTrackedTokens([refreshed]).mid).toEqual([refreshed]);
+    expect(groupTrackedTokens([refreshed]).unpriced).toEqual([]);
+  });
   it('explains unavailable valuation in English and Chinese', () => {
     expect(translate('Awaiting valuation', 'en')).toBe('Awaiting valuation');
     expect(translate('Awaiting valuation', 'zh-CN')).toBe('等待估值');

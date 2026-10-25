@@ -39,6 +39,8 @@ export type ReplayAccounting = Omit<TradeReplayAccounting, 'events' | 'final' | 
 
 export interface TradeReplayData {
   accountingSnapshot?: NodeAccountingSnapshotIdentity;
+  /** Set after the server approves the signed frozen object. Export checks it again. */
+  replayLease?: { manifest: string; expiresAt: string; preparedAt: string; validatedAt: string };
   requestContext?: TradeRequestContext;
   kol: Pick<Kol, 'address' | 'name' | 'avatarUrl' | 'twitter'>;
   token: Pick<Token, 'address' | 'symbol' | 'name' | 'logoUrl'> & { priceUsd: number | null; marketCapUsd: number | null };
@@ -80,11 +82,19 @@ export function unavailableReplayAccounting(data: { kol: { address: string }; to
     events: [], final: null, coverage: { transactionsComplete: false, balanceMatched: false, exactFinal: false, reason } };
 }
 
-export function replayAccountingIsFresh(data: Pick<TradeReplayData, 'replayAccounting'>, now = Date.now()) {
+function replayLeaseTime(data: Pick<TradeReplayData, 'replayLease'>, now: number): number | null {
+  const lease = data.replayLease;
+  if (!lease) return null;
+  const expires = Date.parse(lease.expiresAt), prepared = Date.parse(lease.preparedAt), validated = Date.parse(lease.validatedAt);
+  return lease.manifest && Number.isFinite(expires) && expires > now && expires - validated <= 15 * 60_000 + 1000
+    && Number.isFinite(prepared) && Number.isFinite(validated) && prepared <= validated + 1000 && validated <= now + 1000 ? prepared : null;
+}
+export function replayAccountingIsFresh(data: Pick<TradeReplayData, 'replayAccounting' | 'replayLease'>, now = Date.now()) {
+  const approval = replayLeaseTime(data, now); now = approval ?? now;
   const accounting = data.replayAccounting, time = Date.parse(accounting?.checkedAt ?? '');
   return Boolean(accounting && ['ready', 'estimated'].includes(accounting.status)
     && accounting.coverage.transactionsComplete && accounting.coverage.balanceMatched
-    && Number.isFinite(time) && time <= now + serverClockSkewMs && now - time <= 180_000);
+    && Number.isFinite(time) && time <= now + serverClockSkewMs && (approval !== null || now - time <= 180_000));
 }
 
 /** Total profit does not depend on how GMGN allocates cost between disposed
@@ -233,10 +243,11 @@ export function replayEndTimestamp(data: Pick<TradeReplayData, 'trades' | 'inven
   return end;
 }
 
-export function replayInventoryIsFresh(data: Pick<TradeReplayData, 'inventory'>, now = Date.now()): boolean {
+export function replayInventoryIsFresh(data: Pick<TradeReplayData, 'inventory' | 'replayLease'>, now = Date.now()): boolean {
+  const approval = replayLeaseTime(data, now); now = approval ?? now;
   const checkedAt = Date.parse(data.inventory?.coverage.checkedAt ?? '');
   return Boolean(data.inventory && data.inventory.coverage.complete && data.inventory.coverage.reconciled
-    && Number.isFinite(checkedAt) && checkedAt <= now + serverClockSkewMs && now - checkedAt <= 180_000);
+    && Number.isFinite(checkedAt) && checkedAt <= now + serverClockSkewMs && (approval !== null || now - checkedAt <= 180_000));
 }
 
 function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[], complete: boolean, now: number): ReplayInventory | undefined {
@@ -317,6 +328,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
 }
 
 function checkedCurrentQuote(data: TradeReplayData, quote: { timestamp: string; priceUsd: number | string } | undefined, supply: number | null, now: number) {
+  now = replayLeaseTime(data, now) ?? now;
   if (!quote || !replayIsOpen(data)) return undefined;
   const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
   const lastFill = replayEndTimestamp(data);
@@ -447,7 +459,8 @@ function completedCandleRun(chart: TokenChart, firstTrade: number, lastTrade: nu
 }
 
 /** Only a fresh, independently checked balance can authorize the replay's rolling gross P&L. */
-export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenChart | null, position?: Position | null, now = Date.now(), context?: TradeRequestContext): TradeReplayData | null {
+export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenChart | null, position?: Position | null, now = Date.now(), context?: TradeRequestContext,
+  approval?: TradeReplayData['replayLease']): TradeReplayData | null {
   const { kol, token } = activity;
   if (!kol || !token) return null;
   const selectedChart = chart?.address.toLowerCase() === token.address.toLowerCase() ? chart : null;
@@ -474,7 +487,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   const history = prepareNodeReplay(activity, now, context) ?? (activity.accountingSnapshot ? undefined : prepareJournalReplay(activity, now, context) ?? prepareGmgnReplayHistory(activity, complete, now));
   const inventory = history?.inventory ?? prepareReplayInventory(activity, trades, complete, now);
   const replayAccounting = history?.accounting ?? prepareReplayAccounting(activity, trades, inventory, now);
-  const inventoryTrusted = replayInventoryIsFresh({ inventory }, now);
+  const inventoryTrusted = replayInventoryIsFresh({ inventory, replayLease: approval }, now);
   const validPosition = position?.walletAddress.toLowerCase() === kol.address.toLowerCase()
     && position?.tokenAddress.toLowerCase() === token.address.toLowerCase() && position?.status !== 'Unknown';
   const checkedAt = validPosition && position?.checkedAt ? Date.parse(position.checkedAt) : NaN;
@@ -540,6 +553,7 @@ export function prepareTradeReplayData(activity: ReplayActivity, chart: TokenCha
   }
   const chartSource = points.length ? (selectedChart?.source === 'recorded' ? 'Recorded observations' : 'Historical market samples') : 'Recorded fills';
   const prepared: TradeReplayData = {
+    ...(approval ? { replayLease: approval } : {}),
     ...(activity.accountingSnapshot ? { accountingSnapshot: activity.accountingSnapshot } : {}),
     ...(context ? { requestContext: context } : {}),
     kol, token: { ...token, priceUsd: replayNumber(token.priceUsd), marketCapUsd: replayNumber(token.marketCapUsd) }, trades,

@@ -118,6 +118,8 @@ describe('automatic replay preparation continuation', () => {
 describe('complete replay export gate', () => {
   it.each([
     ['preparation_pending','longer than usual'],
+    ['preparation_timeout','timed out'],
+    ['preparation_capacity','memory limit'],
     ['accounting_pending','transactions are still being processed'],['accounting_mismatch','confirmed wallet balance'],
     ['unknown_costs','wallet-paid fees are unavailable'],['chart_coverage','full replay window'],['chart_unavailable','No further history'],
     ['stale_quote','confirmed market price is unavailable'],['provider_cooldown','historical import'],

@@ -19,6 +19,10 @@ export interface NodeAccountingSnapshotIdentity {
   lifetimeReason?: 'historical_baseline_required';
 }
 export interface NodeAccountingSummary {
+  tracking?: { version: 1; source: 'fresh'; fromBlock: string; utcDay: string };
+  walletAddress?: string;
+  realizedStatus?: 'ready' | 'pending' | 'unavailable';
+  quotedAt?: string | null;
   tokenAddress: string; snapshot: NodeAccountingSnapshotIdentity | null;
   status: 'ready' | 'pending' | 'unavailable'; position: 'open' | 'closed' | 'unknown';
   realizedProfitUsd: string | null; estimatedProfitUsd: string | null; roi: string | null;

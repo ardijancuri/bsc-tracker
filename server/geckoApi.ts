@@ -5,16 +5,10 @@ type Query = (sql: string, values: unknown[]) => Promise<{ rows: { delay: number
 // headroom instead of repeatedly putting the whole IP into a 429 cooldown.
 const spacingMs = 6500;
 const budgetKey = 'gecko_api_budget';
-export type GeckoPriority = 'chart' | 'prefetch' | 'sparkline' | 'metadata';
-export const marketPriorityRank: Record<GeckoPriority, number> = { chart: 0, prefetch: 1, sparkline: 2, metadata: 3 };
+export { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './providerPriority.js';
+import { MarketProviderDeferred, marketPriorityRank, type GeckoPriority } from './providerPriority.js';
 type Priority = GeckoPriority | (() => GeckoPriority);
 const priorityOf = (priority: Priority) => typeof priority === 'function' ? priority() : priority;
-
-export class MarketProviderDeferred extends Error {
-  constructor(public readonly reason: 'busy' | 'rate_limited', public readonly retryAfterMs: number) {
-    super(reason === 'rate_limited' ? 'Market provider cooling down' : 'Market provider busy; retry shortly');
-  }
-}
 
 // Reserve only the request being dispatched, not slots for an entire watchlist.
 // A selected candle chart goes ahead of waiting sparklines between upstream calls.

@@ -49,15 +49,6 @@ export async function ensureIntelligenceSchema(pool: Pool) {
     );
     CREATE INDEX IF NOT EXISTS position_snapshots_latest_idx ON position_snapshots(wallet_address,token_address,block_number DESC);
     ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS block_timestamp timestamptz;
-    CREATE TABLE IF NOT EXISTS token_launches (
-      token_address text PRIMARY KEY REFERENCES tokens(address), platform text, stage text NOT NULL DEFAULT 'unavailable',
-      progress numeric, launched_at timestamptz, first_kol_at timestamptz,
-      graduated_at timestamptz, graduation_tx_hash text, quote_address text,
-      pool_address text, pool_id text, migrator_type integer,
-      block_number bigint, block_hash text, checked_at timestamptz,
-      liquidity_usd numeric, liquidity_baseline_usd numeric, liquidity_baseline_at timestamptz, liquidity_at timestamptz
-    );
-    ALTER TABLE token_launches ADD COLUMN IF NOT EXISTS liquidity_reason text;
     CREATE TABLE IF NOT EXISTS launch_events (
       id text PRIMARY KEY, token_address text NOT NULL REFERENCES tokens(address), platform text NOT NULL,
       kind text NOT NULL, block_number bigint NOT NULL, block_hash text NOT NULL,

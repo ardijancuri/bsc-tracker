@@ -1,12 +1,15 @@
+import type{FreshAcquisitionCost}from'./freshAccounting.js';
 import type { TradeReplayAccounting } from './tradeReplayAccounting.js';
 import type { NodeAccountingSnapshotIdentity } from './nodeAccounting.js';
 
 /** One KOL's indexed activity for one exact token contract, without a 24h cutoff. */
 export interface KolTokenActivity {
+  /** Fresh ledger service decides accounting eligibility; clients validate identity and freshness. */
+  tracking?: { version: 1; source: 'fresh'; fromBlock: string; utcDay: string; realizedComplete?: boolean };
   kol: { address: string; name: string | null; avatarUrl: string | null; twitter: string | null; source: string; lastSeenAt: string | null };
   token: {
     address: string; symbol: string | null; name: string | null; logoUrl: string | null;
-    priceUsd: string | null; marketCapUsd: string | null; marketCapSupply: string | null;
+    priceUsd: string | null; marketCapUsd: string | null; marketCapSupply: string | null; valuationStatus?: string;
   };
   trades: KolTokenTrade[];
   summary: KolTokenTradeSummary;
@@ -93,7 +96,7 @@ export interface KolTokenProfitPosition {
 /** Accounting snapshots include transfers without representing them as swaps. */
 export interface InventoryEvent {
   id: string;
-  kind: 'buy' | 'sell' | 'transfer_in' | 'transfer_out';
+  kind: 'buy' | 'sell' | 'transfer_in' | 'transfer_out' | 'fee';
   tradeId?: string;
   txHash: string;
   timestamp: string;
@@ -150,6 +153,9 @@ export interface KolTokenTrade {
   tokenSymbol: string | null; tokenName: string | null; tokenLogoUrl: string | null;
   side: 'buy' | 'sell' | 'swap' | 'unknown'; tokenAmount: string | null;
   quoteSymbol: string | null; quoteTokenAddress?: string | null; quoteAmount: string | null; amountUsd: string | null;
+  /** BNB equivalent from the stored historical node rate; original quote stays intact. */
+  bnbEquivalentAmount?: string | null;
+  acquisitionCost?:FreshAcquisitionCost;
   priceUsd: string | null; marketCapUsd: string | null; timestamp: string;
   source: string; blockNumber: string | null; transactionIndex: number | null;
   valuationStatus: 'valued' | 'unpriced' | 'shared_quote' | 'invalid_quantity';

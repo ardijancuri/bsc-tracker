@@ -7,9 +7,9 @@ import { ensureSchema, pool, setState } from './db.js';
 import { ensureSeeds } from './seeds.js';
 import { ensureIntelligenceSchema } from './intelligenceSchema.js';
 import { registerIntelligenceRoutes } from './intelligenceApi.js';
-import { collectLaunches, collectPositions, collectSignals, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
+import { collectPositions, collectSignals, recordLaunchRange, recordWalletTransfers, rollbackIntelligence } from './intelligenceWorker.js';
 import { hashSecret } from './intelligenceApi.js';
-import { flapInterface, fourInterface, FLAP_PORTAL, FOUR_HELPER, FOUR_MANAGERS, pairInterface } from './launchpad.js';
+import { flapInterface, FLAP_PORTAL, pairInterface } from './launchpad.js';
 import { transferTopic } from './swap.js';
 import { getTokenTranslation } from './tokenTranslation.js';
 import { isStockToken, nonStockTokenSql } from './stockToken.js';
@@ -22,7 +22,7 @@ process.env.PUBLIC_APP_URL = 'https://kollens.com';
 const token = `0x${'1'.repeat(40)}`, flapToken = `0x${'2'.repeat(40)}`, unsupported = `0x${'3'.repeat(40)}`, pair = `0x${'4'.repeat(40)}`;
 const poolId = `0x${'5'.repeat(64)}`, outsider = `0x${'6'.repeat(40)}`, unit = 10n ** 36n;
 const hash = (height: number) => `0x${height.toString(16).padStart(64, '0')}`;
-let height = 108, curve = 40, fourGraduated = false, balanceFails = false, staleBlock = false, liquidity = 1000;
+let height = 108, balanceFails = false, staleBlock = false;
 const balances = new Map<string, bigint>();
 let translationCalls = 0;
 let externalFinancialCalls=0;
@@ -57,12 +57,6 @@ const rpc = createServer(async (request, response) => {
       if (data.startsWith('0x70a08231')) {
         if (balanceFails && to === token) throw new Error('RPC check failed');
         result = `0x${(balances.get(`${key}:${to}`) || 0n).toString(16).padStart(64, '0')}`;
-      } else if (to === FOUR_HELPER) result = fourInterface.encodeFunctionResult('getTokenInfo', [key === token ? 2 : 0, key === token ? FOUR_MANAGERS[1] : ZeroAddress, ZeroAddress, 0, 0, 0, 1725000000, 0, 0, curve, 100, fourGraduated && key === token]);
-      else if (to === FLAP_PORTAL) {
-        const method = data.slice(0, 10) === flapInterface.getFunction('getTokenV8Safe')!.selector ? 'getTokenV8Safe' : 'getTokenV7';
-        const values: unknown[] = [key === flapToken ? 4 : 0, 0, 0, 0, 4, 0, 0, 0, 100, ZeroAddress, false, `0x${'0'.repeat(64)}`, 0];
-        if (method === 'getTokenV8Safe') values.push(0);
-        values.push(pair, 10n ** 18n, 0, 0); result = flapInterface.encodeFunctionResult(method, [values]);
       } else result = pairInterface.encodeFunctionResult('getPair', [ZeroAddress]);
     } else throw new Error('Unexpected RPC');
     response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ jsonrpc: '2.0', id: query.id, result }));
@@ -256,35 +250,18 @@ try {
   balanceFails = true; await pool.query(`UPDATE position_snapshots SET checked_at=now()-interval '61 seconds'`); await node(114); await collectPositions(); assert.equal((await position()).status, 'Unknown'); assert.equal((await position()).balance, null); balanceFails = false;
   await pool.query(`UPDATE position_snapshots SET error=false,status='Holding',checked_at=now()-interval '6 minutes' WHERE block_number=114`); assert.equal((await position()).status, 'Unknown');
   staleBlock = true; const snapshotCount = (await pool.query('SELECT COUNT(*) AS count FROM position_snapshots')).rows[0].count; await collectPositions(); assert.equal((await pool.query('SELECT COUNT(*) AS count FROM position_snapshots')).rows[0].count, snapshotCount); staleBlock = false;
-  await recordLaunchRange(110, 114, Array.from({ length: 5 }, (_, i) => block(110 + i))); await collectLaunches();
-  const launch = async (address: string) => (await app.inject(`/api/tokens/${address}/launch`)).json().launch;
-  assert.equal((await launch(token)).stage, 'bonding'); assert.equal((await launch(flapToken)).stage, 'graduated'); assert.equal((await launch(flapToken)).poolId, poolId); assert.equal((await launch(flapToken)).poolAddress, null); assert.equal((await launch(flapToken)).launchedAt, null);
-  assert.equal((await launch(unsupported)).stage, 'unavailable'); assert.equal((await pool.query(`SELECT * FROM radar_signals WHERE kind='graduated'`)).rowCount, 0);
-  const baseline = (await launch(flapToken)).liquidityBaselineAt; assert.equal((await launch(flapToken)).liquidityUsd,null);
-  assert.equal((await launch(flapToken)).liquidityReason,'node_liquidity_unavailable','Unsupported reserve valuation stays explicit instead of using a financial provider');
-  // A cold historical catalog must not starve an active, unfollowed bonding curve.
-  const followers = (await pool.query(`DELETE FROM watch_entries WHERE kind='token' AND address=$1 RETURNING session_id`, [token])).rows;
-  const coldTokens: string[] = [];
-  for (let index = 0; index < 9; index++) {
-    const address = `0x${(4000 + index).toString(16).padStart(40, '0')}`; coldTokens.push(address);
-    await pool.query(`INSERT INTO tokens(address,symbol,decimals) VALUES($1,'COLD',18)`, [address]);
-    await insertTrade(4000 + index, wallets[0], 'buy', 101, 60, false, address);
+  // Protocol migration logs remain canonical evidence for accounting and market
+  // authentication even though the public Launches feature has been removed.
+  await recordLaunchRange(110, 114, Array.from({ length: 5 }, (_, i) => block(110 + i)));
+  const launchEvidence = (await pool.query('SELECT kind,details FROM launch_events WHERE token_address=$1 ORDER BY id', [flapToken])).rows;
+  assert.deepEqual(launchEvidence.map(row => row.kind).sort(), ['graduated', 'migrator', 'pool']);
+  assert.equal(launchEvidence.find(row => row.kind === 'pool')?.details.poolId, poolId);
+  for (const url of ['/api/launches', '/api/launches?limit=1&platform=flap', `/api/tokens/${token}/launch`]) {
+    assert.equal((await app.inject(url)).statusCode, 404, 'Retired Launches routes must not be registered');
   }
-  await pool.query(`UPDATE token_launches SET checked_at=now()-interval '61 seconds',liquidity_at=now()-interval '121 seconds'`); liquidity = 1500; curve = 90; await node(115); await collectLaunches();
-  assert.equal((await launch(token)).stage, 'near_graduation'); assert.equal((await launch(flapToken)).liquidityBaselineAt, baseline); assert.equal((await launch(flapToken)).liquidityBaselineUsd,null); assert.equal((await launch(flapToken)).liquidityUsd,null);
-  for (const follower of followers) await pool.query(`INSERT INTO watch_entries(session_id,kind,address) VALUES($1,'token',$2)`, [follower.session_id, token]);
-  await pool.query('DELETE FROM trades WHERE token_address=ANY($1::text[])', [coldTokens]);
-  await pool.query('DELETE FROM token_launches WHERE token_address=ANY($1::text[])', [coldTokens]);
-  await pool.query('DELETE FROM tokens WHERE address=ANY($1::text[])', [coldTokens]);
-  assert.equal((await pool.query(`SELECT * FROM radar_signals WHERE kind='near_graduation'`)).rowCount, 1);
-  await pool.query(`UPDATE token_launches SET checked_at=now()-interval '61 seconds'`); await collectLaunches(); assert.equal((await pool.query(`SELECT * FROM radar_signals WHERE kind='near_graduation'`)).rowCount, 1);
-  fourGraduated = true; await node(116); await pool.query(`UPDATE token_launches SET checked_at=now()-interval '61 seconds'`); await collectLaunches(); assert.equal((await launch(token)).stage, 'graduated'); assert.equal((await launch(token)).graduatedAt, null);
-  const launches = (await app.inject('/api/launches?limit=1')).json(); assert.equal(launches.items.length, 1); assert.ok(launches.nextCursor);
-  assert.notEqual((await app.inject(`/api/launches?limit=1&cursor=${launches.nextCursor}`)).json().items[0].tokenAddress, launches.items[0].tokenAddress);
   const client = await pool.connect(); try { await client.query('BEGIN'); await rollbackIntelligence(client, 110); await client.query('DELETE FROM trades WHERE block_number>=110'); await client.query('DELETE FROM processed_blocks WHERE block_number>=110'); await client.query('COMMIT'); } finally { client.release(); }
   assert.equal((await pool.query('SELECT * FROM wallet_transfers WHERE block_number>=110')).rowCount, 0); assert.equal((await pool.query('SELECT * FROM position_snapshots WHERE block_number>=110')).rowCount, 0); assert.equal((await pool.query('SELECT * FROM launch_events WHERE block_number>=110')).rowCount, 0);
   assert.ok((await pool.query('SELECT * FROM radar_signals WHERE source_block>=110')).rows.every(row => row.corrected));
-  assert.equal((await launch(token)).stage, 'unavailable');
   await app.inject({ method: 'DELETE', url: '/api/watchlist', headers: { ...headers, cookie: cookieA } }); assert.equal((await pool.query('SELECT * FROM watch_sessions WHERE id=$1', [sessionA])).rowCount, 0);
   if (process.env.INTELLIGENCE_PREVIEW_FIXTURES === '1') {
     for (let number = 110; number <= 125; number++) await pool.query('INSERT INTO processed_blocks(block_number,block_hash) VALUES($1,$2) ON CONFLICT DO NOTHING', [number, hash(number)]);
@@ -296,12 +273,10 @@ try {
       await pool.query(`INSERT INTO tokens(address,symbol,name,decimals,is_meme,price_source,price_usd,total_supply_raw,supply_checked_at) VALUES($1,$2,$2,18,true,'onchain',$3,$4,now())`, [asset, `DEMO${i + 1}`, [0.05,0.5,5][i % 3], (1000000n * 10n ** 18n).toString()]);
       await insertTrade(100 + i, wallets[0], i % 2 ? 'buy' : 'sell', 108, i, false, asset);
       await insertTrade(200 + i, wallets[i % 3], i % 2 ? 'buy' : 'sell', 108, i, false, token);
-      await pool.query(`INSERT INTO token_launches(token_address,platform,stage,progress,first_kol_at,checked_at,block_number,block_hash) VALUES($1,'fourmeme','bonding',$2,now()-$3*interval '1 minute',now(),125,$4)`, [asset, i * 4, i, hash(125)]);
     }
-    await pool.query(`UPDATE token_launches SET platform='fourmeme',stage='near_graduation',progress=94,checked_at=now(),first_kol_at=now()-interval '10 minutes',launched_at=now()-interval '1 hour' WHERE token_address=$1`, [token]);
     for (const wallet of wallets) await pool.query(`INSERT INTO position_snapshots(wallet_address,token_address,block_number,block_hash,balance_raw,status,checked_at,block_timestamp) VALUES($1,$2,125,$3,$4,'Added',now(),now())`, [wallet, token, hash(125), (125n * unit + 1n).toString()]);
     console.log(`Preview fixtures: /token/${token}, /kol/${wallets[0]}`);
   }
-  assert.equal(externalFinancialCalls,0,'Normal market, watchlist and launch processing never needs an external financial provider');
-  console.log('Intelligence integration checks passed: migrations, legacy-route isolation, signals, sessions, positions, launches and reorgs.');
+  assert.equal(externalFinancialCalls,0,'Normal market, watchlist and canonical evidence processing never needs an external financial provider');
+  console.log('Intelligence integration checks passed: migrations, legacy-route isolation, signals, sessions, positions, retired Launches routes and canonical reorgs.');
 } finally { globalThis.fetch = nativeFetch; await app.close(); await new Promise<void>(resolve => rpc.close(() => resolve())); await pool.end(); }

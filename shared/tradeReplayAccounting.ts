@@ -17,7 +17,7 @@ export interface ReplayAccountingSnapshot {
 
 export interface ReplayAccountingEvent extends ReplayAccountingSnapshot {
   id: string;
-  kind: 'buy' | 'sell' | 'transfer_in' | 'transfer_out';
+  kind: 'buy' | 'sell' | 'transfer_in' | 'transfer_out' | 'fee';
   tradeId?: string;
   txHash: string;
   timestamp: string;

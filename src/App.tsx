@@ -20,9 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
-import type { Kol, LeaderboardRow, Overview, Token, Trade } from './types';
+import type { Kol, LeaderboardResponse, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
-import { FeatureTabs, FollowButton, KolAlertButton, LaunchesView, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
+import { FeatureTabs, FollowButton, KolAlertButton, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
 import './watchlistBanner.css';
 import { TokenName, useTokenTranslation } from './TokenName';
 import { BRAND_HEADER_LOGO_SRC, BRAND_LOGO_SRC } from './brandAssets';
@@ -32,14 +32,13 @@ import { subscribeToUpdates } from './updateStream';
 import { createCoalescedRefresh } from './coalescedRefresh';
 import { groupTrackedTokens } from './trackedTokenGroups';
 import { leaderboardPresentation } from './leaderboardPresentation';
+import { nativeTradeDisplay } from './nativeTradeDisplay';
 
 type List<T> = { items: T[]; nextCursor?: string | null };
 const EMPTY_OVERVIEW: Overview = { trackedKols: 0, trades24h: 0, tokens24h: 0, latestTradeAt: null, lastTokenPriceAt: null, lastNodeBlock: null, nodeLagBlocks: null, lastNodeAt: null, bnbPriceUsd: null, bnbPriceAt: null, lastLeaderboardAt: null, leaderboardSource: 'node_fifo' };
 const gmgnTokenUrl = (address: string) => `https://gmgn.ai/bsc/token/${address}`;
 const gmgnWalletUrl = (address: string) => `https://gmgn.ai/bsc/address/${address}`;
 const isFresh = (value: string | null, limitMs: number) => Boolean(value && Date.now() - new Date(value).getTime() < limitMs);
-const skopjeTimeZone = () => new Intl.DateTimeFormat('en', { timeZone: 'Europe/Skopje', timeZoneName: 'shortOffset' })
-  .formatToParts(Date.now()).find(part => part.type === 'timeZoneName')!.value.replace('GMT', 'UTC');
 function tradeTokenAmount(value: string | null) {
   if (value == null) return '—';
   const amount = Number(value);
@@ -47,13 +46,9 @@ function tradeTokenAmount(value: string | null) {
   if (amount > 0 && amount < 0.001) return '<0.001';
   return new Intl.NumberFormat(getLocale(), { notation: amount >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 3 }).format(amount);
 }
-function tradeBnbValue(trade: Trade, bnbPriceUsd: number | null) {
-  const direct = trade.quoteAmount != null && ['BNB', 'WBNB'].includes(trade.quoteSymbol?.toUpperCase() || '') ? Number(trade.quoteAmount) : NaN;
-  const estimated = trade.amountUsd != null && bnbPriceUsd && bnbPriceUsd > 0 ? Number(trade.amountUsd) / bnbPriceUsd : NaN;
-  const amount = Number.isFinite(direct) && direct >= 0 ? direct : estimated;
-  if (!Number.isFinite(amount) || amount < 0) return '— BNB';
-  if (amount > 0 && amount < 0.001) return '<0.001 BNB';
-  return `${Number.isFinite(direct) && direct >= 0 ? '' : '≈'}${new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 3 }).format(amount)} BNB`;
+function TradeValue({trade}:{trade:Trade}) {
+  const value=nativeTradeDisplay(trade,getLocale());
+  return <span title={t(value.titleKey,{symbol:value.symbol??'',amount:value.amount??'',quoteAmount:trade.quoteAmount??'',quoteSymbol:trade.quoteSymbol??''})}>{value.kind==='pending'?t(value.text):value.text}</span>;
 }
 
 function useData<T>(url: string, initial: T, interval = 15000) {
@@ -197,13 +192,13 @@ function EmptyState({ title, detail }: { title: string; detail: string }) { retu
 function SectionTitle({ eyebrow, title, description, right }: { eyebrow: string; title: string; description?: string; right?: React.ReactNode }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1>{description && <p>{description}</p>}</div>{right}</div>; }
 function Metric({ label, value, detail }: { label: string; value: string | number; detail?: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>; }
 
-function TradeRow({ trade, bnbPriceUsd, showSide = true, linkTimeToToken = false }: { trade: Trade; bnbPriceUsd: number | null; showSide?: boolean; linkTimeToToken?: boolean }) {
+function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: Trade; showSide?: boolean; linkTimeToToken?: boolean }) {
   const sideIcon = trade.side === 'buy' ? <ArrowDownLeft size={14} /> : trade.side === 'sell' ? <ArrowUpRight size={14} /> : <ArrowLeftRight size={14} />;
   const tokenIdentity = <TokenIdentity token={{ address: trade.tokenAddress, symbol: trade.tokenSymbol, name: trade.tokenName, logoUrl: trade.tokenLogoUrl }} />;
   return <div className="trade-row">
-    <div className="trade-kol"><Link to={`/kol/${trade.walletAddress}`}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} twitter={trade.kolTwitter} subtitle={false} /></Link></div>
+    <div className="trade-kol"><Link to={`/kol/${trade.walletAddress}`} title={trade.kolName || trade.walletAddress}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} twitter={trade.kolTwitter} subtitle={false} /></Link></div>
     <div className="trade-activity">{showSide && <span className={`side-pill ${trade.side}`}>{sideIcon}{t(trade.side)}</span>}<Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={t('View token details')}>{tokenIdentity}</Link></div>
-    <div className={`trade-value ${trade.side}`} title={trade.quoteSymbol === 'BNB' || trade.quoteSymbol === 'WBNB' ? t("Recorded BNB trade amount") : t("Approximate BNB amount based on the current BNB/USD price")}><strong>{tradeBnbValue(trade, bnbPriceUsd)}</strong><span className="trade-amount">{tradeTokenAmount(trade.tokenAmount)}</span></div>
+    <div className={`trade-value ${trade.side}`}><strong><TradeValue trade={trade} /></strong><span className="trade-amount">{tradeTokenAmount(trade.tokenAmount)}</span></div>
     <div className="trade-time">{linkTimeToToken ? <Link to={`/token/${trade.tokenAddress}`} {...tokenChartIntent(trade.tokenAddress)} title={`${localDate(trade.timestamp)} · ${t('View token details')}`} aria-label={t('View {token} details, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}</Link> : <a href={gmgnTokenUrl(trade.tokenAddress)} target="_blank" rel="noopener noreferrer" title={`${localDate(trade.timestamp)} · ${t('View token activity on GMGN')}`} aria-label={t('View {token} activity on GMGN, {time}', { token: trade.tokenSymbol || t('token'), time: relativeTime(trade.timestamp) })}>{relativeTime(trade.timestamp)}<ExternalLink size={13} /></a>}</div>
   </div>;
 }
@@ -218,9 +213,9 @@ function TradeTape({ overview }: { overview: Overview }) {
   const { data, loading, error } = useData<List<Trade>>('/api/trades?limit=10', { items: [], nextCursor: null }, 10000);
   const items = data.items.slice(0, 10);
   return <div className="page trades-page"><SectionTitle eyebrow={t("THE LIVE TAPE")} title={t("Realtime trades")} right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.latestTradeAt ? t('Latest trade {time}', { time: relativeTime(overview.latestTradeAt) }) : t("Waiting for trades")}</span></div>} />
-    <FeatureTabs page="trades" /><div className="overview-strip"><Metric label={t("Tracked KOLs")} value={overview.trackedKols} /><Metric label={t("Trades · 24h")} value={compact(overview.trades24h)} /><Metric label={t("Tokens · 24h")} value={compact(overview.tokens24h)} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} /></div>
+    <FeatureTabs page="trades" /><div className="overview-strip"><Metric label={t("Tracked KOLs")} value={overview.trackedKols} /><Metric label={t("Trades · Today UTC")} value={compact(overview.trades24h)} /><Metric label={t("Tokens · Today UTC")} value={compact(overview.tokens24h)} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} /></div>
     <div className="table-toolbar"><h2>{t("Recent activity")}</h2></div>
-    <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={overview.bnbPriceUsd} showSide={false} linkTimeToToken />)}{!items.length && !loading && <EmptyState title={error ? t("Live feed unavailable") : t("Watching for the next trade")} detail={error ? t("The API is reconnecting. Try again shortly.") : t("Trades from tracked KOL wallets will appear here automatically.")} />}</div>
+    <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} showSide={false} linkTimeToToken />)}{!items.length && !loading && <EmptyState title={error ? t("Live feed unavailable") : t("Watching for the next trade")} detail={error ? t("The API is reconnecting. Try again shortly.") : t("Trades from tracked KOL wallets will appear here automatically.")} />}</div>
     <section className="trades-faq" aria-labelledby="trades-faq-title">
       <h2 id="trades-faq-title">{t("FAQs")}</h2>
       <div className="faq-list">
@@ -228,22 +223,22 @@ function TradeTape({ overview }: { overview: Overview }) {
         <details className="faq-item" name="trades-faq"><summary>{t("How often do new trades appear?")}</summary><p>{t("The feed updates automatically as newly indexed trades become available.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What can I find in the token tracker?")}</summary><p>{t("Browse tokens traded by tracked KOLs, grouped by market cap. Open a token to see its recent KOL trades and the wallets trading it.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What does a KOL profile show?")}</summary><p>{t("Each tracked wallet has recent trades, token positions and profit realized during the last 24 hours. Purchase costs can come from earlier history.")}</p></details>
-        <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("Rankings sort available profit realized in the last 24 hours from highest to lowest, including historical FIFO costs, fees and marked transfer-out gains. Partial totals keep their label and sort by their known amount. Results without a known profit remain unranked.")}</p></details>
+        <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("Rankings sort complete realized profit from the last 24 hours, using recorded FIFO purchase costs, fees and transfers. Earlier purchase costs remain included. Incomplete results are not ranked.")}</p></details>
       </div>
     </section>
     <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from kollens.")}</p></div><a href="https://x.com/kollens" target="_blank" rel="noopener noreferrer">@kollens <ExternalLink size={15} /></a></section>
   </div>;
 }
 
-function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false, walletAddress, eagerPnl = false, onOpen }: { token: Token; recentTrades?: Trade[]; bnbPriceUsd?: number | null; marketCapInStats?: boolean; walletAddress?: string; eagerPnl?: boolean; onOpen?: () => void }) {
-  const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} eager={eagerPnl} initialSummary={token.accountingSummary} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("24h volume")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
+function TokenCard({ token, recentTrades, marketCapInStats = false, walletAddress, eagerPnl = false, onOpen }: { token: Token; recentTrades?: Trade[]; marketCapInStats?: boolean; walletAddress?: string; eagerPnl?: boolean; onOpen?: () => void }) {
+  const content = <><div className="token-card-top"><TokenIdentity token={token} />{walletAddress && <KolTokenRealizedPnl walletAddress={walletAddress} tokenAddress={token.address} lastTradeAt={token.lastTradeAt} eager={eagerPnl} initialSummary={token.accountingSummary} />}{!marketCapInStats && <span className="token-card-cap">{token.marketCapUsd ? t('MC {value}', { value: compact(token.marketCapUsd, true) }) : t("MC —")}</span>}</div><div className="token-card-stats"><div><span>{t(marketCapInStats ? "MCAP" : "Observed price")}</span><strong>{compact(marketCapInStats ? token.marketCapUsd : token.priceUsd, true)}</strong></div><div><span>{t("Volume · Today UTC")}</span><strong>{compact(token.volume24hUsd, true)}</strong></div><div><span>{t("Last trade")}</span><strong>{relativeTime(token.lastTradeAt)}</strong></div></div></>;
   return <div className="token-card">{onOpen ? <button type="button" className="token-card-main token-card-open" aria-haspopup="dialog" {...tokenChartIntent(token.address, defaultCandleInterval, preloadKolTokenTradeModal)} onClick={onOpen}>{content}</button> : <Link className="token-card-main" to={`/token/${token.address}`} {...tokenChartIntent(token.address)}>{content}</Link>}
     <FollowButton kind="token" address={token.address} label={token.symbol} />
     {recentTrades && recentTrades.length > 0 && <div className="token-card-trades" aria-label={t('Recent {token} trades', { token: token.symbol || t('token') })}>
       {recentTrades.slice(0, 5).map(trade => <div className="token-card-trade" key={trade.id}>
         <Link className="token-trade-kol" to={`/kol/${trade.walletAddress}`} title={trade.kolName || trade.walletAddress}><Identity name={trade.kolName} address={trade.walletAddress} avatar={trade.kolAvatarUrl} subtitle={false} /></Link>
         <span className={`token-trade-side ${trade.side}`}>{t(trade.side)}</span>
-        <span className={`token-trade-value ${trade.side}`}>{tradeBnbValue(trade, bnbPriceUsd ?? null)}</span>
+        <span className={`token-trade-value ${trade.side}`}><TradeValue trade={trade} /></span>
         <time dateTime={trade.timestamp} title={localDate(trade.timestamp)}>{relativeTime(trade.timestamp)}</time>
       </div>)}
     </div>}
@@ -251,47 +246,39 @@ function TokenCard({ token, recentTrades, bnbPriceUsd, marketCapInStats = false,
 }
 
 type LiveToken = Token & { recentTrades: Trade[] };
-function TokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
-  const [params] = useSearchParams();
-  if (params.get('view') === 'launches') return <div className="page tokens-page"><SectionTitle eyebrow={t("KOL CONVICTION")} title={t("Launches")} /><FeatureTabs page="tokens" /><LaunchesView /></div>;
-  return <TrackedTokensPage bnbPriceUsd={bnbPriceUsd} />;
-}
-function TrackedTokensPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
-  const [initialWindowStart] = useState(() => new Date(Date.now() - 60 * 60_000).toISOString());
-  const [items, setItems] = useState<LiveToken[]>([]);
-  const { data, error } = useData<{ items: LiveToken[] }>(`/api/tokens?since=${encodeURIComponent(initialWindowStart)}&limit=300&withTrades=1`, { items: [] }, 10000);
-  useEffect(() => {
-    setItems(data.items);
-  }, [data]);
-  const groups = useMemo(() => groupTrackedTokens(items), [items]);
-  return <div className="page tokens-page"><SectionTitle eyebrow={t("KOL CONVICTION")} title={t("Meme coin tracker")} right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? t("Live feed reconnecting") : t("Watching live trades")}</span></div>} />
-    <FeatureTabs page="tokens" /><div className="token-columns">{([
+function TokensPage() {
+  const { data, error } = useData<{ items: LiveToken[]; windowStart?: string; windowEnd?: string }>(`/api/tokens?limit=300&withTrades=1`, { items: [] }, 10000);
+  const groups = useMemo(() => groupTrackedTokens(data.items), [data.items]);
+  return <div className="page tokens-page"><SectionTitle eyebrow={t("KOL CONVICTION")} title={t("Meme coin tracker")} description={t("Tokens traded by tracked KOLs in the last 8 hours.")} right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? t("Live feed reconnecting") : t("Watching live trades")}</span></div>} />
+    <div className="token-columns">{([
       { key: 'low', title: t("Low caps"), range: t("Under $100K") },
       { key: 'mid', title: t("$100K+"), range: t("$100K to $1M") },
       { key: 'high', title: t("$1M+"), range: t("$1M and above") },
-    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{t(column.title)}</h2><p>{t(column.range)}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} bnbPriceUsd={bnbPriceUsd} marketCapInStats />)}</div></section>)}</div>
-    {groups.unpriced.length > 0 && <section className="unpriced-section" aria-labelledby="unpriced-tokens-title"><div className="column-heading"><div><h2 id="unpriced-tokens-title">{t("Awaiting valuation")}</h2><p>{t("Recorded trades · market cap unavailable")}</p></div></div><div className="unpriced-grid">{groups.unpriced.map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} bnbPriceUsd={bnbPriceUsd} marketCapInStats />)}</div></section>}
+    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{t(column.title)}</h2><p>{t(column.range)}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div></section>)}</div>
+    {groups.unpriced.length > 0 && <section className="unpriced-section" aria-labelledby="unpriced-tokens-title"><div className="column-heading"><div><h2 id="unpriced-tokens-title">{t("Awaiting valuation")}</h2><p>{t("Recorded trades · market cap unavailable")}</p></div></div><div className="unpriced-grid">{groups.unpriced.map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div></section>}
   </div>;
 }
 
-function LeaderboardPage({ overview }: { overview: Overview }) {
-  const { data, loading, error } = useData<List<LeaderboardRow>>('/api/leaderboard', { items: [] }, 60000);
-  return <div className="page leaderboard-page"><SectionTitle eyebrow={t("THE PERFORMANCE BOARD")} title={t("KOL Leaderboard")} description={t("Profit realized in the last 24 hours, using historical purchase costs, fees and transfers.")} right={<div className="freshness"><i className={isFresh(overview.lastLeaderboardAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.lastLeaderboardAt ? t('Calculated {time}', { time: relativeTime(overview.lastLeaderboardAt) }) : t("Calculating rankings")}</span></div>} />
-    <div className="table-toolbar leaderboard-toolbar"><span className="small-label">{t("LAST 24 HOURS · RANKED BY REALIZED P&L")}</span><span className="coverage-note">{t('{active} active · {tracked} tracked KOLs', { active: data.items.filter(row => row.tradeCount24h > 0).length, tracked: data.items.length })}</span></div>
+function LeaderboardPage(_props: { overview: Overview }) {
+  const { data, loading, error } = useData<LeaderboardResponse>('/api/leaderboard', { items: [] }, 60000);
+  const updatedAt = data.items.reduce<string | null>((latest, row) => row.updatedAt && (!latest || row.updatedAt > latest) ? row.updatedAt : latest, null);
+  return <div className="page leaderboard-page"><SectionTitle eyebrow={t("THE PERFORMANCE BOARD")} title={t("KOL Leaderboard")} description={t("Stored realized P&L over the last 24 hours. Only complete results are ranked.")} right={<div className="freshness"><i className={isFresh(updatedAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{updatedAt ? t('Updated {time}', { time: relativeTime(updatedAt) }) : t("Stored totals")}</span></div>} />
+    <div className="table-toolbar leaderboard-toolbar"><span className="small-label" title={data.windowStart && data.windowEnd ? `${localDate(data.windowStart)} — ${localDate(data.windowEnd)}` : undefined}>{t("Last 24 hours")}</span><span className="coverage-note">{t('{active} active · {tracked} tracked KOLs', { active: data.items.filter(row => row.tradeCount24h > 0).length, tracked: data.items.length })}</span></div>
     <div className="data-table leaderboard-table">{data.items.map((row, index) => {
       const profit = leaderboardPresentation(row);
+      const rank = profit.canRank ? row.rank ?? data.items.slice(0, index + 1).filter(item => leaderboardPresentation(item).canRank).length : null;
       const coverage = t('{matched} valued movements · {pending} pending', { matched: profit.realizedCount, pending: profit.unavailableCount });
-      return <div className="leaderboard-entry" key={row.address}><Link className={`leaderboard-row ${profit.canRank ? `leader-rank-${index + 1}` : ''}`} to={`/kol/${row.address}`}>
-      <span className="rank-number">{profit.canRank ? String(index + 1).padStart(2, '0') : '—'}</span>
+      return <div className="leaderboard-entry" key={row.address}><Link className={`leaderboard-row ${rank ? `leader-rank-${rank}` : ''}`} to={`/kol/${row.address}`}>
+      <span className="rank-number">{rank ? String(rank).padStart(2, '0') : '—'}</span>
       <span className="leader-identity"><Identity name={row.name} address={row.address} avatar={row.avatarUrl} subtitle={false} /><span className="leader-handle">{row.twitter ? `@${row.twitter}` : shortAddress(row.address)}</span></span>
       <span className="leader-activity"><strong>{row.tradeCount24h} <span>{t(row.tradeCount24h === 1 ? 'trade' : 'trades')}</span></strong><span className="leader-sides"><span className="positive">{row.buyCount24h} {t(row.buyCount24h === 1 ? 'buy' : 'buys')}</span><span className="leader-separator">·</span><span className="negative">{row.sellCount24h} {t(row.sellCount24h === 1 ? 'sell' : 'sells')}</span></span></span>
-      <strong className={`pnl ${profit.value == null ? '' : Number(profit.value) >= 0 ? 'positive' : 'negative'}`} title={`${coverage}${profit.asOf ? ` · ${t('As of {time}', { time: localDate(profit.asOf) })}` : ''}`}>{signedMoney(profit.value)}<small className="pnl-status">{profit.status === 'partial' ? t("Partial realized P&L") : profit.status === 'pending' ? t("Costs or history pending") : t("24H realized P&L")}</small></strong>
+      <strong className={`pnl ${profit.value == null ? '' : Number(profit.value) >= 0 ? 'positive' : 'negative'}`} title={`${coverage}${profit.asOf ? ` · ${t('As of {time}', { time: localDate(profit.asOf) })}` : ''}`}>{signedMoney(profit.value)}<small className="pnl-status">{profit.status !== 'ready' ? t("P&L pending · Not ranked") : t("Realized P&L · Last 24h")}</small></strong>
     </Link><FollowButton kind="kol" address={row.address} label={row.name} /></div>;
     })}{!data.items.length && !loading && <EmptyState title={error ? t("Leaderboard unavailable") : t("No KOL trades in the last 24 hours")} detail={error ? t("The API is reconnecting.") : t("Recent wallet activity will appear here automatically.")} />}</div>
   </div>;
 }
 
-function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
+function KolPage() {
   const address = window.location.pathname.split('/').pop() || '';
   const [selectedToken, setSelectedToken] = useState<Token | null>(null);
   const closeToken = useCallback(() => setSelectedToken(null), []);
@@ -301,7 +288,7 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState(false);
   const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false });
-  const { data, loading, refresh: refreshProfile } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; windowStart: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
+  const { data, loading, refresh: refreshProfile } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; period?: '24h'; windowStart: string | null; windowEnd?: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
   useEffect(() => { setExtraTrades([]); setExtraCursor(undefined); setMoreError(false); }, [address]);
   useEffect(() => { setTokenPage({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false }); }, [address]);
   const currentTokenPage = tokenPage.address === address ? tokenPage : { address, items: [], cursor: undefined, visibleCount: kolProfileTokenPageSize, loading: false, error: false };
@@ -360,18 +347,18 @@ function KolPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     finally { setLoadingMore(false); }
   };
   const periodProfit = leaderboardPresentation({ ...data.stats, tradeCount24h: data.tradeCount24h });
-  const periodProfitDetail = periodProfit.status === 'pending' ? t('Costs or history pending')
-    : `${periodProfit.status === 'partial' ? `${t('Partial result')} · ` : ''}${t('{matched} valued movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
+  const periodProfitDetail = periodProfit.status !== 'ready' ? t('Costs or history pending')
+    : `${t('{matched} valued movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
   if (!loading && !data.kol) return <div className="page"><EmptyState title={t("KOL not found")} detail={t("This wallet is not in the supplied KOL roster.")} /></div>;
   return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
     <CreatorProfile wallet={address} onPublished={() => void refreshProfile()} />
-    <div className="profile-stats"><Metric label={t("24H realized P&L")} value={signedMoney(periodProfit.value)} detail={periodProfitDetail} /><Metric label={t("Trades · last 24 hours")} value={data.tradeCount24h} detail={t('{buys} buys · {sells} sells · {zone}', { buys: data.buyCount24h, sells: data.sellCount24h, zone: skopjeTimeZone() })} /><Metric label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
-    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No trades in the last 24 hours")} detail={t("New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
+    <div className="profile-stats"><Metric label={t("Realized P&L · Last 24h")} value={signedMoney(periodProfit.value)} detail={periodProfitDetail} /><Metric label={t("Trades · last 24 hours")} value={data.tradeCount24h} detail={t('{buys} buys · {sells} sells', { buys: data.buyCount24h, sells: data.sellCount24h })} /><Metric label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
+    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No trades in the last 24 hours")} detail={t("New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
     {selectedToken && data.kol?.address.toLowerCase() === address.toLowerCase() && <TradeModalLoader key={`${address}:${selectedToken.address}`} kol={data.kol} token={selectedToken} kolIdentity={<Identity name={data.kol.name} address={address} avatar={data.kol.avatarUrl} subtitle={false} />} tokenIdentity={<TokenIdentity token={selectedToken} hideAddress />} tokenAddress={<CopyAddress address={selectedToken.address} label={t('Token contract address')} />} onClose={closeToken} />}
   </div>;
 }
 
-function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
+function TokenPage() {
   const address = window.location.pathname.split('/').pop() || '';
   const [sharingReplay, setSharingReplay] = useState(false);
   useEffect(() => { preloadTokenChart(address); }, [address]);
@@ -412,7 +399,7 @@ function TokenPage({ bnbPriceUsd }: { bnbPriceUsd: number | null }) {
     }
   };
   if (!loading && !data.token) return <div className="page"><EmptyState title={t("Token not found")} detail={t("No tracked KOL has traded this contract yet.")} /></div>;
-  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} bnbPriceUsd={bnbPriceUsd} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list">{data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
+  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list">{data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
 }
 
 export default function App() {
@@ -423,10 +410,11 @@ export default function App() {
   return <AccountProvider><WatchlistProvider><TelegramNotificationsProvider>
     <Header overview={overview} />
     <WatchlistBanner />
+    {overview.trackingBoundary?.value.startTime && <div className="tracking-boundary">{t('Tracking new launches since {time} UTC', {time:new Date(overview.trackingBoundary.value.startTime).toISOString().replace('T',' ').slice(0,16)})}</div>}
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />
-      <Route path="/tokens" element={<TokensPage bnbPriceUsd={overview.bnbPriceUsd} />} />
+      <Route path="/tokens" element={<TokensPage />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
       <Route path="/portfolio" element={<PortfolioPage />} />
@@ -434,8 +422,8 @@ export default function App() {
       <Route path="/creator" element={<CreatorProfilesPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
       <Route path="/championship" element={<ChampionshipPage />} />
-      <Route path="/kol/:address" element={<KolPage bnbPriceUsd={overview.bnbPriceUsd} />} />
-      <Route path="/token/:address" element={<TokenPage bnbPriceUsd={overview.bnbPriceUsd} />} />
+      <Route path="/kol/:address" element={<KolPage />} />
+      <Route path="/token/:address" element={<TokenPage />} />
       <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
       <Route path="/terms-of-use" element={<TermsOfUsePage />} />
       <Route path="*" element={<Navigate to="/trades" replace />} />

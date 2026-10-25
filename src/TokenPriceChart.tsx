@@ -5,6 +5,7 @@ import { getLocale, t } from './i18n';
 import { compact } from './lib';
 import { marketCapCandles } from './tokenChartData';
 import { useTokenChart } from './useTokenChart';
+import { tokenChartContextKey, type TokenChartRequestContext } from './privateTokenCharts';
 import { kolTradeMarkers, tradeVisibleRange, type ChartTrade } from './kolTradeChartData';
 import { chartPriceTickmarks, formatChartPrice, latestSubstantialSegmentStart, majorCandleGaps, readableCandleSlots, remapChartViewport, type CandleViewport } from './chartViewport';
 
@@ -49,8 +50,9 @@ export function tradeChartNeedsRefit(candles: MarketCandle[], previous: MarketHi
     candles.length !== previous.count || candles[0].time !== previous.firstTime || candles.at(-1)!.time !== previous.lastTime);
 }
 
-export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false, enabled = true }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean; enabled?: boolean }) {
-  const { chart: data, error, retry } = useTokenChart(address, interval, enabled, 'chart', fullHistory);
+export function TokenPriceChart({ address, interval, trades, focusTrades = false, fullHistory = false, enabled = true, requestContext }: { address: string; interval: CandleInterval; trades?: ChartTrade[]; focusTrades?: boolean; fullHistory?: boolean; enabled?: boolean; requestContext?: TokenChartRequestContext }) {
+  const scope = tokenChartContextKey(requestContext);
+  const { chart: data, error, retry } = useTokenChart(address, interval, enabled, 'chart', fullHistory, requestContext);
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -101,7 +103,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
 
   useEffect(() => {
     if (!container.current) return;
-    const identity = `${address}:${interval}:${focusTrades}`;
+    const identity = `${scope}:${address}:${interval}:${focusTrades}`;
     if (chartIdentity.current !== identity) {
       fitted.current = null;
       previousHistory.current = null;
@@ -157,7 +159,7 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
       preservedViewport.current = instance.timeScale().getVisibleLogicalRange();
       observer.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(fittingFrame.current); markers.current?.detach(); markers.current = null; instance.remove(); chart.current = null; candles.current = null; volume.current = null;
     };
-  }, [address, interval, focusTrades, showVolume,hasSupply]);
+  }, [address, interval, focusTrades, showVolume,hasSupply,scope]);
 
   useEffect(() => {
     if (!chart.current || !candles.current) return;

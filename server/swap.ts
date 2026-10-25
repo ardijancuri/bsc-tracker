@@ -52,13 +52,13 @@ export const hasRecognizedSwap = (logs: TransferLog[]) => logs.some(log => swapT
 
 export function nativeSellProceeds(wallet: string, soldRaw: bigint, logs: TransferLog[], router?: string | null, soldToken?: string): bigint | null {
   const recipient = wallet.toLowerCase();
-  const payouts: bigint[] = [];
+  const payouts: {router:string;value:bigint}[] = [];
   for (const log of logs) {
     if (flapRouters.has(log.address.toLowerCase()) && log.topics[0]?.toLowerCase() === flapSwapTopic &&
     addressFromTopic(log.topics[1]) === recipient && addressFromTopic(log.topics[2]) === recipient &&
     nativeAddresses.has(addressFromTopic(log.topics[3]) || '') && /^0x[0-9a-fA-F]{128,}$/.test(log.data) &&
     (!soldToken || !flapInputToken(log) || flapInputToken(log) === soldToken.toLowerCase()) &&
-    sameQuantity(soldRaw, BigInt(`0x${log.data.slice(2, 66)}`), Boolean(soldToken && flapInputToken(log) === soldToken.toLowerCase()))) payouts.push(BigInt(`0x${log.data.slice(66, 130)}`));
+    sameQuantity(soldRaw, BigInt(`0x${log.data.slice(2, 66)}`), Boolean(soldToken && flapInputToken(log) === soldToken.toLowerCase()))) payouts.push({router:log.address.toLowerCase(),value:BigInt(`0x${log.data.slice(66, 130)}`)});
     if (!soldToken) continue;
     for (const format of payoutFormats) {
       if (!format.routers.some(address => address === log.address.toLowerCase()) || log.topics[0]?.toLowerCase() !== format.topic) continue;
@@ -83,10 +83,18 @@ export function nativeSellProceeds(wallet: string, soldRaw: bigint, logs: Transf
         quantity = words[4]; paid = words[5];
       }
       if (to === recipient && token === soldToken.toLowerCase() && nativeAddresses.has(output || '') && sameQuantity(soldRaw, BigInt(`0x${quantity}`), true))
-        payouts.push(BigInt(`0x${paid}`));
+        payouts.push({router:log.address.toLowerCase(),value:BigInt(`0x${paid}`)});
     }
   }
-  if (payouts.length) return payouts.length === 1 && payouts[0] > 0n ? payouts[0] : null;
+  // A nested aggregator may report gross output before the outer router's
+  // fee. When the signed transaction's router reports its own payout, that
+  // recipient's net payment is authoritative. Multiple outer payments remain
+  // ambiguous; an invalid outer payment cannot fall back to an inner gross one.
+  const top=router?.toLowerCase();
+  const outerReported=top&&logs.some(log=>log.address.toLowerCase()===top&&
+    (flapRouters.has(top)&&log.topics[0]?.toLowerCase()===flapSwapTopic||payoutFormats.some(format=>format.routers.some(a=>a===top)&&format.topic===log.topics[0]?.toLowerCase())));
+  const selected=outerReported?payouts.filter(p=>p.router===top):payouts;
+  if(outerReported||selected.length)return selected.length===1&&selected[0].value>0n?selected[0].value:null;
   // Binance DEX reports gross aggregator output and a separate native fee. Match the
   // recipient, input token/quantity and the exact unwrapped output before subtracting it.
   if (router?.toLowerCase() === binanceDexRouter && soldToken) {

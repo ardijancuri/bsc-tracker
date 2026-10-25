@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ZeroAddress } from 'ethers';
-import { decodeFlapState, decodeFourState, flapInterface, fourInterface, fourV1Interface, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, launchTransition, migrationPair, pairInterface, parseLaunchLog, PCS_V2_FACTORY, PCS_V3_FACTORY } from './launchpad.js';
+import { decodeFlapState, decodeFourState, flapInterface, fourInterface, fourV1Interface, FOUR_MANAGERS, FLAP_PORTAL, graduationPool, migrationPair, pairInterface, parseLaunchLog, PCS_V2_FACTORY, PCS_V3_FACTORY } from './launchpad.js';
 const token = '0x1111111111111111111111111111111111111111', quote = '0x2222222222222222222222222222222222222222', pair = '0x3333333333333333333333333333333333333333';
 function four(version: number, funds: bigint, max: bigint, graduated = false, quoteAddress = ZeroAddress) {
   return fourInterface.encodeFunctionResult('getTokenInfo', [version, FOUR_MANAGERS[version - 1], quoteAddress, 0, 0, 0, 1725000000, 0, 0, funds, max, graduated]);
@@ -26,14 +26,6 @@ describe('official launch interfaces', () => {
     expect(decodeFlapState(flap(1, 900000000000000000n, method), method)).toMatchObject({ stage: 'near_graduation', progress: 90, quoteAddress: quote });
     expect(decodeFlapState(flap(1, 899900000000000000n, method), method)?.stage).toBe('bonding');
     expect(decodeFlapState(flap(4, 0n, method), method)).toMatchObject({ stage: 'graduated', progress: 100, launchedAt: null });
-  });
-  it('does not notify for tokens discovered already near graduation or graduated', () => {
-    expect(launchTransition(null, 'graduated')).toBeNull();
-    expect(launchTransition(null, 'near_graduation')).toBeNull();
-    expect(launchTransition('graduated', 'graduated')).toBeNull();
-    expect(launchTransition('unavailable', 'graduated')).toBeNull();
-    expect(launchTransition('bonding', 'near_graduation')).toBe('near_graduation');
-    expect(launchTransition('near_graduation', 'graduated')).toBe('graduated');
   });
   it('uses the separate pool ID for Infinity instead of a vault', () => {
     const poolId = `0x${'a'.repeat(64)}`;

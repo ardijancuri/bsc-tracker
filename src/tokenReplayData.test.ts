@@ -80,7 +80,7 @@ describe('token replay preparation', () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify(chart())));
     const data = await loadTokenReplay(token, '24h', new AbortController().signal, { now: () => now, fetcher });
     expect(data.points).toHaveLength(3);
-    expect(fetcher).toHaveBeenCalledWith(`/api/tokens/${address}/chart?period=24h&priority=chart`, expect.objectContaining({ cache: 'no-store' }));
+    expect(fetcher).toHaveBeenCalledWith(`/api/tokens/${address}/chart?period=24h&priority=chart&workload=replay`, expect.objectContaining({ cache: 'no-store' }));
   });
   it('honors provider cooldowns and resumes the same period', async () => {
     vi.useFakeTimers(); vi.setSystemTime(now);

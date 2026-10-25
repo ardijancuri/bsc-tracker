@@ -1,10 +1,13 @@
 import type { NodeAccountingSource } from './nodeAccounting.js';
+import type { FreshFeeExclusions } from './freshAccounting.js';
 
 /** The rolling window selects realizations, not the age of their FIFO lots. */
 export interface NodeLeaderboardSnapshot {
   version: 1;
   policy: 'kollens_fifo_v1';
   walletAddress: string;
+  /** Realizations in this rolling window may consume FIFO lots acquired earlier. */
+  period?: '24h';
   windowStart: string;
   windowEnd: string;
   snapshotId: string;
@@ -15,7 +18,7 @@ export interface NodeLeaderboardSnapshot {
   complete: boolean;
   reasons: string[];
   realizedProfitUsd: string | null;
-  /** A labeled subtotal, sorted by its known amount without claiming completeness. */
+  /** Diagnostic subtotal only; incomplete totals never receive a leaderboard rank. */
   knownRealizedProfitUsd: string;
   valuedSellCount: number;
   excludedSellCount: number;
@@ -25,6 +28,7 @@ export interface NodeLeaderboardSnapshot {
   feeOnlyFeesUsd?: string | null;
   valuedFeeCount?: number;
   excludedFeeCount?: number;
+  exclusions?: { feeOnly: FreshFeeExclusions };
 }
 
 export type NodeLeaderboardStatus = 'ready' | 'partial' | 'pending';

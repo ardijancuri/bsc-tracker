@@ -10,8 +10,28 @@ export interface ReplayMarketRequestResult {
   preparationStatus: 'ready' | 'pending' | 'unavailable'; blockingReason?: ReplayPreparationReason; retryAfterMs?: number;
 }
 function withoutApproval(data: TradeReplayData): TradeReplayData {
-  return { ...data, replayAccounting: data.replayAccounting ? { ...data.replayAccounting, status: 'unavailable', final: null,
+  return { ...data, replayLease: undefined, replayAccounting: data.replayAccounting ? { ...data.replayAccounting, status: 'unavailable', final: null,
     coverage: { ...data.replayAccounting.coverage, exactFinal: false, transactionsComplete: false, balanceMatched: false } } : undefined };
+}
+
+/** The server checks signatures, correction epochs and current private access.
+ * The browser never treats decoding the manifest as financial authorization. */
+export async function validatePreparedTradeReplay(data: TradeReplayData, signal?: AbortSignal): Promise<void> {
+  const lease = data.replayLease;
+  if (!lease) return;
+  if (!Number.isFinite(Date.parse(lease.expiresAt)) || Date.parse(lease.expiresAt) <= Date.now()) throw new Error('Replay approval expired. Retry replay.');
+  let response: Response;
+  try {
+    response = await fetch('/api/replays/validate', { method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', ...tradeRequestHeaders(data.requestContext) },
+      body: JSON.stringify({ manifest: lease.manifest }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000) });
+  } catch {
+    if (signal?.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
+    throw new Error('Replay approval could not be checked. Retry replay.');
+  }
+  if (!response.ok) throw new Error('Replay access or accounting changed. Retry replay.');
+  const result = await response.json() as { valid?: boolean; expiresAt?: string };
+  if (result.valid !== true || result.expiresAt && result.expiresAt !== lease.expiresAt) throw new Error('Replay access or accounting changed. Retry replay.');
 }
 
 /** One database preparation read. The sole outer poll joins server work; no
@@ -19,7 +39,9 @@ function withoutApproval(data: TradeReplayData): TradeReplayData {
 export async function replayMarketData(data: TradeReplayData, signal: AbortSignal): Promise<ReplayMarketRequestResult> {
   // An old media lease must not pin every retry to the same expired valuation.
   // Rebind accounting and chart together; onResult updates the modal as well.
-  const snapshotFresh = data.accountingSnapshot && Date.now() - Date.parse(data.accountingSnapshot.asOf) <= 180_000;
+  const snapshotFresh = data.accountingSnapshot && (Date.now() - Date.parse(data.accountingSnapshot.asOf) <= 180_000
+    || data.accountingSnapshot.source === 'node' && data.accountingSnapshot.complete && Date.now() - Date.parse(data.generatedAt) <= 180_000
+    || data.replayLease && Date.parse(data.replayLease.expiresAt) > Date.now());
   const context = data.requestContext && !snapshotFresh ? { ...data.requestContext, snapshotId: undefined } : data.requestContext;
   const frozen = context?.snapshotId ?? (!context && snapshotFresh && data.accountingSnapshot?.complete ? data.accountingSnapshot.snapshotId : undefined);
   const query = frozen ? `?snapshot=${encodeURIComponent(frozen)}` : '';
@@ -61,14 +83,31 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
   if (activity && (activity.kol.address.toLowerCase() !== data.kol.address.toLowerCase() || activity.token.address.toLowerCase() !== data.token.address.toLowerCase())) throw new Error('Replay identity changed');
   const privateSnapshot = (activity as import('../shared/journal').JournalTokenActivity | undefined)?.journal?.snapshotId;
   const selectedContext = context && privateSnapshot ? { ...context, snapshotId: privateSnapshot } : context;
-  const selected = activity ? prepareTradeReplayData(activity, null, undefined, Date.now(), selectedContext) ?? data : data;
-  if (result.status !== 'ready') return { data: selected, notice: result.reason ? replayPreparationMessages[result.reason] : null,
+  let lease: TradeReplayData['replayLease'];
+  if (result.manifest !== undefined || result.expiresAt !== undefined) {
+    const expires = Date.parse(result.expiresAt ?? '');
+    if (typeof result.manifest !== 'string' || !result.manifest || !Number.isFinite(expires) || expires <= Date.now() || expires > Date.now() + 15 * 60_000 + 1000) throw new Error('Invalid replay preparation lease');
+    const preparedAt = Math.max(...[activity?.generatedAt, activity?.accountingSnapshot?.asOf, activity?.replayAccounting?.checkedAt,
+      activity?.replayAccounting?.history?.balanceProof.checkedAt, activity?.replayAccounting?.final?.timestamp].map(value => Date.parse(value ?? '')).filter(Number.isFinite));
+    if (!Number.isFinite(preparedAt) || preparedAt > Date.now() + 1000) throw new Error('Invalid replay preparation lease');
+    lease = { manifest: result.manifest, expiresAt: result.expiresAt!, preparedAt: new Date(preparedAt).toISOString(), validatedAt: new Date().toISOString() };
+    await validatePreparedTradeReplay({ ...data, requestContext: selectedContext, replayLease: lease }, signal);
+  }
+  // An approved dated object is rendered at its original observation time;
+  // the lease permits reuse without changing a quote or accounting value.
+  let selected = activity ? prepareTradeReplayData(activity, null, undefined, lease ? Date.parse(lease.preparedAt) : Date.now(), selectedContext, lease) ?? data : data;
+  if (lease) selected = { ...selected, replayLease: lease };
+  if (result.status !== 'ready') {
+    if (result.reason === 'stale_quote') selected = { ...withoutApproval(selected), accountingSnapshot: undefined,
+      requestContext: selected.requestContext ? { ...selected.requestContext, snapshotId: undefined } : undefined };
+    return { data: selected, notice: result.reason ? replayPreparationMessages[result.reason] : null,
     preparationStatus: result.status, blockingReason: result.reason, retryAfterMs: result.retryAfterMs };
+  }
   const chart = result.chart, identity = activity?.accountingSnapshot;
   if (!activity || !chart || !identity || !identity.complete || !selected.replayAccounting || !result.window
     || result.snapshotId !== identity.snapshotId || chart.snapshotId !== result.snapshotId || chart.windowId !== result.window.id
     || !/^[a-f0-9]{64}$/.test(result.window.id) || chart.address.toLowerCase() !== data.token.address.toLowerCase()
-    || !['node', 'mixed', 'imported'].includes(chart.source) || chart.partialHistory || chart.stale
+    || !['node', 'mixed', 'imported', 'gmgn'].includes(chart.source) || chart.source === 'gmgn' && !lease || chart.partialHistory || chart.stale
     || !Number.isFinite(Date.parse(result.window.from)) || !Number.isFinite(Date.parse(result.window.to))
     || Date.parse(result.window.from) > Date.parse(result.window.to)) throw new Error('Replay snapshot and market window do not agree');
   const prepared = applyReplayMarketChart(selected, chart);

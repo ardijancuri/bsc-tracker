@@ -1,14 +1,14 @@
 import type { Pool } from 'pg';
 
-export async function ensureTelegramNotificationsSchema(pool: Pool) {
+export async function ensureTelegramNotificationsSchema(pool: Pool, fresh = false) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782326)');
     await client.query(`
-      ALTER TABLE trades ADD COLUMN IF NOT EXISTS telegram_notification_processed boolean NOT NULL DEFAULT false;
+      ${fresh ? '' : `ALTER TABLE trades ADD COLUMN IF NOT EXISTS telegram_notification_processed boolean NOT NULL DEFAULT false;
       CREATE INDEX IF NOT EXISTS trades_telegram_pending_idx ON trades(block_number,transaction_index,id)
-        WHERE observed_live AND NOT telegram_notification_processed AND block_number IS NOT NULL;
+        WHERE observed_live AND NOT telegram_notification_processed AND block_number IS NOT NULL;`}
       CREATE TABLE IF NOT EXISTS telegram_notification_settings (
         user_id uuid PRIMARY KEY REFERENCES auth_users(id) ON DELETE CASCADE,
         chat_id text UNIQUE, connection text NOT NULL DEFAULT 'not_connected'

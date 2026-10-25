@@ -40,6 +40,7 @@ export interface WatchEntry {
   kind: 'kol' | 'token'; address: string; name: string | null; symbol?: string | null;
   avatarUrl?: string | null; logoUrl?: string | null; marketCapUsd?: string | null;
   priceUsd?: string | null; change1h?: string | null; change24h?: string | null;
+  valuationStatus?: string;
   volume24hUsd?: string | null; kolCount24h?: number; lastTradeAt?: string | null;
   priceHistory?: WatchPricePoint[];
   periodChange?: string | null; periodVolumeUsd?: string | null; periodKolCount?: number;
@@ -60,14 +61,9 @@ export type PositionStatus = 'Holding' | 'Added' | 'Reduced' | 'Exited' | 'Trans
 export interface Position {
   walletAddress: string; tokenAddress: string; balance: string | null; status: PositionStatus;
   checkedAt: string | null; blockNumber: string | null; lastMovementAt: string | null;
+  /** Fresh stored balances remain valid across quiet blocks when canonical
+   * collection and decoding coverage still reconcile the position. */
+  confirmed?: boolean; coveredThroughBlock?: string | null;
 }
+/** Internal confirmed launchpad state used by token eligibility/chain decoding. */
 export type LaunchStage = 'bonding' | 'near_graduation' | 'graduated' | 'unavailable';
-export interface LaunchState {
-  tokenAddress: string; platform: 'fourmeme' | 'flap' | null; stage: LaunchStage;
-  progress: number | null; launchedAt: string | null; firstKolAt: string | null;
-  graduatedAt: string | null; graduationTxHash: string | null;
-  quoteAddress: string | null; poolAddress: string | null; poolId: string | null;
-  liquidityUsd: string | null; liquidityBaselineUsd: string | null; liquidityReason?: 'node_liquidity_unavailable' | null;
-  liquidityBaselineAt: string | null; liquidityAt: string | null; checkedAt: string | null;
-}
-export interface LaunchItem extends LaunchState { symbol: string | null; name: string | null; logoUrl: string | null }

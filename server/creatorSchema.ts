@@ -1,14 +1,14 @@
 import type { Pool } from 'pg';
 
 /** Independent from roster seeding: a refresh cannot erase a creator's published identity. */
-export async function ensureCreatorSchema(db: Pool) {
+export async function ensureCreatorSchema(db: Pool, fresh = false) {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(782330)');
     await client.query(`
       CREATE TABLE IF NOT EXISTS creator_claims (
-        wallet_address text PRIMARY KEY REFERENCES kols(address),
+        wallet_address text PRIMARY KEY REFERENCES ${fresh ? 'fresh.kols(wallet_address)' : 'kols(address)'},
         user_id uuid NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
         claimed_at timestamptz NOT NULL DEFAULT now(),
         proof_chain_id integer NOT NULL CHECK(proof_chain_id=56),
@@ -27,7 +27,7 @@ export async function ensureCreatorSchema(db: Pool) {
       CREATE TABLE IF NOT EXISTS creator_challenges (
         id uuid PRIMARY KEY,
         user_id uuid NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
-        session_hash text NOT NULL, wallet_address text NOT NULL REFERENCES kols(address),
+        session_hash text NOT NULL, wallet_address text NOT NULL REFERENCES ${fresh ? 'fresh.kols(wallet_address)' : 'kols(address)'},
         origin text NOT NULL, action text NOT NULL CHECK(action IN ('claim','release')),
         chain_id integer NOT NULL CHECK(chain_id=56), message text NOT NULL,
         issued_at timestamptz NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz,
