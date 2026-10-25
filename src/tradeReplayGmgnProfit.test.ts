@@ -57,7 +57,7 @@ async function replay(payload = data(), drawing?: Drawing) {
   return renderer;
 }
 function progressAt(renderer: ReplayCanvas, seconds: number) {
-  let low = 0, high = .94;
+  let low = 0, high = renderer.chartProgress(1);
   for (let index = 0; index < 60; index++) {
     const middle = (low + high) / 2;
     if (renderer.timeAt(middle) < start + seconds * 1000) low = middle; else high = middle;
@@ -78,16 +78,17 @@ describe('GMGN profit in every replay frame', () => {
     }
     const drawing: Drawing = { strokes: [], gradients: [], text: [] };
     const renderer = await replay(payload, drawing);
-    for (const progress of [.9, 1, .9, 1]) {
+    const beforeFinal = progressAt(renderer, 239);
+    for (const progress of [beforeFinal, 1, beforeFinal, 1]) {
       drawing.strokes.length = drawing.gradients.length = drawing.text.length = 0;
       const state = renderer.snapshot(progress);
       renderer.render(progress);
-      const color = progress === .9 ? '#a9a69a' : direction === 'gain' ? '#16c784' : '#f6465d';
-      const rgb = progress === .9 ? '169,166,154' : direction === 'gain' ? '22,199,132' : '246,70,93';
+      const color = progress === beforeFinal ? '#a9a69a' : direction === 'gain' ? '#16c784' : '#f6465d';
+      const rgb = progress === beforeFinal ? '169,166,154' : direction === 'gain' ? '22,199,132' : '246,70,93';
       expect(drawing.strokes.find(stroke => stroke.width === 8)?.color).toBe(color);
       expect(drawing.gradients).toContain(`rgba(${rgb},0.18)`);
       expect(drawing.strokes.some(stroke => stroke.width === 8 && stroke.color === '#f0b90b')).toBe(false);
-      if (progress === .9) {
+      if (progress === beforeFinal) {
         expect(state.totalPnl).toBeNull();
         expect(drawing.text.some(text => text.value === '—')).toBe(true);
       } else {
@@ -169,8 +170,9 @@ describe('GMGN profit in every replay frame', () => {
     payload.replayAccounting!.events[3].remainingCostBasisUsd = null;
     payload.replayAccounting!.events[3].cumulativeRealizedProfitUsd = null;
     payload.replayAccounting!.events[3].feeInclusiveCostUsd = null;
-    expect((await replay(payload)).snapshot(.9).totalPnl).toBeNull();
-    expect((await replay(payload)).snapshot(1).totalPnl).toBe(200.8);
+    const renderer = await replay(payload);
+    expect(renderer.snapshot(progressAt(renderer, 239)).totalPnl).toBeNull();
+    expect(renderer.snapshot(1).totalPnl).toBe(200.8);
   });
 
   it('displays the moving total from complete cash flows when the realized and held-basis allocation is unknown', async () => {
@@ -194,8 +196,9 @@ describe('GMGN profit in every replay frame', () => {
     payload.replayAccounting!.events[3].feesUsd = null;
     payload.replayAccounting!.events[3].feeInclusiveCostUsd = null;
     const renderer = await replay(payload);
-    expect(renderer.snapshot(.9).totalPnl).toBeNull(); expect(renderer.snapshot(.9).pnl).toBeNull();
-    expect(renderer.snapshot(.9).totalRoi).toBeNull();
+    const beforeFinal = progressAt(renderer, 239);
+    expect(renderer.snapshot(beforeFinal).totalPnl).toBeNull(); expect(renderer.snapshot(beforeFinal).pnl).toBeNull();
+    expect(renderer.snapshot(beforeFinal).totalRoi).toBeNull();
     expect(renderer.snapshot(1).totalPnl).toBe(200.8);
   });
 });
