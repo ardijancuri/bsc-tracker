@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import ReplayCanvas from './tradeReplayCanvas';
 import type { TradeReplayData } from './tradeReplayData';
+import { selectReplaySellHighlights } from './tradeReplayHighlights';
 
 const start = Date.parse('2026-10-11T10:00:00Z');
 const at = (seconds: number) => new Date(start + seconds * 1000).toISOString();
@@ -123,20 +124,6 @@ function atomicPosition(): TradeReplayData {
   return payload;
 }
 
-function buyBurst(count = 9, ending = false): TradeReplayData {
-  const payload = data();
-  payload.trades = Array.from({ length: count }, (_, index) => ({
-    id: `buy-${index}`, txHash: `0xbuy${index}`, timestamp: at(ending && index > 0 ? 180 : index), side: 'buy' as const,
-    tokenAmount: 1, amountUsd: 15 + index, priceUsd: 15 + index, marketCapUsd: (15 + index) * 1000,
-  }));
-  payload.trades.push({ id: 'close', txHash: '0xclose', timestamp: at(180), side: 'sell',
-    tokenAmount: count, amountUsd: count * 30, priceUsd: 30, marketCapUsd: 30000 });
-  payload.chart.points = payload.trades.map(trade => ({ timestamp: trade.timestamp,
-    priceUsd: trade.priceUsd!, marketCapUsd: trade.marketCapUsd }));
-  payload.generatedAt = payload.position.checkedAt = at(180);
-  return payload;
-}
-
 interface PaintedArc {
   x: number;
   y: number;
@@ -147,66 +134,19 @@ interface PaintedArc {
   alpha: number;
 }
 
-interface DrawnText {
-  value: string;
-  x: number;
-  y: number;
-  alpha: number;
-  color?: string;
-  clip?: PaintedBox;
-}
-interface PaintedBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-function canvasStub(drawn?: DrawnText[], painted?: PaintedArc[],
-  filled?: PaintedBox[], rounded?: PaintedBox[]): HTMLCanvasElement {
+function canvasStub(drawn?: { value: string; x: number; y: number; alpha: number }[], painted?: PaintedArc[],
+  filled?: { x: number; y: number; width: number; height: number }[]): HTMLCanvasElement {
   let currentArc: Omit<PaintedArc, 'color' | 'alpha'> | null = null;
-  let path: { x: number; y: number }[] = [], corners = 0, closed = false;
-  const stack: Record<PropertyKey, unknown>[] = [];
-  const context = new Proxy<Record<PropertyKey, unknown>>({ globalAlpha: 1 }, {
+  const context = new Proxy({}, {
     get: (target, key) => key === 'measureText' ? (value: string) => ({ width: value.length * 20 })
-      : key === 'fillText' ? (value: string, x: number, y: number) => drawn?.push({ value, x, y,
-        alpha: Number(target.globalAlpha ?? 1), color: String(target.fillStyle ?? ''), clip: target.clipBounds as PaintedBox | undefined })
+      : key === 'fillText' ? (value: string, x: number, y: number) => drawn?.push({ value, x, y, alpha: (target as { globalAlpha?: number }).globalAlpha ?? 1 })
       : key === 'fillRect' ? (x: number, y: number, width: number, height: number) => filled?.push({ x, y, width, height })
-      : key === 'save' ? () => { stack.push({ ...target }); }
-      : key === 'restore' ? () => {
-        const saved = stack.pop();
-        if (!saved) return;
-        for (const property of Reflect.ownKeys(target)) delete target[property];
-        Object.assign(target, saved);
-      }
-      : key === 'beginPath' ? () => { currentArc = null; path = []; corners = 0; closed = false; }
-      : key === 'rect' ? (x: number, y: number, width: number, height: number) => {
-        path.push({ x, y }, { x: x + width, y: y + height });
-      }
-      : key === 'clip' ? () => {
-        if (!path.length) return;
-        const x = Math.min(...path.map(point => point.x)), y = Math.min(...path.map(point => point.y));
-        const right = Math.max(...path.map(point => point.x)), bottom = Math.max(...path.map(point => point.y));
-        const previous = target.clipBounds as PaintedBox | undefined;
-        const left = Math.max(x, previous?.x ?? -Infinity), top = Math.max(y, previous?.y ?? -Infinity);
-        target.clipBounds = { x: left, y: top, width: Math.min(right, previous ? previous.x + previous.width : Infinity) - left,
-          height: Math.min(bottom, previous ? previous.y + previous.height : Infinity) - top };
-      }
-      : key === 'moveTo' || key === 'lineTo' ? (x: number, y: number) => { path.push({ x, y }); }
-      : key === 'quadraticCurveTo' ? (cx: number, cy: number, x: number, y: number) => {
-        corners += 1; path.push({ x: cx, y: cy }, { x, y });
-      }
-      : key === 'closePath' ? () => { closed = true; }
+      : key === 'beginPath' ? () => { currentArc = null; }
       : key === 'arc' ? (x: number, y: number, radius: number, startAngle: number, endAngle: number) => { currentArc = { x, y, radius, startAngle, endAngle }; }
       : key === 'fill' ? () => {
         if (currentArc) painted?.push({ ...currentArc, color: (target as { fillStyle?: string }).fillStyle ?? '', alpha: (target as { globalAlpha?: number }).globalAlpha ?? 1 });
-        if (closed && corners === 4 && path.length) {
-          const x = Math.min(...path.map(point => point.x)), y = Math.min(...path.map(point => point.y));
-          rounded?.push({ x, y, width: Math.max(...path.map(point => point.x)) - x,
-            height: Math.max(...path.map(point => point.y)) - y });
-        }
       }
-      : key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : key in target ? target[key] : () => undefined,
+      : key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : () => undefined,
   });
   return { width: 0, height: 0, getContext: () => context } as unknown as HTMLCanvasElement;
 }
@@ -220,74 +160,13 @@ async function replay(payload = data()) {
 const activeX = 42 + 772 * .74;
 
 describe('handoff replay canvas geometry', () => {
-  it('adapts the clip to the genuine position span within the requested five-to-twenty-five-second range', async () => {
-    const durations: number[] = [];
-    for (const span of [0, 5, 60, 300, 3600, 7 * 24 * 3600]) {
-      const payload = data();
-      payload.trades = [payload.trades[0], { ...payload.trades[3], timestamp: at(span) }];
-      payload.chart.points = [{ timestamp: at(0), priceUsd: 2, marketCapUsd: 2000 },
-        { timestamp: at(span), priceUsd: 50, marketCapUsd: 50000 }];
-      payload.generatedAt = payload.position.checkedAt = at(span);
-      const { renderer } = await replay(payload), duration = renderer.getDuration();
-      durations.push(duration);
-      expect(duration).toBeGreaterThanOrEqual(5); expect(duration).toBeLessThanOrEqual(25);
-      expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: at(span), holdings: 0, pnl: 48 }));
-    }
-    expect(durations[0]).toBe(5); expect(durations.at(-1)).toBe(25);
-    for (let index = 1; index < durations.length; index += 1) expect(durations[index]).toBeGreaterThan(durations[index - 1]);
-  });
-
-  it('uses one linear source clock within each clip and the same steady pan across different durations', async () => {
-    const speeds: number[] = [], durations: number[] = [];
-    for (const payload of [data(), densePosition(true), longPosition()]) {
-      const { renderer, motion } = await replay(payload), duration = renderer.getDuration();
-      const first = Date.parse(payload.trades[0].timestamp), last = Date.parse(renderer.snapshot(1).time!);
-      const ending = motion.chartProgress(1);
-      durations.push(duration);
-      expect((1 - ending) * duration).toBeCloseTo(1.5, 10);
-      for (const fraction of [0, .1, .37, .68, 1]) {
-        expect(motion.timeAt(ending * fraction)).toBeCloseTo(first + (last - first) * fraction, 0);
-      }
-      for (const fraction of [.05, .3, .6]) {
-        const before = ending * fraction, after = before + .1 / duration;
-        const distance = motion.markerPosition(0, before)!.x - motion.markerPosition(0, after)!.x;
-        speeds.push(distance / .1);
-      }
-      expect(motion.viewportAt(1)).toEqual(motion.viewportAt(ending));
-    }
-    expect(new Set(durations).size).toBeGreaterThan(1);
-    expect(speeds[0]).toBeGreaterThan(0);
-    for (const speed of speeds) expect(speed).toBeCloseTo(speeds[0], 8);
-  });
-
-  it('caps dense replays without stretching close execution times into artificial gaps', async () => {
-    const payload = densePosition();
-    payload.trades = Array.from({ length: 200 }, (_, index) => ({ ...payload.trades[index % 40],
-      id: 'burst-' + index, txHash: '0xburst' + index, timestamp: at(index / 100),
-      amountUsd: 100, priceUsd: 100, marketCapUsd: 100000, cumulativeRealizedProfitUsd: 0 }));
-    payload.chart.points = payload.trades.map(trade => ({ timestamp: trade.timestamp, priceUsd: 100, marketCapUsd: 100000 }));
-    payload.position.checkedAt = payload.generatedAt = payload.trades.at(-1)!.timestamp;
-    const { renderer, motion } = await replay(payload);
-    expect(renderer.getDuration()).toBe(25);
-    const gaps = payload.trades.slice(1).map((_, index) => renderer.eventProgress(index + 1) - renderer.eventProgress(index));
-    expect(gaps.every(gap => gap > 0)).toBe(true);
-    for (const gap of gaps) expect(gap).toBeCloseTo(gaps[0], 10);
-    for (let index = 0; index < payload.trades.length; index += 1) {
-      const progress = renderer.eventProgress(index), marker = motion.markerPosition(index, progress)!;
-      expect(marker.ts).toBe(Date.parse(payload.trades[index].timestamp));
-      expect(motion.timeAt(progress)).toBeCloseTo(marker.ts, 0);
-      expect(marker.x).toBeCloseTo(activeX, 10);
-    }
-  });
-
-  it('keeps simultaneous fills at one horizontal timestamp without inventing gaps', async () => {
+  it('paces simultaneous fills separately while retaining every exact execution timestamp', async () => {
     const { renderer, motion } = await replay();
     const progress = renderer.eventProgress(3);
     const buy = motion.markerPosition(1, progress)!;
     const sell = motion.markerPosition(2, progress)!;
     expect(buy.ts).toBe(start + 60000); expect(sell.ts).toBe(buy.ts);
-    expect(sell.q).toBe(buy.q); expect(sell.x).toBe(buy.x);
-    expect(renderer.eventProgress(1)).toBe(renderer.eventProgress(2));
+    expect(sell.q).toBeGreaterThan(buy.q); expect(sell.x).toBeGreaterThan(buy.x);
     for (let index = 0; index < 4; index += 1) {
       const marker = motion.markerPosition(index, progress)!;
       expect(motion.timeAt(renderer.eventProgress(index))).toBe(Date.parse(data().trades[index].timestamp));
@@ -295,16 +174,18 @@ describe('handoff replay canvas geometry', () => {
     }
   });
 
-  it('places compact circles at their exact fill price and source timestamp, including atomic fills', async () => {
+  it('places each compact circle directly on its exact fill vertex', async () => {
     const { renderer, motion } = await replay();
     for (let index = 0; index < 4; index += 1) {
       const progress = renderer.eventProgress(index);
       const marker = motion.markerPosition(index, progress)!;
+      const fill = motion.storyVertices.find(point => point.q === progress)!;
       const viewport = motion.viewportAt(progress);
-      expect(marker.ts).toBe(Date.parse(data().trades[index].timestamp));
-      expect(marker.executionValue).toBe(data().trades[index].marketCapUsd);
+      expect(fill.marketCapUsd).toBe(data().trades[index].marketCapUsd);
+      expect(marker.marketValue).toBe(fill.marketCapUsd);
+      expect(marker.executionValue).toBe(fill.marketCapUsd);
       expect(marker.x).toBeCloseTo(activeX, 10);
-      const fillY = 651 - (marker.executionValue! - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379;
+      const fillY = 651 - (fill.marketCapUsd - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379;
       expect(marker.y).toBeCloseTo(fillY, 10);
       expect(marker.anchorY).toBeCloseTo(fillY, 10);
     }
@@ -314,11 +195,10 @@ describe('handoff replay canvas geometry', () => {
     const payload = densePosition(true);
     expect(Date.parse(payload.trades[20].timestamp) - Date.parse(payload.trades[19].timestamp)).toBe(1000);
     const { renderer, motion } = await replay(payload);
-    expect(motion.storyWindow).toBeGreaterThan(0);
+    expect(motion.storyWindow).toBeGreaterThanOrEqual(.32);
     expect(motion.markerRadius).toBeGreaterThanOrEqual(18);
     expect(motion.markerRadius).toBeLessThanOrEqual(22);
-    expect(renderer.getDuration()).toBeGreaterThanOrEqual(5);
-    expect(renderer.getDuration()).toBeLessThanOrEqual(25);
+    expect(renderer.getDuration()).toBe(15.5);
     for (let index = 0; index < payload.trades.length; index += 1) {
       const event = renderer.eventProgress(index);
       expect(motion.timeAt(event)).toBe(Date.parse(payload.trades[index].timestamp));
@@ -326,16 +206,12 @@ describe('handoff replay canvas geometry', () => {
     }
     const frames = Math.round(renderer.getDuration() * 30);
     let previous = motion.markerPosition(0, 0)!.x;
-    const panSteps: number[] = [];
     for (let frame = 1; frame < frames; frame += 1) {
-      const progress = frame / (frames - 1), current = motion.markerPosition(0, progress)!.x;
+      const current = motion.markerPosition(0, frame / (frames - 1))!.x;
       expect(previous - current).toBeGreaterThanOrEqual(-1e-9);
-      if (progress < motion.chartProgress(1)) panSteps.push(previous - current);
-      else if ((frame - 1) / (frames - 1) >= motion.chartProgress(1)) expect(current).toBe(previous);
+      expect(previous - current).toBeLessThanOrEqual(5.3);
       previous = current;
     }
-    expect(panSteps.length).toBeGreaterThan(1);
-    for (const step of panSteps) expect(step).toBeCloseTo(panSteps[0], 8);
     const final = renderer.snapshot(1);
     const invested = payload.trades.filter(trade => trade.side === 'buy').reduce((total, trade) => total + trade.amountUsd!, 0);
     const sold = payload.trades.filter(trade => trade.side === 'sell').reduce((total, trade) => total + trade.amountUsd!, 0);
@@ -347,9 +223,8 @@ describe('handoff replay canvas geometry', () => {
 
   it.each([false, true])('keeps dense %s-price markers on the curve without shifting trade times or moving between seeks', async rising => {
     const payload = densePosition(rising), { renderer, motion } = await replay(payload);
-    const frames = Math.ceil(renderer.getDuration() * 30);
-    for (let frame = 0; frame <= frames; frame += 1) {
-      const progress = frame / frames;
+    for (let frame = 0; frame < 465; frame += 1) {
+      const progress = frame / 464;
       const markers = payload.trades.map((_, index) => motion.markerPosition(index, progress)!)
         .filter(marker => marker.visible);
       for (let index = 0; index < markers.length; index += 1) {
@@ -377,11 +252,10 @@ describe('handoff replay canvas geometry', () => {
     expect(motion.markerPosition(19, shared)!.x).toBe(motion.markerPosition(20, shared)!.x);
     expect(motion.markerPosition(19, shared)!.y).toBe(motion.markerPosition(20, shared)!.y);
     expect(renderer.snapshot(shared).currentEventIndex).toBe(20);
-    expect(motion.storyWindow).toBeGreaterThan(0);
+    expect(motion.storyWindow).toBeGreaterThanOrEqual(.32);
     expect(motion.markerRadius).toBeGreaterThanOrEqual(18);
     expect(motion.markerRadius).toBeLessThanOrEqual(22);
-    expect(renderer.getDuration()).toBeGreaterThanOrEqual(5);
-    expect(renderer.getDuration()).toBeLessThanOrEqual(25);
+    expect(renderer.getDuration()).toBe(15.5);
     expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.trades.at(-1)!.timestamp,
       totalPnl: 0, totalRoi: 0, currentEventIndex: 39 }));
   });
@@ -424,7 +298,7 @@ describe('handoff replay canvas geometry', () => {
     expect(renderer.snapshot(1).currentPrice).toBe(9.5);
     expect(renderer.snapshot(1).currentCap).toBe(9500);
     expect(motion.viewportAt(.85).startQ).toBeGreaterThan(motion.viewportAt(lastFill).startQ);
-    expect(motion.viewportAt(1)).toEqual(motion.viewportAt(motion.chartProgress(1)));
+    expect(motion.viewportAt(1)).toEqual(motion.viewportAt(.94));
     expect(renderer.snapshot(1).currentEventIndex).toBe(2);
     expect(motion.storyVertices.some(point => point.ts === start + 300000)).toBe(true);
     const expected = { view: motion.viewportAt(.8), state: renderer.snapshot(.8) };
@@ -452,7 +326,7 @@ describe('handoff replay canvas geometry', () => {
     const lastFill = renderer.eventProgress(payload.trades.length - 1), endpoint = motion.chartProgress(1);
     const tailDuration = (endpoint - lastFill) * renderer.getDuration();
     expect(tailDuration).toBeGreaterThan(0); expect(tailDuration).toBeLessThan(1);
-    expect((1 - endpoint) * renderer.getDuration()).toBeCloseTo(1.5, 10);
+    expect((1 - endpoint) * renderer.getDuration()).toBeLessThan(1);
     for (const point of payload.chart.points) {
       const time = Date.parse(point.timestamp), progress = motion.progressAtTime(time);
       expect(motion.timeAt(progress)).toBeCloseTo(time, 0);
@@ -471,248 +345,155 @@ describe('handoff replay canvas geometry', () => {
     }
   });
 
-  it.each([true, false])('keeps large sales free of banners and special transitions with known profit %s', async known => {
+  it('shows a take-profit transition only after a large sale with known profit without changing accounting', async () => {
     const payload = longPosition(), original = structuredClone(payload);
-    if (!known) {
-      for (const trade of payload.trades) delete trade.cumulativeRealizedProfitUsd;
-      payload.realizedAccounting = { available: false };
-    }
-    const drawn: DrawnText[] = [], boxes: PaintedBox[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn, undefined, undefined, boxes));
-    await renderer.setData(payload);
-    const motion = renderer as ReplayCanvas & MotionMethods;
-    const sale = renderer.eventProgress(2), during = sale + .4 / renderer.getDuration();
-    const expected = { viewport: motion.viewportAt(during), snapshot: renderer.snapshot(during) };
-    for (const progress of [sale - 1e-7, sale, during, sale + 1.2 / renderer.getDuration(), 1]) {
-      drawn.length = 0; boxes.length = 0; renderer.render(progress);
-      expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
-      expect(boxes.some(box => box.y >= 190 && box.y + box.height <= 254 && box.width > 200)).toBe(false);
-    }
-    for (const seek of [1, 0, .9, sale - 1e-7, during]) renderer.render(seek);
-    expect({ viewport: motion.viewportAt(during), snapshot: renderer.snapshot(during) }).toEqual(expected);
-    if (known) {
-      expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.currentQuote!.timestamp,
-        currentPrice: 1430, totalPnl: 131700, totalRoi: 131700 / 5800, realizedPnl: 65440 }));
-      expect(payload).toEqual(original);
-    } else {
-      expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ realizedPnl: null, totalPnl: null, totalRoi: null }));
-    }
-    expect(renderer.getDuration()).toBeGreaterThanOrEqual(5); expect(renderer.getDuration()).toBeLessThanOrEqual(25);
+    const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
+    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
+    const sale = renderer.eventProgress(2), emphasized = sale + .2 / renderer.getDuration();
+    drawn.length = 0; renderer.render(sale - 1e-7);
+    expect(renderer.snapshot(sale - 1e-7).currentEventIndex).toBe(1);
+    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
+    drawn.length = 0; renderer.render(emphasized);
+    const badge = drawn.find(label => label.value.startsWith('TAKE PROFIT'));
+    expect(badge).toBeDefined(); expect(badge!.alpha).toBeGreaterThan(0);
+    expect(drawn.some(label => label.value.startsWith('BIG SELL'))).toBe(false);
+    const expected = { badge, snapshot: renderer.snapshot(emphasized) };
+    for (const seek of [1, 0, .9, sale - 1e-7, emphasized]) renderer.render(seek);
+    drawn.length = 0; renderer.render(emphasized);
+    expect({ badge: drawn.find(label => label.value.startsWith('TAKE PROFIT')),
+      snapshot: renderer.snapshot(emphasized) }).toEqual(expected);
+    drawn.length = 0; renderer.render(1);
+    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
+    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.currentQuote!.timestamp,
+      currentPrice: 1430, totalPnl: 131700, totalRoi: 131700 / 5800, realizedPnl: 65440 }));
+    expect(renderer.getDuration()).toBe(15.5);
+    expect(payload).toEqual(original);
   });
 
-  it.each([false, true])('keeps event timing independent of sale size for atomic movement groups %s', async atomic => {
-    const small = atomic ? atomicPosition() : longPosition();
-    const large = structuredClone(small);
-    for (const trade of small.trades) if (trade.side === 'sell') trade.amountUsd = 10;
-    for (const [index, trade] of large.trades.entries()) {
-      if (trade.side === 'sell') trade.amountUsd = index === 3 ? 10_000_000 : 100;
-    }
-    const before = await replay(small), after = await replay(large);
-    expect(after.renderer.getDuration()).toBe(before.renderer.getDuration());
-    for (let index = 0; index < small.trades.length; index += 1) {
-      expect(after.renderer.eventProgress(index)).toBe(before.renderer.eventProgress(index));
-      expect(after.motion.timeAt(after.renderer.eventProgress(index))).toBe(Date.parse(small.trades[index].timestamp));
-    }
-    const frames = Math.ceil(before.renderer.getDuration() * 30);
-    for (let frame = 0; frame <= frames; frame += 1) {
-      expect(after.motion.timeAt(frame / frames)).toBe(before.motion.timeAt(frame / frames));
-    }
-  });
-
-  it.each(['open', 'closed'] as const)('keeps the normal viewport and aligned markers through a large %s-position sale', async position => {
+  it('labels a large sale with unknown profit Big sell without inventing take-profit accounting', async () => {
     const payload = longPosition();
-    if (position === 'closed') {
+    for (const trade of payload.trades) delete trade.cumulativeRealizedProfitUsd;
+    payload.realizedAccounting = { available: false };
+    const original = structuredClone(payload);
+    const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
+    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
+    const sale = renderer.eventProgress(2), emphasized = sale + .2 / renderer.getDuration();
+    drawn.length = 0; renderer.render(sale - 1e-7);
+    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
+    drawn.length = 0; renderer.render(emphasized);
+    const badge = drawn.find(label => label.value.startsWith('BIG SELL'));
+    expect(badge).toBeDefined(); expect(badge!.alpha).toBeGreaterThan(0);
+    expect(drawn.some(label => label.value.startsWith('TAKE PROFIT'))).toBe(false);
+    expect(renderer.snapshot(emphasized).realizedPnl).toBeNull();
+    expect(renderer.snapshot(emphasized).totalPnl).toBeNull();
+    const expected = { badge, snapshot: renderer.snapshot(emphasized) };
+    for (const seek of [1, .01, .8, 0, emphasized]) renderer.render(seek);
+    drawn.length = 0; renderer.render(emphasized);
+    expect({ badge: drawn.find(label => label.value.startsWith('BIG SELL')),
+      snapshot: renderer.snapshot(emphasized) }).toEqual(expected);
+    drawn.length = 0; renderer.render(1);
+    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
+    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.currentQuote!.timestamp,
+      currentPrice: 1430, realizedPnl: null, totalPnl: null, totalRoi: null }));
+    expect(renderer.getDuration()).toBe(15.5);
+    expect(payload).toEqual(original);
+  });
+
+  it('keeps the regular chart scale around a large sale with its line, markers and price guide aligned', async () => {
+    const drawn: { value: string; x: number; y: number; alpha: number }[] = [], painted: PaintedArc[] = [];
+    const filled: { x: number; y: number; width: number; height: number }[] = [];
+    const renderer = new ReplayCanvas(canvasStub(drawn, painted, filled)); await renderer.setData(longPosition());
+    const motion = renderer as ReplayCanvas & MotionMethods;
+    const sale = renderer.eventProgress(2), progress = sale + .7 / renderer.getDuration();
+    const viewport = motion.viewportAt(progress), span = viewport.endQ - viewport.startQ;
+    expect(span).toBeCloseTo(motion.storyWindow, 10);
+    const state = renderer.snapshot(progress), baseCamera = motion.cameraAt(motion.chartProgress(progress));
+    expect(viewport.yMin).toBe(baseCamera.min);
+    expect(viewport.yMax).toBe(baseCamera.max);
+    const tip = motion.visibleLine(progress, viewport).at(-1)!;
+    expect(tip.cap).toBe(state.currentCap); expect(tip.q).toBe(motion.chartProgress(progress));
+    expect(tip.x).toBeCloseTo(activeX, 10);
+    const quoteY = 651 - (state.currentCap - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379;
+    expect(tip.y).toBeCloseTo(quoteY, 10);
+    expect(motion.visibleLine(progress).every(point => point.q <= motion.chartProgress(progress))).toBe(true);
+    const marker = motion.markerPosition(2, progress)!;
+    expect(marker.x).toBeCloseTo(42 + (marker.q - viewport.startQ) / span * 772, 10);
+    expect(marker.y).toBeCloseTo(651 - (marker.executionValue! - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379, 10);
+    drawn.length = 0; painted.length = 0; filled.length = 0; renderer.render(progress);
+    expect(drawn.find(label => label.x === 938)?.y).toBeCloseTo(Math.min(645, Math.max(278, quoteY)) + 1, 10);
+    expect(painted.find(arc => arc.radius === 4 && Math.abs(arc.x - activeX) < .001)?.y)
+      .toBeCloseTo(Math.min(645, Math.max(278, quoteY)), 10);
+    expect(painted.find(arc => arc.color === '#f6465d' && Math.abs(arc.x - marker.x) < .001)?.y).toBeCloseTo(marker.y, 10);
+    // The badge leaves the regular chart viewport unobscured.
+    filled.length = 0; renderer.render(sale + .2 / renderer.getDuration());
+    expect(filled.some(rect => rect.x === 27 && rect.y === 235 && rect.width === 1018 && rect.height === 475)).toBe(false);
+    const expected = { viewport, marker, snapshot: state };
+    for (const seek of [1, 0, .8, sale - .001, progress]) renderer.render(seek);
+    expect({ viewport: motion.viewportAt(progress), marker: motion.markerPosition(2, progress),
+      snapshot: renderer.snapshot(progress) }).toEqual(expected);
+    expect(renderer.getDuration()).toBe(15.5);
+    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ totalPnl: 131700, totalRoi: 131700 / 5800 }));
+  });
+
+  it.each(['open', 'closed'] as const)('keeps an %s sale and ending hold on the base camera without zooming', async status => {
+    const payload = longPosition(), original = structuredClone(payload);
+    if (status === 'closed') {
       payload.position = { ...payload.position, status: 'closed', tokenBalance: 0 };
       payload.trades[3] = { ...payload.trades[3], tokenAmount: 80, amountUsd: 112000, cumulativeRealizedProfitUsd: 130200 };
       delete payload.currentQuote;
     }
-    const original = structuredClone(payload), { renderer, motion } = await replay(payload);
-    const frames = Math.ceil(renderer.getDuration() * 30);
-    for (let frame = 0; frame <= frames; frame += 1) {
-      const progress = frame / frames, viewport = motion.viewportAt(progress);
+    const prepared = structuredClone(payload), { renderer, motion } = await replay(payload);
+    const sale = renderer.eventProgress(3);
+    for (let frame = 0; frame < 465; frame += 1) {
+      const progress = frame / 464, viewport = motion.viewportAt(progress);
       const base = motion.cameraAt(motion.chartProgress(progress));
       expect(viewport.endQ - viewport.startQ).toBeCloseTo(motion.storyWindow, 10);
       expect(viewport.yMin).toBe(base.min); expect(viewport.yMax).toBe(base.max);
-      const tip = motion.visibleLine(progress, viewport).at(-1)!;
-      expect(tip.x).toBeCloseTo(activeX, 10);
-      expect(tip.cap).toBe(renderer.snapshot(progress).currentCap);
     }
-    const progress = renderer.eventProgress(2) + .7 / renderer.getDuration();
-    const viewport = motion.viewportAt(progress), marker = motion.markerPosition(2, progress)!;
-    expect(marker.x).toBeCloseTo(42 + (marker.q - viewport.startQ) / motion.storyWindow * 772, 10);
-    expect(marker.y).toBeCloseTo(651 - (marker.executionValue! - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379, 10);
+    for (let index = 0; index < payload.trades.length; index += 1) {
+      expect(motion.timeAt(renderer.eventProgress(index))).toBe(Date.parse(payload.trades[index].timestamp));
+    }
     const final = renderer.snapshot(1), geometry = motion.viewportAt(1);
-    for (const seek of [progress, 0, .8, 1]) renderer.render(seek);
+    const ending = motion.chartProgress(1);
+    expect(motion.viewportAt(ending)).toEqual(geometry);
+    renderer.render(sale + .7 / renderer.getDuration()); renderer.render(0); renderer.render(1);
     expect(renderer.snapshot(1)).toEqual(final); expect(motion.viewportAt(1)).toEqual(geometry);
-    expect(renderer.getDuration()).toBeGreaterThanOrEqual(5); expect(renderer.getDuration()).toBeLessThanOrEqual(25); expect(payload).toEqual(original);
-    if (position === 'closed') {
-      expect(final).toEqual(expect.objectContaining({ holdings: 0, totalPnl: 130200, totalRoi: 130200 / 5800 }));
-      expect(geometry).toEqual(motion.viewportAt(renderer.eventProgress(3)));
+    expect(renderer.getDuration()).toBe(15.5);
+    if (status === 'closed') {
+      expect(motion.chartProgress(sale + .7 / renderer.getDuration())).toBe(sale);
+      expect(final).toEqual(expect.objectContaining({ time: payload.trades.at(-1)!.timestamp,
+        currentPrice: 1400, holdings: 0, totalPnl: 130200, totalRoi: 130200 / 5800 }));
     } else {
-      expect(final).toEqual(expect.objectContaining({ holdings: 50, totalPnl: 131700, totalRoi: 131700 / 5800 }));
+      expect(final).toEqual(expect.objectContaining({ time: original.currentQuote!.timestamp,
+        currentPrice: 1430, holdings: 50, totalPnl: 131700, totalRoi: 131700 / 5800 }));
     }
+    expect(payload).toEqual(prepared);
   });
 
-  it.each([[0, '$2.00', '#16c784'], [2, '$30.00', '#f6465d']] as const)
-    ('shows only the amount next to transaction %s without a box, time or execution MCAP', async (index, amount, color) => {
-      const drawn: DrawnText[] = [], rounded: PaintedBox[] = [];
-      const renderer = new ReplayCanvas(canvasStub(drawn, undefined, undefined, rounded));
-      await renderer.setData(data());
-      const motion = renderer as ReplayCanvas & MotionMethods;
-      const progress = renderer.eventProgress(index) + .4 / renderer.getDuration();
-      const marker = motion.markerPosition(index, progress)!;
-      drawn.length = 0; rounded.length = 0; renderer.render(progress);
-      const label = drawn.find(label => label.value === amount && label.y >= 258 && label.y <= 666)!;
-      expect(label).toBeDefined(); expect(label.alpha).toBeGreaterThan(.9); expect(label.color).toBe(color);
-      expect(label.x).toBeCloseTo(marker.x, 8);
-      expect(Math.abs(label.y - marker.y)).toBeGreaterThan(motion.markerRadius);
-      if (index === 0) expect(label.y).toBeLessThan(marker.y);
-      else expect(label.y).toBeGreaterThan(marker.y);
-      expect(drawn.some(label => /^(BUY|SELL) ·|\d\d:\d\d:\d\d UTC| MCAP$/.test(label.value))).toBe(false);
-      expect(rounded.some(box => box.x >= 42 && box.x + box.width <= 814
-        && box.y >= 258 && box.y + box.height <= 666 && box.width > 100 && box.height > 40)).toBe(false);
-    });
-
-  it('fades the amount in and out around its circle appearance while keeping the circle visible', async () => {
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(data());
-    const sale = renderer.eventProgress(3);
-    const labelAt = (seconds: number) => {
-      drawn.length = 0; renderer.render(sale + seconds / renderer.getDuration());
-      return drawn.find(label => label.value === '$50.00' && label.y >= 258 && label.y <= 666);
-    };
-    expect(labelAt(-.01)).toBeUndefined();
-    const entering = labelAt(.06), held = labelAt(.4), leaving = labelAt(1.1);
-    expect(entering).toBeDefined(); expect(held).toBeDefined(); expect(leaving).toBeDefined();
-    expect(entering!.alpha).toBeGreaterThan(0); expect(entering!.alpha).toBeLessThan(held!.alpha);
-    expect(held!.alpha).toBeGreaterThan(.9);
-    expect(leaving!.alpha).toBeGreaterThan(0); expect(leaving!.alpha).toBeLessThan(held!.alpha);
-    expect(labelAt(1.4)).toBeUndefined();
-    expect(drawn.some(label => label.value === 'S')).toBe(true);
-    drawn.length = 0; renderer.render(1);
-    expect(drawn.some(label => label.value === '$50.00' && label.y >= 258 && label.y <= 666)).toBe(false);
-    expect(drawn.some(label => label.value === 'S' && label.alpha === 1)).toBe(true);
-  });
-
-  it('fades nearby buy amounts in sequentially underneath the first amount without combining fills', async () => {
-    const drawn: DrawnText[] = [], payload = buyBurst(), original = structuredClone(payload);
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    const labelsAt = (seconds: number) => {
-      drawn.length = 0; renderer.render(seconds / renderer.getDuration());
-      return drawn.filter(label => label.color === '#16c784' && /^\$\d+\.00$/.test(label.value)
-        && label.y >= 258 && label.y <= 666);
-    };
-    const first = labelsAt(.06);
-    expect(first.map(label => label.value)).toEqual(['$15.00']);
-    const second = labelsAt(.28);
-    expect(second.map(label => label.value)).toEqual(['$15.00', '$16.00']);
-    expect(second[1].alpha).toBeGreaterThan(0); expect(second[1].alpha).toBeLessThan(second[0].alpha);
-    expect(second[1].x).toBe(second[0].x);
-    expect(second[1].y - second[0].y).toBeCloseTo(36, 8);
-    const third = labelsAt(.5);
-    expect(third.map(label => label.value)).toEqual(['$15.00', '$16.00', '$17.00']);
-    expect(third[2].x).toBe(third[0].x);
-    expect(third[2].y - third[1].y).toBeCloseTo(36, 8);
-    // The independent source clock has already processed more fills than the
-    // callout queue; every original amount still reaches the final accounting.
-    const state = renderer.snapshot(.5 / renderer.getDuration());
-    expect(state.currentEventIndex).toBeGreaterThan(2);
-    const expected = structuredClone(third);
-    for (const seek of [1, 0, .7, .1]) renderer.render(seek);
-    expect(labelsAt(.5)).toEqual(expected);
-    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ invested: 171, proceeds: 270, holdings: 0, pnl: 99 }));
-    expect(payload).toEqual(original);
-  });
-
-  it('keeps at most four chronological buy rows in one column, clear of the transaction circles', async () => {
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(buyBurst());
-    const shown = new Set<string>();
-    for (let seconds = .04; seconds < 3; seconds += .04) {
-      drawn.length = 0; renderer.render(seconds / renderer.getDuration());
-      const labels = drawn.filter(label => label.color === '#16c784' && /^\$\d+\.00$/.test(label.value)
-        && label.y >= 258 && label.y <= 666);
-      expect(labels.length).toBeLessThanOrEqual(4);
-      labels.forEach(label => shown.add(label.value));
-      for (let index = 1; index < labels.length; index += 1) {
-        expect(labels[index].x).toBe(labels[0].x);
-        expect(labels[index].y - labels[index - 1].y).toBeCloseTo(36, 8);
-        expect(Number(labels[index].value.slice(1))).toBeGreaterThan(Number(labels[index - 1].value.slice(1)));
-      }
-      for (const label of labels) for (const circle of drawn.filter(label => /^[BS]$/.test(label.value))) {
-        const left = Math.max(label.x - label.value.length * 10, label.clip?.x ?? -Infinity);
-        const right = Math.min(label.x + label.value.length * 10, label.clip ? label.clip.x + label.clip.width : Infinity);
-        const top = Math.max(label.y - 15, label.clip?.y ?? -Infinity);
-        const bottom = Math.min(label.y + 15, label.clip ? label.clip.y + label.clip.height : Infinity);
-        if (right <= left || bottom <= top) continue;
-        const dx = Math.max(left - circle.x, 0, circle.x - right);
-        const dy = Math.max(top - circle.y, 0, circle.y - bottom);
-        expect(Math.hypot(dx, dy), JSON.stringify({ seconds, label, circle })).toBeGreaterThan(20);
-      }
+  it.each([false, true])('keeps the same pacing for small and large sells in a modern=%s replay', async modern => {
+    const source = modern ? atomicPosition() : longPosition(), saleIndex = modern ? 19 : 2;
+    const small = structuredClone(source), large = structuredClone(source);
+    for (const payload of [small, large]) for (const trade of payload.trades) if (trade.side === 'sell') trade.amountUsd = 10;
+    large.trades[saleIndex].amountUsd = 10_000_000;
+    expect(selectReplaySellHighlights(small.trades)).toEqual([]);
+    expect(selectReplaySellHighlights(large.trades).map(highlight => highlight.tradeIndex)).toEqual([saleIndex]);
+    const before = await replay(small), after = await replay(large);
+    expect(after.renderer.getDuration()).toBe(15.5);
+    for (let index = 0; index < source.trades.length; index += 1) {
+      expect(after.renderer.eventProgress(index)).toBe(before.renderer.eventProgress(index));
+      expect(after.motion.timeAt(after.renderer.eventProgress(index))).toBe(Date.parse(source.trades[index].timestamp));
     }
-    expect([...shown]).toEqual(Array.from({ length: 9 }, (_, index) => `$${15 + index}.00`));
-  });
-
-  it('skips an unknown buy amount without leaving a gap in the column', async () => {
-    const payload = buyBurst(); payload.trades[1].amountUsd = null;
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    drawn.length = 0; renderer.render(.28 / renderer.getDuration());
-    const labels = drawn.filter(label => label.color === '#16c784' && /^\$\d+\.00$/.test(label.value)
-      && label.y >= 258 && label.y <= 666);
-    expect(labels.map(label => label.value)).toEqual(['$15.00', '$17.00']);
-    expect(labels[1].y - labels[0].y).toBeCloseTo(36, 8);
-  });
-
-  it('finishes a dense closing buy queue within the existing final hold without delaying PnL', async () => {
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(buyBurst(12, true));
-    const duration = renderer.getDuration(), closing = renderer.chartProgress(1), shown = new Set<string>();
-    expect((1 - closing) * duration).toBeCloseTo(1.5, 8);
-    expect(renderer.snapshot(closing)).toEqual(expect.objectContaining({ invested: 246, proceeds: 360, holdings: 0, pnl: 114 }));
-    for (let seconds = closing * duration; seconds <= duration; seconds += 1 / 60) {
-      drawn.length = 0; renderer.render(seconds / duration);
-      for (const label of drawn) if (label.color === '#16c784' && /^\$\d+\.00$/.test(label.value)
-        && label.y >= 258 && label.y <= 666) shown.add(label.value);
+    const sale = before.renderer.eventProgress(saleIndex);
+    for (const progress of [0, sale - 1e-7, sale, sale + .2 / 15.5, sale + .7 / 15.5, .9, 1]) {
+      expect(after.motion.chartProgress(progress)).toBe(before.motion.chartProgress(progress));
+      expect(after.motion.timeAt(progress)).toBe(before.motion.timeAt(progress));
+      expect(after.motion.viewportAt(progress)).toEqual(before.motion.viewportAt(progress));
+      expect(after.motion.visibleLine(progress)).toEqual(before.motion.visibleLine(progress));
     }
-    expect(shown.size).toBe(11);
-    drawn.length = 0; renderer.render(1);
-    expect(drawn.some(label => label.color === '#16c784' && label.value.startsWith('$') && label.y >= 258 && label.y <= 666)).toBe(false);
-  });
-
-  it('keeps amounts for simultaneous trades separate and clear of visible circles', async () => {
-    const payload = atomicPosition();
-    payload.trades[19].amountUsd = 141.23; payload.trades[20].amountUsd = 257.45;
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    const motion = renderer as ReplayCanvas & MotionMethods;
-    const progress = renderer.eventProgress(19) + .4 / renderer.getDuration();
-    drawn.length = 0; renderer.render(progress);
-    const labels = ['$141.23', '$257.45'].map(value => drawn.find(label => label.value === value && label.y >= 258 && label.y <= 666)!);
-    expect(labels.every(Boolean)).toBe(true);
-    expect(Math.abs(labels[0].y - labels[1].y)).toBeGreaterThan(25);
-    const circles = drawn.filter(label => /^[BS]$/.test(label.value));
-    for (const label of labels) for (const circle of circles) {
-      const dx = Math.max(Math.abs(label.x - circle.x) - label.value.length * 10, 0);
-      const dy = Math.max(Math.abs(label.y - circle.y) - 15, 0);
-      expect(Math.hypot(dx, dy)).toBeGreaterThan(motion.markerRadius);
+    if (modern) {
+      expect(after.renderer.eventProgress(19)).toBe(after.renderer.eventProgress(20));
+      expect(after.renderer.snapshot(1)).toEqual(before.renderer.snapshot(1));
     }
-    const expected = structuredClone(labels);
-    for (const seek of [1, 0, .8, progress]) renderer.render(seek);
-    drawn.length = 0; renderer.render(progress);
-    expect(['$141.23', '$257.45'].map(value => drawn.find(label => label.value === value && label.y >= 258 && label.y <= 666))).toEqual(expected);
-  });
-
-  it('omits unknown transaction values instead of adding an invented amount', async () => {
-    const payload = data(); payload.trades[2].amountUsd = null;
-    const drawn: DrawnText[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    const progress = renderer.eventProgress(2) + .4 / renderer.getDuration();
-    drawn.length = 0; renderer.render(progress);
-    const labels = drawn.filter(label => label.x >= 42 && label.x <= 814 && label.y >= 258 && label.y <= 666);
-    expect(labels.some(label => label.value === '$30.00')).toBe(false);
-    expect(labels.some(label => label.value === '$20.00' && label.color === '#16c784')).toBe(true);
-    expect(drawn.some(label => label.value === 'S')).toBe(true);
   });
 
   it('gives a day of post-trade market history more playback time than a few minutes', async () => {
@@ -720,8 +501,7 @@ describe('handoff replay canvas geometry', () => {
     const tailSeconds = ({ renderer, motion }: Awaited<ReturnType<typeof replay>>) =>
       (motion.chartProgress(1) - renderer.eventProgress(3)) * renderer.getDuration();
     expect(tailSeconds(extended)).toBeGreaterThan(tailSeconds(brief) * 2);
-    const activeSeconds = extended.motion.chartProgress(1) * extended.renderer.getDuration();
-    expect(tailSeconds(extended) / activeSeconds).toBeCloseTo(24 / 56, 10);
+    expect(tailSeconds(extended)).toBeLessThan(4.1);
     expect(extended.renderer.snapshot(1).currentPrice).toBe(brief.renderer.snapshot(1).currentPrice);
     expect(extended.renderer.snapshot(1).totalPnl).toBe(brief.renderer.snapshot(1).totalPnl);
     expect(extended.renderer.snapshot(1).time).toBe(at(56 * 3600));
@@ -737,7 +517,7 @@ describe('handoff replay canvas geometry', () => {
     let previousEvent = -1, previousTime = start;
     for (let index = 0; index < payload.trades.length; index += 1) {
       const progress = renderer.eventProgress(index);
-      expect(Number.isFinite(progress)).toBe(true); expect(progress).toBe(0); expect(progress).toBeGreaterThanOrEqual(previousEvent);
+      expect(Number.isFinite(progress)).toBe(true); expect(progress).toBeGreaterThan(previousEvent);
       expect(motion.timeAt(progress)).toBe(start); previousEvent = progress;
     }
     for (let frame = 0; frame <= 100; frame += 1) {
@@ -842,7 +622,7 @@ describe('handoff replay canvas geometry', () => {
     expect(finalSell).toBeDefined(); expect(finalSell!.alpha).toBe(1);
   });
 
-  it('retains green buy and red sell circles at their genuine shared timestamp', async () => {
+  it('retains separate green buy and red sell circles for paced simultaneous fills', async () => {
     const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
     const painted: PaintedArc[] = [];
     const renderer = new ReplayCanvas(canvasStub(drawn, painted)); await renderer.setData(data());

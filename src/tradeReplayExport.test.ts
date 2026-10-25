@@ -41,7 +41,7 @@ beforeEach(() => {
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function browserRecorder(supported: string, duration = .02) {
+function browserRecorder(supported: string) {
   vi.stubGlobal('VideoEncoder', undefined); vi.stubGlobal('VideoFrame', undefined);
   vi.useFakeTimers(); vi.setSystemTime(0);
   const stopTrack = vi.fn();
@@ -63,11 +63,11 @@ function browserRecorder(supported: string, duration = .02) {
   vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id));
   vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
   const render = vi.fn();
-  const player = { canvas: new Canvas(), getDuration: () => duration, render } as unknown as ReplayCanvas;
+  const player = { canvas: new Canvas(), getDuration: () => .02, render } as unknown as ReplayCanvas;
   return { player, stopTrack, render };
 }
 
-function indexedPlayer(duration = 12) {
+function indexedPlayer(duration = 15.5) {
   vi.stubGlobal('VideoEncoder', class {}); vi.stubGlobal('VideoFrame', class {});
   vi.stubGlobal('document', { visibilityState: 'hidden' });
   const render = vi.fn();
@@ -82,27 +82,23 @@ describe('indexed replay video encoding', () => {
     expect(file.name).toBe('token-24h-token-replay.mp4'); expect(render).toHaveBeenCalledTimes(30);
     expect(render).toHaveBeenLastCalledWith(1);
   });
-  it.each([5, 11.47, 25])('encodes a %s-second replay at exact 30fps through its final state', async duration => {
-    const { player, render, canvas } = indexedPlayer(duration);
+  it('encodes all 465 frames at exact 30fps timestamps through the final replay state', async () => {
+    const { player, render, canvas } = indexedPlayer();
     const progress = vi.fn();
     const file = await recordTradeReplay(player, 'Trader TOKEN', new AbortController().signal, progress);
     expect(file.type).toBe('video/mp4'); expect(file.name).toBe('trader-token-trade-replay.mp4');
     expect(indexed.codec).toHaveBeenCalledWith(['avc'], expect.objectContaining({ width: 1080, height: 1350, frameRate: 30 }));
     expect(indexed.quality).toHaveBeenCalledWith({ bitrate: 8_000_000 });
     expect(indexed.trackOptions).toHaveBeenCalledWith({ frameRate: 30 });
-    const frameCount = Math.round(duration * 30);
-    expect(indexed.add).toHaveBeenCalledTimes(frameCount); expect(render).toHaveBeenCalledTimes(frameCount);
+    expect(indexed.add).toHaveBeenCalledTimes(465); expect(render).toHaveBeenCalledTimes(465);
     expect(canvas.captureStream).not.toHaveBeenCalled();
-    for (let index = 0; index < frameCount; index += 1) {
-      expect(render.mock.calls[index]).toEqual([index / (frameCount - 1)]);
+    for (let index = 0; index < 465; index += 1) {
+      expect(render.mock.calls[index]).toEqual([index / 464]);
       expect(indexed.add.mock.calls[index]).toEqual([index / 30, 1 / 30, index % 60 === 0 ? { keyFrame: true } : undefined]);
     }
     expect(progress).toHaveBeenLastCalledWith(1);
     expect(indexed.finalize).toHaveBeenCalledOnce(); expect(indexed.close).toHaveBeenCalled();
     expect(indexed.cancel).not.toHaveBeenCalled();
-    const finalFrame = indexed.add.mock.calls.at(-1)!;
-    expect(finalFrame[0] + finalFrame[1]).toBeCloseTo(frameCount / 30, 10);
-    expect(Math.abs(frameCount / 30 - duration)).toBeLessThanOrEqual(1 / 60 + 1e-10);
   });
 
   it('keeps encoded timing fixed when drawing and encoding take longer than playback', async () => {
@@ -195,21 +191,6 @@ describe('indexed replay video encoding', () => {
 });
 
 describe('replay video export lifecycle', () => {
-  it('records the selected longer duration instead of stopping at the former fixed replay length', async () => {
-    const { player, stopTrack, render } = browserRecorder('video/mp4', 24);
-    let completed = false;
-    const promise = recordTradeReplay(player, 'Trader TOKEN', new AbortController().signal).then(file => { completed = true; return file; });
-    await vi.advanceTimersByTimeAsync(16_000);
-    expect(completed).toBe(false);
-    expect(render.mock.calls.at(-1)![0]).toBeCloseTo(2 / 3, 2);
-    expect(stopTrack).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(8300);
-    const file = await promise;
-    expect(completed).toBe(true); expect(file.type).toBe('video/mp4');
-    expect(render).toHaveBeenLastCalledWith(1); expect(stopTrack).toHaveBeenCalledOnce();
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
   it('exports real recorder output as MP4 and releases stream tracks', async () => {
     const { player, stopTrack, render } = browserRecorder('video/mp4');
     expect(supportedReplayFormat()).toBe('video/mp4');

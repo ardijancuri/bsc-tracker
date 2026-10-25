@@ -169,7 +169,7 @@ describe('trade replay rolling recorded-position profit', () => {
     expect(final.invested).toBe(lastSale.invested); expect(final.proceeds).toBe(lastSale.proceeds);
     expect(final.currentEventIndex).toBe(2);
     expect(renderer.snapshot(.8).totalPnl).not.toBe(lastSale.totalPnl);
-    expect(renderer.snapshot(renderer.chartProgress(1))).toEqual(final);
+    expect(renderer.snapshot(.94)).toEqual(final);
     if (source === 'Recorded fills') expect(final.pnl).toBeNull();
   });
 
@@ -234,19 +234,16 @@ describe('trade replay rolling recorded-position profit', () => {
     }
   });
 
-  it('reveals the complete same-second accounting prefix at one timestamp without inventing delays', async () => {
+  it('accounts for same-second fills only when their distinct replay events are revealed', async () => {
     const payload = data();
     payload.trades[2].timestamp = payload.trades[1].timestamp;
     const renderer = await replay(payload);
-    const group = renderer.eventProgress(1);
-    const before = renderer.snapshot(group - 1e-7);
-    const bought = renderer.snapshot(group), sold = renderer.snapshot(renderer.eventProgress(2));
-    expect(before).toEqual(expect.objectContaining({ holdings: 100, realizedPnl: 0, remainingCostBasis: 100 }));
-    expect(bought.time).toBe(at(60)); expect(bought).toEqual(sold);
-    expect(bought.currentEventIndex).toBe(2); expect(bought.holdings).toBe(50);
-    expect(bought.realizedPnl).toBe(350); expect(bought.remainingCostBasis).toBe(150);
+    const bought = renderer.snapshot(renderer.eventProgress(1));
+    const sold = renderer.snapshot(renderer.eventProgress(2));
+    expect(bought.time).toBe(sold.time);
+    expect(bought.realizedPnl).toBe(0); expect(bought.remainingCostBasis).toBe(400);
     expect(sold.realizedPnl).toBe(350); expect(sold.remainingCostBasis).toBe(150);
-    expect(renderer.eventProgress(2)).toBe(group);
+    expect(renderer.eventProgress(2)).toBeGreaterThan(renderer.eventProgress(1));
   });
 
   it('estimates recorded open lots at the displayed fill-price curve while keeping verified wallet profit withheld', async () => {

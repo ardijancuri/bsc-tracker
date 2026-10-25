@@ -2,22 +2,23 @@
  * Adapted from the user-supplied BScan Trade Replay Studio (second handoff).
  * BScan trade recap, drawn entirely on a 1080 × 1350 canvas.
  *
- * One linear clock compresses the approved position history consistently.
- * Dates, chart prices, and fill values remain real data.
+ * The visual timeline can spend more time around a trader's fills than around
+ * quiet chart history. Dates, chart prices, and fill values remain real data.
  * All rendering is derived from `progress`; exporting frames in any order gives
  * the same result.
  */
 
 import { BRAND_ICON_PATHS, BRAND_WORDMARK_PATHS } from './tradeReplayBrandPaths';
 import { replayAccountingTotal, replayEndTimestamp, replayIsOpen } from './tradeReplayData';
-import { createTradeReplayTiming } from './tradeReplayTiming';
-import { createTradeReplayAmountSchedule } from './tradeReplayAmounts';
+import { selectReplaySellHighlights } from './tradeReplayHighlights';
 
 const WIDTH = 1080;
 const HEIGHT = 1350;
+const DURATION = 15.5;
 const MINUTE = 60_000;
 const PLAYHEAD_FRACTION = 0.74;
 const MARKER_RADIUS = 20;
+const MIN_STORY_WINDOW = 0.32;
 const FONT = 'Manrope, system-ui, sans-serif';
 
 const COLOR = {
@@ -330,20 +331,20 @@ export class ReplayCanvas {
     this.timelineEnd = 0;
     this.tradeEnd = 0;
     this.eventPhase = 1;
-    this.timing = createTradeReplayTiming(0, 0);
-    this.durationSeconds = this.timing.durationSeconds;
-    this.currentEndPhase = 0;
+    this.currentEndPhase = 0.94;
     this.currentQuote = null;
     this.hasTail = false;
     this.inventoryEvents = [];
     this.accountingEvents = [];
     this.eventProgresses = [];
+    this.pacingEvents = [];
+    this.sellHighlights = [];
     this.supply = null;
     this.fillOnly = false;
     this.storyWindow = 0.5;
     this.markerRadius = MARKER_RADIUS;
     this.markerPlacements = [];
-    this.amountClusters = [];
+    this.tooltipRects = [];
     this.axisTicks = [];
     this.cameraValues = [];
     this.yMin = 0;
@@ -354,6 +355,7 @@ export class ReplayCanvas {
   async setData(data) {
     if (!data || !data.kol || !data.token) throw new TypeError('Replay data needs kol and token');
     this.data = data;
+    this.pacingEvents = [];
     const modern = data.replayAccounting?.version === 2;
     const movementTimes = modern ? (data.inventory?.events ?? []).map(event => Date.parse(event.timestamp)).filter(Number.isFinite) : [];
     this.trades = (Array.isArray(data.trades) ? data.trades : [])
@@ -456,28 +458,90 @@ export class ReplayCanvas {
     if (modern) this.hasTail = Boolean(this.currentQuote) || this.timelineEnd > this.tradeEnd;
     if (!this.trades.length && this.timelineEnd <= this.timelineStart) this.timelineEnd = this.timelineStart + MINUTE;
 
-    const inventory = Array.isArray(data.inventory?.events) ? data.inventory.events : [];
-    this.timing = createTradeReplayTiming(this.timelineStart, this.timelineEnd,
-      [...this.trades.map(trade => trade.ts), ...inventory.map(event => Date.parse(event.timestamp))]);
-    this.durationSeconds = this.timing.durationSeconds;
-    this.currentEndPhase = this.timing.activePhase;
-    this.eventPhase = this.progressAtTime(this.tradeEnd);
-    this.eventProgresses = this.trades.map(trade => this.progressAtTime(trade.ts));
+    // Trade recaps need enough screen time for consecutive fills even when the
+    // chain timestamps differ by seconds. Actual timestamps remain the x-axis
+    // and price lookup; these progress knots only set presentation pacing.
+    if (this.trades.length >= 2) {
+      // A few quiet minutes after a day of trades should not consume the same
+      // four seconds as a full day of post-trade market history. Keep a short
+      // readable tail, scaling only by elapsed time so future prices cannot
+      // change the pacing of earlier fills. Every observation still appears.
+      const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd);
+      const totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
+      const tailPhase = clamp(0.26 * Math.sqrt(tailMs / totalMs), 0.04, 0.26);
+      this.eventPhase = this.hasTail ? this.currentEndPhase - tailPhase : 0.84;
+      const gaps = this.trades.slice(1).map((trade, i) => Math.max(0, trade.ts - this.trades[i].ts));
+      const minimumGap = Math.min(0.04, this.eventPhase / gaps.length * 0.82);
+      const weighted = gaps.map((gap) => Math.log1p(gap / 1000) + 0.5);
+      const totalWeight = weighted.reduce((sum, value) => sum + value, 0);
+      const discretionary = this.eventPhase - minimumGap * gaps.length;
+      this.eventProgresses = [0];
+      for (let i = 0; i < gaps.length; i += 1) {
+        this.eventProgresses.push(this.eventProgresses.at(-1) + minimumGap + discretionary * weighted[i] / totalWeight);
+      }
+      this.eventProgresses[this.eventProgresses.length - 1] = this.eventPhase;
+    } else {
+      this.eventPhase = this.trades.length ? 0 : 1;
+      this.eventProgresses = this.trades.length ? [0] : [];
+    }
+    if (modern && movementTimes.length) {
+      // One timestamp is one atomic ledger group. Its transfers and swaps
+      // appear together, without inventing an order inside that second.
+      const times = [...new Set(movementTimes)].sort((a, b) => a - b);
+      const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd), totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
+      this.eventPhase = times.length > 1 ? this.hasTail ? this.currentEndPhase - clamp(.26 * Math.sqrt(tailMs / totalMs), .04, .26) : .84 : 0;
+      const weights = times.slice(1).map((time, i) => Math.log1p((time - times[i]) / 1000) + .5), total = weights.reduce((sum, weight) => sum + weight, 0);
+      let q = 0; this.pacingEvents = times.map((ts, index) => {
+        if (index) q += this.eventPhase * weights[index - 1] / total;
+        return { ts, q: index === times.length - 1 ? this.eventPhase : q };
+      });
+      const byTime = new Map(this.pacingEvents.map(event => [event.ts, event.q]));
+      this.eventProgresses = this.trades.map(trade => byTime.get(trade.ts) ?? 0);
+    }
 
-    // Same-time movements reveal as one canonical group; no artificial pauses
-    // or delays are inserted between fills and transfers.
+    // Highlight wording is independent of the camera and playback pacing.
+    this.sellHighlights = selectReplaySellHighlights(this.trades, data.replayAccounting?.events);
+
+    // Account for the canonical movement prefix without adding executions or
+    // price vertices. Same-second transfers fit between their neighboring
+    // paced trades; a future trade's snapshot never leaks into an earlier frame.
     const tradeIndices = new Map(this.trades.map((trade, index) => [trade.id, index]));
-    this.inventoryEvents = inventory.map(event => ({ ...event,
-      q: this.progressAtTime(Date.parse(event.timestamp)), tradeIndex: tradeIndices.get(event.tradeId) }));
+    const inventory = Array.isArray(data.inventory?.events) ? data.inventory.events : [];
+    this.inventoryEvents = inventory.map((event, index) => {
+      const tradeIndex = tradeIndices.get(event.tradeId);
+      let q = tradeIndex === undefined ? this.progressAtTime(Date.parse(event.timestamp)) : this.eventProgress(tradeIndex);
+      if (!modern && tradeIndex === undefined) {
+        let before = index - 1, after = index + 1;
+        while (before >= 0 && !tradeIndices.has(inventory[before].tradeId)) before -= 1;
+        while (after < inventory.length && !tradeIndices.has(inventory[after].tradeId)) after += 1;
+        const previous = inventory[before], next = inventory[after];
+        if (previous && next) {
+          const start = this.eventProgress(tradeIndices.get(previous.tradeId));
+          const end = this.eventProgress(tradeIndices.get(next.tradeId));
+          const gap = Math.min(0.012, (end - start) / (after - before) * 0.1);
+          q = Date.parse(previous.timestamp) === Date.parse(event.timestamp) && Date.parse(next.timestamp) === Date.parse(event.timestamp)
+            ? start + (end - start) * (index - before) / (after - before)
+            : clamp(q, start + gap * (index - before), end - gap * (after - index));
+        } else if (previous && !next && this.hasTail) {
+          const start = this.eventProgress(tradeIndices.get(previous.tradeId));
+          const gap = Math.min(0.012, (this.currentEndPhase - start) / (inventory.length - before) * 0.1);
+          q = clamp(q, start + gap * (index - before), this.currentEndPhase - gap * (inventory.length - 1 - index));
+        }
+      }
+      return { ...event, q, tradeIndex };
+    });
     const movementById = new Map(this.inventoryEvents.map(event => [event.id, event]));
     this.accountingEvents = (data.replayAccounting?.events ?? []).map(event => {
       const movement = movementById.get(event.id);
       return { ...event, q: movement?.q ?? Infinity, tradeIndex: movement?.tradeIndex };
     });
 
-    // A fixed presentation-time viewport keeps horizontal movement steady
-    // across clips of different lengths, without changing execution prices.
-    this.storyWindow = this.timing.storyWindow;
+    // A single rapid fill must not turn a long recap into an extreme close-up.
+    // Keep a readable, constant-speed pan instead of shrinking the markers.
+    // Same-second ledger groups share one anchor; they are not zero-width views.
+    const eventGaps = this.eventProgresses.slice(1).map((q, i) => q - this.eventProgresses[i]).filter(gap => gap > 1e-9);
+    const minEventGap = eventGaps.length ? Math.min(...eventGaps) : 1;
+    this.storyWindow = clamp(minEventGap * (814 - 42) / (MARKER_RADIUS * 2 + 10), MIN_STORY_WINDOW, 0.5);
     this.markerRadius = MARKER_RADIUS;
 
     const story = this.plotPoints
@@ -514,6 +578,7 @@ export class ReplayCanvas {
     this.buildCamera();
     this.buildAxisTicks();
     this.layoutMarkers();
+    this.layoutTooltips();
 
     const [avatar, logo, brandIcon, brandWordmark] = await Promise.all([
       loadImage(normalizeImageUrl(data.kol.avatarUrl)),
@@ -529,11 +594,11 @@ export class ReplayCanvas {
   }
 
   getDuration() {
-    return this.durationSeconds;
+    return DURATION;
   }
 
   chartProgress(progress) {
-    return Math.min(clamp(finite(progress), 0, 1), this.currentEndPhase);
+    return this.trades.length ? Math.min(clamp(finite(progress), 0, 1), this.hasTail ? this.currentEndPhase : this.eventPhase) : clamp(finite(progress), 0, 1);
   }
 
   viewportAt(progress) {
@@ -542,7 +607,7 @@ export class ReplayCanvas {
     const window = this.storyWindow;
     const startQ = p - window * PLAYHEAD_FRACTION;
     const time = this.timeAt(p);
-    const startTime = this.timing.timeAtProgress(startQ);
+    const startTime = startQ < 0 ? this.timelineStart + startQ / 0.12 * 2 * MINUTE : this.timeAt(startQ);
     const endTime = this.timeAt(startQ + window);
     return { time, startTime, endTime, spanTime: endTime - startTime,
       startQ, endQ: startQ + window, yMin: camera.min, yMax: camera.max };
@@ -575,7 +640,7 @@ export class ReplayCanvas {
     const camera = { min: viewport.yMin, max: viewport.yMax };
     const y = this.markerCenterY(marker.cap, camera);
     const anchorY = y;
-    const elapsed = Math.max(0, (clamp(finite(progress), 0, 1) - marker.q) * this.durationSeconds);
+    const elapsed = Math.max(0, (clamp(finite(progress), 0, 1) - marker.q) * DURATION);
     const entrance = smoothstep(elapsed / 0.19);
     return { index, ts: marker.ts, q: marker.q, x, y, anchorY, marketValue: marker.cap,
       executionValue: this.capMode ? this.trades[index].marketCapUsd : this.trades[index].priceUsd,
@@ -588,7 +653,34 @@ export class ReplayCanvas {
   }
 
   progressAtTime(ts) {
-    return this.timing.progressAtTime(ts);
+    if (this.pacingEvents.length) {
+      const first = this.pacingEvents[0], last = this.pacingEvents.at(-1);
+      if (ts <= first.ts) return 0;
+      if (ts >= last.ts) return this.timelineEnd > last.ts ? last.q + (ts - last.ts) / (this.timelineEnd - last.ts) * (this.currentEndPhase - last.q) : last.q;
+      for (let i = 1; i < this.pacingEvents.length; i++) {
+        const a = this.pacingEvents[i - 1], b = this.pacingEvents[i];
+        if (ts <= b.ts) return a.q + (ts - a.ts) / (b.ts - a.ts) * (b.q - a.q);
+      }
+    }
+    if (!this.trades.length) {
+      return (ts - this.timelineStart) / (this.timelineEnd - this.timelineStart);
+    }
+    if (ts < this.trades[0].ts) {
+      return -Math.min(0.16, (this.trades[0].ts - ts) / (2 * MINUTE) * 0.12);
+    }
+    if (ts >= this.tradeEnd) {
+      const tail = this.timelineEnd - this.tradeEnd;
+      return tail > 0 ? this.eventPhase + (ts - this.tradeEnd) / tail * (this.currentEndPhase - this.eventPhase) : this.eventPhase;
+    }
+    for (let i = 0; i < this.trades.length - 1; i += 1) {
+      const a = this.trades[i];
+      const b = this.trades[i + 1];
+      if (ts <= b.ts) {
+        const fraction = b.ts > a.ts ? (ts - a.ts) / (b.ts - a.ts) : 0;
+        return this.eventProgress(i) + fraction * (this.eventProgress(i + 1) - this.eventProgress(i));
+      }
+    }
+    return this.eventPhase;
   }
 
   buildCamera() {
@@ -599,11 +691,11 @@ export class ReplayCanvas {
     // are precomputed so seeking and export produce identical frames.
     const samples = 1025;
     const step = 1 / (samples - 1);
-    const riseRate = 1 - Math.exp(-this.durationSeconds * step / 0.105);
-    const fallRate = 1 - Math.exp(-this.durationSeconds * step / 0.85);
-    const floorRiseRate = 1 - Math.exp(-this.durationSeconds * step / 0.65);
-    const floorFallRate = 1 - Math.exp(-this.durationSeconds * step / 0.14);
-    const maxLogFall = 0.6 * this.durationSeconds * step;
+    const riseRate = 1 - Math.exp(-DURATION * step / 0.105);
+    const fallRate = 1 - Math.exp(-step / 0.055);
+    const floorRiseRate = 1 - Math.exp(-DURATION * step / 0.65);
+    const floorFallRate = 1 - Math.exp(-DURATION * step / 0.14);
+    const maxLogFall = 0.6 * DURATION * step;
     this.cameraValues = new Array(samples);
     let logCeiling = 0;
     let floor = 0;
@@ -674,17 +766,20 @@ export class ReplayCanvas {
 
   buildAxisTicks() {
     const span = Math.max(MINUTE, this.timelineEnd - this.timelineStart);
-    // Fixed clock ticks use the same linear scale as prices and executions.
+    // Build a denser set of fixed clock ticks, then choose labels by their
+    // actual on-screen distance. Story pacing can place two real minutes far
+    // apart near the final fills even when earlier minutes are compressed.
     const majorStep = axisStep(span);
     const step = AXIS_STEPS[Math.max(0, AXIS_STEPS.indexOf(majorStep) - 1)];
-    const prehistory = this.currentEndPhase > 0
-      ? (this.timelineEnd - this.timelineStart) * (this.storyWindow + 0.1) / this.currentEndPhase : 0;
+    const prehistory = 2 * MINUTE * (this.storyWindow + 0.1) / 0.12;
     const first = Math.floor((this.timelineStart - prehistory) / step) * step;
     const minStoryGap = 180 / (814 - 42) * this.storyWindow;
     const candidates = [];
     const labels = new Set();
     for (let ts = first; ts <= this.timelineEnd && candidates.length < 1000; ts += step) {
-      const q = this.progressAtTime(ts);
+      const q = ts < this.timelineStart
+        ? (ts - this.timelineStart) / (2 * MINUTE) * 0.12
+        : this.progressAtTime(ts);
       if (q < -this.storyWindow - 0.1) continue;
       const label = axisLabel(ts, span);
       if (labels.has(label)) continue;
@@ -713,14 +808,77 @@ export class ReplayCanvas {
   layoutMarkers() {
     this.markerPlacements = this.trades.map((trade, index) => ({ index,
       q: this.eventProgress(index), ts: trade.ts, cap: this.capMode ? trade.marketCapUsd : trade.priceUsd }));
-    this.amountClusters = createTradeReplayAmountSchedule(this.trades.map((trade, index) => ({
-      index, side: trade.side, atSeconds: this.eventProgress(index) * this.durationSeconds,
-      amountUsd: this.markerPlacements[index].cap > 0 ? trade.amountUsd : null,
-    })), this.durationSeconds);
+  }
+
+  layoutTooltips() {
+    const left = 42;
+    const right = 814;
+    this.tooltipRects = this.trades.map((trade, index) => {
+      const eventProgress = this.eventProgress(index);
+      const nextProgress = this.eventProgresses[index + 1] ?? this.eventPhase;
+      const anchorX = left + PLAYHEAD_FRACTION * (right - left);
+      const anchorCap = this.capMode ? trade.marketCapUsd : trade.priceUsd;
+      const anchorView = this.viewportAt(eventProgress);
+      const anchorY = this.markerCenterY(anchorCap, { min: anchorView.yMin, max: anchorView.yMax });
+      const bubbles = [];
+      const linePoints = [];
+      // Score each fixed position against the chart throughout this fill's
+      // on-screen interval. The chosen rectangle never moves before the next
+      // trade replaces it, even while the chart pans underneath.
+      const travel = (nextProgress - eventProgress) / this.storyWindow * (right - left);
+      const samples = Math.max(2, Math.ceil(travel / 12));
+      for (let sample = 0; sample <= samples; sample += 1) {
+        const fraction = sample / samples;
+        const progress = eventProgress + (nextProgress - eventProgress) * fraction;
+        const viewport = this.viewportAt(progress);
+        const cameraRange = { min: viewport.yMin, max: viewport.yMax };
+        const xAt = (q) => left + (q - viewport.startQ) / (viewport.endQ - viewport.startQ) * (right - left);
+        for (const marker of this.markerPlacements) {
+          if (marker.index > index) continue;
+          const q = marker.q;
+          const bubbleX = xAt(q);
+          const bubbleY = this.markerCenterY(marker.cap, cameraRange);
+          if (bubbleX >= left + this.markerRadius && bubbleX <= right - this.markerRadius) {
+            bubbles.push({ x: bubbleX, y: bubbleY });
+          }
+        }
+        for (const point of this.storyVertices) {
+          if (point.q > progress) continue;
+          const x = xAt(point.q);
+          if (x >= left && x <= right) linePoints.push({ x, y: this.yAtCap(point.marketCapUsd, cameraRange) });
+        }
+      }
+      return this.chooseTooltip(anchorX, anchorY, bubbles, linePoints);
+    });
   }
 
   timeAt(progress) {
-    return this.timing.timeAtProgress(this.chartProgress(progress));
+    const p = this.chartProgress(progress);
+    if (this.pacingEvents.length) {
+      const first = this.pacingEvents[0], last = this.pacingEvents.at(-1);
+      if (p <= first.q) return first.ts;
+      for (let i = 1; i < this.pacingEvents.length; i++) {
+        const a = this.pacingEvents[i - 1], b = this.pacingEvents[i];
+        if (p <= b.q) return a.ts + (p - a.q) / Math.max(1e-12, b.q - a.q) * (b.ts - a.ts);
+      }
+      return this.timelineEnd > last.ts ? last.ts + clamp((p - last.q) / Math.max(1e-12, this.currentEndPhase - last.q), 0, 1) * (this.timelineEnd - last.ts) : last.ts;
+    }
+    if (this.trades.length && p >= this.eventPhase && !this.hasTail) return this.tradeEnd;
+    if (!this.trades.length) return this.timelineStart + p * (this.timelineEnd - this.timelineStart);
+    if (p <= this.eventPhase && this.trades.length > 1) {
+      for (let i = 0; i < this.eventProgresses.length - 1; i += 1) {
+        if (p <= this.eventProgresses[i + 1]) {
+          const start = this.eventProgresses[i];
+          const end = this.eventProgresses[i + 1];
+          const fraction = end > start ? (p - start) / (end - start) : 0;
+          return this.trades[i].ts + fraction * (this.trades[i + 1].ts - this.trades[i].ts);
+        }
+      }
+    }
+    if (this.eventPhase < 1) {
+      return this.tradeEnd + ((p - this.eventPhase) / (this.currentEndPhase - this.eventPhase)) * (this.timelineEnd - this.tradeEnd);
+    }
+    return this.timelineStart + p * (this.timelineEnd - this.timelineStart);
   }
 
   priceAt(ts, currentEventIndex = Infinity) {
@@ -938,6 +1096,7 @@ export class ReplayCanvas {
       const state = this.snapshot(p);
       this.drawHeader(ctx, state);
       this.drawChart(ctx, p, state);
+      this.drawSellTransition(ctx, p);
       this.drawResult(ctx, state);
     } else {
       text(ctx, 'TRADE RECAP', 540, 560, `700 46px ${FONT}`, COLOR.white, 'center');
@@ -1006,6 +1165,36 @@ export class ReplayCanvas {
     } else {
       drawBrandMark(ctx, BRAND_ICON_PATHS, right - detailHeight, detailRow - detailHeight / 2, detailHeight, detailHeight, '#F9C932');
     }
+  }
+
+  drawSellTransition(ctx, progress) {
+    const highlight = this.sellHighlights.findLast(event => {
+      const elapsed = (progress - this.eventProgress(event.tradeIndex)) * DURATION;
+      return elapsed >= 0 && elapsed < 1.55;
+    });
+    if (!highlight) return;
+    const elapsed = (progress - this.eventProgress(highlight.tradeIndex)) * DURATION;
+    const entrance = smoothstep(elapsed / 0.16);
+    const opacity = entrance * (1 - smoothstep((elapsed - 1.1) / 0.45));
+    if (opacity < 1e-6) return;
+    const marker = this.markerPosition(highlight.tradeIndex, progress);
+    ctx.save();
+    // Keep the badge and execution pulse independent of the chart camera.
+    if (marker?.visible) {
+      const pulse = clamp(elapsed, 0, 1);
+      ctx.globalAlpha = (1 - pulse) * 0.8;
+      ctx.beginPath();
+      ctx.arc(marker.x, marker.y, this.markerRadius + 5 + pulse * 32, 0, Math.PI * 2);
+      ctx.strokeStyle = highlight.label === 'Take profit' ? COLOR.green : COLOR.gold;
+      ctx.lineWidth = 4 - pulse * 2;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = opacity;
+    const badge = `${highlight.label.toUpperCase()} · ${money(highlight.amountUsd, 0, true)}`;
+    const y = 203 + (1 - entrance) * 10;
+    fillRound(ctx, 330, y, 420, 46, 12, '#292312', '#8e711e', 1.5);
+    text(ctx, badge, 540, y + 24, fitFont(ctx, badge, 386, 24, 19, 750), COLOR.goldBright, 'center', 'middle');
+    ctx.restore();
   }
 
   drawChart(ctx, progress, state) {
@@ -1114,7 +1303,6 @@ export class ReplayCanvas {
     }
     const visibleMarkers = this.drawTradeMarkers(ctx, progress, windowStart, windowEnd, xAtProgress, state, cameraRange);
     ctx.restore();
-    this.drawTradeAmounts(ctx, progress, visibleMarkers);
 
     const capText = hasQuote ? this.capMode ? money(state.currentCap, 0, true) : this.priceText(state.currentCap) : '—';
     fillRound(ctx, 844, currentY - 29, 188, 58, 14, COLOR.gold, 'rgba(255,221,97,0.65)', 2);
@@ -1127,6 +1315,29 @@ export class ReplayCanvas {
       text(ctx, tick.label, x, 698, `500 26px ${FONT}`, '#8c8676', 'center');
     }
 
+    const activeIndex = state.currentEventIndex;
+    const active = this.trades[activeIndex];
+    if (active && (!this.hasTail || progress < this.eventPhase + 0.04)) {
+      const elapsed = Math.max(0, (progress - this.eventProgress(activeIndex)) * DURATION);
+      if (activeIndex > 0 && elapsed < 0.09) {
+        const previousRect = this.tooltipRects[activeIndex - 1];
+        const clearance = visibleMarkers.reduce((closest, marker) => {
+          const dx = Math.max(previousRect.x - marker.x, 0, marker.x - previousRect.x - previousRect.width);
+          const dy = Math.max(previousRect.y - marker.y, 0, marker.y - previousRect.y - previousRect.height);
+          return Math.min(closest, Math.hypot(dx, dy));
+        }, Infinity);
+        const clearFade = clamp((clearance - this.markerRadius) / 14, 0, 1);
+        const previousOpacity = (1 - smoothstep(elapsed / 0.09)) * clearFade;
+        if (previousOpacity > 0.01) {
+          this.drawTradeTooltip(ctx, this.trades[activeIndex - 1], previousRect, previousOpacity);
+        }
+      } else {
+        const opacity = activeIndex === 0
+          ? 0.15 + 0.85 * smoothstep(elapsed / 0.19)
+          : smoothstep((elapsed - 0.09) / 0.10);
+        if (opacity > 0.01) this.drawTradeTooltip(ctx, active, this.tooltipRects[activeIndex], opacity);
+      }
+    }
   }
 
   traceLine(ctx, points) {
@@ -1177,13 +1388,13 @@ export class ReplayCanvas {
       const trade = this.trades[marker.index];
       const x = xAtProgress(q);
       const y = this.markerCenterY(marker.cap, cameraRange);
-      const entrance = smoothstep((progress - q) * this.durationSeconds / 0.19);
+      const entrance = smoothstep((progress - q) * DURATION / 0.19);
       const alpha = 0.2 + 0.8 * entrance;
       const scale = 0.82 + 0.18 * entrance;
       // The circle is centered on its genuine execution point, without stems.
       if (x - this.markerRadius - 2 < 42 || x + this.markerRadius + 2 > 814) continue;
       markers.push({
-        index: marker.index, x, y,
+        x, y,
         color: trade.side === 'buy' ? COLOR.green : COLOR.red,
         letter: trade.side === 'buy' ? 'B' : 'S',
         alpha, scale,
@@ -1219,117 +1430,55 @@ export class ReplayCanvas {
     return markers;
   }
 
-  drawTradeAmounts(ctx, progress, markers) {
-    const labels = [];
-    // The amount queue is presentation only; circles and financial state still
-    // reveal at the genuine execution timestamp, including simultaneous fills.
-    for (const cluster of [...this.amountClusters].reverse()) {
-      if (cluster.entries.length > 1) {
-        this.drawBuyAmountStack(ctx, progress, markers, cluster, labels);
-        continue;
-      }
-      const entry = cluster.entries[0];
-      const marker = markers.find(marker => marker.index === entry.index);
-      if (!marker) continue;
-      const trade = this.trades[marker.index];
-      const elapsed = progress * this.durationSeconds - entry.startSeconds;
-      if (!(trade.amountUsd > 0) || elapsed < 0 || elapsed >= 1.35) continue;
-      const opacity = smoothstep(elapsed / 0.19) * (1 - smoothstep((elapsed - 0.9) / 0.45));
-      if (opacity < 0.01) continue;
-      const amount = money(trade.amountUsd, 2, trade.amountUsd >= 1000);
-      const font = fitFont(ctx, amount, 160, 28, 22, 750);
-      const width = this.measure(ctx, amount, font);
-      const x = clamp(marker.x, 48 + width / 2, 808 - width / 2);
-      const preferred = trade.side === 'buy' ? -1 : 1;
-      let best = null, bestScore = Infinity;
-      for (const distance of [44, 80, 116, 152, 188]) for (const direction of [preferred, -preferred]) {
-        const y = marker.y + direction * distance;
-        if (y < 294 || y > 629) continue;
-        const rect = { x: x - width / 2 - 3, y: y - 17, width: width + 6, height: 34 };
-        const circlePenalty = markers.reduce((score, circle) => {
-          const dx = Math.max(rect.x - circle.x, 0, circle.x - rect.x - rect.width);
-          const dy = Math.max(rect.y - circle.y, 0, circle.y - rect.y - rect.height);
-          return score + Math.max(0, this.markerRadius + 6 - Math.hypot(dx, dy)) * 1000;
-        }, 0);
-        const labelPenalty = labels.reduce((score, label) => {
-          const overlapX = Math.min(rect.x + rect.width + 4, label.x + label.width) - Math.max(rect.x - 4, label.x);
-          const overlapY = Math.min(rect.y + rect.height + 4, label.y + label.height) - Math.max(rect.y - 4, label.y);
-          return score + (overlapX > 0 && overlapY > 0 ? overlapX * overlapY * 100 : 0);
-        }, 0);
-        const score = circlePenalty + labelPenalty + (distance - 44) + (direction === preferred ? 0 : 8);
-        if (score < bestScore) { best = { ...rect, centerY: y }; bestScore = score; }
-      }
-      if (!best) continue;
-      labels.push(best);
-      ctx.save();
-      ctx.globalAlpha = opacity;
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = 6;
-      text(ctx, amount, x, best.centerY, font, marker.color, 'center', 'middle');
-      ctx.restore();
+  chooseTooltip(anchorX, anchorY, bubbles, linePoints) {
+    const width = 346;
+    const height = 92;
+    const candidates = [];
+    for (const y of [258, 348, 450, 548]) {
+      for (const x of [42, 130, 230, 358, 458, 488]) candidates.push({ x, y, width, height });
     }
+    let best = candidates[0];
+    let bestScore = Infinity;
+    for (const rect of candidates) {
+      const bubblePenalty = bubbles.reduce((total, bubble) => {
+        const dx = Math.max(rect.x - bubble.x, 0, bubble.x - (rect.x + rect.width));
+        const dy = Math.max(rect.y - bubble.y, 0, bubble.y - (rect.y + rect.height));
+        const distance = Math.hypot(dx, dy);
+        if (distance < this.markerRadius + 2) {
+          return total + 100_000 + (this.markerRadius + 2 - distance) * 1000;
+        }
+        return total + Math.max(0, this.markerRadius + 16 - distance) * 20;
+      }, 0);
+      const linePenalty = linePoints.filter((point) =>
+        point.x >= rect.x - 8 && point.x <= rect.x + rect.width + 8
+        && point.y >= rect.y - 8 && point.y <= rect.y + rect.height + 8).length * 4;
+      const centerPenalty = Math.abs(anchorX - (rect.x + width / 2)) * 0.55;
+      const verticalPenalty = Math.abs(anchorY - (rect.y + height / 2)) * 0.04;
+      const score = bubblePenalty + linePenalty + centerPenalty + verticalPenalty;
+      if (score < bestScore) {
+        best = rect;
+        bestScore = score;
+      }
+    }
+    return best;
   }
 
-  drawBuyAmountStack(ctx, progress, markers, cluster, labels) {
-    const seconds = progress * this.durationSeconds;
-    const lifetime = cluster.lifetimeSeconds;
-    const fadeIn = Math.min(0.19, lifetime * 0.24), fadeOut = lifetime * 0.25;
-    const entries = cluster.entries.map((entry, row) => {
-      const age = seconds - entry.startSeconds;
-      const alpha = smoothstep(age / fadeIn) * (1 - smoothstep((age - lifetime + fadeOut) / fadeOut));
-      const amount = money(this.trades[entry.index].amountUsd, 2, this.trades[entry.index].amountUsd >= 1000);
-      const font = fitFont(ctx, amount, 160, 28, 22, 750);
-      return { ...entry, row, age, alpha, amount, font, width: this.measure(ctx, amount, font) };
-    });
-    const active = entries.filter(entry => entry.age >= 0 && entry.age < lifetime && entry.alpha >= 0.01);
-    if (!active.length) return;
-    const indices = new Set(cluster.entries.map(entry => entry.index));
-    const circles = markers.filter(marker => indices.has(marker.index));
-    if (!circles.length) return;
-    const first = this.markerPosition(cluster.entries[0].index, progress);
-    const anchor = first?.visible ? first
-      : circles.find(circle => active.some(entry => entry.index === circle.index)) ?? circles.at(-1);
-    const rowGap = 36, height = (Math.min(4, cluster.entries.length) - 1) * rowGap;
-    const width = Math.max(...entries.map(entry => entry.width));
-    const anchorX = clamp(anchor.x, 48 + width / 2, 808 - width / 2);
-    const above = Math.min(...circles.map(marker => marker.y)) - 44 - height;
-    const below = Math.max(...circles.map(marker => marker.y)) + 44;
-    const preferred = above >= 294 ? above : below;
-    let best = null, bestScore = Infinity;
-    // Place the complete column together, so rows cannot scatter above/below
-    // individual fills. Move it sideways when the chart leaves no vertical room.
-    for (const rawX of [anchorX, anchorX - width - 32, anchorX + width + 32]) {
-      const x = clamp(rawX, 48 + width / 2, 808 - width / 2);
-      for (const rawY of [preferred, above, below, 294, 629 - height]) {
-        const y = clamp(rawY, 294, 629 - height);
-        const rect = { x: x - width / 2 - 3, y: y - 17, width: width + 6, height: height + 34 };
-        const circlePenalty = markers.reduce((score, circle) => {
-          const dx = Math.max(rect.x - circle.x, 0, circle.x - rect.x - rect.width);
-          const dy = Math.max(rect.y - circle.y, 0, circle.y - rect.y - rect.height);
-          return score + Math.max(0, this.markerRadius + 6 - Math.hypot(dx, dy)) * 1000;
-        }, 0);
-        const labelPenalty = labels.reduce((score, label) => {
-          const overlapX = Math.min(rect.x + rect.width + 4, label.x + label.width) - Math.max(rect.x - 4, label.x);
-          const overlapY = Math.min(rect.y + rect.height + 4, label.y + label.height) - Math.max(rect.y - 4, label.y);
-          return score + (overlapX > 0 && overlapY > 0 ? overlapX * overlapY * 100 : 0);
-        }, 0);
-        const score = circlePenalty + labelPenalty + Math.abs(x - anchorX) * 2 + Math.abs(y - preferred);
-        if (score < bestScore) { best = { ...rect, centerX: x, top: y }; bestScore = score; }
-      }
-    }
-    if (!best) return;
-    labels.push(best);
-    // Fading rows slide out above the column; new rows always enter underneath.
-    const scroll = cluster.entries.reduce((rows, entry) => rows
-      + smoothstep((seconds - entry.startSeconds - lifetime + fadeOut) / fadeOut), 0);
+  drawTradeTooltip(ctx, trade, rect, opacity) {
     ctx.save();
-    ctx.beginPath(); ctx.rect(best.x, best.y, best.width, best.height); ctx.clip();
-    for (const entry of active) {
-      ctx.globalAlpha = entry.alpha;
-      ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 6;
-      text(ctx, entry.amount, best.centerX, best.top + (entry.row - scroll) * rowGap,
-        entry.font, COLOR.green, 'center', 'middle');
-    }
+    ctx.globalAlpha = opacity;
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 17;
+    fillRound(ctx, rect.x, rect.y, rect.width, rect.height, 16, '#1d1c18', '#4b4430', 1);
+    ctx.shadowBlur = 0;
+    const isBuy = trade.side === 'buy';
+    const time = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'UTC', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(trade.ts);
+    text(ctx, `${isBuy ? 'BUY' : 'SELL'} · ${time} UTC`, rect.x + 20, rect.y + 30, `650 20px ${FONT}`, '#c6bfae');
+    const amount = trade.amountUsd > 0 ? `${isBuy ? '+' : '−'} ${money(trade.amountUsd, 2, trade.amountUsd >= 1000)}` : '—';
+    const cap = this.capMode && trade.marketCapUsd > 0 ? `${money(trade.marketCapUsd, 1, true)} MCAP` : trade.priceUsd > 0 ? this.priceText(trade.priceUsd) : 'Price unavailable';
+    text(ctx, amount, rect.x + 20, rect.y + 71, fitFont(ctx, amount, 166, 29, 21, 750), isBuy ? COLOR.green : COLOR.red);
+    text(ctx, cap, rect.x + rect.width - 18, rect.y + 70, fitFont(ctx, cap, 150, 23, 17, 600), '#c8c0af', 'right');
     ctx.restore();
   }
 

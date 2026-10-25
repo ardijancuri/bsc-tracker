@@ -393,13 +393,9 @@ describe('replay renderer accounting and chart', () => {
   it('retains distinct same-second executions in the explicitly fill-only replay', async () => {
     const payload = activity(); payload.trades[1].timestamp = payload.trades[0].timestamp; payload.trades[1].transactionIndex = 1;
     const renderer = new ReplayCanvas(canvasStub()); await renderer.setData(prepareTradeReplayData(payload, null, position, now)!);
-    const internals = renderer as unknown as { trades: { priceUsd: number }[]; storyVertices: { q: number; priceUsd: number }[] };
-    expect(internals.trades.map(trade => trade.priceUsd)).toEqual([1, 5]);
-    expect(renderer.eventProgress(0)).toBe(renderer.eventProgress(1));
-    const first = renderer.markerPosition(0, 1)!, second = renderer.markerPosition(1, 1)!;
-    expect(first.ts).toBe(second.ts); expect(first.x).toBe(second.x);
-    expect(first.executionValue).not.toBe(second.executionValue);
-    expect(internals.storyVertices.map(point => point.priceUsd)).toEqual([5]);
+    const internals = renderer as unknown as { storyVertices: { q: number; priceUsd: number }[] };
+    expect(internals.storyVertices.map(point => point.priceUsd)).toEqual([1, 5]);
+    expect(internals.storyVertices[1].q).toBeGreaterThan(internals.storyVertices[0].q);
     expect(renderer.snapshot(1).pnl).toBeCloseTo(400);
     expect(renderer.snapshot(1).time).toBe(new Date(payload.trades[1].timestamp).toISOString());
   });
