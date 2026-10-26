@@ -1,6 +1,8 @@
 import pg from 'pg';
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 12,
-  options: '-c timezone=UTC -c idle_in_transaction_session_timeout=30000' });
+  // Online reads and bounded worker batches must not spend seconds compiling
+  // large eligibility predicates. This is a connection-local setting only.
+  options: '-c timezone=UTC -c idle_in_transaction_session_timeout=30000 -c jit=off' });
 /** Only the fresh schema is reachable from the application startup. */
 export async function ensureSchema() {
   const { ensureFreshSchema } = await import('./fresh/schema.js');

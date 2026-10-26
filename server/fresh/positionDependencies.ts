@@ -48,12 +48,14 @@ export const freshPositionReceiptOpaqueSql = (e: string) =>
  * evidence remain relevant. The receipt/repair itself is never changed. */
 export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string){
  const e=pendingAlias(receipt),t=pendingTokenExpression(token),proof='token_birth.proof';
- return`EXISTS(SELECT 1 FROM fresh.launch_facts token_birth
+ // No receipt/token outer reference belongs in this subselect: PostgreSQL
+ // evaluates the validated birth map once as an InitPlan, not per receipt.
+ return`(COALESCE(${e}.block_number<((SELECT jsonb_object_agg(token_birth.token_address,token_birth.block_number) FROM fresh.launch_facts token_birth
   JOIN fresh.checkpoints token_start ON token_start.key='start'
   JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
   JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash
-  WHERE token_birth.token_address=${t} AND token_birth.status='eligible' AND token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
-   AND ${e}.block_number<token_birth.block_number AND token_birth.block_number>token_start.block_number
+  WHERE token_birth.status='eligible' AND token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
+   AND token_birth.block_number>token_start.block_number
    AND token_start.value->>'startBlock'=token_start.block_number::text AND token_start.value->>'startHash'=token_start.block_hash
    AND token_birth.launched_at=born.occurred_at AND ${proof}->'version'='1'::jsonb AND ${proof}->>'kind'='canonical_token_birth_v1'
    AND ${proof}->>'source' IN('node','explicit_archive') AND ${proof}->>'codeBefore'='0x'
@@ -74,10 +76,14 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
     AND CASE WHEN jsonb_typeof(${proof}->'creationFrame'->'path')='array' THEN
      jsonb_array_length(${proof}->'creationFrame'->'path') BETWEEN 1 AND 64 AND NOT EXISTS(
       SELECT 1 FROM jsonb_array_elements(${proof}->'creationFrame'->'path') step
-       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))
+       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))) ->> ${t})::bigint,false)
    AND NOT EXISTS(SELECT 1 FROM fresh.financial_events explicit_token WHERE explicit_token.canonical
     AND explicit_token.token_address=${t} AND explicit_token.transaction_hash=${e}.tx_hash AND explicit_token.block_hash=${e}.block_hash))`;
 }
+/** Global accounting already blocks every opaque receipt. Reuse this cheap
+ * identity predicate there; a per-token birth proof cannot waive that gate. */
+export const freshPositionReceiptRawRelevantSql=(e:string,token:string)=>
+ `(${freshPositionReceiptOpaqueSql(e)} OR ${token}=ANY(${e}.position_dependency_addresses))`;
 export const freshPositionReceiptRelevantSql = (e: string, token: string) =>
   `(COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token)}))`;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { freshPositionDependencies, freshPositionReceiptRelevantSql } from './positionDependencies.js';
+import { freshPositionDependencies, freshPositionReceiptRelevantSql,freshPositionReceiptPredatesTokenBirthSql,freshPositionReceiptRawRelevantSql } from './positionDependencies.js';
 import type { FreshCapturedReceipt } from './capture.js';
 const address=(n:number)=>`0x${n.toString(16).padStart(40,'0')}`,hash=(n:number)=>`0x${n.toString(16).padStart(64,'0')}`;
 function fixture():FreshCapturedReceipt {
@@ -36,5 +36,13 @@ describe('temporary full-execution position dependency index',()=>{
   });
   it('keeps malformed or absent stored proof indexes conservative',()=>{
     const sql=freshPositionReceiptRelevantSql('e','p.token_address');expect(sql).toContain('position_dependency_addresses IS NULL');expect(sql).toContain('position_dependency_proof IS NULL');expect(sql).toContain("!~'^[0-9a-f]{64}$'");expect(sql).toContain('p.token_address=ANY');
+  });
+  it('validates the birth map independently of outer receipt/token rows so PostgreSQL can initialize it once',()=>{
+    const sql=freshPositionReceiptPredatesTokenBirthSql('e','p.token_address'),map=sql.slice(sql.indexOf('SELECT jsonb_object_agg'),sql.indexOf(' ->> p.token_address'));
+    expect(map).toContain("canonical_token_birth_v1");expect(map).not.toContain('e.block_number');expect(map).not.toContain('p.token_address');
+    expect(sql).toContain('COALESCE(');expect(sql).toContain('::bigint,false)');expect(sql).toContain('explicit_token.transaction_hash=e.tx_hash');
+  });
+  it('keeps global opaque-accounting relevance free of the unnecessary birth proof query',()=>{
+    const sql=freshPositionReceiptRawRelevantSql('e','p.token_address');expect(sql).toContain('position_dependency_proof IS NULL');expect(sql).toContain('p.token_address=ANY');expect(sql).not.toContain('launch_facts');
   });
 });

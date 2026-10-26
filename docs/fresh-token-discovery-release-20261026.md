@@ -79,3 +79,10 @@ reports are under `.cache/fresh/private/wpc-release-20261026/` locally and
 `/opt/bscan/deploy/wpc-discovery-v14-20261026/` on the VPS. These are finite
 release audit artifacts, not new app snapshot/history tables or a permanent
 rollback-backup system. Post-deployment results are appended after verification.
+
+The app and worker database sessions disable PostgreSQL JIT compilation through
+their explicit pool startup options. These online reads and update batches do not benefit from
+seconds of compilation per request. This leaves global database configuration,
+query results, account settings and financial evidence unchanged. The ranking
+query also omits token-birth checks already dominated by its global opaque-
+receipt gate; token-specific reads retain the complete authenticated proof.

@@ -1,5 +1,5 @@
 import { freshDecimal, FreshRational } from './accounting.js';
-import { freshPositionReceiptRelevantSql, freshPositionReceiptOpaqueSql,freshPendingTradeInScopeSql } from './positionDependencies.js';
+import { freshPositionReceiptRawRelevantSql, freshPositionReceiptOpaqueSql,freshPendingTradeInScopeSql } from './positionDependencies.js';
 
 type Row = Record<string, any>;
 
@@ -31,7 +31,7 @@ export function freshDailyLeaderboardPendingSql() {
         WHERE daily.scope_id='kol:'||w.address
         AND daily.occurred_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
         AND daily.occurred_at < (($1::date+1)::timestamp AT TIME ZONE 'UTC')
-        AND ${freshPositionReceiptRelevantSql('e', 'daily.token_address')})
+        AND ${freshPositionReceiptRawRelevantSql('e', 'daily.token_address')})
     )) OR EXISTS(SELECT 1 FROM fresh.accounting_scopes pending_scope JOIN fresh.pending_trades pending ON pending.wallet_address=w.address
      WHERE pending_scope.id='kol:'||w.address AND ${freshPendingTradeInScopeSql('pending','pending_scope')} AND(
       pending.occurred_at>=($1::date::timestamp AT TIME ZONE 'UTC') AND pending.occurred_at<(($1::date+1)::timestamp AT TIME ZONE 'UTC')
@@ -52,7 +52,7 @@ export function freshRollingLeaderboardPendingSql() {
         ${freshPositionReceiptOpaqueSql('e')}
         OR EXISTS(SELECT 1 FROM fresh.scope_event_results active
           WHERE active.scope_id='kol:'||w.address AND active.occurred_at > $1::timestamptz AND active.occurred_at <= $2::timestamptz
-          AND ${freshPositionReceiptRelevantSql('e','active.token_address')})
+          AND ${freshPositionReceiptRawRelevantSql('e','active.token_address')})
       )
     )) OR EXISTS(SELECT 1 FROM fresh.accounting_scopes pending_scope JOIN fresh.pending_trades pending ON pending.wallet_address=w.address
      WHERE pending_scope.id='kol:'||w.address AND ${freshPendingTradeInScopeSql('pending','pending_scope')} AND(
