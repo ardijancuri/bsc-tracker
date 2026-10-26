@@ -86,3 +86,46 @@ seconds of compilation per request. This leaves global database configuration,
 query results, account settings and financial evidence unchanged. The ranking
 query also omits token-birth checks already dominated by its global opaque-
 receipt gate; token-specific reads retain the complete authenticated proof.
+
+## Production verification — 26 October 2026
+
+Runtime commit `e87e492b2e2c8514203cdaf66fa5f8e117f91b8b` is deployed to the
+app and single worker. Image `7c58fdc581e6f4668c15ce1da517bbf741352b7751b39846343009c2ba15fcab`
+passed Linux/native-image checks and all eight entrypoint checksum checks. The
+public frontend matches the built artifact. Temporary preview containers were
+removed without removing volumes.
+
+The guarded recovery added nineteen facts once: sixteen swaps and three
+approval fees, with all sixteen transaction MCAPs. Tempo has two buys, two
+sells, zero remaining WPC and realized profit `51.48569388966672523256305` USD.
+Its replay uses five genuine candles, validates its signed manifest and ends
+with ROI `0.661932501414409922617928292830141647`. The second public wallet
+has eleven buys, one sell, zero WPC and profit `2.18603038024480815491469928`.
+Both balances were independently confirmed; profile and leaderboard stored
+totals agree. Historical imports generated no recovery alerts or social posts.
+The final production MP4 was downloaded and played through all 15.5 seconds at
+1080 × 1350; its visible ending matches the frozen modal at +$51.49 / +66.19%.
+
+An older opaque c9e receipt predates WPC's authenticated creation. It remains
+an unresolved repair for other accounting; a strict creation-aware dependency
+check prevents it from incorrectly blocking this later token. Same-block and
+explicit target dependencies still block. Thirty-nine PostgreSQL proof cases
+and the existing affected integration programs passed with rollback-only tests.
+
+The combined suite passed 4,090 tests with two opt-in skips before the contained
+query-performance adjustment. The final adjustment passed its focused tests,
+independent PostgreSQL/session checks, both TypeScript projects and production
+build. It removes redundant ranking proof work and disables JIT only in the
+application pool sessions. Global PostgreSQL JIT remains on. Final loopback
+samples (ten per endpoint) measured profile p95 122 ms and leaderboard p95
+45 ms; the balance stage measured 227 ms, versus roughly fifteen seconds with
+JIT compilation. No financial formula or database-wide setting changed.
+
+Independent preservation checks matched every original 4,966 financial row,
+11,661 receipt core and expiry, 228 scope identity and all account/settings
+digests. The original start block/hash, activation and cutover seal remain
+unchanged. Capture and decoding advance; unrelated historical repairs remain
+visible. Championship cache bytes and the single four-hour scheduler remain
+intact; its latest provider refresh was unavailable, retaining the saved board.
+No node, tracing or webhook configuration changed. The canceled timed
+validation was not restarted.
