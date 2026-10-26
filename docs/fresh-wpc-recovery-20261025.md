@@ -46,6 +46,16 @@ zero-trade result. Its pending badge respects the active public scope,
 registration block/time and monitoring bounds, so earlier private activity
 cannot leak. Worker discovery health is included as an aggregate status.
 
+Token-specific readiness also respects authenticated contract birth. An opaque
+receipt strictly before a verified `canonical_token_birth_v1` creation cannot
+change that token's balance or FIFO history. The shared dependency check requires
+the unchanged tracking start, canonical adjacent parent/birth headers, empty
+parent code and the validated creation/runtime identity. Pool timestamps,
+unverified/state-only witnesses, missing or orphaned headers and same-block
+ordering do not qualify. Explicit target dependencies or financial identities
+still block. The old receipt and its repair remain intact for other tokens and
+wallet-wide accounting; this is not a waiver of unknown costs or fees.
+
 ## Finite WPC evidence and recovery
 
 The authenticated deployment is block 129752966 at 2026-10-25 18:23:24 UTC,

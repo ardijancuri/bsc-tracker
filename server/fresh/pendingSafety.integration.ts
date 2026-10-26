@@ -22,17 +22,17 @@ async function reset(){await client.query('TRUNCATE pg_temp.pending_pending_trad
 try{
  await client.query('BEGIN');await client.query("SET LOCAL statement_timeout='5s'");
  await client.query(`CREATE TEMP TABLE pending_pending_trades(id text PRIMARY KEY,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean);
- CREATE TEMP TABLE pending_financial_events(id text,execution_key text,canonical boolean);
+ CREATE TEMP TABLE pending_financial_events(id text,execution_key text,canonical boolean,token_address text,transaction_hash text,block_hash text);
  CREATE TEMP TABLE pending_scope_event_results(scope_id text,token_address text,occurred_at timestamptz);
  CREATE TEMP TABLE pending_accounting_scopes(id text PRIMARY KEY,kind text,wallet_addresses text[],account_id text,starts_block bigint,starts_at timestamptz,active boolean);
  CREATE TEMP TABLE pending_tokens(address text PRIMARY KEY,launch_status text,symbol text,name text);
  CREATE TEMP TABLE pending_wallets(address text PRIMARY KEY,monitoring_from_block bigint,monitoring_to_block bigint,active boolean DEFAULT true);
  CREATE TEMP TABLE pending_kols(wallet_address text PRIMARY KEY,is_tracked boolean);
  CREATE TEMP TABLE pending_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text,value jsonb);
- CREATE TEMP TABLE pending_launch_facts(token_address text,status text);
+ CREATE TEMP TABLE pending_launch_facts(token_address text,status text,protocol text,block_number bigint,block_hash text,tx_hash text,log_index integer,launched_at timestamptz,proof jsonb DEFAULT '{}');
  CREATE TEMP TABLE pending_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz);
- CREATE TEMP TABLE pending_recent_evidence(wallet_addresses text[],decoder_status text,block_number bigint,block_hash text,position_dependency_addresses text[],position_dependency_proof text);
- CREATE TEMP TABLE pending_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz);`);
+ CREATE TEMP TABLE pending_recent_evidence(wallet_addresses text[],decoder_status text,block_number bigint,block_hash text,position_dependency_addresses text[],position_dependency_proof text,tx_hash text);
+ CREATE TEMP TABLE pending_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz,parent_hash text);`);
  await client.query('INSERT INTO pg_temp.pending_wallets VALUES($1,101,NULL),($2,101,NULL)',[wallet,privateWallet]);
  await client.query('INSERT INTO pg_temp.pending_kols VALUES($1,true)',[wallet]);
  await client.query("INSERT INTO pg_temp.pending_accounting_scopes VALUES($1,'kol',$2,NULL,101,$3,true),('private','portfolio_wallet',$4,$5,101,$3,true)",[scope,[wallet],start,[privateWallet],account]);

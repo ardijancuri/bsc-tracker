@@ -20,14 +20,14 @@ try {
   await client.query(`CREATE TEMP TABLE board_wallets(address text,monitoring_from_block bigint,monitoring_to_block bigint,active boolean DEFAULT true);
     CREATE TEMP TABLE board_evidence(tx_hash text,block_hash text,block_number bigint,wallet_addresses text[],decoder_status text,
       position_dependency_addresses text[],position_dependency_proof text);
-    CREATE TEMP TABLE board_blocks(block_number bigint,block_hash text,occurred_at timestamptz);
+    CREATE TEMP TABLE board_blocks(block_number bigint,block_hash text,occurred_at timestamptz,parent_hash text);
     CREATE TEMP TABLE board_results(scope_id text,token_address text,occurred_at timestamptz);
     CREATE TEMP TABLE board_pending(id text,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean);
-    CREATE TEMP TABLE board_financial(id text,execution_key text,canonical boolean);
+    CREATE TEMP TABLE board_financial(id text,execution_key text,canonical boolean,token_address text,transaction_hash text,block_hash text);
     CREATE TEMP TABLE board_scopes(id text,kind text,wallet_addresses text[],account_id text,starts_block bigint,starts_at timestamptz,active boolean);
     CREATE TEMP TABLE board_tokens(address text,launch_status text,symbol text,name text);
     CREATE TEMP TABLE board_kols(wallet_address text,is_tracked boolean);
-    CREATE TEMP TABLE board_launch(token_address text,status text);
+    CREATE TEMP TABLE board_launch(token_address text,status text,protocol text,block_number bigint,block_hash text,tx_hash text,log_index integer,launched_at timestamptz,proof jsonb DEFAULT '{}');
     CREATE TEMP TABLE board_checkpoints(key text,block_number bigint,block_hash text,value jsonb);
     CREATE TEMP TABLE board_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz);`);
   await client.query('INSERT INTO board_wallets(address)VALUES($1)', [wallet]);

@@ -25,14 +25,14 @@ export async function runFreshBalanceSchedulingIntegration(){
   await client.query(`CREATE TEMP TABLE balance_positions(scope_id text,token_address text,quantity_q text,revision bigint,balance_status text,balance_quantity text,balance_block bigint,balance_hash text,balance_checked_at timestamptz,last_event_id text,last_event_at timestamptz,PRIMARY KEY(scope_id,token_address))ON COMMIT DROP;
    CREATE TEMP TABLE balance_accounting_scopes(id text PRIMARY KEY,kind text,wallet_addresses text[],account_id text,starts_at timestamptz,starts_block bigint,revision bigint,active boolean)ON COMMIT DROP;
    CREATE TEMP TABLE balance_tokens(address text PRIMARY KEY,decimals integer,launch_status text DEFAULT 'eligible',symbol text,name text)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_financial_events(id text PRIMARY KEY,block_number bigint,execution_key text,canonical boolean DEFAULT true)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_financial_events(id text PRIMARY KEY,block_number bigint,execution_key text,canonical boolean DEFAULT true,token_address text,transaction_hash text,block_hash text)ON COMMIT DROP;
    CREATE TEMP TABLE balance_pending_trades(id text,execution_key text,wallet_address text,token_address text,kind text,block_number bigint,occurred_at timestamptz,canonical boolean)ON COMMIT DROP;
    CREATE TEMP TABLE balance_wallets(address text PRIMARY KEY,decode_gap_from_block bigint,monitoring_from_block bigint DEFAULT 0,monitoring_to_block bigint,active boolean DEFAULT true)ON COMMIT DROP;
    CREATE TEMP TABLE balance_kols(wallet_address text,is_tracked boolean)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_launch_facts(token_address text,status text)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_launch_facts(token_address text,status text,protocol text,block_number bigint,block_hash text,tx_hash text,log_index integer,launched_at timestamptz,proof jsonb DEFAULT '{}')ON COMMIT DROP;
    CREATE TEMP TABLE balance_jobs(kind text,reference text,state text)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_recent_evidence(block_number bigint,block_hash text,wallet_addresses text[],decoder_status text,position_dependency_addresses text[],position_dependency_proof text)ON COMMIT DROP;
-   CREATE TEMP TABLE balance_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz,PRIMARY KEY(block_number,block_hash))ON COMMIT DROP;
+   CREATE TEMP TABLE balance_recent_evidence(block_number bigint,block_hash text,wallet_addresses text[],decoder_status text,position_dependency_addresses text[],position_dependency_proof text,tx_hash text)ON COMMIT DROP;
+   CREATE TEMP TABLE balance_recent_blocks(block_number bigint,block_hash text,occurred_at timestamptz,parent_hash text,PRIMARY KEY(block_number,block_hash))ON COMMIT DROP;
    CREATE TEMP TABLE balance_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text,value jsonb DEFAULT '{}')ON COMMIT DROP;
    CREATE TEMP TABLE balance_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz,PRIMARY KEY(user_id,wallet_address))ON COMMIT DROP`);
   await reset();await scope('blocked',[a(1)]);await scope('ready',[a(2)]);await pending(a(1));

@@ -43,8 +43,43 @@ export const freshPositionReceiptOpaqueSql = (e: string) =>
   `(${e}.position_dependency_addresses IS NULL OR cardinality(${e}.position_dependency_addresses)=0
     OR ${e}.position_dependency_proof IS NULL OR ${e}.position_dependency_proof!~'^[0-9a-f]{64}$'
   )`;
+/** A genuine code-creation proof can bound a token's existence, unlike a pool
+ * launch timestamp. Same-block receipts and contradictory positive token
+ * evidence remain relevant. The receipt/repair itself is never changed. */
+export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string){
+ const e=pendingAlias(receipt),t=pendingTokenExpression(token),proof='token_birth.proof';
+ return`EXISTS(SELECT 1 FROM fresh.launch_facts token_birth
+  JOIN fresh.checkpoints token_start ON token_start.key='start'
+  JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
+  JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash
+  WHERE token_birth.token_address=${t} AND token_birth.status='eligible' AND token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
+   AND ${e}.block_number<token_birth.block_number AND token_birth.block_number>token_start.block_number
+   AND token_start.value->>'startBlock'=token_start.block_number::text AND token_start.value->>'startHash'=token_start.block_hash
+   AND token_birth.launched_at=born.occurred_at AND ${proof}->'version'='1'::jsonb AND ${proof}->>'kind'='canonical_token_birth_v1'
+   AND ${proof}->>'source' IN('node','explicit_archive') AND ${proof}->>'codeBefore'='0x'
+   AND ${proof}->'start'=jsonb_build_object('number',token_start.block_number,'hash',token_start.block_hash)
+   AND ${proof}->'birth'=jsonb_build_object('number',born.block_number,'hash',born.block_hash,'parentHash',born.parent_hash,
+    'timestamp',to_char(born.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+   AND ${proof}->'parent'=jsonb_build_object('number',parent.block_number,'hash',parent.block_hash,'parentHash',parent.parent_hash,
+    'timestamp',to_char(parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+   AND ${proof}->'creationTransactionKnown'='true'::jsonb AND ${proof}->>'witnessTransactionHash'=token_birth.tx_hash
+   AND token_birth.tx_hash~'^0x[0-9a-f]{64}$' AND ${proof}->>'creator'~'^0x[0-9a-f]{40}$'
+   AND ${proof}->>'originalContextSha256'~'^[0-9a-f]{64}$' AND ${proof}->>'runtimeSha256'~'^[0-9a-f]{64}$'
+   AND CASE WHEN ${proof}->>'runtimeBytes'~'^[1-9][0-9]{0,5}$' THEN (${proof}->>'runtimeBytes')::integer<=131072 ELSE false END
+   AND((${proof}->>'creation'='top_level_creation' AND NOT(${proof}?'creationFrame')) OR(
+    ${proof}->>'creation'='internal_creation' AND ${proof}->'creationFrame'->>'type' IN('CREATE','CREATE2')
+    AND ${proof}->'creationFrame'->>'creator'=${proof}->>'creator'
+    AND ${proof}->'creationFrame'->>'runtimeSha256'=${proof}->>'runtimeSha256'
+    AND ${proof}->'creationFrame'->>'inputSha256'~'^[0-9a-f]{64}$'
+    AND CASE WHEN jsonb_typeof(${proof}->'creationFrame'->'path')='array' THEN
+     jsonb_array_length(${proof}->'creationFrame'->'path') BETWEEN 1 AND 64 AND NOT EXISTS(
+      SELECT 1 FROM jsonb_array_elements(${proof}->'creationFrame'->'path') step
+       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))
+   AND NOT EXISTS(SELECT 1 FROM fresh.financial_events explicit_token WHERE explicit_token.canonical
+    AND explicit_token.token_address=${t} AND explicit_token.transaction_hash=${e}.tx_hash AND explicit_token.block_hash=${e}.block_hash))`;
+}
 export const freshPositionReceiptRelevantSql = (e: string, token: string) =>
-  `(${freshPositionReceiptOpaqueSql(e)} OR ${token}=ANY(${e}.position_dependency_addresses))`;
+  `(COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token)}))`;
 
 const pendingAlias=(value:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_alias_invalid');return value;};
 const pendingTokenExpression=(value:string)=>{if(!/^(?:[a-z_][a-z0-9_]*\.){1,2}[a-z_][a-z0-9_]*$|^\$[1-9][0-9]*$/i.test(value))throw Error('pending_trade_sql_token_invalid');return value;};
