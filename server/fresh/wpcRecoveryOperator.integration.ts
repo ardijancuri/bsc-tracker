@@ -1,0 +1,27 @@
+/** Explicit full-data rehearsal on the already-owned isolated WPC clone.
+ * The production CLI has no test bypass. Only this local test adapter rewrites
+ * its exact current_database() assertion, after validating the real DB first. */
+import assert from'node:assert/strict';import{readFile,writeFile,mkdir}from'node:fs/promises';import{Pool,type PoolClient}from'pg';import{chainRpc}from'../rpc.js';
+import{loadWpcRecoveryBundle,verifyWpcRecoveryCanonical,runWpcRecovery,wpcSha,WPC_RECOVERY_TOKEN}from'./wpcRecoveryOperator.js';import{FreshRational}from'./accounting.js';
+const url=new URL(process.env.DATABASE_URL??'');if(url.hostname!=='127.0.0.1'||url.port!=='5436'||url.pathname!=='/kollens_tempo_wpc_20261025_192724')throw Error('wpc_rehearsal_exact_owned_local_clone_only');
+const value=(key:string)=>process.argv[process.argv.indexOf(key)+1],directory=value('--bundle'),manifestSha=value('--manifest-sha');if(!process.argv.includes('--bundle')||!process.argv.includes('--manifest-sha'))throw Error('Provide the reviewed --bundle and --manifest-sha; --apply-local explicitly commits only to this owned clone');
+const actual=new Pool({connectionString:url.href,max:2});let calls=0;const rpc:typeof chainRpc=async(method,params)=>{calls++;return chainRpc(method,params);};
+try{
+ assert.equal((await actual.query('SELECT current_database() name')).rows[0].name,'kollens_tempo_wpc_20261025_192724');
+ const bundle=await loadWpcRecoveryBundle(directory,manifestSha),revision=(await actual.query("SELECT revision::text FROM fresh.checkpoints WHERE key='capture'")).rows[0].revision,canonical=await verifyWpcRecoveryCanonical(bundle,rpc,{captureRevision:revision}),operatorSha=wpcSha(await readFile(new URL('./wpcRecoveryOperator.ts',import.meta.url))),before=(await actual.query('SELECT * FROM fresh.financial_events ORDER BY id')).rows;
+ const rewriteClient=(client:PoolClient)=>({query:(sql:string,args?:unknown[])=>sql==='SELECT current_database() name'?Promise.resolve({rows:[{name:'kollens_fresh_v14'}],rowCount:1}):client.query(sql,args),release:()=>client.release()});
+ const db={connect:async()=>rewriteClient(await actual.connect())}as unknown as Pool;
+ const initial=await runWpcRecovery(db,bundle,canonical,operatorSha,{});if(!('plan'in initial))throw Error('read_only_plan_required');
+ const out='.cache/fresh/private/wpc-release-20261026/rehearsal-'+new Date().toISOString().replaceAll(':','-')+'.json',report:any={at:new Date().toISOString(),database:'kollens_tempo_wpc_20261025_192724',manifestSha,canonicalSha:canonical.sha256,beforeFacts:before.length,initial,readOnlyNodeCalls:calls,productionWrites:0,realMessages:0};
+ if(process.argv.includes('--apply-local')){
+  report.applied=await runWpcRecovery(db,bundle,canonical,operatorSha,{apply:true,planDigest:initial.plan.digest});
+  const after=(await actual.query('SELECT * FROM fresh.financial_events ORDER BY id')).rows,byId=new Map(after.map(r=>[r.id,r]));for(const row of before){const next=byId.get(row.id);assert(next);for(const[key,v]of Object.entries(row))if(v!=null)assert.deepEqual(next[key],v,'Original known field '+row.id+':'+key);}
+  const repeated=await runWpcRecovery(db,bundle,canonical,operatorSha,{});if(!('plan'in repeated))throw Error('read_only_plan_required');assert.equal(repeated.plan.changes.length,0);
+  const scopeBefore=wpcSha((await actual.query('SELECT * FROM fresh.accounting_scopes ORDER BY id')).rows),factsBefore=wpcSha(after);report.rerun=await runWpcRecovery(db,bundle,canonical,operatorSha,{apply:true,planDigest:repeated.plan.digest});assert.equal((report.rerun as any).newFacts,0);assert.equal((report.rerun as any).financialBatches,0);assert.equal(wpcSha((await actual.query('SELECT * FROM fresh.accounting_scopes ORDER BY id')).rows),scopeBefore);assert.equal(wpcSha((await actual.query('SELECT * FROM fresh.financial_events ORDER BY id')).rows),factsBefore);
+  const facts=(await actual.query('SELECT * FROM fresh.financial_events WHERE token_address=$1 AND canonical ORDER BY block_number,transaction_index',[WPC_RECOVERY_TOKEN])).rows;
+  report.wallets=[];for(const wallet of bundle.data.publicWallets){let quantity=FreshRational.parse('0'),profit=FreshRational.parse('0');const own=facts.filter(e=>e.wallet_address===wallet);for(const e of own){if(e.kind==='buy'){quantity=quantity.add(FreshRational.parse(e.quantity));profit=profit.sub(FreshRational.parse(e.amount_usd));}if(e.kind==='sell'){quantity=quantity.sub(FreshRational.parse(e.quantity));profit=profit.add(FreshRational.parse(e.amount_usd));}profit=profit.sub(FreshRational.parse(e.fee_usd));}assert.equal(quantity.decimal(),'0');report.wallets.push({wallet,facts:own.length,quantity:quantity.decimal(),profitUsd:profit.decimal()});}
+  assert.equal(report.wallets.find((w:any)=>w.wallet==='0x8168b8af46261bccbaa673c2f86bd78153c47bc6').profitUsd,'51.48569388966672523256305');assert.equal(report.wallets.find((w:any)=>w.wallet==='0xc9e4a15b6795a0cf97206218b52e20d78bc13145').profitUsd,'2.18603038024480815491469928');
+  report.afterFacts=after.length;report.originalKnownFactsExact=true;report.rerunNoChurn=true;
+ }
+ await mkdir('.cache/fresh/private/wpc-release-20261026',{recursive:true});await writeFile(out,JSON.stringify(report,null,2));console.log(JSON.stringify({path:out,plan:initial.plan.counts,changes:initial.plan.changes.length,applied:!!report.applied,newFacts:report.applied?.newFacts,rerunNoChurn:report.rerunNoChurn,wallets:report.wallets,productionWrites:0,realMessages:0}));
+}finally{await actual.end();}

@@ -20,6 +20,8 @@ import {runFreshV4MarketDiscovery,readFreshV4MarketIdentities} from './v4Discove
 import{createFreshCurrentMarketCanonicalHash}from'./currentMarketAnchor.js';
 import{createFreshUrgentTraceCapture}from'./urgentTrace.js';
 import{createFreshIpcTrace}from'./ipcTrace.js';
+import{runFreshTokenDiscovery}from'./discovery.js';
+import{createFreshDiscoveryArchiveRpc}from'./discoveryArchive.js';
 import{readFreshQuoteRefreshStates,readFreshQuoteRefreshAnchor,observeFreshQuoteRefresh,commitFreshQuoteRefreshFailure}from'./quoteRefreshFailure.js';
 
 const pause=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve();};const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});if(signal.aborted)finish();});
@@ -68,6 +70,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   let captureHealth:FreshRecoveryCaptureHealth|undefined;
   const urgentEvidence=createFreshUrgentEvidenceCapture(db,rpc),recoveryBatch=createFreshRecoveryBatch(db,rpc,{captureHealth:()=>captureHealth});
   const urgentTrace=trace?createFreshUrgentTraceCapture(db,rpc,localSsh?createFreshSshTrace({maxQueued:0}):createFreshIpcTrace({maxQueued:0})):undefined;
+  const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal});
   let lastQuoteAt=0;
   // One capture owner. API requests never start scanners or accounting workers.
   if(!(await connection.query('SELECT pg_try_advisory_lock(73621945) AS owned')).rows[0].owned){connection.release();throw new Error('fresh_worker_already_running');}
@@ -88,6 +91,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     }),
     loop('urgent_evidence',500,()=>urgentEvidence({signal})),
     loop('urgent_trace',500,()=>urgentTrace?urgentTrace({signal}):Promise.resolve({disabled:true})),
+    loop('token_discovery',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenDiscovery(db,rpc,{signal,archiveRpc:discoveryArchive})),
     loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db);const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
       // No relevant receipts is a complete empty block, rather than a stalled financial cursor.
       await db.query(`UPDATE fresh.checkpoints d SET block_number=c.block_number,block_hash=c.block_hash,updated_at=clock_timestamp() FROM fresh.checkpoints c WHERE d.key='decode' AND c.key='capture'

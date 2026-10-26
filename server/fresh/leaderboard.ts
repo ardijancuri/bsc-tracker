@@ -3,6 +3,21 @@ import { freshPositionReceiptRelevantSql, freshPositionReceiptOpaqueSql,freshPen
 
 type Row = Record<string, any>;
 
+/** A public pending badge cannot expose earlier private-only wallet activity. */
+export function freshPublicTokenDiscoveryPendingSql() {
+  return `EXISTS(SELECT 1 FROM fresh.recent_evidence discovery_receipt
+    JOIN fresh.recent_blocks discovery_block ON discovery_block.block_number=discovery_receipt.block_number AND discovery_block.block_hash=discovery_receipt.block_hash
+    JOIN fresh.accounting_scopes discovery_scope ON discovery_scope.id='kol:'||k.wallet_address
+      AND discovery_scope.kind='kol' AND discovery_scope.account_id IS NULL AND discovery_scope.active
+      AND discovery_scope.wallet_addresses=ARRAY[k.wallet_address]::text[]
+    WHERE k.is_tracked AND w.active AND discovery_receipt.wallet_addresses@>ARRAY[k.wallet_address]::text[]
+      AND discovery_receipt.decoder_status<>'done' AND discovery_receipt.last_error LIKE '%token_discovery_pending%'
+      AND discovery_receipt.block_number>=discovery_scope.starts_block AND discovery_block.occurred_at>=discovery_scope.starts_at
+      AND discovery_receipt.block_number>=w.monitoring_from_block
+      AND(w.monitoring_to_block IS NULL OR discovery_receipt.block_number<=w.monitoring_to_block)
+      AND discovery_block.occurred_at >= $1::timestamptz AND discovery_block.occurred_at <= $2::timestamptz)`;
+}
+
 /** Old unrelated repairs cannot change today's stored totals. Opaque evidence,
  * missing canonical time, every current-day receipt, and any earlier movement
  * touching a token used today still prevent a complete daily rank. */
@@ -58,6 +73,7 @@ export function freshStoredKolRollingMetrics(row:Row, at:number) {
     ...(Number(row.rolling_unknown_count??0)?['unknown_costs']:[]),
     ...(row.decode_gap_from_block!=null?['wallet_decode_gap']:[]),
     ...(row.decoding_pending?['decoding_pending']:[]),
+    ...(row.token_discovery_pending?['token_discovery_pending']:[]),
     ...(initialized&&row.rolling_realized_q==null?['stored_total_unavailable']:[]),
   ];
   const complete=reasons.length===0;
@@ -78,6 +94,7 @@ export function freshStoredKolDailyMetrics(row: Row, day: string) {
     ...(unknownCount ? ['unknown_costs'] : []),
     ...(row.decode_gap_from_block != null ? ['wallet_decode_gap'] : []),
     ...(row.decoding_pending ? ['decoding_pending'] : []),
+    ...(row.token_discovery_pending ? ['token_discovery_pending'] : []),
     ...(current && row.today_realized_q == null ? ['stored_total_unavailable'] : []),
   ];
   const complete = reasons.length === 0;

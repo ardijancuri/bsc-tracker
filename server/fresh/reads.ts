@@ -6,7 +6,7 @@ import { applyFreshEvent, freshDecimal, freshQuantity, freshEventFromRow, freshL
 import type { FreshFinancialEvent, FreshLot, FreshScope } from '../../shared/freshAccounting.js';
 import { freshPositionReceiptRelevantSql,freshPendingTradeScopeSql,freshPendingTradeInScopeSql } from './positionDependencies.js';
 import { freshPositionWalletGapSql } from './balanceScheduling.js';
-import { freshStoredKolRollingMetrics, rankFreshStoredLeaderboard, freshRollingLeaderboardPendingSql } from './leaderboard.js';
+import { freshStoredKolRollingMetrics, rankFreshStoredLeaderboard, freshRollingLeaderboardPendingSql, freshPublicTokenDiscoveryPendingSql } from './leaderboard.js';
 import {freshTradeBnbEquivalent} from './tradeBnbDisplay.js';
 import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeTokenBoundarySql,GANG_TOKEN_ADDRESS} from './tracking.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
@@ -54,7 +54,7 @@ export function tradeIdentity(r: Record<string, any>): KolTokenTrade {
 export function createFreshReads(db: Pool, now = Date.now, transactional=false) {
   async function hydrateReadScope(scope:any){const typed=await hydrateFreshScopeTokenHistory(db,typedScope(scope));return{...scope,tokenHistoryStarts:typed.tokenHistoryStarts};}
   async function boundary() { return (await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'`)).rows[0] ?? null; }
-  async function state() { const rows = (await db.query(`SELECT key,block_number::text,block_hash,updated_at,value FROM fresh.checkpoints WHERE key IN('start','capture','decode','quote','utc_day')`)).rows;
+  async function state() { const rows = (await db.query(`SELECT key,block_number::text,block_hash,updated_at,value FROM fresh.checkpoints WHERE key IN('start','capture','decode','quote','utc_day','health:token_discovery')`)).rows;
     return Object.fromEntries(rows.map(row=>[row.key,row])); }
   async function leaderboard() {
     const at=now(),states=await state(),day=freshUtcDay(at),windowStart=new Date(at-86_400_000).toISOString(),windowEnd=new Date(at).toISOString();
@@ -64,6 +64,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
         WHERE imported.wallet_address=k.wallet_address AND imported.canonical AND imported.provenance IS NOT NULL
         AND ${freshScopeEventSql('imported','imported_scope')}) AS imported_provenance,
       ${freshRollingLeaderboardPendingSql()} AS decoding_pending,
+      ${freshPublicTokenDiscoveryPendingSql()} AS token_discovery_pending,
       p.creator_website_url,p.creator_x_url,p.creator_telegram_url,p.creator_updated_at
       FROM fresh.kols k JOIN fresh.wallets w ON w.address=k.wallet_address JOIN published_kols p ON p.address=k.wallet_address WHERE k.is_tracked`,[windowStart,windowEnd]);
     const items=result.rows.map(r=>{

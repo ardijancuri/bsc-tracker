@@ -520,3 +520,34 @@ and replay owner share the ordinary local credential budget. The final modal
 validator accepts server-approved matching `mixed` Fresh accounting without
 requiring retired inventory copies, while retaining freshness, completeness,
 source agreement and private-membership checks.
+
+### Explicit token discovery repair — October 25 local WPC fix
+
+Unknown tokens in genuine monitored-wallet swaps now remain in
+`token_discovery_pending` repair instead of completing as empty receipts.
+One leased `token_discovery` job per contract stores bounded receipt references
+and progress. It never supplies precision, prices, costs or P&L. Unsolicited
+incoming airdrops do not start discovery. The independent worker stage yields
+when capture is unhealthy or more than 32 blocks behind.
+
+Discovery first uses the owned node. A successful creation receipt or a
+canonical full CREATE/CREATE2 proof can establish the exact deployment. The
+adjacent-state fallback requires empty code in the canonical parent, matching
+nonempty code in the birth block and a canonical same-block mint witness. Its
+proof labels the receipt as a witness when the creation transaction is not
+known; it does not claim that pool initialization created the token. A positive
+canonical code observation at the original tracking boundary can instead prove
+that a contract is old, without inventing its creation date or transaction.
+
+`FRESH_DISCOVERY_ARCHIVE_RPC_URL` is optional and server-only. When unset, no
+external archive is called automatically. An explicitly configured source may
+serve only bounded historical code, canonical headers, receipts and single-block
+mint logs; financial/provider P&L, current-state substitution, public traces and
+chain-writing methods are forbidden. The adapter limits concurrency, requests,
+response size and duration, honors rate-limit cooldowns and stops on worker
+cancellation. Missing historical proof remains visibly pending. Successful
+discovery wakes at most 64 canonical decoder references while preserving their
+first failures, raw payloads, expiry and existing leases.
+
+This is a local implementation and finite recovery. It does not restart the
+canceled timed validation, reset a boundary or authorize deployment.

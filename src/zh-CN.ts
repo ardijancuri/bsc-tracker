@@ -126,6 +126,7 @@ export const chinese: Record<string, string> = {
   'trade': '笔交易', 'trades': '笔交易', 'buy': '买入', 'buys': '笔买入', 'sell': '卖出', 'sells': '笔卖出', 'swap': '兑换', 'unknown': '未知',
   '{matched} valued movements · {pending} pending': '{matched} 笔已计价变动 · {pending} 笔待核对',
   'Partial realized P&L': '已知已实现盈亏小计', 'Partial result': '部分结果', 'Costs or history pending': '成本或历史记录待核对',
+  'Token verification pending': '代币验证中', 'Captured transactions are awaiting token verification.': '已捕获交易，正在验证代币。',
   'Today’s stored realized P&L in UTC. Only complete results are ranked.': '今日已存储的已实现盈亏（UTC），仅对完整结果进行排名。',
   'Updated {time}': '{time}更新', 'Stored totals': '已存储的汇总', 'P&L pending · Not ranked': '盈亏待核对 · 暂不排名',
   'As of {time}': '截至 {time}',

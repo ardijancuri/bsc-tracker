@@ -81,6 +81,7 @@ describe('stored rolling 24-hour metrics',()=>{
     [{rolling_unknown_count:1},'unknown_costs'],
     [{rolling_realized_q:null},'stored_total_unavailable'],
     [{decoding_pending:true},'decoding_pending'],
+    [{token_discovery_pending:true},'token_discovery_pending'],
   ])('never ranks stale, uninitialized or incomplete totals: %j',(patch,reason)=>{
     expect(freshStoredKolRollingMetrics({...rollingRow,...patch},at)).toMatchObject({complete:false,realizedProfitUsd:null,reasons:expect.arrayContaining([reason])});
   });

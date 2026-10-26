@@ -59,6 +59,7 @@
         "PUBLIC_APP_URL": "${PUBLIC_APP_URL:-https://kollens.com}",
         "BSC_RPC_HTTP": "http://127.0.0.1:8545", "BSC_RPC_WS": "ws://127.0.0.1:8546",
         "BSC_TRACE_IPC": "/run/bsc/geth.ipc",
+        "FRESH_DISCOVERY_ARCHIVE_RPC_URL": "${FRESH_DISCOVERY_ARCHIVE_RPC_URL:-}",
         "TELEGRAM_CLIENT_ID": "${TELEGRAM_CLIENT_ID:-}", "TELEGRAM_BOT_TOKEN": "",
         "FRESH_TELEGRAM_ACTIVE": "false"
       },
