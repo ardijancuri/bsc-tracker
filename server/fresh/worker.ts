@@ -16,7 +16,7 @@ import {rollbackTelegramNotifications} from '../telegramNotifications.js';
 import {freshRuntimeDigest} from './runtime.js';
 import {createFreshSshTrace} from './sshTrace.js';
 import {runFreshRegistrationRepair} from './registration.js';
-import {runFreshArtwork} from './artwork.js';
+import {runFreshArtwork,freshArtworkCaptureReady} from './artwork.js';
 import {createFreshUrgentEvidenceCapture} from './urgentEvidence.js';
 import {createFreshRecoveryBatch,type FreshRecoveryCaptureHealth} from './recoveryBatch.js';
 import {runFreshV4MarketDiscovery,readFreshV4MarketIdentities} from './v4Discovery.js';
@@ -135,11 +135,14 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     loop('artwork',5000,async()=>{
       // Optional media yields to capture/decoding. No image request or decoder
       // can hold a financial transaction or prevent the node loops progressing.
-      const state=(await db.query(`SELECT c.block_number-d.block_number AS decode_lag,b.occurred_at,
-        h.value->>'ok' AS capture_ok FROM fresh.checkpoints c JOIN fresh.checkpoints d ON d.key='decode'
-        JOIN fresh.checkpoints h ON h.key='health:capture' JOIN fresh.recent_blocks b ON b.block_number=c.block_number AND b.block_hash=c.block_hash
+      const state=(await db.query(`SELECT b.occurred_at,h.value->>'ok' AS capture_ok,
+        dh.value->>'ok' AS decode_ok,dh.updated_at AS decode_checked_at,
+        EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.decoder_status='pending'
+          AND e.block_number>c.block_number-256 AND e.block_number<=c.block_number-32) AS pending_current
+        FROM fresh.checkpoints c JOIN fresh.checkpoints h ON h.key='health:capture'
+        JOIN fresh.checkpoints dh ON dh.key='health:decode' JOIN fresh.recent_blocks b ON b.block_number=c.block_number AND b.block_hash=c.block_hash
         WHERE c.key='capture'`)).rows[0];
-      if(!state||state.capture_ok!=='true'||Number(state.decode_lag)>32||Date.now()-new Date(state.occurred_at).getTime()>20_000)return{yielded:true};
+      if(!freshArtworkCaptureReady(state))return{yielded:true};
       return runFreshArtwork(db,{signal,limit:1});
     }),
     loop('maintenance',30_000,async()=>{const client=await db.connect();try{await client.query('BEGIN');await rolloverFreshUtcDay(client);await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}

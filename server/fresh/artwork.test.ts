@@ -1,6 +1,6 @@
 import {describe,it,expect,vi} from 'vitest';
 import sharp from 'sharp';
-import {freshArtworkRaster,freshArtworkUrl,freshFlapArtworkFromHtml,loadFreshArtwork,normalizeFreshArtwork,runFreshArtwork} from './artwork.js';
+import {freshArtworkRaster,freshArtworkUrl,freshFlapArtworkFromHtml,loadFreshArtwork,normalizeFreshArtwork,runFreshArtwork,freshArtworkCaptureReady} from './artwork.js';
 import {tokenIdentity} from './reads.js';
 import type {Pool} from 'pg';
 
@@ -71,6 +71,12 @@ describe('optional contract-bound token artwork',()=>{
 });
 
 describe('artwork durable work and read identities',()=>{
+  it('permits optional images despite an old repair gap when current capture and decoding are healthy',()=>{
+    const now=Date.now(),state={capture_ok:'true',decode_ok:'true',pending_current:false,occurred_at:new Date(now-3000),decode_checked_at:new Date(now-30_000),decode_lag:100_000};
+    expect(freshArtworkCaptureReady(state,now)).toBe(true);
+    for(const patch of[{pending_current:true},{capture_ok:'false'},{decode_ok:'false'},{occurred_at:new Date(now-20_001)},{decode_checked_at:new Date(now-60_001)},{occurred_at:'invalid'},{decode_checked_at:new Date(now+5001)}])expect(freshArtworkCaptureReady({...state,...patch},now)).toBe(false);
+    expect(freshArtworkCaptureReady(undefined,now)).toBe(false);
+  });
   it('queries only eligible public traded tokens and never starts financial work',async()=>{
     const query=vi.fn(async(sql:string)=>({rows:[],rowCount:0}));
     expect(await runFreshArtwork({query} as unknown as Pool)).toEqual({ready:0,failed:0});
