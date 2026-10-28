@@ -3,6 +3,7 @@ import { journalTokenProfit } from './journalReplay';
 import { canUseGmgnHistoryFallback, kolTokenPositionQuoteMaxAgeMs, type KolTokenActivity } from '../shared/kolTokenTrades';
 import { t } from './i18n';
 import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
+import{validNodeCostEstimate,nodeCostEstimateNote}from'../shared/nodeCostEstimate';
 
 export interface KolTokenPnlSelection { walletAddress: string; tokenAddress: string; lastTradeAt: string | null; requestContext?: TradeRequestContext }
 export interface KolTokenPnlResult { activity: KolTokenActivity | null; status: 'ready' | 'pending' | 'unavailable'; retryAfterMs?: number }
@@ -24,7 +25,16 @@ function isNodeAccounting(activity: KolTokenActivity | null) {
 function isFreshNodeAccounting(activity: KolTokenActivity | null) {
   return isNodeAccounting(activity) && activity?.tracking?.version === 1 && activity.tracking.source === 'fresh';
 }
+function tokenCostFallback(activity:KolTokenActivity|null,now=Date.now()){
+  if(!isFreshNodeAccounting(activity)||!activity)return null;
+  const snapshot=activity.accountingSnapshot,raw=activity.realizedAccounting;
+  if(!raw||!snapshot||raw.source!==snapshot.source||!['ready','estimated'].includes(raw.status)
+    ||raw.walletAddress!==activity.kol.address.toLowerCase()||raw.tokenAddress!==activity.token.address.toLowerCase()
+    ||!address.test(raw.walletAddress)||!address.test(raw.tokenAddress)||Date.parse(snapshot.asOf)>now+1000)return null;
+  return validNodeCostEstimate(snapshot);
+}
 function nodePnlDescription(activity: KolTokenActivity) {
+  if(validNodeCostEstimate(activity.accountingSnapshot))return nodeCostEstimateNote;
   const identity = activity.accountingSnapshot;
   const scope = capturedPositionDescription(identity);
   if (identity?.refreshStatus === 'pending' && Number.isFinite(Date.parse(identity.asOf))) return [t('Saved profit as of {time} UTC. Updating data…', { time: new Date(identity.asOf).toISOString().replace('T', ' ').slice(0, 19) }), scope].filter(Boolean).join(' ');
@@ -45,6 +55,7 @@ export function gmgnRealizedPnlDescription(activity: KolTokenActivity | null) {
 }
 
 export function tokenPositionPnlLabel(activity: KolTokenActivity | null) {
+  if(validNodeCostEstimate(activity?.accountingSnapshot))return tokenPositionIsOpen(activity)?'Estimated profit':'Estimated realized P&L';
   const estimated = tokenPositionIsOpen(activity)
     && (activity?.realizedAccounting?.position?.status === 'open' && verifiedTokenPositionPnl(activity) !== null
       || verifiedTokenRealizedPnl(activity) === null || openPositionWithoutRealizedProceeds(activity));
@@ -107,6 +118,8 @@ export function tokenPositionPnlPriceTime(activity: KolTokenActivity | null) {
 /** Open positions require a dated market mark. The historical realized total is
  * still available separately, but must never be mislabeled as current profit. */
 export function verifiedTokenPositionPnl(activity: KolTokenActivity | null, now = Date.now()) {
+  const fallback=tokenCostFallback(activity,now);
+  if(fallback){if(!tokenPositionIsOpen(activity))return Number(fallback.realizedProfitUsd);const position=activity?.realizedAccounting?.position,at=Date.parse(position?.pricedAt??'');return fallback.totalProfitUsd!==null&&Number.isFinite(at)&&at<=now+1000&&now-at<=120_000?Number(fallback.totalProfitUsd):null;}
   const accounting = verifiedTokenAccounting(activity, now);
   if (!accounting) return null;
   if (isNodeAccounting(activity)) {
@@ -353,7 +366,7 @@ function verifiedFreshNodeAccounting(activity: KolTokenActivity, now: number) {
   if (!raw || !snapshot || tracking?.version !== 1 || tracking.source !== 'fresh' || !height(tracking.fromBlock)
     || !/^\d{4}-\d{2}-\d{2}$/.test(tracking.utcDay) || !Number.isFinite(Date.parse(`${tracking.utcDay}T00:00:00Z`))
     || snapshot.version !== 2 || !['node','mixed'].includes(snapshot.source) || raw.source !== snapshot.source || raw.policy !== 'kollens_fifo_v1' || raw.version !== 2
-    || snapshot.complete !== true && tracking.realizedComplete !== true || raw.status !== 'ready' || raw.coverage?.transactionsComplete !== true || raw.coverage.balanceMatched !== true
+    || snapshot.complete !== true && tracking.realizedComplete !== true&&!validNodeCostEstimate(snapshot) || raw.status !== 'ready'&&raw.status!=='estimated' || raw.coverage?.transactionsComplete !== true || raw.coverage.balanceMatched !== true
     || !digest.test(snapshot.snapshotId) || !digest.test(snapshot.historyFingerprint) || !height(snapshot.coveredThroughBlock)
     || BigInt(snapshot.coveredThroughBlock) < BigInt(tracking.fromBlock)
     || typeof raw.walletAddress !== 'string' || typeof raw.tokenAddress !== 'string'
@@ -468,6 +481,7 @@ function isGmgnReportedAggregate(activity: KolTokenActivity | null) {
 }
 
 export function verifiedTokenRealizedPnl(activity: KolTokenActivity | null, now = Date.now()) {
+  const estimate=tokenCostFallback(activity,now);if(estimate&&activity?.realizedAccounting?.status==='estimated')return Number(estimate.realizedProfitUsd);
   const accounting = verifiedTokenAccounting(activity, now);
   const raw = accounting?.realizedProfitUsd;
   if (typeof raw !== 'string' || !decimal.test(raw.trim())) return null;

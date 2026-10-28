@@ -161,6 +161,7 @@ async function ensureFreshSchemaAttempt(db: Pool) {
         PRIMARY KEY(scope_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS scope_event_results_day_idx ON fresh.scope_event_results(scope_id,occurred_at);
+      ALTER TABLE fresh.scope_event_results ADD COLUMN IF NOT EXISTS estimated_realized_q text;
       CREATE INDEX IF NOT EXISTS scope_event_results_fee_idx ON fresh.scope_event_results(scope_id,fee_key) WHERE fee_key IS NOT NULL;
       CREATE TABLE IF NOT EXISTS fresh.positions (
         scope_id text NOT NULL REFERENCES fresh.accounting_scopes(id),token_address text NOT NULL REFERENCES fresh.tokens(address),

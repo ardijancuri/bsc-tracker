@@ -8,28 +8,30 @@ const qFields=['known_realized_q','capital_q','volume_q','fee_only_q','unallocat
 const countFields=['trade_count','token_count','unknown_count','buy_count','sell_count','valued_sell_count','unknown_sell_count',
   'valued_transfer_count','unknown_transfer_count','valued_fee_count','unknown_fee_count','unallocated_fee_count','unallocated_fee_unknown_count','unattributed_fee_count'] as const;
 type QField=typeof qFields[number];type CountField=typeof countFields[number];
-export type FreshRollingTotals=Record<QField,string>&Record<CountField,number>&{realized_q:string|null};
+export type FreshRollingTotals=Record<QField,string>&Record<CountField,number>&{realized_q:string|null;estimated_realized_q:string|null};
 type Row=Record<string,any>;
 const rational=(v:string)=>FreshRational.fromStored(v);
 const milliseconds=(now:string|Date|number)=>{const value=new Date(now).getTime();if(!Number.isFinite(value))throw Error('invalid_rolling_time');return value;};
 export const freshRollingWindow=(now:string|Date|number)=>{const at=milliseconds(now);return{from:new Date(at-FRESH_ROLLING_WINDOW_MS).toISOString(),to:new Date(at).toISOString()};};
 export function emptyFreshRollingTotals():FreshRollingTotals{
-  return Object.fromEntries([...qFields.map(k=>[k,'0']),...countFields.map(k=>[k,0]),['realized_q','0']]) as FreshRollingTotals;
+  return Object.fromEntries([...qFields.map(k=>[k,'0']),...countFields.map(k=>[k,0]),['realized_q','0'],['estimated_realized_q',null]]) as FreshRollingTotals;
 }
 export function freshRollingTotalsFromRow(row:Row):FreshRollingTotals{
   const result=emptyFreshRollingTotals();for(const key of qFields)result[key]=row['rolling_'+key]??'0';
   for(const key of countFields)result[key]=Number(row['rolling_'+key]??0);
-  result.realized_q=result.unknown_count?null:result.known_realized_q;return result;
+  result.realized_q=result.unknown_count?null:result.known_realized_q;result.estimated_realized_q=result.unknown_count?row.rolling_estimated_realized_q??null:null;return result;
 }
 
 /** Deltas are already FIFO/fee results. This never recalculates a purchase cost. */
 export function addFreshRollingContribution(totals:FreshRollingTotals,row:Row,sign:1|-1=1):FreshRollingTotals{
-  const next={...totals};const addQ=(key:QField,value:string)=>{const term=rational(value);next[key]=rational(next[key]).add(sign===1?term:new FreshRational(-term.n,term.d,true)).exact();};
+  const next={...totals};let estimate=totals.unknown_count?totals.estimated_realized_q:totals.known_realized_q;const addQ=(key:QField,value:string)=>{const term=rational(value);next[key]=rational(next[key]).add(sign===1?term:new FreshRational(-term.n,term.d,true)).exact();};
   const addCount=(key:CountField,value:number)=>{next[key]+=sign*value;if(next[key]<0)throw Error('rolling_negative_counter');};
   if(row.is_excluded_fee){
     addCount('unallocated_fee_count',1);addQ('unallocated_fee_q',row.fee_usd??'0');
     addCount('unallocated_fee_unknown_count',row.fee_usd==null?1:0);addCount('unattributed_fee_count',row.fee_attribution?.status==='excluded'?0:1);
   }else{
+    const term=row.realized_q??row.estimated_realized_q??null;
+    estimate=estimate!==null&&term!==null?rational(estimate).add(sign===1?rational(term):new FreshRational(-rational(term).n,rational(term).d,true)).exact():null;
     addQ('known_realized_q',row.known_realized_q??'0');addQ('capital_q',row.capital_q??'0');addQ('volume_q',row.volume_q??'0');
     addCount('trade_count',Number(row.trade_count??0));addCount('unknown_count',row.realized_q==null?1:0);
     addCount('buy_count',row.kind==='buy'?1:0);addCount('sell_count',row.kind==='sell'?1:0);
@@ -37,10 +39,10 @@ export function addFreshRollingContribution(totals:FreshRollingTotals,row:Row,si
     if(row.kind==='transfer_out')addCount(row.realized_q==null?'unknown_transfer_count':'valued_transfer_count',1);
     if(row.kind==='fee'){addCount(row.realized_q==null?'unknown_fee_count':'valued_fee_count',1);addQ('fee_only_q',row.fee_q??'0');}
   }
-  next.realized_q=next.unknown_count?null:next.known_realized_q;return next;
+  next.realized_q=next.unknown_count?null:next.known_realized_q;next.estimated_realized_q=next.unknown_count?estimate:null;return next;
 }
 const resultRow=(event:FreshFinancialEvent,result:FreshEventResult):Row=>({kind:event.kind,token_address:event.tokenAddress,event_id:event.id,
-  realized_q:result.realizedQ,known_realized_q:result.knownRealizedQ,capital_q:result.capitalQ,volume_q:result.volumeQ,
+  realized_q:result.realizedQ,estimated_realized_q:result.realizedQ===null?result.estimatedRealizedQ??null:null,known_realized_q:result.knownRealizedQ,capital_q:result.capitalQ,volume_q:result.volumeQ,
   fee_q:result.feeQ,trade_count:result.tradeCount,tokens_trade:result.tokensTrade,occurred_at:result.occurredAt});
 const excludedFeeRow=(event:FreshFinancialEvent):Row=>({kind:event.kind,is_excluded_fee:true,fee_usd:event.feeUsd,fee_attribution:event.feeAttribution,occurred_at:event.occurredAt});
 
@@ -82,7 +84,7 @@ async function nextExpiry(client:PoolClient,scope:Row,from:string,to:string){
   return row?.due_at?new Date(row.due_at).toISOString():null;
 }
 async function persist(client:PoolClient,wallet:string,totals:FreshRollingTotals,asOf:string,next:string|null){
-  const keys=['realized_q',...qFields,...countFields];
+  const keys=['realized_q','estimated_realized_q',...qFields,...countFields];
   await client.query(`UPDATE fresh.kols SET ${keys.map((key,i)=>`rolling_${key}=$${i+2}`).join(',')},
     rolling_as_of=$${keys.length+2},rolling_next_expiry_at=$${keys.length+3},rolling_metrics_updated_at=clock_timestamp(),revision=revision+1
     WHERE wallet_address=$1`,[wallet,...keys.map(key=>totals[key as keyof FreshRollingTotals]),asOf,next]);

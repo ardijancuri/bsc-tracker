@@ -24,6 +24,7 @@ import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
 import {freshPositionWalletGapSql} from './balanceScheduling.js';
 import {readFreshTokenDirectory} from './tokenDirectory.js';
+import{freshPublicKolTokenPageSql}from'./kolTokenPage.js';
 import {freshTrackedEventSql,freshScopeTokenBoundarySql} from './tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 
@@ -74,10 +75,9 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     WHERE e.token_address=$1 AND ${freshPublicTradeScopeSql('e')} AND ${freshTrackedEventSql('e','t')}
     AND e.occurred_at>=$2::timestamptz AND e.occurred_at<=$3::timestamptz`,[token,`${freshUtcDay()}T00:00:00.000Z`,new Date().toISOString()])).rows[0];}
   async function tokens(wallet?:string,limit=150,offset=0){
-    const values:unknown[]=[];let join='',walletTrade='';if(wallet){values.push(wallet);
-      walletTrade=`AND EXISTS(SELECT 1 FROM fresh.visible_trades e WHERE e.token_address=t.address AND e.wallet_address=$1 AND ${freshPublicTradeScopeSql('e')} AND ${freshTrackedEventSql('e','t')})`;}
+    const values:unknown[]=[];if(wallet)values.push(wallet);
     values.push(limit+1,offset);
-    const result=await db.query(`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t ${join} WHERE ${publicToken} ${walletTrade}
+    const result=await db.query(wallet?freshPublicKolTokenPageSql():`SELECT t.*,t.today_utc::text AS utc_date FROM fresh.tokens t WHERE ${publicToken}
       ORDER BY t.last_trade_at DESC NULLS LAST,t.address LIMIT $${values.length-1} OFFSET $${values.length}`,values);
     const items=result.rows.slice(0,limit).map(r=>tokenIdentity({...r,...(r.utc_date===freshUtcDay()?{}:{today_buy_count:0,today_sell_count:0,today_kol_count:0,today_volume_q:'0'})}));
     if(wallet){const summary=await reads.summaries(wallet,items.map(t=>t.address));for(const item of items)Object.assign(item,{accountingSummary:summary[item.address]});}
@@ -169,7 +169,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
       ${freshScopeTokenCaptureSql('s','p.token_address')} AS capture_block,
       ${freshPositionWalletGapSql("(SELECT block_number FROM fresh.checkpoints WHERE key='capture')")} AS wallet_gap,
       (EXISTS(SELECT 1 FROM fresh.recent_evidence e LEFT JOIN fresh.recent_blocks h USING(block_number,block_hash) WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.decoder_status<>'done'
-        AND ${freshPositionReceiptRelevantSql('e','p.token_address')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending,
+        AND ${freshPositionReceiptRelevantSql('e','p.token_address','s')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending,
       EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='registration_capture' AND j.reference=ANY(s.wallet_addresses) AND j.state NOT IN('done','cancelled')) AS registration_pending
       FROM fresh.positions p JOIN fresh.accounting_scopes s ON s.id=p.scope_id JOIN fresh.kols k ON s.id='kol:'||k.wallet_address
       JOIN fresh.tokens t ON t.address=p.token_address LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id

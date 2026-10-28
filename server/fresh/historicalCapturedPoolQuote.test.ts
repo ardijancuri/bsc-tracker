@@ -4,6 +4,7 @@ import{factoryCode,pairCode}from'./currentQuote.fixture.js';import{freshPoolNati
 import{FRESH_PCS_V2_PAIR_INITCODE_HASH}from'./flapQuoteRecovery.js';import type{FreshStateReadEvidence}from'./stateEvidence.js';
 import type{FreshTokenMetadata}from'./pricing.js';import type{FreshLog}from'./capture.js';
 import{readFreshCapturedV2Pools,recoverFreshHistoricalCapturedPoolQuote}from'./historicalCapturedPoolQuote.js';
+import{recoverFreshRetainedPoolNativeQuote}from'./retainedPoolQuote.js';
 const token='0x'+'1'.repeat(40),quote='0x'+'9'.repeat(40),h=(n:number)=>'0x'+n.toString(16).padStart(64,'0'),hex=(n:number)=>'0x'+n.toString(16);
 const syncAbi=new Interface(['event Sync(uint112 reserve0,uint112 reserve1)']);
 function fixture(quoteAddress=quote){
@@ -22,6 +23,20 @@ function fixture(quoteAddress=quote){
  return{source,metadata,pool,methods,codes,log,options:{tokenAddress:token,target,source,anchor,rpc,canonicalHash:async(n:number)=>h(n)}};
 }
 describe('original target-block captured PCS V2 transfer valuation',()=>{
+ it('uses authenticated retained target quote state when the quiet quote pool has no available historical Sync',async()=>{
+  const f=fixture(),pair=freshPoolNativePair(quote),assets=[quote,WBNB].sort();
+  const rpc=(async(method:string,params:any[])=>{
+   if(method!=='eth_call')return f.options.rpc(method,params);
+   const parsed=poolMarketAbi.parseTransaction(params[0])!,values:Record<string,unknown[]>={getPair:[pair],factory:[PCS_V2_FACTORY],token0:[assets[0]],token1:[assets[1]],getReserves:[10n**6n,2n*10n**18n,1]};
+   expect(params[1]).toEqual({blockHash:f.options.target.hash,requireCanonical:true});return poolMarketAbi.encodeFunctionResult(parsed.name,values[parsed.name]);
+  })as Rpc;
+  const conversion=await recoverFreshRetainedPoolNativeQuote({...f.options,rpc,source:undefined,quoteAddress:quote});f.source.calls.push(...conversion.source.calls);
+  const noHistory=(async(method:string,p:any[])=>{if(['eth_getLogs','eth_call'].includes(method))throw Error('historical_state_and_logs_pruned');return f.options.rpc(method,p);})as Rpc;
+  const proof=await recoverFreshHistoricalCapturedPoolQuote({...f.options,rpc:noHistory,retainedNativeQuotes:[conversion]});
+  expect(proof).toMatchObject({priceNative:'0.4',conversion:{kind:'retained_target_pool_native_v2',observation:'block_end'}});
+  expect(await recoverFreshHistoricalCapturedPoolQuote({...f.options,prior:proof,rpc:(async()=>{throw Error('all_rpc_pruned');})as Rpc})).toEqual(proof);
+  await expect(recoverFreshHistoricalCapturedPoolQuote({...f.options,prior:{...proof,conversion:{...conversion,nativeRaw:'1'}},rpc:noHistory})).rejects.toThrow();
+ });
  it('requires original target getPair/assets/factory/reserves and composes exact block-end quote/native conversion without historical quote precision',async()=>{
   const f=fixture(),proof=await recoverFreshHistoricalCapturedPoolQuote(f.options);
   expect(proof).toMatchObject({priceNative:'0.4',quoteLiquidityNative:'2',pool:{pool:f.pool,tokenDecimals:6},conversion:{observation:'block_end',pool:{lastSync:{transactionIndex:'0x5'}}}});

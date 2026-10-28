@@ -10,6 +10,8 @@ import type{FreshPriceBlock}from'./pricing.js';
 import type{FreshHistoricalPoolNativeQuote}from'./historicalPoolQuote.js';
 import{FreshRational}from'./accounting.js';
 import{FRESH_STOCK_QUOTE_TOKEN,type FreshStockRawQuoteEvidence}from'./stockQuote.js';
+import{isStockToken}from'../stockToken.js';
+import{validFreshCompleteCallTrace}from'./passiveIncoming.js';
 
 const routers=new Set(['0x1de460f363af910f51726def188f9004276bf4bc','0x3508dca95a64c9378cb07ef6f40553a50905372a','0xef312c613199ac91ee23743565e6a4e4e65fe2c0','0x9689992f5b5c09447f15906d8d11214944488341']);
 const zero='0x'+'0'.repeat(40),unit=10n**18n;
@@ -28,7 +30,7 @@ export interface FreshNativeQuoteChangeValue{
  version:1;kind:'historical_native_purchase_with_bncb_change';payment:FreshNativeQuoteChangePayment;conversion:FreshHistoricalPoolNativeQuote;
  nativePriceUsd:string;grossNativeUsd:string;changeUsd:string;amountUsd:string;grossNativeQ:string;changeQ:string;amountQ:string;
 }
-export interface FreshNativeStockQuoteChangePayment extends Omit<FreshNativeQuoteChangePayment,'kind'>{kind:'wallet_native_purchase_with_nvdab_change'}
+export interface FreshNativeStockQuoteChangePayment extends Omit<FreshNativeQuoteChangePayment,'kind'>{kind:'wallet_native_purchase_with_nvdab_change'|'wallet_native_purchase_with_stock_quote_change'}
 export interface FreshNativeStockQuoteChangeValue extends Omit<FreshNativeQuoteChangeValue,'kind'|'payment'|'conversion'>{
  kind:'historical_native_purchase_with_nvdab_change';payment:FreshNativeStockQuoteChangePayment;conversion:FreshStockRawQuoteEvidence;
 }
@@ -41,7 +43,19 @@ export function freshNativeQuoteChange(entry:FreshCapturedReceipt,block:FreshPri
  return readNativeQuoteChange(entry,block,tokenAddress,walletAddress,targetRaw,FRESH_BNCB_QUOTE,'wallet_native_purchase_with_bncb_change')as FreshNativeQuoteChangePayment|null;
 }
 export function freshNativeStockQuoteChange(entry:FreshCapturedReceipt,block:FreshPriceBlock,tokenAddress:string,walletAddress:string,targetRaw:bigint):FreshNativeStockQuoteChangePayment|null{
- return readNativeQuoteChange(entry,block,tokenAddress,walletAddress,targetRaw,FRESH_STOCK_QUOTE_TOKEN,'wallet_native_purchase_with_nvdab_change')as FreshNativeStockQuoteChangePayment|null;
+ try{
+  // Select the actual returned asset, never a ticker or a guessed stock peg.
+  // The full settlement verifier below still requires exactly two wallet flows,
+  // acquired=spent+returned raw units and matching successful balance/call proof.
+  const router=freshAddress(entry.transaction.to),wallet=freshAddress(walletAddress);if(!router||!wallet)return null;
+  const candidates=new Set(entry.receipt.logs.filter(l=>l.topics[0]===transferTopic&&l.topics.length===3&&/^0x[\da-f]{64}$/.test(l.data)
+   &&l.address!==tokenAddress&&(l.address===FRESH_STOCK_QUOTE_TOKEN||isStockToken(l.address))&&topicAddress(l.topics[1])===router&&topicAddress(l.topics[2])===wallet&&BigInt(l.data)>0n).map(l=>l.address));
+  if(candidates.size!==1)return null;const quote=[...candidates][0];
+  // Existing NVDAB proofs retain their literal representation. Newly supported
+  // stock identities require an authenticated complete original call tree.
+  if(quote!==FRESH_STOCK_QUOTE_TOKEN&&(!entry.trace||!validFreshCompleteCallTrace(entry,validateFreshTrace(entry.trace))))return null;
+  return readNativeQuoteChange(entry,block,tokenAddress,walletAddress,targetRaw,quote,quote===FRESH_STOCK_QUOTE_TOKEN?'wallet_native_purchase_with_nvdab_change':'wallet_native_purchase_with_stock_quote_change')as FreshNativeStockQuoteChangePayment|null;
+ }catch{return null;}
 }
 function readNativeQuoteChange(entry:FreshCapturedReceipt,block:FreshPriceBlock,tokenAddress:string,walletAddress:string,targetRaw:bigint,quote:string,kind:FreshNativeQuoteChangePayment['kind']|FreshNativeStockQuoteChangePayment['kind']):FreshNativeQuoteChangePayment|FreshNativeStockQuoteChangePayment|null{
  try{

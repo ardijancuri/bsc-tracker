@@ -1,7 +1,7 @@
 import { getCreateAddress, keccak256 } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import type { FreshBlock, FreshReceipt, FreshTransaction } from './capture.js';
-import { classifyFreshCreationToken, FRESH_IMMUTABLE_NONLEDGER_TEMPLATES, FRESH_LITERAL_NONLEDGER_TEMPLATES, FRESH_NONLEDGER_TEMPLATES } from './tokenAuthenticity.js';
+import { classifyFreshPinnedCreationToken as classifyFreshCreationToken, FRESH_IMMUTABLE_NONLEDGER_TEMPLATES, FRESH_LITERAL_NONLEDGER_TEMPLATES, FRESH_NONLEDGER_TEMPLATES } from './tokenAuthenticity.js';
 import { FRESH_USDC_NONLEDGER_CREATION } from './usdcNonledgerCreation.fixture.js';
 import { FRESH_BNB_LITERAL_NONLEDGER_CREATION } from './bnbLiteralNonledgerCreation.fixture.js';
 import { FRESH_BNB_CONTROLLER_NONLEDGER_CREATION } from './bnbNonledgerCreation.fixture.js';

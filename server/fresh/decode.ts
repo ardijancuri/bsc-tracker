@@ -4,11 +4,11 @@ import{freshPendingGangTrade,persistFreshPendingTrades,removeFreshResolvedPendin
 import{freshAcquisitionCostKey}from'./acquisitionCost.js';
 import{freshSignedSelfCallSettlement}from'./signedSelfCallSettlement.js';
 import { createHash } from 'node:crypto';
-import{freshPassiveIncomingOnly}from'./passiveIncoming.js';
+import{freshPassiveIncomingOnly,validFreshCompleteCallTrace}from'./passiveIncoming.js';
 import{certifyFreshPassiveImportedPrecision}from'./passivePrecision.js';
 import{createFreshDecodeWorkBudget,groupFreshDecodeRows}from'./decodeWorkBudget.js';
 import {invalidateFreshNotificationActivation} from './notificationActivation.js';
-import { Interface } from 'ethers';
+import { AbiCoder,Interface } from 'ethers';
 import type { Pool, PoolClient } from 'pg';
 import { transferTopic, hasRecognizedSwap, nativeSellProceeds } from '../swap.js';
 import { beforeExecutionTopic, userOperationTopic } from '../smartAccountTrades.js';
@@ -17,7 +17,7 @@ import { fourMarketAbi, flapMarketAbi, TRUSTED_QUOTE_FEEDS, v3MarketAbi, infinit
 import { isKolProfileToken, isExcludedKolProfileTokenAddress } from '../kolProfileToken.js';
 import {RpcRequestError,type Rpc} from '../rpc.js';
 import type { FreshFinancialEvent } from '../../shared/freshAccounting.js';
-import { applyFreshFinancialEvents,validateFreshFinancialEvent, FreshRational, rebuildFreshScopesAfterReorg, freshEventFromRow, freshScopeFromRow,freshEventOrder, freshEventAccountingEligible,assertFreshEventQuoteCompatible,freshSameTradeQuoteContext,persistFreshTradeQuote } from './accounting.js';
+import { applyFreshFinancialEvents,validateFreshFinancialEvent, FreshRational, rebuildFreshScopesAfterReorg,freshCostOnlyEventCorrection, freshEventFromRow, freshScopeFromRow,freshEventOrder, freshEventAccountingEligible,assertFreshEventQuoteCompatible,freshSameTradeQuoteContext,persistFreshTradeQuote,freshAirdropBasisKey,validFreshAirdropBasis,freshFinancialBasis } from './accounting.js';
 import { FRESH_ENTRY_POINTS, decodeFreshEvidence, encodeFreshEvidence, freshAddress, freshHash, freshInteger,validateFreshReceipt, type FreshCapturedReceipt, type FreshLog, type FreshBlock } from './capture.js';
 import { freshCall, freshCurrentQuote, freshTokenMetadata, freshQuoteUsd, freshMetadataDiagnostic, type FreshTokenMetadata, type FreshPriceBlock } from './pricing.js';
 import { freshIpcTrace, freshNativeDelta, freshTraceMatchesTransaction,validateFreshTrace, type FreshTraceLoader, type FreshCallTrace } from './trace.js';
@@ -27,7 +27,12 @@ import {freshNativeBuyCost} from './routerPayment.js';
 import type {FreshRecoveryBatch} from './recoveryBatch.js';
 import{isFreshSyntheticBatchCandidate,decodeFreshSyntheticTransferBatch,readFreshSyntheticBatchAnchor,type FreshSyntheticBatchAnchor,type FreshSyntheticBatchProof}from'./syntheticTransferBatch.js';
 import { freshPositionDependencies,freshPendingTradeInScopeSql } from './positionDependencies.js';
+import{freshFailedFeeOnlyCompletion}from'./failedFeeCompletion.js';
 import {hasFreshSmartSellSettlement,freshSmartAccountSellSettlement} from './smartAccountSettlement.js';
+import {freshSmartAccountNativeSell} from './smartAccountNativeSettlement.js';
+import {freshNativeSellSettlement} from './nativeSellSettlement.js';
+import {freshMixedNativeWrappedSell} from './mixedNativeWrappedSettlement.js';
+import {freshDirectTransferIntent,freshDirectTransferIntentCandidate,type FreshDirectTransferIntent} from './directTransferIntent.js';
 import {persistFreshTradeBnbPrice} from './tradeBnbDisplay.js';
 import {freshQuotePayment} from './quotePayment.js';
 import {freshTokenExchangeSettlement,hasFreshTokenExchangeRoute} from './tokenExchangeSettlement.js';
@@ -36,7 +41,11 @@ import{readFreshGangMetadataInput,recoverFreshGangHistoricalMetadata,validFreshG
 import{recoverFreshGangTradeMarketMark,persistFreshGangTradeMarketMark,invalidateFreshTradeMarketMarks,type FreshGangTradeMarketMark}from'./gangTradeMarketMark.js';
 import{freshImportedMetadataMatchesState}from'./importedMetadata.js';
 import{readFreshTokenDiscovery,queueFreshTokenDiscovery}from'./discovery.js';
+import{freshAdmissionHistoricalEventIds,rollbackFreshAdmissionRechecks}from'./admissionRecheck.js';
+import{freshPaidCreationPurchase,freshPaidCreationPurchaseCandidate}from'./paidCreationPurchase.js';
+import{certifyFreshPaidCreationEvent,planFreshPaidCreationKindCorrections,retireFreshPaidCreationInterpretations}from'./paidCreationCorrection.js';
 import{FRESH_UNISWAP_V4_BSC_MANAGER,stockwavePoolManagerInterface}from'./stockwaveMarket.js';
+import{freshV4SplitNativeBuy}from'./v4SplitNativeBuy.js';
 
 export const FRESH_DECODER_VERSION = 3;
 const q = FreshRational.parse, units = (raw: bigint, decimals: number) => new FreshRational(raw, 10n ** BigInt(decimals)).decimal(255);
@@ -51,7 +60,8 @@ const attributionKey = (value: FreshFinancialEvent['feeAttribution']) => JSON.st
   contract: value.contract ?? null, selector: value.selector ?? null, nativeFeeWei: value.nativeFeeWei,
   ...(value.expensePolicy?{expensePolicy:value.expensePolicy,batchExpenseNativeWei:value.batchExpenseNativeWei,gasNativeWei:value.gasNativeWei}:{}) } : null);
 export interface FreshExecution { key: string; wallet: string; index: number; kind: 'transaction' | 'user_operation' | 'transfer'; logs: FreshLog[]; feeWei: bigint | null; status: 'success' | 'failed' | 'unsupported'; operationHash: string | null; nativeValue: bigint; router: string | null }
-export interface FreshDecodedReceipt { events: FreshFinancialEvent[]; reasons: string[]; tokens: FreshTokenMetadata[]; executions: number; trace?: FreshCallTrace | null;syntheticTransferBatch?:FreshSyntheticBatchProof;tradeBnbPrices?:Record<string,string>;pendingTrades?:FreshPendingTrade[];gangMarketMarks?:FreshGangTradeMarketMark[];discoveryPendingTokens?:string[] }
+export interface FreshDecodedReceipt { events: FreshFinancialEvent[]; reasons: string[]; tokens: FreshTokenMetadata[]; executions: number; trace?: FreshCallTrace | null;syntheticTransferBatch?:FreshSyntheticBatchProof;tradeBnbPrices?:Record<string,string>;pendingTrades?:FreshPendingTrade[];gangMarketMarks?:FreshGangTradeMarketMark[];discoveryPendingTokens?:string[];directTransferIntents?:FreshDirectTransferIntent[] }
+declare module './capture.js'{interface FreshCapturedReceipt{directTransferIntents?:FreshDirectTransferIntent[]}}
 export interface FreshDecodeDiagnostics { version:1; valuationReasons:string[]; firstFailure?:{version:1;at:string;reasons:string[]} }
 type FreshDiagnosedReceipt=FreshCapturedReceipt&{decodeDiagnostics?:FreshDecodeDiagnostics};
 export interface FreshDecodeServices {
@@ -67,6 +77,9 @@ export interface FreshDecodeServices {
    * must not launch new historical RPC work after financial valuation succeeds. */
   retainedQuoteMetadata?(token:string):Promise<Pick<FreshTokenMetadata,'decimals'>|null>;
   acquisitionCost?(token:string,wallet:string):FreshFinancialEvent['acquisitionCost']|null;
+  /** Positive authenticated free-distribution semantics only. Fair-value marks
+   * remain separate; absent settlement in one receipt is insufficient. */
+  airdropBasis?(event:FreshFinancialEvent,metadata:FreshTokenMetadata,trace:()=>Promise<FreshCallTrace|null>):Promise<FreshFinancialEvent['airdropBasis']|null>;
   additionalNativeFeeWei?(token:string):Promise<bigint|null>;
   directFlapPurchaseUsd?(token:string,wallet:string,receivedRaw:bigint,nativePriceUsd:string|null,trace?:()=>Promise<FreshCallTrace|null>):Promise<string|null>;
   quotePaymentUsd?(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly?:boolean):Promise<string|null>;
@@ -209,7 +222,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
   const discoveryPendingTokens=new Set<string>(),discovery=new Map<string,Promise<'eligible'|'excluded'|'pending'>>();
   const discoveryState=(token:string)=>{let value=discovery.get(token);if(!value){value=services.tokenDiscovery?services.tokenDiscovery(token)
     :services.knownLaunch?services.knownLaunch(token).then(known=>known?'eligible' as const:'excluded' as const):Promise.resolve('eligible' as const);discovery.set(token,value);}return value;};
-  const tradeBnbPrices:Record<string,string>={};
+  const tradeBnbPrices:Record<string,string>={},directTransferIntents:FreshDirectTransferIntent[]=[];
   const syntheticTransferBatch=isFreshSyntheticBatchCandidate(entry)?decodeFreshSyntheticTransferBatch(entry,block,await services.syntheticBatchAnchor?.(entry.transaction.to!)):null;
   // The original raw receipt remains intact for capture/repair. Only this
   // authenticated execution's proven non-financial logs leave normalization.
@@ -317,20 +330,35 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     for (const target of targets) {
       const controller = controllerTrade(execution, target.token);
       if (controller.length > 1) { reasons.add('multiple_actions_require_execution_decoder'); continue; }
-      const v4Swap=freshLinkedV4Swap(execution,target.logs,target.raw);
+      const v4Swap=freshLinkedV4Swap(execution,target.logs,target.raw)||(execution.kind==='transaction'&&targets.length===1&&freshV4SplitNativeBuy(entry,execution.wallet,target.token,target.raw));
       // A rejected manager settlement is not an ordinary wallet transfer. Its
       // original gas/receipt and existing facts remain intact for repair; do
       // not invent a transfer cost or move FIFO lots for an unsupported route.
       if(execution.kind!=='transfer'&&touchesV4Manager(target.logs)&&officialV4SwapPresent(execution)&&!v4Swap){reasons.add('v4_swap_execution_unsupported');continue;}
       const positive = target.raw > 0n, opposingQuotes = [...flows].filter(([token, flow]) => isFreshSettlementQuote(token) && flow.raw !== 0n && (flow.raw < 0n) === positive);
-      const swap = execution.kind !== 'transfer' && (controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0]))||v4Swap);
+      const paidCreationCandidate=positive&&execution.kind==='transaction'&&freshPaidCreationPurchaseCandidate(entry);
+      const paidCreationTrace=paidCreationCandidate?await getTrace():null,paidCreationEntry=paidCreationTrace?{...entry,trace:paidCreationTrace}:entry;
+      const paidCreation=paidCreationCandidate?freshPaidCreationPurchase(paidCreationEntry,execution.wallet,target.token,target.raw):null;
+      if(paidCreationCandidate&&!paidCreation){reasons.add('paid_creation_execution_unverified');continue;}
+      let directTransfer:FreshDirectTransferIntent|null=null;
+      if(!paidCreation&&controller.length===0&&freshDirectTransferIntentCandidate(entry,execution,target.token,target.raw)){
+        const intentTrace=await getTrace();
+        // Do not publish a speculative sale between ordinary normalization and
+        // urgent capture's canonical complete-trace certificate. A real market
+        // recipient never enters this intent gate.
+        if(!intentTrace||!validFreshCompleteCallTrace(entry,intentTrace)){reasons.add('direct_transfer_intent_unverified');continue;}
+        directTransfer=freshDirectTransferIntent(entry,execution,block,target.token,target.raw,intentTrace);
+        if(directTransfer)directTransferIntents.push(directTransfer);
+      }
+      const swap = !directTransfer && execution.kind !== 'transfer' && (paidCreation||controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0]))||v4Swap);
       if (swap && target.raw !== 0n) {
         if (controller.length && (controller[0].side === 'buy') !== positive) { reasons.add('controller_quantity_direction_mismatch'); continue; }
         const selfCallTrace=execution.kind==='transaction'&&targets.length===1&&entry.selfCallContext?await getTrace():null;
         const selfCallSettlement=selfCallTrace&&entry.selfCallContext?freshSignedSelfCallSettlement({...entry,trace:selfCallTrace},{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw,entry.selfCallContext):null;
-        let settledQuote:Pick<FreshFinancialEvent,'quoteAddress'|'quoteSymbol'|'quoteAmount'>|undefined=selfCallSettlement?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(selfCallSettlement.nativeAmountWei),18)}:undefined;
+        let settledQuote:Pick<FreshFinancialEvent,'quoteAddress'|'quoteSymbol'|'quoteAmount'>|undefined=selfCallSettlement?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(selfCallSettlement.nativeAmountWei),18)}:paidCreation?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(paidCreation.nativeAmountWei),18)}:undefined;
         const selfCallNativeUsd=selfCallSettlement?await price(WBNB):null;
-        let amountUsd: string | null = selfCallSettlement&&selfCallNativeUsd!==null?q(units(BigInt(selfCallSettlement.nativeAmountWei),18)).mul(q(selfCallNativeUsd)).decimal():batchPayment&&batchTrace&&services.signedBatchPurchaseUsd
+        const paidCreationNativeUsd=paidCreation?await price(WBNB):null;
+        let amountUsd: string | null = paidCreation?paidCreationNativeUsd===null?null:q(units(BigInt(paidCreation.nativeAmountWei),18)).mul(q(paidCreationNativeUsd)).decimal():selfCallSettlement&&selfCallNativeUsd!==null?q(units(BigInt(selfCallSettlement.nativeAmountWei),18)).mul(q(selfCallNativeUsd)).decimal():batchPayment&&batchTrace&&services.signedBatchPurchaseUsd
           ?await services.signedBatchPurchaseUsd(target.token,execution.wallet,target.raw,await price(WBNB),batchTrace).catch(()=>null):exchange ? exchangeUsd : positive && targets.length === 1 && execution.kind === 'transaction' && services.directFlapPurchaseUsd
           ? await services.directFlapPurchaseUsd(target.token,execution.wallet,target.raw,await price(WBNB),()=>getTrace()).catch(()=>null) : null;
         // Reuse an already authenticated valuation route before trying a newly
@@ -341,16 +369,31 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
           amountUsd=await services.nativeQuoteChangeUsd(target.token,execution.wallet,target.raw,await price(WBNB),true).catch(()=>null);
         if(amountUsd===null&&positive&&targets.length===1&&execution.kind==='transaction'&&opposingQuotes.length===0&&services.nativeQuoteChangeUsd)
           amountUsd=await services.nativeQuoteChangeUsd(target.token,execution.wallet,target.raw,await price(WBNB)).catch(()=>null);
-        const smartTrace=!positive&&targets.length===1&&execution.kind==='user_operation'&&hasFreshSmartSellSettlement(execution.logs)?await getTrace():null;
-        const smartSettlement=smartTrace?freshSmartAccountSellSettlement(entry,execution,target.token,target.raw,smartTrace):null;
+        const smartTrace=!positive&&targets.length===1&&execution.kind==='user_operation'?await getTrace():null;
+        const smartNativeSettlement=smartTrace?freshSmartAccountNativeSell(entry,execution,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,target.raw,smartTrace):null;
+        const smartSettlement=smartNativeSettlement?{quoteAddress:WBNB,quoteRaw:BigInt(smartNativeSettlement.nativeReceivedWei)}:smartTrace&&hasFreshSmartSellSettlement(execution.logs)?freshSmartAccountSellSettlement(entry,execution,target.token,target.raw,smartTrace):null;
+        const wrappedSell=amountUsd===null&&!positive&&targets.length===1&&execution.kind==='transaction'&&opposingQuotes.length===1&&opposingQuotes[0][0]===WBNB;
+        const wrappedTrace=wrappedSell?await getTrace():null,wrappedTraceAuthenticated=!!wrappedTrace&&validFreshCompleteCallTrace(entry,wrappedTrace);
+        const wrappedNativeDelta=wrappedTraceAuthenticated?freshNativeDelta(wrappedTrace!,execution.wallet):null;
+        const mixedWrappedMetadata=wrappedSell&&wrappedTraceAuthenticated&&wrappedNativeDelta!==null&&wrappedNativeDelta>0n?await meta(WBNB):null;
+        const mixedSettlement=mixedWrappedMetadata?freshMixedNativeWrappedSell(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw,mixedWrappedMetadata):null;
+        const wrappedSettlementUnverified=wrappedSell&&(!wrappedTraceAuthenticated||wrappedNativeDelta!==0n&&!mixedSettlement);
+        if(wrappedSettlementUnverified)reasons.add('wrapped_settlement_trace_unverified');
+        if(mixedSettlement){
+          const quoteAmount=units(BigInt(mixedSettlement.totalNativeEquivalentWei),18),usd=await price(WBNB);
+          settledQuote={quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount};
+          if(usd!==null)amountUsd=q(quoteAmount).mul(q(usd)).decimal();
+        }
         if(smartSettlement){
-          const quoteMetadata=await meta(smartSettlement.quoteAddress),usd=await price(smartSettlement.quoteAddress);
+          // A proven native payout is denominated in wei, just like ordinary
+          // native routes. It needs no optional WBNB ERC20 identity reads.
+          const quoteMetadata=smartNativeSettlement?{decimals:18}:await meta(smartSettlement.quoteAddress),usd=await price(smartSettlement.quoteAddress);
           if(quoteMetadata){const quoteAmount=units(smartSettlement.quoteRaw,quoteMetadata.decimals);
             settledQuote={quoteAddress:smartSettlement.quoteAddress,quoteSymbol:smartSettlement.quoteAddress===WBNB?'BNB':TRUSTED_QUOTE_FEEDS[smartSettlement.quoteAddress].description.split(' / ')[0],quoteAmount};
             if(usd!==null)amountUsd=q(quoteAmount).mul(q(usd)).decimal();
           }
         }
-        if (!smartSettlement && targets.length === 1 && opposingQuotes.length === 1) {
+        if (!smartSettlement && !mixedSettlement && !wrappedSettlementUnverified && targets.length === 1 && opposingQuotes.length === 1) {
           const [quoteAddress, flow] = opposingQuotes[0];
           // A supported non-feed asset is valued from its authenticated raw
           // wallet settlement and historical conversion, never a generic token
@@ -374,11 +417,13 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
           }
           if(amountUsd===null&&execution.kind==='transaction'&&TRUSTED_QUOTE_FEEDS[quoteAddress]&&services.quotePaymentUsd)
             amountUsd=await services.quotePaymentUsd(target.token,execution.wallet,target.raw,await price(WBNB)).catch(()=>null);
-        } else if (!smartSettlement && targets.length === 1 && opposingQuotes.length === 0 && [...flows].every(([asset, flow]) => asset === target.token || flow.raw === 0n)) {
+        } else if (!smartSettlement && !mixedSettlement && targets.length === 1 && opposingQuotes.length === 0 && [...flows].every(([asset, flow]) => asset === target.token || flow.raw === 0n)) {
           let native: bigint | null = null, contradictoryNative = false;
           const receiptPayment=positive?freshNativeBuyCost(tx,execution.wallet,target.token,target.raw,execution.logs)
             :nativeSellProceeds(execution.wallet,-target.raw,execution.logs,execution.router,target.token);
-          if (execution.kind === 'transaction') {
+          const supportedSell=!positive&&entry.trace?freshNativeSellSettlement(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw,entry.trace):null;
+          if(supportedSell)native=BigInt(supportedSell.netNativeWei);
+          if (!supportedSell&&execution.kind === 'transaction') {
             // Authenticated recipient/input/output receipts already establish
             // payment. Trace unsupported cash flows; retain and cross-check
             // any trace we captured originally instead of hiding a conflict.
@@ -386,7 +431,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
             if (traced) { const delta = freshNativeDelta(traced, execution.wallet); native = positive ? delta < 0n ? -delta : null : delta > 0n ? delta : null;
               if (delta===0n || positive && delta > 0n || !positive && delta < 0n) { contradictoryNative = true; reasons.add('native_payout_mismatch'); } }
           }
-          if (receiptPayment!==null) {
+          if (!supportedSell&&receiptPayment!==null) {
             if (native !== null && native !== receiptPayment) { native = null; reasons.add('native_payout_mismatch'); }
             else if (native === null && !contradictoryNative) native = receiptPayment;
           }
@@ -397,7 +442,8 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
         }
         if (amountUsd === null) reasons.add(exchange?'exchange_quote_valuation_unavailable':targets.length > 1 ? 'shared_quote_allocation_unknown' : 'trade_value_unavailable');
         emit(target.token, positive ? 'buy' : 'sell', units(target.raw < 0n ? -target.raw : target.raw, target.metadata.decimals), amountUsd,
-          controller[0] ? Number(freshInteger(controller[0].log.logIndex)) : target.logs.length === 1 ? Number(freshInteger(target.logs[0].logIndex)) : null, null, null,extraFeeAttribution,settledQuote);
+          paidCreation?paidCreation.transferLogIndex:controller[0] ? Number(freshInteger(controller[0].log.logIndex)) : target.logs.length === 1 ? Number(freshInteger(target.logs[0].logIndex)) : null, null, null,extraFeeAttribution,settledQuote);
+        if(paidCreation&&amountUsd!==null&&!certifyFreshPaidCreationEvent(events[events.length-1],paidCreationEntry,target.metadata,target.raw))throw Error('paid_creation_normalization_binding_invalid');
         if(positive&&amountUsd!==null){const basis=services.acquisitionCost?.(target.token,execution.wallet);if(basis){if(basis.tokenCostUsd!==amountUsd)throw Error('acquisition_cost_value_mismatch');const event=events[events.length-1],grossQuote=units(BigInt(basis.grossNativeWei),18);if(event.quoteAmount!=null&&(event.quoteAddress!==WBNB||event.quoteSymbol!=='BNB'||q(event.quoteAmount).compare(q(grossQuote))!==0))throw Error('acquisition_cost_gross_quote_conflict');event.quoteAddress=WBNB;event.quoteSymbol='BNB';event.quoteAmount=grossQuote;event.acquisitionCost=basis;}}
         if(amountUsd!==null&&settledQuote&&settledQuote.quoteAddress!==WBNB){
           const nativeUsd=await price(WBNB);
@@ -410,8 +456,10 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
           const raw = BigInt(log.data); if (!raw) continue;
           const from = tokenTopic(log.topics[1])!, to = tokenTopic(log.topics[2])!, incoming = to === execution.wallet, index = Number(freshInteger(log.logIndex));
           const quantity = units(raw, target.metadata.decimals), amount = usd === null ? null : q(quantity).mul(q(usd)).decimal();
-          if (amount === null) reasons.add(incoming ? 'incoming_transfer_cost_unknown' : 'outgoing_transfer_value_unknown');
           emit(target.token, incoming ? 'transfer_in' : 'transfer_out', quantity, amount, index, incoming ? from : to, `${block.hash.toLowerCase()}:${tx.hash.toLowerCase()}:${target.token}:${index}`);
+          const event=events[events.length-1];
+          if(incoming&&services.airdropBasis){const basis=await services.airdropBasis(event,target.metadata,()=>getTrace()).catch(()=>null);if(basis){event.airdropBasis=basis;if(!validFreshAirdropBasis(event))delete event.airdropBasis;}}
+          if(amount===null&&!(incoming&&validFreshAirdropBasis(event)))reasons.add(incoming?'incoming_transfer_cost_unknown':'outgoing_transfer_value_unknown');
         }
       }
     }
@@ -422,7 +470,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
   let pending:FreshPendingTrade|null=null;
   if(services.tradeAdmission&&entry.receipt.logs.some(log=>log.address===GANG_TOKEN_ADDRESS)&&!events.some(event=>event.tokenAddress===GANG_TOKEN_ADDRESS&&['buy','sell'].includes(event.kind)))
     pending=freshPendingGangTrade(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},await services.tradeAdmission(GANG_TOKEN_ADDRESS));
-  return { events, reasons: [...reasons].sort(), tokens: [...tokens.values()], executions: executions.length, ...(trace !== undefined ? { trace } : {}),...(syntheticTransferBatch?{syntheticTransferBatch}:{}),...(Object.keys(tradeBnbPrices).length?{tradeBnbPrices}:{}),...(pending?{pendingTrades:[pending]}:{}),...(discoveryPendingTokens.size?{discoveryPendingTokens:[...discoveryPendingTokens].sort()}:{}) };
+  return { events, reasons: [...reasons].sort(), tokens: [...tokens.values()], executions: executions.length, ...(trace !== undefined ? { trace } : {}),...(syntheticTransferBatch?{syntheticTransferBatch}:{}),...(Object.keys(tradeBnbPrices).length?{tradeBnbPrices}:{}),...(pending?{pendingTrades:[pending]}:{}),...(discoveryPendingTokens.size?{discoveryPendingTokens:[...discoveryPendingTokens].sort()}:{}),...(directTransferIntents.length?{directTransferIntents}:{}) };
 }
 
 /** An existing canonical fact already identifies its traded token and scaled
@@ -554,6 +602,7 @@ export function preserveFreshVerifiedValuations(decoded: FreshDecodedReceipt, pr
       && saved.blockNumber === event.blockNumber && saved.blockHash === event.blockHash && saved.transactionHash === event.transactionHash
       && saved.transactionIndex === event.transactionIndex && saved.logIndex === event.logIndex && q(saved.quantity).compare(q(event.quantity)) === 0;
     if (!same || contradiction) continue;
+    if(!event.airdropBasis&&saved.airdropBasis)event.airdropBasis=saved.airdropBasis;
     assertFreshEventQuoteCompatible(saved,event);
     if(!event.acquisitionCost&&saved.acquisitionCost)event.acquisitionCost=saved.acquisitionCost;
     if(event.quoteAmount==null&&saved.quoteAmount!=null){event.quoteAddress=saved.quoteAddress;event.quoteSymbol=saved.quoteSymbol;event.quoteAmount=saved.quoteAmount;}
@@ -566,7 +615,7 @@ export function preserveFreshVerifiedValuations(decoded: FreshDecodedReceipt, pr
   decoded.reasons = decoded.reasons.filter(reason => {
     if (reason === 'wallet_fee_valuation_unavailable') return unresolved(decoded.events.filter(freshEventAccountingEligible), 'feeUsd');
     if (reason === 'trade_value_unavailable' || reason === 'exchange_quote_valuation_unavailable') return unresolved(decoded.events.filter(event => event.kind === 'buy' || event.kind === 'sell'), 'amountUsd');
-    if (reason === 'incoming_transfer_cost_unknown') return unresolved(decoded.events.filter(event => event.kind === 'transfer_in'), 'amountUsd');
+    if (reason === 'incoming_transfer_cost_unknown') {const incoming=decoded.events.filter(event=>event.kind==='transfer_in');return incoming.length===0||incoming.some(event=>event.amountUsd===null&&!validFreshAirdropBasis(event));}
     if (reason === 'outgoing_transfer_value_unknown') return unresolved(decoded.events.filter(event => event.kind === 'transfer_out'), 'amountUsd');
     return true;
   });
@@ -594,6 +643,88 @@ export function freshTransferValuationOnly(decoded:FreshDecodedReceipt,entry?:Fr
     if(event.amountUsd===null){unvalued=true;if(!decoded.reasons.includes(event.kind==='transfer_in'?'incoming_transfer_cost_unknown':'outgoing_transfer_value_unknown'))return false;}
   }
   return unvalued&&decoded.reasons.every(reason=>decoded.events.some(event=>event.amountUsd===null&&event.kind===(reason==='incoming_transfer_cost_unknown'?'transfer_in':'transfer_out')));
+}
+
+/** Signed inventory movement needs no market mark, even when its book has
+ * actual trades. This grants movement completion only: null acquisition cost,
+ * transfer value and diagnostics remain intact. Unknown buys/sells, fees and
+ * unsupported executions never enter this path. */
+export function freshAuthenticatedTransferCompletion(decoded:FreshDecodedReceipt,entry:FreshCapturedReceipt):boolean{
+ try{
+  if(!freshTransferValuationOnly(decoded)||decoded.pendingTrades?.length||decoded.discoveryPendingTokens?.length||decoded.syntheticTransferBatch||entry.launchRepair
+    ||entry.receipt.status!=='0x1'||!['0x0','0x1','0x2'].includes(String(entry.transaction.type))||entry.transaction.authorizationList!==undefined
+    ||entry.transaction.chainId!==undefined&&freshInteger(entry.transaction.chainId)!==56n||freshInteger(entry.transaction.value)!==0n||decoded.events.length>512
+    ||entry.receipt.logs.some(l=>[beforeExecutionTopic,userOperationTopic].includes(l.topics[0])))return false;
+  const tx=entry.transaction,wallet=tx.from,token=decoded.events[0].tokenAddress!;
+  if(!freshAddress(wallet)||!entry.wallets.includes(wallet)||!decoded.events.some(e=>e.walletAddress===wallet&&e.kind==='transfer_out')||isFreshSettlementQuote(token)
+    ||decoded.events.some(e=>e.tokenAddress!==token||!entry.wallets.includes(e.walletAddress)))return false;
+  const block={number:tx.blockNumber,hash:tx.blockHash,timestamp:'0x'+Math.floor(Date.parse(decoded.events[0].occurredAt)/1000).toString(16)};
+  validateFreshReceipt(entry.receipt,tx,{...block,parentHash:block.hash,transactions:[tx]});
+  const trace=validateFreshTrace(decoded.trace??entry.trace);if(!validFreshCompleteCallTrace(entry,trace))return false;
+  const wallets=new Set(decoded.events.map(e=>e.walletAddress)),nodes:FreshCallTrace[]=[];
+  const visit=(call:FreshCallTrace,context?:string,parentValue=0n)=>{
+    if(nodes.length>=4096||call.error||!['CALL','STATICCALL','DELEGATECALL'].includes(call.type)||!freshAddress(call.from)||!freshAddress(call.to)
+      ||context!==undefined&&call.from!==context||nodes.length>0&&(wallets.has(call.from)||wallets.has(call.to!))
+      ||call.type==='STATICCALL'&&freshInteger(call.value??'0x0')!==0n||call.type==='DELEGATECALL'&&freshInteger(call.value??'0x0')!==parentValue)throw Error('pure_transfer_trace');
+    nodes.push(call);call.calls?.forEach(child=>visit(child,call.type==='DELEGATECALL'?call.from:call.to,freshInteger(call.value??'0x0')));
+  };visit(trace);
+  for(const actor of wallets)if(freshNativeDelta(trace,actor)!==0n)return false;
+  const metadata=new Map(decoded.tokens.map(t=>[t.address,t])),eventsByLog=new Map<string,FreshFinancialEvent>();
+  for(const event of decoded.events){if(event.transactionHash!==tx.hash||event.blockHash!==tx.blockHash||event.blockNumber!==String(freshInteger(tx.blockNumber))||event.transactionIndex!==Number(freshInteger(tx.transactionIndex)))return false;
+    const key=event.walletAddress+':'+event.logIndex;if(eventsByLog.has(key))return false;eventsByLog.set(key,event);
+  }
+  const movements:{from:string;to:string;raw:bigint;index:number}[]=[],used=new Set<string>();
+  for(const log of entry.receipt.logs){if(log.topics[0]!==transferTopic)continue;
+    if(log.topics.length!==3||!/^0x[\da-f]{64}$/i.test(log.data))return false;const from=tokenTopic(log.topics[1]),to=tokenTopic(log.topics[2]);if(!from||!to)return false;const raw=BigInt(log.data);if(raw===0n)continue;
+    if(wallets.has(from)||wallets.has(to)){
+      if(log.address!==token||from===to)return false;const index=Number(freshInteger(log.logIndex));movements.push({from,to,raw,index});
+      for(const actor of[from,to].filter(a=>wallets.has(a))){const key=actor+':'+index,event=eventsByLog.get(key),precision=metadata.get(token);if(!event||!precision||event.kind!==(actor===from?'transfer_out':'transfer_in')||event.counterparty!==(actor===from?to:from)||q(event.quantity).compare(new FreshRational(raw,10n**BigInt(precision.decimals)))!==0)return false;used.add(key);}
+    }
+  }
+  if(used.size!==decoded.events.length||!movements.length)return false;
+  const principal=movements.filter(m=>m.from===wallet);if(principal.length!==movements.length||principal.some(m=>m.to===wallet||m.to===token||m.to===zeroAddress))return false;
+  if(typeof tx.input!=='string')return false;
+  const market=hasRecognizedSwap(entry.receipt.logs)||entry.receipt.logs.some(l=>extraSwapTopics.has(l.topics[0]));
+  // A complete trace also closes unlogged settlement: another contract can
+  // mutate an asset balance without a standard Transfer event. Permit only
+  // principal calls and the known Flap balance notifications, never arbitrary
+  // foreign selectors. The notification proxy delegates the same calldata to
+  // its fixed implementation and cannot make another state-changing call.
+  const closedCalls=(calls:FreshCallTrace[],recipients:string[],amounts:bigint[])=>{
+    const allowedCalls=new Set<FreshCallTrace>([trace,...calls]),allowedDelegates=new Set<FreshCallTrace>(),balances=new Map<string,bigint>();let hookAddress:string|undefined;
+    const word=(v:string|bigint)=>typeof v==='string'?v.slice(2).padStart(64,'0'):v.toString(16).padStart(64,'0');
+    for(const[at,call]of calls.entries()){
+      const delegated=call.calls?.filter(c=>c.type==='DELEGATECALL')??[],nestedCalls=call.calls?.filter(c=>c.type==='CALL')??[];
+      if(nestedCalls.length||delegated.length>1)return false;
+      if(!delegated.length)continue;const implementation=delegated[0];
+      if(implementation.from!==token||implementation.to!=='0x024f18294970b5c76c0691b87f138a0317156422'||implementation.input!==call.input||implementation.output!==call.output)return false;allowedDelegates.add(implementation);
+      const notifications=implementation.calls?.filter(c=>c.type==='CALL')??[];if(notifications.length!==2)return false;
+      for(const[j,actor]of[wallet,recipients[at]].entries()){
+        const n=notifications[j],d=n.calls?.[0];if(n.from!==token||!freshAddress(n.to)||n.to===token||wallets.has(n.to!)||isFreshSettlementQuote(n.to!)||hookAddress!==undefined&&n.to!==hookAddress
+          ||freshInteger(n.value??'0x0')!==0n||typeof n.input!=='string'||!new RegExp('^0x14b6ca96'+word(actor)+'[a-f0-9]{64}$').test(n.input)||n.output!==undefined&&n.output!=='0x'
+          ||n.calls?.length!==1||!d||d.type!=='DELEGATECALL'||d.from!==n.to||d.to!=='0xefbc2f91142e24fbd5a550686155e6af3c4461fa'||d.input!==n.input||freshInteger(d.value??'0x0')!==0n||d.calls?.length||d.output!==undefined&&d.output!=='0x')return false;
+        const balance=BigInt('0x'+n.input.slice(-64)),previous=balances.get(actor),amount=amounts[at];if(previous!==undefined&&(j===0?previous<amount||balance!==previous-amount:balance!==previous+amount)||j===1&&balance<amount)return false;
+        balances.set(actor,balance);hookAddress=n.to!;allowedCalls.add(n);allowedDelegates.add(d);
+      }
+    }
+    return nodes.every(n=>n.type==='STATICCALL'||n.type==='CALL'&&allowedCalls.has(n)||n.type==='DELEGATECALL'&&allowedDelegates.has(n));
+  };
+  if(tx.to===token&&tx.input.startsWith('0xa9059cbb')){
+    const parsed=feeAttemptAbi.decodeFunctionData('transfer',tx.input),recipient=String(parsed[0]).toLowerCase(),raw=BigInt(parsed[1]);
+    if(feeAttemptAbi.encodeFunctionData('transfer',parsed).toLowerCase()!==tx.input||raw<=0n||principal.length!==1||principal[0].to!==recipient||principal[0].raw!==raw||trace.output!=='0x'+'0'.repeat(63)+'1')return false;
+    // Internal inventory swaps keep their established intent classification,
+    // but do not gain this price-free completion until their entire external
+    // call graph has a separate closed grammar.
+    return!market&&closedCalls([trace],[recipient],[raw]);
+  }
+  // One authenticated batch grammar, with no arbitrary router execution. The
+  // signed arrays, direct transferFrom calls and original logs agree itemwise.
+  if(tx.to!=='0xd0afd22c2bddf7131595c9d9a125be60c76ebad4'||!tx.input.startsWith('0x20651d5d')||market)return false;
+  const abi=AbiCoder.defaultAbiCoder(),args=abi.decode(['address','address[]','uint256[]'],'0x'+tx.input.slice(10)),recipients=[...args[1]].map(v=>String(v).toLowerCase()),amounts=[...args[2]].map(v=>BigInt(v));
+  if('0x20651d5d'+abi.encode(['address','address[]','uint256[]'],args).slice(2)!==tx.input||String(args[0]).toLowerCase()!==token||!recipients.length||recipients.length>256||recipients.length!==amounts.length||principal.length!==recipients.length||trace.calls?.length!==recipients.length)return false;
+  return recipients.every((recipient,i)=>{const call=trace.calls![i],movement=principal[i];return freshAddress(recipient)&&recipient!==wallet&&recipient!==token&&recipient!==zeroAddress&&amounts[i]>0n&&movement.to===recipient&&movement.raw===amounts[i]
+    &&call.type==='CALL'&&call.from===tx.to&&call.to===token&&freshInteger(call.value??'0x0')===0n&&call.input===feeAttemptAbi.encodeFunctionData('transferFrom',[wallet,recipient,amounts[i]]).toLowerCase()&&(call.output==='0x'||call.output==='0x'+'0'.repeat(63)+'1');})&&closedCalls(trace.calls!,recipients,amounts);
+ }catch{return false;}
 }
 
 /** Run under the decoder transaction lock, after this block's facts commit to
@@ -655,14 +786,18 @@ async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, 
     const same = saved.filter(row => row.canonical && row.wallet_address === event.walletAddress && row.token_address === event.tokenAddress && row.kind === event.kind
       && row.block_hash === event.blockHash && row.transaction_hash === event.transactionHash && row.log_index === event.logIndex);
     if (same.length > 1) throw new Error('ambiguous_transfer_identity');
-    if (same.length === 1) { event.id = same[0].id; event.executionKey = same[0].execution_key; }
+    if (same.length === 1) { const airdrop=event.airdropBasis;event.id = same[0].id; event.executionKey = same[0].execution_key;
+      // Legacy IDs name the same canonical Transfer log. Rebind only that
+      // alias; all wallet/token/raw quantity/trace authentication stays intact.
+      if(airdrop)event.airdropBasis={...airdrop,eventId:event.id}; }
   }
   const old = new Map(saved.map(row => [row.id, freshEventFromRow(row)]));
+  const kindCorrections=planFreshPaidCreationKindCorrections(decoded.events,saved);
   for (const context of contexts) preserveFreshVerifiedValuations(context, old);
   const quoteUpdates=decoded.events.filter(event=>old.has(event.id)&&old.get(event.id)!.quoteAmount==null&&event.quoteAmount!=null&&freshSameTradeQuoteContext(old.get(event.id)!,event));
   for(const event of decoded.events){validateFreshFinancialEvent(event);const prior=old.get(event.id);if(prior)assertFreshEventQuoteCompatible(prior,event);}
   const changed = decoded.events.filter(event => { const previous = old.get(event.id); return previous && (['tokenAddress', 'quantity', 'amountUsd', 'feeUsd', 'feeKey', 'counterparty', 'transferKey', 'executionIndex'].some(key => previous[key as keyof FreshFinancialEvent] !== event[key as keyof FreshFinancialEvent])
-    || freshAcquisitionCostKey(previous.acquisitionCost)!==freshAcquisitionCostKey(event.acquisitionCost)|| attributionKey(previous.feeAttribution) !== attributionKey(event.feeAttribution)); });
+    || freshAcquisitionCostKey(previous.acquisitionCost)!==freshAcquisitionCostKey(event.acquisitionCost)||freshAirdropBasisKey(previous.airdropBasis)!==freshAirdropBasisKey(event.airdropBasis)|| attributionKey(previous.feeAttribution) !== attributionKey(event.feeAttribution)); });
   let restrictedScopes:ReturnType<typeof freshScopeFromRow>[]|undefined;
   if(allowedScopeIds!==undefined){
     if(allowedScopeIds.length>1024||new Set(allowedScopeIds).size!==allowedScopeIds.length||allowedScopeIds.some(id=>typeof id!=='string'||!id||id.length>256))throw Error('decode_allowed_scopes_invalid');
@@ -675,8 +810,9 @@ async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, 
   }
   const scopes = restrictedScopes?.map(s=>s.id)??(await client.query('SELECT id FROM fresh.accounting_scopes WHERE active AND wallet_addresses && $1::text[] ORDER BY id', [[...new Set(decoded.events.map(event => event.walletAddress))]])).rows.map(row => row.id as string);
   for (const id of scopes) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`fresh-scope:${id}`]);
+  await retireFreshPaidCreationInterpretations(client,kindCorrections);
   for (const event of changed) await client.query('UPDATE fresh.financial_events SET quantity=$2,amount_usd=$3,fee_usd=$4,fee_key=$5,counterparty=$6,transfer_key=$7,decoder_version=$8,execution_index=$9,fee_attribution=$10::jsonb,token_address=$11,acquisition_cost=$12::jsonb WHERE id=$1 AND canonical',
-    [event.id, event.quantity, event.amountUsd, event.feeUsd, event.feeKey, event.counterparty, event.transferKey, FRESH_DECODER_VERSION, event.executionIndex, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null, event.tokenAddress,event.acquisitionCost?JSON.stringify(event.acquisitionCost):null]);
+    [event.id, event.quantity, event.amountUsd, event.feeUsd, event.feeKey, event.counterparty, event.transferKey, FRESH_DECODER_VERSION, event.executionIndex, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null, event.tokenAddress,freshFinancialBasis(event)]);
   for(const event of quoteUpdates)await persistFreshTradeQuote(client,event);
   // Late metadata repair can insert older facts after later transactions were
   // already handled; reset only those affected books, not all KOL history.
@@ -684,15 +820,16 @@ async function persistDecoded(client: PoolClient, decoded: FreshDecodedReceipt, 
   const late = first ? (await client.query(`SELECT 1 FROM fresh.positions p JOIN fresh.financial_events last ON last.id=p.last_event_id
     WHERE p.scope_id=ANY($1::text[]) AND (last.block_number,last.transaction_index,last.execution_index,coalesce(last.log_index,-1),last.id)>
       ($2::bigint,$3::integer,$4::integer,$5::integer,$6::text) LIMIT 1`, [scopes, first.blockNumber, first.transactionIndex, first.executionIndex, first.logIndex ?? -1, first.id])).rowCount : 0;
-  const isolatedAppend=!changed.length&&Boolean(late)&&await canAppendFreshIsolatedIncoming(client,
+  const isolatedAppend=!kindCorrections.length&&!changed.length&&Boolean(late)&&await canAppendFreshIsolatedIncoming(client,
     decoded.events.filter(event=>!old.has(event.id)&&freshEventAccountingEligible(event)),contexts,scopes);
-  if (changed.length || late&&!isolatedAppend) {
+  if (kindCorrections.length||changed.length || late&&!isolatedAppend) {
     for (const event of decoded.events.filter(event => !old.has(event.id))) await client.query(`INSERT INTO fresh.financial_events(id,execution_key,wallet_address,token_address,kind,quantity,amount_usd,fee_usd,fee_key,counterparty,transfer_key,
       block_number,block_hash,transaction_hash,transaction_index,execution_index,log_index,occurred_at,canonical,fee_attribution,quote_address,quote_symbol,quote_amount,acquisition_cost)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,true,$19::jsonb,$20,$21,$22,$23::jsonb) ON CONFLICT DO NOTHING`, [event.id, event.executionKey, event.walletAddress, event.tokenAddress, event.kind, event.quantity, event.amountUsd, event.feeUsd,
-      event.feeKey, event.counterparty, event.transferKey, event.blockNumber, event.blockHash, event.transactionHash, event.transactionIndex, event.executionIndex, event.logIndex, event.occurredAt, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null,event.quoteAddress??null,event.quoteSymbol??null,event.quoteAmount??null,event.acquisitionCost?JSON.stringify(event.acquisitionCost):null]);
-    await rebuildFreshScopesAfterReorg(client, scopes, now);
+      event.feeKey, event.counterparty, event.transferKey, event.blockNumber, event.blockHash, event.transactionHash, event.transactionIndex, event.executionIndex, event.logIndex, event.occurredAt, event.feeAttribution ? JSON.stringify(event.feeAttribution) : null,event.quoteAddress??null,event.quoteSymbol??null,event.quoteAmount??null,freshFinancialBasis(event)]);
+    await rebuildFreshScopesAfterReorg(client, scopes, now,{preserveMatchedBalancesForCostOnly:changed.length>0&&!late&&decoded.events.every(event=>old.has(event.id)&&freshCostOnlyEventCorrection(old.get(event.id)!,event))});
   } else await applyFreshFinancialEvents(client, decoded.events, restrictedScopes?{now,scopes:restrictedScopes}:{now});
+  if(kindCorrections.length)await client.query('UPDATE fresh.financial_events SET observed_live=false,telegram_notification_processed=true WHERE id=ANY($1::text[]) AND canonical',[kindCorrections.map(p=>p.event.id)]);
   for(const context of contexts)for(const[id,rate]of Object.entries(context.tradeBnbPrices??{})){
     const event=decoded.events.find(event=>event.id===id);if(!event)throw Error('trade_bnb_display_event_missing');
     await persistFreshTradeBnbPrice(client,event,rate);
@@ -706,12 +843,12 @@ export { persistDecoded as persistFreshDecodedReceipt };
 
 /** One block per transaction: receipt events stay ordered, paired transfers
  * reach the combined Portfolio together, and unsupported work remains durable. */
-export async function selectFreshDecodeEvidence(database: Pick<Pool, 'query'>, now: Date, limit = 16) {
+export async function selectFreshDecodeEvidence(database: Pick<Pool, 'query'>, now: Date, limit = 16,options:{repairFirst?:boolean}={}) {
   return database.query(`SELECT e.*,b.parent_hash,b.occurred_at FROM fresh.recent_evidence e JOIN fresh.recent_blocks b USING(block_number,block_hash)
     LEFT JOIN fresh.jobs j ON j.kind='decode_receipt' AND j.reference=e.tx_hash||':'||e.block_hash
     WHERE e.decoder_status='pending' OR e.decoder_status='repair' AND j.due_at<=$1 AND j.state='pending'
       OR e.decoder_status='done' AND e.decoder_version<$3
-    ORDER BY CASE e.decoder_status WHEN 'pending' THEN 0 WHEN 'repair' THEN 1 ELSE 2 END,
+    ORDER BY ${options.repairFirst?"CASE e.decoder_status WHEN 'repair' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END":"CASE e.decoder_status WHEN 'pending' THEN 0 WHEN 'repair' THEN 1 ELSE 2 END"},
       CASE WHEN e.decoder_status='repair' THEN j.due_at END,e.block_number,e.transaction_index,e.tx_hash LIMIT $2`, [now, Math.min(64, Math.max(1, limit)), FRESH_DECODER_VERSION]);
 }
 /** First failure is insertion-only. Retrying a pre-diagnostic job with empty
@@ -727,12 +864,14 @@ export async function queueFreshDecodeRepair(database:Pick<Pool,'query'>,row:{tx
 
 /** Retain authentic state successes beside their original receipt, including
  * partial repairs. This never changes its transaction, logs or observation. */
-export function freshDecodedEvidencePayload(entry:FreshCapturedReceipt,state:FreshStateEvidenceRpc,trace?:FreshCallTrace|null,recovery?:FreshReceiptRecoveryEvidence,diagnostics?:FreshDecodeDiagnostics){
+export function freshDecodedEvidencePayload(entry:FreshCapturedReceipt,state:FreshStateEvidenceRpc,trace?:FreshCallTrace|null,recovery?:FreshReceiptRecoveryEvidence,diagnostics?:FreshDecodeDiagnostics,directTransferIntents?:FreshDirectTransferIntent[]){
   const changedRecovery=recovery&&JSON.stringify(recovery)!==JSON.stringify(entry.recoveryEvidence);
   const changedDiagnostics=diagnostics&&JSON.stringify(diagnostics)!==JSON.stringify((entry as FreshDiagnosedReceipt).decodeDiagnostics);
-  if(!state.writes&&!state.rejectedPrior&&!(trace&&!entry.trace)&&!changedRecovery&&!changedDiagnostics)return null;
+  const changedIntents=directTransferIntents?.length&&JSON.stringify(directTransferIntents)!==JSON.stringify(entry.directTransferIntents);
+  if(directTransferIntents&&(directTransferIntents.length>8||Buffer.byteLength(JSON.stringify(directTransferIntents))>64*1024))throw Error('transfer_intent_evidence_bounds');
+  if(!state.writes&&!state.rejectedPrior&&!(trace&&!entry.trace)&&!changedRecovery&&!changedDiagnostics&&!changedIntents)return null;
   const {stateEvidence:_prior,...original}=entry,proof=state.snapshot();
-  return encodeFreshEvidence({...original,...(proof?{stateEvidence:proof}:{}),...(trace&&!entry.trace?{trace}:{}),...(recovery?{recoveryEvidence:recovery}:{}),...(diagnostics?{decodeDiagnostics:diagnostics}:{})} as FreshDiagnosedReceipt);
+  return encodeFreshEvidence({...original,...(proof?{stateEvidence:proof}:{}),...(trace&&!entry.trace?{trace}:{}),...(recovery?{recoveryEvidence:recovery}:{}),...(diagnostics?{decodeDiagnostics:diagnostics}:{}),...(directTransferIntents?.length?{directTransferIntents}:{})} as FreshDiagnosedReceipt);
 }
 function retainedFirstFailure(value:unknown):FreshDecodeDiagnostics['firstFailure'] {
   if(!value||typeof value!=='object')return undefined;
@@ -757,7 +896,10 @@ export async function finishFreshDecodedReceipt(database:Pick<Pool,'query'>,opti
       passiveValuationOnly=freshPassiveIncomingOnly(decoded,proofEntry);
     }
   }
-  const valuationOnly=(ordinaryValuationOnly||passiveValuationOnly)&&await canCompleteFreshUntradedTransfers(database,decoded,options.batchEvents);
+  // Retain the established unsigned incoming-distribution rule. An unsigned
+  // outgoing log may be an unsupported sell/emitter and cannot use it.
+  const incomingOnly=decoded.events.length>0&&decoded.events.every(event=>event.kind==='transfer_in'&&event.feeUsd==='0');
+  const valuationOnly=freshFailedFeeOnlyCompletion(decoded,entry)||freshAuthenticatedTransferCompletion(decoded,entry)||incomingOnly&&(ordinaryValuationOnly||passiveValuationOnly)&&await canCompleteFreshUntradedTransfers(database,decoded,options.batchEvents);
   const waiting=decoded.reasons.length>0&&!valuationOnly;
   let diagnostics:FreshDecodeDiagnostics|undefined;
   if(!waiting){
@@ -767,7 +909,7 @@ export async function finishFreshDecodedReceipt(database:Pick<Pool,'query'>,opti
   }
   const dependencies=freshPositionDependencies({...entry,...(decoded.trace?{trace:decoded.trace}:{})});
   await database.query(`UPDATE fresh.recent_evidence SET decoder_status=$3,decoder_version=$4,last_error=$5,payload=COALESCE($6,payload),position_dependency_addresses=$7,position_dependency_proof=$8 WHERE tx_hash=$1 AND block_hash=$2`,
-    [row.tx_hash,row.block_hash,waiting?'repair':'done',FRESH_DECODER_VERSION,decoded.reasons.join(',')||null,freshDecodedEvidencePayload(entry,state,decoded.trace,recovery,diagnostics),dependencies?.addresses??null,dependencies?.proofHash??null]);
+    [row.tx_hash,row.block_hash,waiting?'repair':'done',FRESH_DECODER_VERSION,decoded.reasons.join(',')||null,freshDecodedEvidencePayload(entry,state,decoded.trace,recovery,diagnostics,decoded.directTransferIntents),dependencies?.addresses??null,dependencies?.proofHash??null]);
   if(waiting)await queueFreshDecodeRepair(database,row,now,decoded.reasons);
   else await database.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1",[`${row.tx_hash}:${row.block_hash}`]);
   return{waiting,valuationOnly};
@@ -817,9 +959,9 @@ export function canRecoverFreshMetadata(error:unknown){
   return error.category==='state_unavailable'||error.category==='transport'||error.category==='rate_limit';
 }
 
-export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?: number; now?: Date; trace?: FreshTraceLoader; recoveryBatch?: FreshRecoveryBatch; maxNormalizeMs?:number; normalizationNow?:()=>number;
+export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?: number; now?: Date; trace?: FreshTraceLoader; recoveryBatch?: FreshRecoveryBatch; maxNormalizeMs?:number; normalizationNow?:()=>number;repairFirst?:boolean;
  gangHistoricalMetadata?:(context:{tokenAddress:string;entry:FreshCapturedReceipt;block:FreshPriceBlock})=>Promise<FreshGangImportedMetadata|null> } = {}) {
-  const now = options.now ?? new Date(), selected = await selectFreshDecodeEvidence(database, now, options.limit);
+  const now = options.now ?? new Date(), selected = await selectFreshDecodeEvidence(database, now, options.limit,{repairFirst:options.repairFirst});
   if (!selected.rows.length) return { receipts: 0, attemptedReceipts:0,deferredReceipts:0,events: 0, repair: 0, unsupported: 0, evidenceMerges:0,completeCutoffBlock: null };
   const boundary = (await database.query("SELECT value FROM fresh.checkpoints WHERE key='capture'")).rows[0]?.value?.startBlock;
   if (!Number.isSafeInteger(Number(boundary))) throw new Error('tracking_boundary_uninitialized');
@@ -873,6 +1015,7 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
       retainedQuoteMetadata:recovery.importedMetadata,
       nativeQuoteChangeUsd:recovery.nativeQuoteChangeUsd,
       acquisitionCost:recovery.acquisitionCost,
+      airdropBasis:recovery.airdropBasis,
       signedBatchPurchaseUsd:recovery.signedBatchPurchaseUsd,
       syntheticBatchAnchor:token=>readFreshSyntheticBatchAnchor(database,token),
       tradeAdmission:token=>admission(token,block.number),
@@ -943,7 +1086,11 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
       }
       // Apply the whole block's normalized events together for transfer pairing.
       const combined = { events: rows.flatMap(row => row.decoded.events), reasons: rows.flatMap(row => row.decoded.reasons), tokens: rows.flatMap(row => row.decoded.tokens), executions: rows.reduce((sum, row) => sum + row.decoded.executions, 0),pendingTrades:rows.flatMap(row=>row.decoded.pendingTrades??[]) };
+      const admissionHistorical=rows.flatMap(({entry,decoded})=>freshAdmissionHistoricalEventIds(entry,decoded.events));
+      const alreadyRecorded=admissionHistorical.length?(await client.query('SELECT id FROM fresh.financial_events WHERE id=ANY($1::text[])',[admissionHistorical])).rows.map(row=>row.id as string):[];
       await persistDecoded(client, combined, transactionNow, rows.map(row => row.decoded)); events += combined.events.length;
+      const newlyRecovered=admissionHistorical.filter(id=>!alreadyRecorded.includes(id));
+      if(newlyRecovered.length)await client.query('UPDATE fresh.financial_events SET observed_live=false,telegram_notification_processed=true WHERE id=ANY($1::text[])',[newlyRecovered]);
       for (const { entry, decoded } of rows) if (entry.historicalWallets?.length) await client.query(`UPDATE fresh.financial_events SET observed_live=false
         WHERE id=ANY($1::text[]) AND wallet_address=ANY($2::text[]) AND observed_live`, [decoded.events.map(event => event.id), entry.historicalWallets]);
       const batchEvents=decodedRows.flatMap(row=>row.decoded.events);
@@ -988,13 +1135,14 @@ export async function rollbackFreshToAncestor(client: PoolClient, ancestor: { bl
   await client.query(`UPDATE fresh.jobs SET progress=jsonb_set(jsonb_set(progress,'{targetBlock}',to_jsonb($1::bigint)),'{targetHash}',to_jsonb($2::text)),
     lease_id=NULL,lease_until=NULL,due_at=$3,last_error='registration_reorg_rewind',updated_at=clock_timestamp()
     WHERE kind='registration_capture' AND (progress->>'targetBlock')::bigint>$1`, [ancestor.blockNumber, ancestor.blockHash, now]);
+  await rollbackFreshAdmissionRechecks(client,ancestor.blockNumber);
   await client.query('DELETE FROM fresh.launch_facts WHERE block_number>$1', [ancestor.blockNumber]);
   await client.query("UPDATE fresh.tokens SET launch_status='unverified',price_usd=NULL,market_cap_usd=NULL,valuation_status='reorg' WHERE launch_status='eligible' AND NOT EXISTS(SELECT 1 FROM fresh.launch_facts f WHERE f.token_address=fresh.tokens.address AND f.status='eligible')");
   await client.query("UPDATE fresh.tokens SET price_usd=NULL,market_cap_usd=NULL,valuation_status='reorg' WHERE observed_block>$1", [ancestor.blockNumber]);
   await client.query("UPDATE fresh.positions SET balance_quantity=NULL,balance_block=NULL,balance_hash=NULL,balance_checked_at=NULL,balance_status='pending' WHERE balance_block>$1", [ancestor.blockNumber]);
   await client.query("UPDATE fresh.markets SET state='{}',status='reorg',observed_block=NULL,observed_hash=NULL,observed_at=NULL WHERE observed_block>$1", [ancestor.blockNumber]);
   await client.query(`UPDATE fresh.markets SET identity=jsonb_set(identity,'{canonicalIdentityInvalid}','true'::jsonb),state='{}',status='reorg',
-    observed_block=NULL,observed_hash=NULL,observed_at=NULL WHERE protocol='uniswap_v4'
+    observed_block=NULL,observed_hash=NULL,observed_at=NULL WHERE protocol IN('uniswap_v4','infinity_cl')
     AND CASE WHEN jsonb_typeof(COALESCE(identity->'market'->'initial'->'blockNumber',identity->'initial'->'blockNumber'))='number'
       THEN (COALESCE(identity->'market'->'initial'->>'blockNumber',identity->'initial'->>'blockNumber'))::numeric>$1 ELSE false END`,[ancestor.blockNumber]);
   await client.query('DELETE FROM fresh.recent_blocks WHERE block_number>$1', [ancestor.blockNumber]);

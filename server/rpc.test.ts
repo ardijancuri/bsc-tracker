@@ -52,6 +52,21 @@ describe('sanitized RPC diagnostics',()=>{
     }})));
     safeError(await chainRpc('eth_call',[]).catch(error=>error),'RPC eth_call unavailable','invalid_response');
   });
+  it.each(['null','missing','wrong-id','wrong-version','malformed','json',429,'transport']as const)('marks only an explicit null in a matching valid header response: %s',async mode=>{
+    vi.stubGlobal('fetch',vi.fn(async(_url,options)=>{
+      if(mode==='transport')throw Error(sensitive);if(mode===429)return{ok:false,status:429};const id=JSON.parse(options.body).id;
+      return{ok:true,json:async()=>{if(mode==='json')throw Error(sensitive);if(mode==='malformed')return[];
+        return{jsonrpc:mode==='wrong-version'?'1.0':'2.0',id:mode==='wrong-id'?id+1:id,...(mode==='missing'?{}:{result:null})};}};
+    }));
+    const error=await chainRpc('eth_getBlockByNumber',['0x64',false]).catch(e=>e);safeError(error,mode===429?'RPC eth_getBlockByNumber returned 429':'RPC eth_getBlockByNumber unavailable',mode===429?'rate_limit':mode==='transport'?'transport':'invalid_response');
+    expect(error).toBeInstanceOf(RpcRequestError);if(!(error instanceof RpcRequestError))throw Error('expected_sanitized_rpc_error');
+    if(mode==='null')expect(error.nullResult).toBe(true);else expect(error).not.toHaveProperty('nullResult');
+  });
+  it('retains explicit-null diagnostics independently in a batch without marking missing or foreign responses',async()=>{
+    vi.stubGlobal('fetch',vi.fn(async(_url,options)=>{const items=JSON.parse(options.body);return{ok:true,json:async()=>[
+      {jsonrpc:'2.0',id:items[0].id,result:null},{jsonrpc:'2.0',id:items[1].id},{jsonrpc:'2.0',id:items[2].id+999,result:null},
+    ]};}));const rows=await rpcBatch(chainRpc,requests(3));for(const[index,row]of rows.entries()){expect(row.status).toBe('rejected');if(row.status==='rejected'){if(index===0)expect(row.reason.nullResult).toBe(true);else expect(row.reason).not.toHaveProperty('nullResult');}}
+  });
   it.each([NaN,Infinity,2147483648,-2147483649,1.5,'-32000',null])('does not retain unsafe provider code %s',async code=>{
     vi.stubGlobal('fetch',vi.fn(async(_url,options)=>({ok:true,json:async()=>({jsonrpc:'2.0',id:JSON.parse(options.body).id,error:{code,message:sensitive}})})));
     safeError(await chainRpc('eth_call',[]).catch(error=>error),'RPC eth_call unavailable','rpc_error');

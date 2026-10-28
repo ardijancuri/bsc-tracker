@@ -4,6 +4,14 @@ import{createFreshApp}from'./app.js';
 import type{FreshServices}from'./services.js';
 import{GANG_TOKEN_ADDRESS}from'./tracking.js';
 describe('selected token pending swap visibility',()=>{
+ it('returns six distinct cards and performs one bounded accounting summary batch for the fetched page',async()=>{
+  const wallet='0x'+'1'.repeat(40),rows=Array.from({length:7},(_,i)=>({address:'0x'+(i+10).toString(16).padStart(40,'0'),name:'Meme '+i,symbol:'M'+i,launch_status:'eligible'}));
+  const query=vi.fn(async(sql:string)=>{if(sql.startsWith('WITH wallet_traded_tokens AS MATERIALIZED'))return{rows};throw Error('Unexpected page query');}),summaries=vi.fn(async()=>({})),chart=vi.fn(async()=>{throw Error('chart network forbidden');}),prepare=vi.fn(async()=>{throw Error('replay forbidden');}),trades=vi.fn();
+  const services={reads:{summaries,trades},charts:{chart},replay:{prepare},cache:{}}as unknown as FreshServices,{app}=await createFreshApp({query}as unknown as Pool,{services});try{
+   const response=await app.inject('/api/kols/'+wallet+'/tokens');expect(response.statusCode).toBe(200);expect(response.json().items.map((r:{address:string})=>r.address)).toEqual(rows.slice(0,6).map(r=>r.address));expect(response.json().nextCursor).toBe('6');
+   expect(summaries).toHaveBeenCalledExactlyOnceWith(wallet,rows.slice(0,6).map(r=>r.address));expect(query).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('WITH wallet_traded_tokens AS MATERIALIZED'),[wallet,7,0]);expect(chart).not.toHaveBeenCalled();expect(prepare).not.toHaveBeenCalled();expect(trades).not.toHaveBeenCalled();
+  }finally{await app.close();}
+ });
  it('lists participating public traders without requiring a position and keeps detail/market counts consistent',async()=>{
   const identities=Array.from({length:5},(_,i)=>({address:'0x'+String(i+1).repeat(40),display_name:'KOL '+i,is_tracked:true}));
   const row={address:GANG_TOKEN_ADDRESS,name:'Gang',symbol:'GANG',launch_status:'preexisting',valuation_status:'ready',price_usd:'0.01',market_cap_usd:'1000000',
@@ -11,7 +19,7 @@ describe('selected token pending swap visibility',()=>{
   const counts={today_kol_count:5,today_buy_count:3,today_sell_count:7,today_volume_q:'30'};
   const query=vi.fn(async(sql:string)=>{
    if(sql.startsWith('INSERT INTO fresh.jobs'))return{rows:[]};
-   if(sql.startsWith('SELECT t.*,t.today_utc'))return{rows:[row]};
+   if(sql.startsWith('SELECT t.*,t.today_utc')||sql.startsWith('WITH wallet_traded_tokens AS MATERIALIZED'))return{rows:[row]};
    if(sql.startsWith('SELECT p.* FROM published_kols'))return{rows:identities};
    if(sql.startsWith('SELECT count(DISTINCT e.wallet_address)'))return{rows:[counts]};
    throw Error('Unexpected selected-token query');
@@ -30,7 +38,7 @@ describe('selected token pending swap visibility',()=>{
    expect(market.json().token).toMatchObject({kolCount24h:5,periodKolCount:5,buys24h:3,sells24h:7,periodVolumeUsd:'30'});
    const cards=await app.inject('/api/kols/'+identities[0].address+'/tokens');expect(cards.statusCode).toBe(200);
    expect(cards.json().items[0]).toMatchObject({address:GANG_TOKEN_ADDRESS,accountingSummary:{status:'unavailable',remainingTokenAmount:null,realizedProfitUsd:null}});
-   const cardQuery=query.mock.calls.filter(([sql])=>sql.startsWith('SELECT t.*,t.today_utc')).at(-1)![0];
+   const cardQuery=query.mock.calls.find(([sql])=>sql.startsWith('WITH wallet_traded_tokens AS MATERIALIZED'))![0];
    expect(cardQuery).toContain('fresh.visible_trades e');expect(cardQuery).not.toContain('fresh.positions');
    expect(row.today_kol_count).toBe(3);expect(row.today_sell_count).toBe(3);
    const sql=query.mock.calls.find(([sql])=>sql.startsWith('SELECT count(DISTINCT e.wallet_address)'))![0];

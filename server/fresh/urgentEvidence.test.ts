@@ -7,6 +7,12 @@ import { decodeFreshEvidence, encodeFreshEvidence, type FreshCapturedReceipt } f
 import { createFreshUrgentEvidenceCapture, freshUrgentTokenTargets, mergeFreshUrgentEvidence, persistFreshUrgentEvidence, FRESH_URGENT_EVIDENCE_MAX_RPC } from './urgentEvidence.js';
 import type { FreshStateReadEvidence } from './stateEvidence.js';
 import{GANG_TOKEN_ADDRESS,type FreshExistingTokenPermission}from'./tracking.js';
+import{readFileSync}from'node:fs';import{gunzipSync}from'node:zlib';
+import{WBNB,PCS_V2_FACTORY,FLAP_PORTAL,FOUR_HELPER,flapInterface}from'../launchpad.js';
+import{poolMarketAbi,oracleMarketAbi,TRUSTED_QUOTE_FEEDS}from'../nodeMarketProtocols.js';
+import{factoryCode,pairCode}from'./currentQuote.fixture.js';
+import{freshPoolNativePair}from'./currentPoolQuote.js';
+import{createFreshReceiptRecovery}from'./recovery.js';
 
 const address = (digit: string) => `0x${digit.repeat(40)}`, hash = (digit: string) => `0x${digit.repeat(64)}`;
 const wallet = address('1'), other = address('2'), token = address('7'), intermediary = address('8'), blockHash = hash('a'), txHash = hash('b');
@@ -39,6 +45,52 @@ function memory(entries: FreshCapturedReceipt[], time = new Date()) {
 }
 
 describe('fresh urgent evidence preservation', () => {
+  it('persists authentic original quote/native state before pruning and normalizes a captured Flap mark with every historical RPC unavailable',async()=>{
+    const now=new Date(),entry=fixture(txHash,now),db=memory([entry],now),base=db.query.getMockImplementation()!,pair=freshPoolNativePair(intermediary),assets=[intermediary,WBNB].sort();
+    let currentAnchors=0;db.query.mockImplementation(async(sql:string,p:unknown[]=[])=>{
+      if(sql.startsWith('SELECT block_hash'))return{rows:[{block_hash:blockHash,occurred_at:now}]};
+      if(sql.startsWith('SELECT block_number::text,block_hash,value'))return{rows:[{block_number:90,block_hash:hash('9'),value:{}}]};
+      if(sql.startsWith('SELECT * FROM fresh.launch_facts'))return{rows:p[0]===token?[{status:'eligible',protocol:'flap',block_number:91}]:[]};
+      if(sql.includes("c.key='capture'")){currentAnchors++;throw Error('current_anchor_unavailable');}return base(sql,p);
+    });
+    const curve=[1,5n*10n**11n,5n*10n**26n,10n**15n,6,10n**23n,10n**26n,36n*10n**31n,8n*10n**26n,intermediary,false,hash('9'),0,0,address('0'),0,0,0];
+    const stamp=Math.floor(now.getTime()/1000),feed=TRUSTED_QUOTE_FEEDS[WBNB];
+    const rpc=vi.fn(async(method:string,p:any[])=>{
+      if(method==='eth_chainId'){expect(p).toEqual([]);return'0x38';}
+      expect(p[1]).toEqual({blockHash,requireCanonical:true});
+      if(method==='eth_getCode'){expect([PCS_V2_FACTORY,pair]).toContain(p[0]);return p[0]===PCS_V2_FACTORY?factoryCode:pairCode;}
+      expect(method).toBe('eth_call');const call=p[0];
+      if(call.to===FOUR_HELPER)throw Error('not_fourmeme');
+      if(call.to===FLAP_PORTAL&&call.data===flapInterface.encodeFunctionData('getTokenV8Safe',[token]))return flapInterface.encodeFunctionResult('getTokenV8Safe',[curve]);
+      if(call.to===feed.feed){const parsed=oracleMarketAbi.parseTransaction(call)!;const result:Record<string,unknown[]>={decimals:[8],description:[feed.description],latestRoundData:[1,600n*10n**8n,stamp-1,stamp-1,1]};return oracleMarketAbi.encodeFunctionResult(parsed.name,result[parsed.name]);}
+      if(call.to===PCS_V2_FACTORY){const args=poolMarketAbi.decodeFunctionData('getPair',call.data);return poolMarketAbi.encodeFunctionResult('getPair',[[String(args[0]).toLowerCase(),String(args[1]).toLowerCase()].sort().join(',')===assets.join(',')?pair:address('0')]);}
+      if(call.to===pair){const parsed=poolMarketAbi.parseTransaction(call)!;const values:Record<string,unknown[]>={factory:[PCS_V2_FACTORY],token0:[assets[0]],token1:[assets[1]],getReserves:[10n**6n,2n*10n**18n,1]};return poolMarketAbi.encodeFunctionResult(parsed.name,values[parsed.name]);}
+      if(call.data===abi.encodeFunctionData('decimals'))return abi.encodeFunctionResult('decimals',[18]);
+      if(call.data===abi.encodeFunctionData('totalSupply'))return abi.encodeFunctionResult('totalSupply',[10n**27n]);
+      throw Error('optional_state_unavailable');
+    })as unknown as Rpc;
+    const captured=await createFreshUrgentEvidenceCapture(db.database,rpc)({now}),kept=decodeFreshEvidence(db.rows[0].payload);
+    expect(kept.recoveryEvidence?.retainedNativeQuotes).toHaveLength(1);expect(kept.recoveryEvidence!.retainedNativeQuotes![0]).toMatchObject({quoteAddress:intermediary,code:{block:{number:101,hash:blockHash}},observation:'block_end'});
+    expect(captured.rpcCalls).toBeLessThanOrEqual(FRESH_URGENT_EVIDENCE_MAX_RPC);expect(db.rows[0].decoder_status).toBe('pending');
+    const none=vi.fn(async()=>{throw Error('historical_state_code_and_logs_pruned');})as unknown as Rpc;
+    const target={number:101,hash:blockHash,timestamp:now.toISOString()},recovery=createFreshReceiptRecovery(db.database,none,kept,target);
+    expect(await recovery.priceUsd(token)).toBe('1.2');expect(none).not.toHaveBeenCalled();expect(currentAnchors).toBe(0);
+    expect(recovery.snapshot()!.flapCurveQuotes![0].conversion?.kind).toBe('retained_target_pool_native_v2');
+    expect(recovery.snapshot()!.retainedNativeQuotes).toEqual(kept.recoveryEvidence!.retainedNativeQuotes);
+    expect(kept.receipt).toEqual(entry.receipt);expect(kept.transaction).toEqual(entry.transaction);
+    expect(db.calls.some(c=>/financial_events|fresh.jobs|UPDATE fresh.checkpoints/.test(c.sql))).toBe(false);
+  });
+  it.each(['valid','wrong_registry','unadmitted'] as const)('captures bounded full historical native-curve proof only after exact registry binding: %s',async mode=>{
+    const sample=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/ant-native-curve-marks.json.gz',import.meta.url))).toString()).rows[0],curve=sample.proof,at=curve.target,now=new Date(Date.parse(at.timestamp)+1000),entry=fixture(txHash,now);
+    entry.receipt.logs=[entry.receipt.logs[1]];entry.receipt.logs[0].address=curve.tokenAddress;
+    for(const v of[entry.transaction,entry.receipt,...entry.receipt.logs])Object.assign(v,{blockNumber:'0x'+at.number.toString(16),blockHash:at.hash});
+    const db=memory([entry],new Date(at.timestamp));Object.assign(db.rows[0],{block_number:String(at.number),block_hash:at.hash});const base=db.query.getMockImplementation()!;
+    db.query.mockImplementation(async(sql:string,p:unknown[]=[])=>{if(sql.startsWith('SELECT block_hash'))return{rows:[{block_hash:at.hash,occurred_at:at.timestamp}]};if(sql.startsWith('SELECT block_number::text,block_hash,value'))return{rows:[{block_number:at.number-100,block_hash:hash('9'),value:{}}]};if(sql.startsWith('SELECT * FROM fresh.launch_facts'))return{rows:mode==='unadmitted'?[]:[{status:'eligible',protocol:'evm_creation',block_number:at.number-10}]};return base(sql,p);});
+    let registrySeen=false;const rpc=vi.fn(async(method:string,p:unknown[])=>{expect(p[1]).toEqual({blockHash:at.hash,requireCanonical:true});if(method==='eth_getCode'){expect(registrySeen).toBe(true);expect(p[0]).toBe(curve.poolAddress);return curve.runtime.code;}expect(method).toBe('eth_call');const call=p[0]as{to:string;data:string};if(call.to===curve.tokenAddress&&call.data===abi.encodeFunctionData('decimals'))return abi.encodeFunctionResult('decimals',[18]);if(call.to===curve.tokenAddress&&call.data===abi.encodeFunctionData('totalSupply'))return abi.encodeFunctionResult('totalSupply',[100]);const retained=curve.state.calls.find((v:any)=>v.to===call.to&&v.data===call.data);if(retained){if(call.data.startsWith('0x3cf28b5a')){registrySeen=true;return mode==='wrong_registry'?'0x'+'0'.repeat(192):retained.result;}return retained.result;}throw Error('optional_state_unavailable');})as unknown as Rpc;
+    const result=await createFreshUrgentEvidenceCapture(db.database,rpc)({now});const kept=decodeFreshEvidence(db.rows[0].payload);
+    expect(kept.recoveryEvidence?.threeXdCurvePrices?.length??0).toBe(mode==='valid'?1:0);expect((rpc as any).mock.calls.filter(([m]:any[])=>m==='eth_getCode').length).toBe(mode==='valid'?1:0);
+    if(mode==='valid'){const keptCurve=kept.recoveryEvidence!.threeXdCurvePrices![0];expect({...keptCurve,state:undefined}).toEqual({...curve,state:undefined});expect(keptCurve.state.calls).toEqual(expect.arrayContaining(curve.state.calls));expect(keptCurve.state.calls).toHaveLength(curve.state.calls.length);}expect(result.rpcCalls).toBeLessThanOrEqual(FRESH_URGENT_EVIDENCE_MAX_RPC);expect(kept.receipt).toEqual(entry.receipt);expect(kept.transaction).toEqual(entry.transaction);expect(db.rows[0].decoder_status).toBe('pending');expect(db.rows[0].last_error).toBe('original_failure');expect(db.calls.some(c=>/financial_events|fresh.jobs|UPDATE fresh.checkpoints/.test(c.sql))).toBe(false);
+  });
   it('includes the admitted existing GANG token in optional quote evidence without inventing a launch fact',async()=>{
     const now=new Date(),entry=fixture(txHash,now);entry.receipt.logs[1].address=GANG_TOKEN_ADDRESS;const m=memory([entry],now),original=m.query.getMockImplementation()!;
     const start={block_number:'90',block_hash:hash('9'),value:{startBlock:90,startHash:hash('9'),startTime:'2026-10-25T00:00:00.000Z'}};

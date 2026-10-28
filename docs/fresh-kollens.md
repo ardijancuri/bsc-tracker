@@ -1,5 +1,13 @@
 # Fresh Kollens local implementation
 
+## Verified airdrop basis — October 27, 2026
+
+The user approved zero acquisition cost for verified airdrops with no wallet-paid purchase. Only authenticated distribution or free-claim evidence can authorize this policy; absence of a price, a passive receipt, a token name, or missing purchase history cannot. Ordinary transfers retain their carried or unknown cost, and internal Portfolio transfers preserve the original FIFO lots. Wallet-paid gas remains an expense. The original transfer market mark, including an unavailable mark, is preserved separately from the zero acquisition basis. A compact source-bound basis proof survives the temporary receipt buffer and is used by stored positions, rolling realized P&L and replay accounting. This supersedes the earlier unknown-airdrop-cost policy only for verified cases. The canceled timed validation stays canceled.
+
+The supported 3XD creation-and-purchase path requires a complete canonical execution trace, exact constructor/runtime versions, signed creation and purchase inputs, matching token delivery, and settled protocol events. Its acquisition cost includes both the actual creation expense and purchase payment; an embedded pool fee is not added again. An earlier transfer interpretation can be superseded only for that authenticated same-log purchase. Its original row remains retained, one canonical buy replaces it, and only affected accounting scopes are rebuilt. This support does not authorize arbitrary native payments or other 3XD trade paths.
+
+Historical transfer marks support authenticated PCS V2 token/quote/WBNB reserve bridges and registered PCS V3 native pools. Intermediate raw units cancel without assuming quote decimals or a peg. Historical non-graduated 3XD native curves require exact target-block code, reserves and factory registry evidence. Urgent capture stores those bounded raw proofs before state pruning. External outgoing transfers with unknown realized results now seed the same bounded recovery cursor as trades, including known outgoing marks whose earlier incoming basis is missing. Incoming-only distributions retain their existing treatment; normal page reads do not scan history.
+
 ## Current operating status — October 24, 2026
 
 The user canceled the entire eight-hour validation. Its automation was deleted and its monitor/guard remain stopped. Do not resume it from older notes below. Audited time and old reports are preserved; the proposed forward-activity validation policy was never activated. `.cache/fresh/validation-closed-by-user.json` records cancellation.

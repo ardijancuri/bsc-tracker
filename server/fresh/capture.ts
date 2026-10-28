@@ -11,6 +11,9 @@ import { classifyFreshCreationToken } from './tokenAuthenticity.js';
 import { classifyFreshStockwaveCreation, FRESH_STOCKWAVE_FACTORY, FRESH_STOCKWAVE_LAUNCH_TOPIC, readFreshStockwaveCodeEvidence, type FreshStockwaveCodeEvidence } from './factoryLaunch.js';
 import type { FreshReceiptRecoveryEvidence } from './recovery.js';
 import type {FreshSelfCallExecutionContext} from './signedSelfCallSettlement.js';
+import{FRESH_ADDITIONAL_SYNTHETIC_BATCH_AUDITS}from'./syntheticTransferBatch.js';
+import {enrichFreshKnownTokenBirth} from './tokenBirth.js';
+import{invalidateFreshRealizedGapCoverage,freshRealizedGapPinnedHeadersSql}from'./realizedGapCoverage.js';
 
 export const FRESH_CONFIRMATIONS = 6;
 export const FRESH_EVIDENCE_TTL_MS = 72 * 60 * 60 * 1_000;
@@ -202,6 +205,14 @@ export async function collectFreshPage(options: { rpc: Rpc; checkpoint: FreshCap
           proof: { creator: tx.from.toLowerCase(), creation: 'top_level', ...(authenticity ? { authenticity } : {}) },
           status: authenticity ? 'excluded_non_token' : safeNumber(block.number) > checkpoint.startBlock ? 'eligible' : 'before_boundary' });
       }
+      // This optional pure proof uses only a full creation context already
+      // fetched for collection. Never delay raw capture with historical code
+      // calls or fetch every unrelated launch receipt for enrichment.
+      if (freshHash(checkpoint.startHash)) for (let i=0;i<facts.length;i++) {
+        const fact=facts[i];if(fact.txHash!==tx.hash.toLowerCase()||fact.blockHash!==block.hash.toLowerCase())continue;
+        try{facts[i]=enrichFreshKnownTokenBirth(fact,{transaction:tx,receipt,block},{number:checkpoint.startBlock,hash:checkpoint.startHash!});}
+        catch{/* Raw collection and the original launch fact survive optional proof failure. */}
+      }
       if (relevant || launchRepair) {
         const involved = new Set<string>();
         for (const value of [tx.from, tx.to]) if (value && watched.has(value.toLowerCase())) involved.add(value.toLowerCase());
@@ -257,8 +268,8 @@ export async function runFreshCapture(database: Pool, rpc: Rpc, options: { limit
   return { blocks: page.blocks.length, receipts: page.receipts.length, launches: page.launches.length,...progress };
 }
 
-/** Bounded expiry. Decoded financial facts and launch facts have no dependency
- * on these rows, so removal cannot cascade into trades, costs or totals. */
+/** Bounded expiry. Only the two exact audited synthetic-method identity
+ * headers are retained; raw receipts and ordinary headers still expire. */
 export async function expireFreshEvidence(database: Pool, now = new Date(), limit = 1_000) {
   const client = await database.connect();
   try {
@@ -270,18 +281,38 @@ export async function expireFreshEvidence(database: Pool, now = new Date(), limi
 /** Caller owns the transaction. Exported for controlled-time integration tests
  * that roll their fixture writes back without touching active collection. */
 export async function expireFreshEvidenceInTransaction(client: PoolClient, now = new Date(), limit = 1_000) {
-    const rows = (await client.query(`SELECT tx_hash,block_hash,block_number,wallet_addresses,decoder_status,last_error FROM fresh.recent_evidence
+    const rows = (await client.query(`SELECT tx_hash,block_hash,block_number,transaction_index,wallet_addresses,decoder_status,last_error,
+      position_dependency_addresses,position_dependency_proof,expires_at,
+      CASE WHEN decoder_status<>'done' THEN encode(sha256(payload),'hex') ELSE NULL END AS unresolved_payload_sha256
+      FROM fresh.recent_evidence
       WHERE expires_at<=$1 ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED`, [now, Math.min(5_000, Math.max(1, limit))])).rows;
     for (const row of rows) {
-      if (row.decoder_status !== 'done') await client.query(`UPDATE fresh.wallets SET decode_gap_from_block=least(decode_gap_from_block,$2::bigint),decode_gap_reason='expired_undecoded_evidence'
-        WHERE address=ANY($1::text[])`, [row.wallet_addresses, row.block_number]);
-      await client.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1", [`${row.tx_hash}:${row.block_hash}`]);
+      const reference=`${row.tx_hash}:${row.block_hash}`;
+      if (row.decoder_status !== 'done') {
+        await invalidateFreshRealizedGapCoverage(client,row.wallet_addresses,Number(row.block_number),now);
+        await client.query(`UPDATE fresh.wallets SET decode_gap_from_block=least(decode_gap_from_block,$2::bigint),decode_gap_reason='expired_undecoded_evidence'
+          WHERE address=ANY($1::text[])`, [row.wallet_addresses, row.block_number]);
+        // The agreed repair buffer expires; its unresolved identity must not.
+        // A small unavailable job retains what needs recovery, not raw evidence
+        // or a copied financial response. It never approves or clears the gap.
+        const manifest={version:1,kind:'expired_receipt_reference_v1',transactionHash:row.tx_hash,blockHash:row.block_hash,
+          blockNumber:Number(row.block_number),transactionIndex:row.transaction_index,walletAddresses:row.wallet_addresses,
+          dependencyAddresses:row.position_dependency_addresses??[],dependencyProof:row.position_dependency_proof??null,
+          payloadSha256:row.unresolved_payload_sha256,
+          expiresAt:new Date(row.expires_at).toISOString(),expiredAt:now.toISOString(),lastError:row.last_error};
+        await client.query(`INSERT INTO fresh.jobs(id,kind,reference,state,progress,last_error,due_at)
+          VALUES($1,'decode_receipt',$2,'unavailable',$3::jsonb,'expired_undecoded_evidence',$4)
+          ON CONFLICT(kind,reference) DO UPDATE SET state='unavailable',progress=fresh.jobs.progress||EXCLUDED.progress,
+            last_error=EXCLUDED.last_error,lease_id=NULL,lease_until=NULL,updated_at=clock_timestamp()`,
+          [`decode:${reference}`,reference,JSON.stringify({expiredEvidence:manifest}),now]);
+      } else await client.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1", [reference]);
       await client.query('DELETE FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2', [row.tx_hash, row.block_hash]);
     }
+    const pinnedSyntheticHeaders=FRESH_ADDITIONAL_SYNTHETIC_BATCH_AUDITS.map(a=>`(b.block_number=${a.creationBlock} AND b.block_hash='${a.creationHash}')`).join(' OR ');
     const blocks = await client.query(`DELETE FROM fresh.recent_blocks WHERE block_number IN
-      (SELECT b.block_number FROM fresh.recent_blocks b WHERE b.captured_at<=$1 AND NOT EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.block_hash=b.block_hash)
+      (SELECT b.block_number FROM fresh.recent_blocks b WHERE b.captured_at<=$1 AND NOT(${pinnedSyntheticHeaders}) AND NOT ${freshRealizedGapPinnedHeadersSql('b')} AND NOT EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.block_hash=b.block_hash)
         ORDER BY b.block_number LIMIT $2)`, [new Date(now.getTime() - FRESH_EVIDENCE_TTL_MS), Math.min(5_000, Math.max(1, limit))]);
-    return { evidence: rows.length, blocks: blocks.rowCount ?? 0, expiredUndecoded: rows.filter(row => row.decoder_status !== 'done').length };
+    return { evidence: rows.length, blocks: blocks.rowCount ?? 0, expiredUndecoded: rows.filter(row => row.decoder_status !== 'done').length,realizedGapExpiryGuardVersion:1 as const };
 }
 
 export async function findFreshCommonAncestor(database: Pick<Pool, 'query'>, rpc: Rpc, checkpoint: FreshCaptureCheckpoint, maximum = 512): Promise<{ blockNumber: number; blockHash: string } | null> {

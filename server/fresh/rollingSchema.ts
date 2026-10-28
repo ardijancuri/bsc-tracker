@@ -4,6 +4,7 @@ export const freshRollingSchemaSql = `
     ADD COLUMN IF NOT EXISTS rolling_next_expiry_at timestamptz,
     ADD COLUMN IF NOT EXISTS rolling_metrics_updated_at timestamptz,
     ADD COLUMN IF NOT EXISTS rolling_realized_q text DEFAULT '0',
+    ADD COLUMN IF NOT EXISTS rolling_estimated_realized_q text,
     ADD COLUMN IF NOT EXISTS rolling_known_realized_q text NOT NULL DEFAULT '0',
     ADD COLUMN IF NOT EXISTS rolling_capital_q text NOT NULL DEFAULT '0',
     ADD COLUMN IF NOT EXISTS rolling_volume_q text NOT NULL DEFAULT '0',

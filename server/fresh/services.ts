@@ -9,9 +9,10 @@ import { createGmgnRequester } from '../gmgnTransport.js';
 import {freshPendingTradeScopeSql}from'./positionDependencies.js';
 import {freshTrackedTokenSql,readFreshGangHistoryAdmission,GANG_TOKEN_ADDRESS}from'./tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
+import{chainRpc}from'../rpc.js';
 
 export function createFreshServices(db:Pool) {
-  const reads=createFreshReads(db);
+  const reads=createFreshReads(db,Date.now,false,{estimateRpc:chainRpc});
   const cache=new ChartDiskCache(path.resolve(process.env.GMGN_CHART_CACHE_DIR??'.cache/fresh/charts'));
   const request=createGmgnRequester({query:(sql,values)=>db.query(sql,values),stateTable:'fresh.checkpoints'});
   const charts=createFreshCharts({cache,request});
@@ -21,7 +22,8 @@ export function createFreshServices(db:Pool) {
       FROM fresh.accounting_scopes s WHERE s.id=$1 AND s.active
       AND EXISTS(SELECT 1 FROM fresh.tokens t WHERE t.address=$2 AND ${freshTrackedTokenSql('t')})
       AND $3::bigint<=${freshScopeTokenCaptureSql('s','$2')}
-      AND NOT ${freshPendingTradeScopeSql('s','$2','$3')}`,[claims.scopeId,claims.token,claims.cutoffBlock])).rows[0];
+      AND EXISTS(SELECT 1 FROM fresh.recent_blocks b WHERE b.block_number=$3 AND b.block_hash=$4)
+      AND NOT ${freshPendingTradeScopeSql('s','$2','$3')}`,[claims.scopeId,claims.token,claims.cutoffBlock,claims.cutoffHash])).rows[0];
     if(!row||row.correction_epoch!==claims.correctionEpoch||!row.wallet_addresses.includes(claims.wallet))return false;
     if(row.kind==='kol'){
       if(claims.historyPermissionDigest!==undefined){

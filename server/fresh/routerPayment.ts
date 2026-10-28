@@ -1,5 +1,8 @@
 import type {FreshTransaction,FreshLog} from './capture.js';
 import{freshGangBinanceNativeBuyCost}from'./gangBinancePayment.js';
+import{freshPoolNativePair}from'./currentPoolQuote.js';
+import{freshThreeHopNativeBuyCost}from'./threeHopNativePayment.js';
+import{freshRefundedControllerNativeBuyCost}from'./refundedControllerPayment.js';
 
 // The same authenticated Flap/GMGN Swap receipt used by nativeSellProceeds.
 // A native exact-input purchase must match the signed transaction value, the
@@ -19,6 +22,7 @@ const poolSwapTopic='0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840
 const wrapperRouter='0x01a21c857a3219991fba2b1a2824b1b758966b54',pcsRouter='0x10ed43c718714eb63d5aa57b78b54704e256024e';
 const wrapperSwapTopic='0xb4ebd56706d27fa01a1b393765021ba216f704b12bb50a87bf257d3ba6cd7bdc';
 const wrapperExpenseTopic='0xb948f731b5e342e038ab722853f67007c439a74137633184c1d0513b21bf5a64',wrapperExpenseRecipient='0xdefb37382e08d8a33abbc869a02e179cb28a0821';
+const taxTransferTopic='0xb4b510017fa3548bf934bbeafb570ebc4f19982ace19ae88d2de59a13addebf1',taxDispatchTopic='0x4724b1b14679f9a890901a546f9d68654ea2ab5aa4615feb77a1daff02cf8850';
 const wordsOf=(data:string,count:number)=>new RegExp('^0x(?:[\\da-f]{64}){'+count+'}$','i').test(data)?data.slice(2).toLowerCase().match(/.{64}/g)!:null;
 
 /** The pinned GANG/WBNB market has a native-funded exact-input route whose
@@ -65,6 +69,37 @@ function wrappedNativeBuyCost(tx:FreshTransaction,wallet:string,token:string,rec
     ||BigInt('0x'+poolWords[0])!==0n||BigInt('0x'+poolWords[1])!==deposited
     ||BigInt('0x'+poolWords[2])!==receivedRaw||BigInt('0x'+poolWords[3])!==0n
     ||syncWords.some(value=>BigInt('0x'+value)<=0n))return null;
+  return gross;
+ }catch{return null;}
+}
+
+/** Same authenticated router-receipt policy as the native route above. A
+ * closed, one-hop PCS V2 route proves signed native expense + wrapped input;
+ * exact tax and wallet deliveries reconcile the pool's gross output. These
+ * additional target-token events describe ERC20 accounting, never a native
+ * refund or an invented fee. Retained traces are still checked by decode.ts. */
+export function freshWrappedTaxNativeBuyCost(tx:FreshTransaction,wallet:string,token:string,receivedRaw:bigint,logs:FreshLog[]):bigint|null{
+ try{
+  if(tx.to?.toLowerCase()!==nativeRouter||tx.from.toLowerCase()!==wallet||!/^0x[\da-f]{40}$/.test(token)||token===wrappedNative||token===wallet
+   ||!['0x0','0x1','0x2'].includes(String(tx.type))||tx.chainId!=='0x38'||tx.authorizationList!==undefined||receivedRaw<=0n||![10,11].includes(logs.length)
+   ||typeof tx.input!=='string'||!/^0x4d819a2a(?:[\da-f]{64}){18}$/i.test(tx.input))return null;
+  const pair=freshPoolNativePair(token),input=tx.input.slice(10).toLowerCase().match(/.{64}/g)!,gross=BigInt(tx.value),route=[0n,wrappedNative,token,pair,2500n,50n,0n,320n,0n,0n,0n].map(v=>typeof v==='bigint'?v.toString(16).padStart(64,'0'):v.slice(2).padStart(64,'0'));
+  if(gross<=0n||BigInt('0x'+input[0])!==160n||BigInt('0x'+input[1])!==0n||BigInt('0x'+input[2])!==gross||BigInt('0x'+input[3])<=0n||BigInt('0x'+input[3])>receivedRaw||BigInt('0x'+input[4])<=0n||BigInt('0x'+input[5])!==1n||BigInt('0x'+input[6])!==32n||route.some((v,i)=>input[i+7]!==v))return null;
+  if(!/^0x[\da-f]{64}$/i.test(tx.hash)||!/^0x[\da-f]{64}$/i.test(tx.blockHash)||!/^0x[\da-f]+$/i.test(tx.blockNumber)||!/^0x[\da-f]+$/i.test(tx.transactionIndex))return null;
+  let previous=-1n;for(const l of logs){if(l.removed||l.transactionHash?.toLowerCase()!==tx.hash.toLowerCase()||l.blockHash?.toLowerCase()!==tx.blockHash.toLowerCase()||!/^0x[\da-f]+$/i.test(l.blockNumber)||BigInt(l.blockNumber)!==BigInt(tx.blockNumber)||!/^0x[\da-f]+$/i.test(l.transactionIndex)||BigInt(l.transactionIndex)!==BigInt(tx.transactionIndex)||!/^0x[\da-f]+$/i.test(l.logIndex)||BigInt(l.logIndex)<=previous)return null;previous=BigInt(l.logIndex);}
+  const matches=(l:FreshLog,address:string,signature:string,actors:string[])=>l.address.toLowerCase()===address&&l.topics.length===actors.length+1&&l.topics[0]?.toLowerCase()===signature&&actors.every((a,i)=>addr(l.topics[i+1]?.slice(2))===a),fee=logs[0],deposit=logs[1],payment=logs[2],sync=logs.at(-3)!,poolSwap=logs.at(-2)!,swap=logs.at(-1)!;
+  if(!matches(fee,nativeRouter,feeTopic,[zero,wallet])||!matches(deposit,wrappedNative,depositTopic,[nativeRouter])||!matches(payment,wrappedNative,transferTopic,[nativeRouter,pair])||!matches(sync,pair,syncTopic,[])||!matches(poolSwap,pair,poolSwapTopic,[nativeRouter,wallet])||!matches(swap,nativeRouter,topic,[wallet,wallet,zero]))return null;
+  const fw=wordsOf(fee.data,2),dw=wordsOf(deposit.data,1),pw=wordsOf(payment.data,1),sw=wordsOf(sync.data,2),pool=wordsOf(poolSwap.data,4),words=wordsOf(swap.data,16);if(!fw||!dw||!pw||!sw||!pool||!words)return null;
+  const expense=BigInt('0x'+fw[0]),wrapped=BigInt('0x'+dw[0]);if(expense<=0n||expense!==gross/100n||wrapped<=0n||expense+wrapped!==gross||BigInt('0x'+pw[0])!==wrapped||BigInt('0x'+fw[1])<=0n||BigInt('0x'+fw[1])>BigInt('0x'+input[4])||BigInt('0x'+words[0])!==gross||BigInt('0x'+words[1])!==receivedRaw||BigInt('0x'+words[2])!==96n||BigInt('0x'+words[3])!==1n||BigInt('0x'+words[4])!==32n||route.some((v,i)=>words[i+5]!==v)||sw.some(v=>BigInt('0x'+v)<=0n))return null;
+  const segment=logs.slice(3,-3);let tax=0n,delivered=0n,transfers=0,auxiliary=0,dispatches=0,indexWord:string|undefined,lastTransfer:FreshLog|undefined;
+  for(const l of segment){if(l.address.toLowerCase()!==token)return null;
+   if(l.topics[0]?.toLowerCase()===transferTopic){const a=wordsOf(l.data,1);if(!a||l.topics.length!==3||addr(l.topics[1]?.slice(2))!==pair||BigInt('0x'+a[0])<=0n)return null;const to=addr(l.topics[2]?.slice(2));if(to===token&&tax===0n&&delivered===0n)tax=BigInt('0x'+a[0]);else if(to===wallet&&tax>0n&&delivered===0n)delivered=BigInt('0x'+a[0]);else return null;transfers++;lastTransfer=l;
+   }else if(l.topics[0]?.toLowerCase()===taxTransferTopic){if(!lastTransfer||l.topics.length!==4||l.topics[1]!==lastTransfer.topics[1]||l.topics[2]!==lastTransfer.topics[2]||l.data!==lastTransfer.data||!/^0x[\da-f]{64}$/i.test(l.topics[3])||BigInt(l.topics[3])<=0n||indexWord!==undefined&&indexWord!==l.topics[3])return null;indexWord=l.topics[3];auxiliary++;lastTransfer=undefined;
+   }else if(l.topics[0]?.toLowerCase()===taxDispatchTopic){const a=wordsOf(l.data,1);if(!a||dispatches++||tax<=0n||delivered!==0n||lastTransfer||l.topics.length!==2||l.topics[1]!=='0x'+'0'.repeat(64)||BigInt('0x'+a[0])<tax)return null;
+   }else return null;
+  }
+  if(transfers!==2||auxiliary!==2||lastTransfer||delivered!==receivedRaw||tax<=0n)return null;
+  const p=pool.map(v=>BigInt('0x'+v)),tokenIs0=token<wrappedNative;if(tokenIs0?(p[0]!==0n||p[1]!==wrapped||p[2]!==tax+delivered||p[3]!==0n):(p[0]!==wrapped||p[1]!==0n||p[2]!==0n||p[3]!==tax+delivered))return null;
   return gross;
  }catch{return null;}
 }
@@ -118,6 +153,8 @@ export function freshNativeBuyCost(tx:FreshTransaction,wallet:string,token:strin
   if(router==='0xb300000b72deaeb607a12d5f54773d1c19c7028d')return freshGangBinanceNativeBuyCost(tx,wallet,token,receivedRaw,logs);
   if(!router||!routers.has(router)&&router!==wrapperRouter||tx.from.toLowerCase()!==wallet||receivedRaw<=0n||!/^0x[\da-f]+$/i.test(tx.value)||BigInt(tx.value)<=0n)return null;
   if(router===wrapperRouter)return wrappedPcsBuyCost(tx,wallet,token,receivedRaw,logs);
+  const multi=freshThreeHopNativeBuyCost(tx,wallet,token,receivedRaw,logs);if(multi!==null)return multi;
+  const refunded=freshRefundedControllerNativeBuyCost(tx,wallet,token,receivedRaw,logs);if(refunded!==null)return refunded;
   const swaps=logs.filter(l=>l.address.toLowerCase()===router&&l.topics[0]?.toLowerCase()===topic);
   if(swaps.length!==1)return null;
   const l=swaps[0];
@@ -128,7 +165,9 @@ export function freshNativeBuyCost(tx:FreshTransaction,wallet:string,token:strin
     ||addr(words[7])!==token)return null;
   const spent=BigInt('0x'+words[0]),received=BigInt('0x'+words[1]);
   if(spent!==BigInt(tx.value)||received!==receivedRaw)return null;
-  if(addr(words[6])===wrappedNative)return wrappedNativeBuyCost(tx,wallet,token,receivedRaw,logs,words);
+  if(addr(words[6])===wrappedNative)return wrappedNativeBuyCost(tx,wallet,token,receivedRaw,logs,words)??freshWrappedTaxNativeBuyCost(tx,wallet,token,receivedRaw,logs);
   if(addr(words[6])!==zero)return null;
   return spent;
 }
+/** Newly supported closed receipt families keep independent early tracing. */
+export const freshSupplementalNativeBuyCost=(tx:FreshTransaction,wallet:string,token:string,receivedRaw:bigint,logs:FreshLog[])=>freshWrappedTaxNativeBuyCost(tx,wallet,token,receivedRaw,logs)??freshThreeHopNativeBuyCost(tx,wallet,token,receivedRaw,logs)??freshRefundedControllerNativeBuyCost(tx,wallet,token,receivedRaw,logs);

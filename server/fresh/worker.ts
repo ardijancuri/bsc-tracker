@@ -1,9 +1,12 @@
 import type {Pool} from 'pg';
+import{createFreshRealizedPolicyGate}from'./realizedPolicy.js';
+import{createFreshRealizedEstimateGate}from'./estimatedProjectionPolicy.js';
 import{freshTrackedTokenSql}from'./tracking.js';
 import {runFreshTransferValuation} from './deferredTransferValuation.js';
 import type {Rpc} from '../rpc.js';
 import {runFreshCapture,expireFreshEvidence,readFreshCaptureState,findFreshCommonAncestor} from './capture.js';
 import {runFreshDecode,rollbackFreshToAncestor} from './decode.js';
+import{createFreshDecodeServiceCycle}from'./decodeWorkBudget.js';
 import {freshCurrentQuote,commitFreshCurrentQuote,freshQuoteUsd,freshQuoteFailureStatus} from './pricing.js';
 import {rolloverFreshUtcDay} from './accounting.js';
 import {refreshFreshRollingKolTotals} from './rolling.js';
@@ -23,6 +26,9 @@ import{createFreshIpcTrace}from'./ipcTrace.js';
 import{runFreshTokenDiscovery}from'./discovery.js';
 import{createFreshDiscoveryArchiveRpc}from'./discoveryArchive.js';
 import{readFreshQuoteRefreshStates,readFreshQuoteRefreshAnchor,observeFreshQuoteRefresh,commitFreshQuoteRefreshFailure}from'./quoteRefreshFailure.js';
+import{runFreshTokenBirthCapture}from'./tokenBirthCapture.js';
+import{runFreshSyntheticBatchAnchorCapture}from'./syntheticBatchAnchorCapture.js';
+import{runFreshAdmissionRecheck}from'./admissionRecheck.js';
 
 const pause=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve();};const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});if(signal.aborted)finish();});
 const category=(error:unknown)=>error instanceof Error?error.message.replace(/https?:\/\/\S+/g,'[endpoint]').slice(0,140):'unavailable';
@@ -64,20 +70,22 @@ export async function deferFreshQuoteRetry(db:Pick<Pool,'query'>,token:string,st
 }
 export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   if(!(await db.query(`SELECT 1 FROM fresh.checkpoints WHERE key='start'`)).rowCount)throw new Error('Initialize the empty local database with fresh:init before running capture.');
+  const policyAllows=createFreshRealizedPolicyGate(db),estimateAllows=createFreshRealizedEstimateGate(db);
   const connection=await db.connect();
   const localSsh=process.env.FRESH_LOCAL_ONLY==='true'&&process.env.FRESH_TRACE_SSH==='1';
   const trace=localSsh?createFreshSshTrace():process.env.BSC_TRACE_IPC?createFreshIpcTrace():undefined;
   let captureHealth:FreshRecoveryCaptureHealth|undefined;
   const urgentEvidence=createFreshUrgentEvidenceCapture(db,rpc),recoveryBatch=createFreshRecoveryBatch(db,rpc,{captureHealth:()=>captureHealth});
   const urgentTrace=trace?createFreshUrgentTraceCapture(db,rpc,localSsh?createFreshSshTrace({maxQueued:0}):createFreshIpcTrace({maxQueued:0})):undefined;
-  const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal});
+  const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000});
+  const nextDecodeService=createFreshDecodeServiceCycle();
   let lastQuoteAt=0;
   // One capture owner. API requests never start scanners or accounting workers.
   if(!(await connection.query('SELECT pg_try_advisory_lock(73621945) AS owned')).rows[0].owned){connection.release();throw new Error('fresh_worker_already_running');}
   if(process.env.FRESH_LOCAL_ONLY==='true')await db.query(`INSERT INTO fresh.checkpoints(key,value) VALUES('runtime:worker',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[JSON.stringify({pid:process.pid,startedAt:new Date().toISOString(),sourceDigest:await freshRuntimeDigest()})]);
   async function loop(stage:string,delay:number,run:()=>Promise<unknown>){
     let lastReport=0,lastStatus='';
-    while(!signal.aborted){const started=performance.now();try{const result=await run();if(Date.now()-lastReport>=30_000||lastStatus!=='ok'){await db.query(`INSERT INTO fresh.checkpoints(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`,[`health:${stage}`,JSON.stringify({ok:true,durationMs:Math.round(performance.now()-started),result})]);lastReport=Date.now();lastStatus='ok';}}
+    while(!signal.aborted){const started=performance.now();try{const result=!await policyAllows(stage)?{yielded:true,reason:'realized_policy_migration_pending'}:!await estimateAllows(stage)?{yielded:true,reason:'realized_estimate_migration_pending'}:await run();if(Date.now()-lastReport>=30_000||lastStatus!=='ok'){await db.query(`INSERT INTO fresh.checkpoints(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`,[`health:${stage}`,JSON.stringify({ok:true,durationMs:Math.round(performance.now()-started),result})]);lastReport=Date.now();lastStatus='ok';}}
       catch(error){const reason=category(error);if(lastStatus!==reason||Date.now()-lastReport>=30_000){console.warn(JSON.stringify({event:'fresh_stage_failed',stage,reason}));await db.query(`INSERT INTO fresh.checkpoints(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=clock_timestamp()`,[`health:${stage}`,JSON.stringify({ok:false,reason,durationMs:Math.round(performance.now()-started)})]).catch(()=>{});lastStatus=reason;lastReport=Date.now();}}
       await pause(delay,signal);
     }
@@ -91,12 +99,15 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     }),
     loop('urgent_evidence',500,()=>urgentEvidence({signal})),
     loop('urgent_trace',500,()=>urgentTrace?urgentTrace({signal}):Promise.resolve({disabled:true})),
+    loop('synthetic_batch_anchor',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshSyntheticBatchAnchorCapture(db,rpc,{signal})),
     loop('token_discovery',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenDiscovery(db,rpc,{signal,archiveRpc:discoveryArchive})),
-    loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db);const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
+    loop('admission_recheck',250,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshAdmissionRecheck(db,{signal})),
+    loop('token_birth',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenBirthCapture(db,rpc,{signal})),
+    loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db),service=nextDecodeService();const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000,...service});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
       // No relevant receipts is a complete empty block, rather than a stalled financial cursor.
       await db.query(`UPDATE fresh.checkpoints d SET block_number=c.block_number,block_hash=c.block_hash,updated_at=clock_timestamp() FROM fresh.checkpoints c WHERE d.key='decode' AND c.key='capture'
         AND d.block_number IS DISTINCT FROM c.block_number
-        AND NOT EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.decoder_status<>'done' AND e.block_number<=c.block_number)`);return{...result,transferRevaluation,recoveryBatch:recoveryBatch.stats()};}),
+        AND NOT EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.decoder_status<>'done' AND e.block_number<=c.block_number)`);return{...result,...service,transferRevaluation,recoveryBatch:recoveryBatch.stats()};}),
     loop('prices',1000,async()=>{
       const now=new Date();
       const selected=(await db.query(freshQuoteWorkSql,[now])).rows;

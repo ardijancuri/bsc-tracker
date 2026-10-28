@@ -4,6 +4,7 @@ import type { NodeAccountingSummary } from '../shared/nodeAccounting';
 import { requestNodePnlSummary, nodeSummaryDisplay, validNodeSummaryIdentity } from './nodePnlSummaryRequest';
 import { getLocale, t } from './i18n';
 import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
+import{validNodeCostEstimate,nodeCostEstimateNote}from'../shared/nodeCostEstimate';
 import { displayedTokenPnl, historicalAccountingMismatchNotice, terminalTokenInventoryFailure, tokenPnlMayRetainDuringProviderRetry, tokenPnlMovementsMatch, tokenPositionPnlDelayedNotice, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, type KolTokenPnlResult } from './kolTokenPnlRequest';
 
 interface TokenPnlState { pair: string; activity: KolTokenActivity | null; busy: boolean; delayed?: boolean }
@@ -40,7 +41,7 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
   const fresh = summary?.tracking?.source === 'fresh';
   const display = nodeSummaryDisplay(summary, walletAddress, tokenAddress, Date.now(), { realizedOnly: fresh }), value = display.value ?? NaN, valid = display.value !== null;
   useEffect(() => {
-    if (display.kind !== 'estimated') return;
+    if (display.kind !== 'estimated'||validNodeCostEstimate(summary?.snapshot)) return;
     const fresh = summary?.tracking?.source === 'fresh', at = Date.parse((fresh ? summary?.quotedAt : summary?.snapshot?.asOf) ?? '');
     if (!Number.isFinite(at)) return;
     // Expire only the rendered market mark. A stalled refresh must not leave an
@@ -51,12 +52,12 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
   const contradictory = [summary?.reason, ...(summary?.snapshot?.reasons ?? [])].includes('historical_accounting_mismatch');
   const asOf = summary?.snapshot?.asOf;
   const retained = summary?.snapshot?.refreshStatus === 'pending';
-  const title = valid ? `${capturedPositionDescription(summary?.snapshot) ?? t('Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.')}${asOf ? ` ${t('As of')} ${new Date(asOf).toLocaleString(getLocale())}` : ''}`
+  const title = valid ? `${validNodeCostEstimate(summary?.snapshot)?t(nodeCostEstimateNote):capturedPositionDescription(summary?.snapshot) ?? t('Kollens accounting from recorded wallet movements, transfers and wallet-paid fees.')}${asOf ? ` ${t('As of')} ${new Date(asOf).toLocaleString(getLocale())}` : ''}`
     : t(nodeSummaryPendingDescription(summary));
   const tracked = isCapturedPosition(summary?.snapshot);
   const unavailable = nodeSummaryUnavailableLabel(summary);
   return <span className="token-card-profit" title={title} aria-busy={!valid && !contradictory && unavailable === 'Pending'}>
-    <span>{t(fresh || display.kind === 'realized' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
+    <span>{t(validNodeCostEstimate(summary?.snapshot)?'Estimated realized P&L':fresh || display.kind === 'realized' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
     <strong className={valid ? value > 0 ? 'positive' : value < 0 ? 'negative' : '' : ''}>{valid ? new Intl.NumberFormat(getLocale(), {
       style: 'currency', currency: 'USD', notation: Math.abs(value) >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 2, signDisplay: 'exceptZero',
     }).format(value) : contradictory ? t('Unverified') : summary ? t(unavailable) : '…'}</strong>

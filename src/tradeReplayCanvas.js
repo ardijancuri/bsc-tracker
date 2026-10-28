@@ -1056,7 +1056,7 @@ export class ReplayCanvas {
       prefix = event;
     }
     const completePrefix = prefix?.id === this.accountingEvents.at(-1)?.id;
-    const final = ending && completePrefix && (accounting.coverage.exactFinal || accounting.coverage.journalFinal) ? accounting.final : null;
+    const final = ending && completePrefix && (accounting.coverage.exactFinal || accounting.coverage.journalFinal || accounting.coverage.estimatedFinal) ? accounting.final : null;
     const snapshot = final ?? prefix;
     if (!snapshot) return unavailable;
     const invested = finite(snapshot.investedUsd, null), proceeds = finite(snapshot.soldUsd, null);
@@ -1078,8 +1078,9 @@ export class ReplayCanvas {
       const sameQuote = holdings === 0 || Math.abs(state.currentPrice - referencePrice) <= referencePrice * 1e-10;
       roi = sameQuote ? finite(final.reportedRoi, cost > 0 ? total / cost : null) : cost > 0 ? total / cost : null;
     }
+    if(accounting.coverage.estimatedFinal)roi=null;
     return { ...state, invested, proceeds, holdings, remainingCostBasis: basis, accountingFinal: final !== null,
-      realizedPnl: realized, realizedRoi: realized !== null && cost > 0 ? realized / cost : null,
+      realizedPnl: realized, realizedRoi: !accounting.coverage.estimatedFinal&&realized !== null && cost > 0 ? realized / cost : null,
       unrealizedPnl: unrealized, pnl: total, roi, totalPnl: total, totalRoi: roi,
       avgEntryCap: invested !== null && boughtTokens > 0 && this.supply ? invested / boughtTokens * this.supply : null };
   }
@@ -1541,7 +1542,7 @@ export class ReplayCanvas {
       roiX += part.width + part.paddingAfter;
     }
     if (this.data.replayAccounting?.version === 2) text(ctx,
-      `${state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.accountingSnapshot?.historyBoundary === 'verified_zero_position' ? ' · TRACKED POSITION' : ''}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
+      `${this.data.replayAccounting.coverage.estimatedFinal?'ESTIMATED · MISSING COSTS EXCLUDED':state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.accountingSnapshot?.historyBoundary === 'verified_zero_position' ? ' · TRACKED POSITION' : ''}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
       540, 958, `500 16px ${FONT}`, COLOR.dim, 'center');
 
     ctx.beginPath();

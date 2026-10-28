@@ -16,7 +16,7 @@ import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolP
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
@@ -32,6 +32,7 @@ import { subscribeToUpdates } from './updateStream';
 import { createCoalescedRefresh } from './coalescedRefresh';
 import { groupTrackedTokens } from './trackedTokenGroups';
 import { leaderboardPresentation } from './leaderboardPresentation';
+import { RealizedEstimateLabel } from './RealizedEstimateLabel';
 import { nativeTradeDisplay } from './nativeTradeDisplay';
 
 type List<T> = { items: T[]; nextCursor?: string | null };
@@ -190,7 +191,7 @@ function WatchlistBanner() {
 
 function EmptyState({ title, detail }: { title: string; detail: string }) { return <div className="empty-state"><span className="empty-icon"><Activity size={22} /></span><strong>{title}</strong><p>{detail}</p></div>; }
 function SectionTitle({ eyebrow, title, description, right }: { eyebrow: string; title: string; description?: string; right?: React.ReactNode }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1>{description && <p>{description}</p>}</div>{right}</div>; }
-function Metric({ label, value, detail }: { label: string; value: string | number; detail?: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>; }
+function Metric({ label, value, detail }: { label: string; value: string | number; detail?: ReactNode }) { return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>; }
 
 function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: Trade; showSide?: boolean; linkTimeToToken?: boolean }) {
   const sideIcon = trade.side === 'buy' ? <ArrowDownLeft size={14} /> : trade.side === 'sell' ? <ArrowUpRight size={14} /> : <ArrowLeftRight size={14} />;
@@ -223,7 +224,7 @@ function TradeTape({ overview }: { overview: Overview }) {
         <details className="faq-item" name="trades-faq"><summary>{t("How often do new trades appear?")}</summary><p>{t("The feed updates automatically as newly indexed trades become available.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What can I find in the token tracker?")}</summary><p>{t("Browse tokens traded by tracked KOLs, grouped by market cap. Open a token to see its recent KOL trades and the wallets trading it.")}</p></details>
         <details className="faq-item" name="trades-faq"><summary>{t("What does a KOL profile show?")}</summary><p>{t("Each tracked wallet has recent trades, token positions and profit realized during the last 24 hours. Purchase costs can come from earlier history.")}</p></details>
-        <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("Rankings sort complete realized profit from the last 24 hours, using recorded FIFO purchase costs, fees and transfers. Earlier purchase costs remain included. Incomplete results are not ranked.")}</p></details>
+        <details className="faq-item" name="trades-faq"><summary>{t("How does the leaderboard work?")}</summary><p>{t("Rankings use realized trading profit from the last 24 hours: sales minus FIFO purchase costs and fees. When amounts are missing, an Estimated result excludes unknown amounts. Transfers move inventory without creating profit. Earlier known purchase costs remain included.")}</p></details>
       </div>
     </section>
     <section className="trades-follow" aria-labelledby="trades-follow-title"><div><h2 id="trades-follow-title">{t("Follow us on X")}</h2><p>{t("Updates from kollens.")}</p></div><a href="https://x.com/kollens" target="_blank" rel="noopener noreferrer">@kollens <ExternalLink size={15} /></a></section>
@@ -262,17 +263,17 @@ function TokensPage() {
 function LeaderboardPage(_props: { overview: Overview }) {
   const { data, loading, error } = useData<LeaderboardResponse>('/api/leaderboard', { items: [] }, 60000);
   const updatedAt = data.items.reduce<string | null>((latest, row) => row.updatedAt && (!latest || row.updatedAt > latest) ? row.updatedAt : latest, null);
-  return <div className="page leaderboard-page"><SectionTitle eyebrow={t("THE PERFORMANCE BOARD")} title={t("KOL Leaderboard")} description={t("Stored realized P&L over the last 24 hours. Only complete results are ranked.")} right={<div className="freshness"><i className={isFresh(updatedAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{updatedAt ? t('Updated {time}', { time: relativeTime(updatedAt) }) : t("Stored totals")}</span></div>} />
+  return <div className="page leaderboard-page"><SectionTitle eyebrow={t("THE PERFORMANCE BOARD")} title={t("KOL Leaderboard")} description={t("Realized trading P&L · Last 24 hours · Sales minus FIFO costs and fees.")} right={<div className="freshness"><i className={isFresh(updatedAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{updatedAt ? t('Updated {time}', { time: relativeTime(updatedAt) }) : t("Stored totals")}</span></div>} />
     <div className="table-toolbar leaderboard-toolbar"><span className="small-label" title={data.windowStart && data.windowEnd ? `${localDate(data.windowStart)} — ${localDate(data.windowEnd)}` : undefined}>{t("Last 24 hours")}</span><span className="coverage-note">{t('{active} active · {tracked} tracked KOLs', { active: data.items.filter(row => row.tradeCount24h > 0).length, tracked: data.items.length })}</span></div>
     <div className="data-table leaderboard-table">{data.items.map((row, index) => {
       const profit = leaderboardPresentation(row);
       const rank = profit.canRank ? row.rank ?? data.items.slice(0, index + 1).filter(item => leaderboardPresentation(item).canRank).length : null;
-      const coverage = t('{matched} valued movements · {pending} pending', { matched: profit.realizedCount, pending: profit.unavailableCount });
+      const coverage = t('{matched} accounted movements · {pending} pending', { matched: profit.realizedCount, pending: profit.unavailableCount });
       return <div className="leaderboard-entry" key={row.address}><Link className={`leaderboard-row ${rank ? `leader-rank-${rank}` : ''}`} to={`/kol/${row.address}`}>
       <span className="rank-number">{rank ? String(rank).padStart(2, '0') : '—'}</span>
       <span className="leader-identity"><Identity name={row.name} address={row.address} avatar={row.avatarUrl} subtitle={false} /><span className="leader-handle">{row.twitter ? `@${row.twitter}` : shortAddress(row.address)}</span></span>
       <span className="leader-activity"><strong>{row.tradeCount24h} <span>{t(row.tradeCount24h === 1 ? 'trade' : 'trades')}</span></strong><span className="leader-sides"><span className="positive">{row.buyCount24h} {t(row.buyCount24h === 1 ? 'buy' : 'buys')}</span><span className="leader-separator">·</span><span className="negative">{row.sellCount24h} {t(row.sellCount24h === 1 ? 'sell' : 'sells')}</span></span></span>
-      <strong className={`pnl ${profit.value == null ? '' : Number(profit.value) >= 0 ? 'positive' : 'negative'}`} title={`${coverage}${profit.asOf ? ` · ${t('As of {time}', { time: localDate(profit.asOf) })}` : ''}`}>{signedMoney(profit.value)}<small className="pnl-status">{profit.status !== 'ready' ? t("P&L pending · Not ranked") : t("Realized P&L · Last 24h")}</small></strong>
+      <strong className={`pnl ${profit.value == null ? '' : Number(profit.value) >= 0 ? 'positive' : 'negative'}`} title={`${coverage}${profit.asOf ? ` · ${t('As of {time}', { time: localDate(profit.asOf) })}` : ''}`}>{signedMoney(profit.value)}<small className="pnl-status">{profit.estimated ? <RealizedEstimateLabel profit={profit} /> : profit.status !== 'ready' ? t("P&L pending · Not ranked") : t("Realized P&L · Last 24h")}</small></strong>
     </Link><FollowButton kind="kol" address={row.address} label={row.name} /></div>;
     })}{!data.items.length && !loading && <EmptyState title={error ? t("Leaderboard unavailable") : t("No KOL trades in the last 24 hours")} detail={error ? t("The API is reconnecting.") : t("Recent wallet activity will appear here automatically.")} />}</div>
   </div>;
@@ -348,8 +349,8 @@ function KolPage() {
   };
   const periodProfit = leaderboardPresentation({ ...data.stats, tradeCount24h: data.tradeCount24h });
   const discoveryPending = data.stats?.accounting?.reasons?.includes('token_discovery_pending') === true;
-  const periodProfitDetail = periodProfit.status !== 'ready' ? t(discoveryPending ? 'Token verification pending' : 'Costs or history pending')
-    : `${t('{matched} valued movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
+  const periodProfitDetail = periodProfit.estimated ? <RealizedEstimateLabel profit={periodProfit} /> : periodProfit.status !== 'ready' ? t(discoveryPending ? 'Token verification pending' : 'Costs or history pending')
+    : `${t('{matched} accounted movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
   if (!loading && !data.kol) return <div className="page"><EmptyState title={t("KOL not found")} detail={t("This wallet is not in the supplied KOL roster.")} /></div>;
   return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
     <CreatorProfile wallet={address} onPublished={() => void refreshProfile()} />

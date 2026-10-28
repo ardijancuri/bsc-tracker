@@ -21,7 +21,7 @@ export function freshHistoricalV3Pool(quote:string,settlement:string,fee:number)
 }
 export interface FreshHistoricalV3QuoteEvidence{
   version:1;kind:'historical_raw_pool_trusted_v3';quoteAddress:string;settlementAddress:string;fee:number;target:FreshPriceBlock;transactionIndex:number;
-  observation:'before_execution';anchor:FreshPriceBlock;source:FreshPriceBlock;fromBlock:number;toBlock:number;
+  observation:'before_execution'|'block_end';anchor:FreshPriceBlock;source:FreshPriceBlock;fromBlock:number;toBlock:number;
   identity:{factory:typeof PCS_V3_FACTORY;deployer:typeof FRESH_PCS_V3_DEPLOYER;poolInitcodeHash:typeof FRESH_PCS_V3_INITCODE_HASH;pool:string;token0:string;token1:string};
   codes:{address:string;code:string}[];calls:{to:string;data:string;result:string}[];lastSwap:FreshLog;ratio:{numerator:string;denominator:string};
 }
@@ -31,15 +31,16 @@ export interface FreshHistoricalV3QuoteEvidence{
  * before the target execution supplies its historical raw-unit spot price.
  * Current slot0, current decimals and same-transaction prices are never used. */
 export async function recoverFreshHistoricalV3Quote(options:{rpc:Rpc;quoteAddress:string;settlementAddress:string;fee:number;target:FreshPriceBlock;
-  transactionIndex:number;anchor:FreshPriceBlock;canonicalHash:(number:number)=>Promise<string|null>;prior?:FreshHistoricalV3QuoteEvidence}):Promise<FreshHistoricalV3QuoteEvidence>{
+  transactionIndex:number;anchor:FreshPriceBlock;canonicalHash:(number:number)=>Promise<string|null>;prior?:FreshHistoricalV3QuoteEvidence;observation?:'before_execution'|'block_end';lookbackBlocks?:16|64|256}):Promise<FreshHistoricalV3QuoteEvidence>{
   const {rpc,target,transactionIndex,canonicalHash,prior}=options,quote=freshAddress(options.quoteAddress),settlement=freshAddress(options.settlementAddress),anchor=prior?.anchor??options.anchor;
+  const observation=options.observation??'before_execution',lookback=options.lookbackBlocks??256;
   if(!quote||!settlement||!TRUSTED_QUOTE_FEEDS[settlement]||!validBlock(target)||!validBlock(anchor)||!validBlock(options.anchor)
     ||anchor.number<target.number||anchor.number>options.anchor.number||Date.parse(anchor.timestamp)<Date.parse(target.timestamp)
-    ||!Number.isSafeInteger(transactionIndex)||transactionIndex<0||transactionIndex>=2**32)throw Error('historical_v3_identity_invalid');
+    ||!Number.isSafeInteger(transactionIndex)||transactionIndex<0||transactionIndex>=2**32||!['before_execution','block_end'].includes(observation)||![16,64,256].includes(lookback))throw Error('historical_v3_identity_invalid');
   const pool=freshHistoricalV3Pool(quote,settlement,options.fee),[token0,token1]=[quote,settlement].sort();
   if(await canonicalHash(target.number)!==target.hash||await canonicalHash(anchor.number)!==anchor.hash)throw Error('historical_v3_noncanonical');
   if(prior&&(Buffer.byteLength(stable(prior))>256*1024||prior.version!==1||prior.kind!=='historical_raw_pool_trusted_v3'||prior.quoteAddress!==quote||prior.settlementAddress!==settlement
-    ||prior.fee!==options.fee||!equal(prior.target,target)||prior.transactionIndex!==transactionIndex||prior.observation!=='before_execution'
+    ||prior.fee!==options.fee||!equal(prior.target,target)||prior.transactionIndex!==transactionIndex||prior.observation!==observation
     ||!Array.isArray(prior.codes)||prior.codes.length!==3||!Array.isArray(prior.calls)||prior.calls.length!==6))throw Error('historical_v3_prior_invalid');
   if(!prior&&(Date.now()-Date.parse(anchor.timestamp)>30_000||Date.now()-Date.parse(anchor.timestamp)<-5_000))throw Error('historical_v3_anchor_stale');
   if(!prior&&await rpc<string>('eth_chainId',[])!=='0x38')throw Error('historical_v3_chain_invalid');
@@ -62,7 +63,8 @@ export async function recoverFreshHistoricalV3Quote(options:{rpc:Rpc;quoteAddres
   // Asset precision is deliberately retained at the historical target separately.
   if(String(registered[0]).toLowerCase()!==pool||String(deployer[0]).toLowerCase()!==FRESH_PCS_V3_DEPLOYER||String(factory[0]).toLowerCase()!==PCS_V3_FACTORY
     ||String(first[0]).toLowerCase()!==token0||String(second[0]).toLowerCase()!==token1||Number(fee[0])!==options.fee)throw Error('historical_v3_identity_mismatch');
-  const fromBlock=Math.max(0,target.number-256),toBlock=target.number;
+  const fromBlock=Math.max(0,target.number-lookback),toBlock=target.number;
+  if(prior&&(prior.fromBlock!==fromBlock||prior.toBlock!==toBlock))throw Error('historical_v3_prior_invalid');
   const logs=prior?[prior.lastSwap]:await rpc<FreshLog[]>('eth_getLogs',[{address:pool,fromBlock:'0x'+fromBlock.toString(16),toBlock:'0x'+toBlock.toString(16),topics:[v3MarketAbi.getEvent('Swap')!.topicHash]}]);
   if(!Array.isArray(logs)||!logs.length||logs.length>512)throw Error('historical_v3_swap_unavailable');
   let previous=-1n,selected:FreshLog|undefined;
@@ -75,7 +77,7 @@ export async function recoverFreshHistoricalV3Quote(options:{rpc:Rpc;quoteAddres
     const encoded=v3MarketAbi.encodeEventLog(parsed.fragment,parsed.args);if(encoded.data!==log.data||!equal(encoded.topics,log.topics))throw Error('historical_v3_log_invalid');
     const a=BigInt(parsed.args.amount0),b=BigInt(parsed.args.amount1),sqrt=BigInt(parsed.args.sqrtPriceX96),liquidity=BigInt(parsed.args.liquidity),tick=Number(parsed.args.tick);
     if(!a||!b||(a>0n)===(b>0n)||sqrt<4295128739n||sqrt>=1461446703485210103287273052203988822378723970342n||!liquidity||Math.abs(tick)>887272)throw Error('historical_v3_swap_invalid');
-    if(bn<target.number||ti<transactionIndex)selected=log;
+    if(observation==='block_end'||bn<target.number||ti<transactionIndex)selected=log;
   }
   if(!selected)throw Error('historical_v3_preceding_swap_unavailable');
   const raw=prior?null:await rpc<any>('eth_getBlockByNumber',[selected.blockNumber,false]);
@@ -85,7 +87,7 @@ export async function recoverFreshHistoricalV3Quote(options:{rpc:Rpc;quoteAddres
   const sqrt=BigInt(v3MarketAbi.parseLog(selected)!.args.sqrtPriceX96),numerator=quote===token0?sqrt*sqrt:1n<<192n,denominator=quote===token0?1n<<192n:sqrt*sqrt;
   calls.sort((a,b)=>a.to.localeCompare(b.to)||a.data.localeCompare(b.data));
   const result:FreshHistoricalV3QuoteEvidence={version:1,kind:'historical_raw_pool_trusted_v3',quoteAddress:quote,settlementAddress:settlement,fee:options.fee,target:{...target},transactionIndex,
-    observation:'before_execution',anchor:{...anchor},source:{...source},fromBlock,toBlock,identity:{factory:PCS_V3_FACTORY,deployer:FRESH_PCS_V3_DEPLOYER,poolInitcodeHash:FRESH_PCS_V3_INITCODE_HASH,pool,token0,token1},codes,calls,lastSwap:structuredClone(selected),ratio:{numerator:String(numerator),denominator:String(denominator)}};
+    observation,anchor:{...anchor},source:{...source},fromBlock,toBlock,identity:{factory:PCS_V3_FACTORY,deployer:FRESH_PCS_V3_DEPLOYER,poolInitcodeHash:FRESH_PCS_V3_INITCODE_HASH,pool,token0,token1},codes,calls,lastSwap:structuredClone(selected),ratio:{numerator:String(numerator),denominator:String(denominator)}};
   if(prior&&!equal(prior,result))throw Error('historical_v3_prior_invalid');return result;
 }
 

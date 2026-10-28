@@ -10,6 +10,7 @@ import {FRESH_INITIALIZED_DECIMALS_AUDIT,recoverFreshImmutableDecimals,recoverFr
 import {FRESH_CONSTANT_PRECISION_AUDITS,authenticateFreshConstantCloneCreation,recoverFreshConstantClonePrecision,type FreshConstantPrecisionProtocol,type FreshMetadataCreationContext} from './constantMetadataRecovery.js';
 import type {FreshTokenMetadata} from './pricing.js';
 import {FRESH_LITERAL_METADATA_AUDIT,recoverFreshLiteralCreationPrecision} from './literalMetadataRecovery.js';
+import{freshImmutableStoragePrecisionBirth,recoverFreshImmutableStoragePrecision,revalidateFreshImmutableStoragePrecision,type FreshImmutableStoragePrecisionSource}from'./immutableStoragePrecision.js';
 
 const ownershipTopic='0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0';
 type Protocol=FreshConstantPrecisionProtocol|'evm_creation';
@@ -115,6 +116,25 @@ export function createFreshTemplateMetadataRecovery(db:Pool,rpc:Rpc,batch:FreshR
  return{async metadata(token:string,fact:any):Promise<{value:FreshTokenMetadata;proof:unknown}|null>{
   if(!['flap','fourmeme','evm_creation'].includes(fact?.protocol)||fact.status!=='eligible'||Number(fact.block_number)>target.number)return null;
   if(await canonicalHash(target.number)!==target.hash)return null;
+  const immutableBirth=freshImmutableStoragePrecisionBirth(fact);
+  if(immutableBirth){
+   if(await canonicalHash(immutableBirth.block.number)!==immutableBirth.block.hash)return null;
+   const prior=entry.recoveryEvidence?.metadata[token]as any;
+   if(prior?.kind==='authenticated_immutable_storage_precision'&&await canonicalHash(prior.source?.anchor?.number)===prior.source?.anchor?.hash){
+    const saved=revalidateFreshImmutableStoragePrecision({chainId:56,tokenAddress:token,target,fact,proof:prior});
+    if(saved)return{value:{address:token,name:null,symbol:null,decimals:saved.decimals,supplyRaw:null,block:target},proof:saved.proof};
+   }
+   const at=await anchor();if(await canonicalHash(at.number)!==at.hash)return null;
+   const source=await batch.memo<FreshImmutableStoragePrecisionSource>(`immutable-storage-precision:${token}:${at.hash}`,async()=>{
+    const state=createFreshStateEvidenceRpc(rpc,at),params:[string,{blockHash:string;requireCanonical:true}]=[token,{blockHash:at.hash,requireCanonical:true}];
+    const callParams:[{to:string;data:string},{blockHash:string;requireCanonical:true}]=[{to:token,data:'0x313ce567'},params[1]];
+    const[code,result]=await Promise.all([rpc<string>('eth_getCode',params),state.rpc<string>('eth_call',callParams)]);
+    return{anchor:at,code:{method:'eth_getCode',params,result:code},call:{method:'eth_call',params:callParams,result},state:state.snapshot()!};
+   });
+   const chainId=Number(BigInt(await batch.memo('chain-id',()=>rpc<string>('eth_chainId',[]))));
+   const result=recoverFreshImmutableStoragePrecision({chainId,tokenAddress:token,target,fact,source});
+   return result?{value:{address:token,name:null,symbol:null,decimals:result.decimals,supplyRaw:null,block:target},proof:result.proof}:null;
+  }
   let protocol=fact.protocol as Protocol;const created=await context(fact.tx_hash,Number(fact.block_number),fact.block_hash);
   if(protocol==='evm_creation'&&token===FRESH_LITERAL_METADATA_AUDIT.tokenAddress){
    if(await canonicalHash(target.number)!==target.hash)return null;

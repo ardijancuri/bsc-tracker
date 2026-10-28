@@ -21,6 +21,15 @@ function chart(input: FreshReplayActivity): ReplayMarketChart {
 }
 
 describe('fresh frozen replay preparation', () => {
+  it('issues an explicitly estimated lease without promoting unknown original costs or ROI',async()=>{
+    const value=activity(),id=value.accountingSnapshot!,a=value.replayAccounting!,final=a.final!;
+    id.complete=false;id.reasons=['unknown_costs'];id.estimate={version:1,policy:'omit_unknown_costs_v1',basis:'recorded_facts',snapshotId:id.snapshotId,historyFingerprint:id.historyFingerprint,asOf:id.asOf,reasons:['unknown_costs'],realizedProfitUsd:final.reportedProfitUsd!,totalProfitUsd:final.reportedProfitUsd,knownCapitalUsd:final.feeInclusiveCostUsd!,knownRemainingCostUsd:'0',missingCostCount:null,missingFeeCount:null,missingProceedsCount:null};
+    a.status='estimated';a.coverage.exactFinal=false;a.coverage.estimatedFinal=true;final.reportedRoi=null;
+    const service=createFreshReplay({charts:{replayChart:async()=>chart(value)},secret,validateRevision:async()=>true,now:()=>frozen});
+    const ready=await service.prepare(value);expect(ready.status).toBe('ready');expect(ready.activity!.accountingSnapshot!.complete).toBe(false);expect(ready.activity!.replayAccounting!.final!.reportedRoi).toBeNull();
+    expect(JSON.parse(Buffer.from(ready.manifest!.split('.')[0],'base64url').toString())).toMatchObject({accountingQuality:'estimated',estimatePolicy:'omit_unknown_costs_v1'});expect((await service.validate(ready.manifest!)).valid).toBe(true);
+    const bad=structuredClone(value);bad.replayAccounting!.coverage.balanceMatched=false;expect((await service.prepare(bad,{scope:'other'})).status).not.toBe('ready');
+  });
   it('signs the exact historical permission and rechecks it for issued and remembered financial objects',async()=>{
     const value=activity(),digest='c'.repeat(64);value.__freshRevision!.historyPermissionDigest=digest;let active=digest;
     const service=createFreshReplay({charts:{replayChart:async()=>chart(value)},secret,validateRevision:async claims=>claims.historyPermissionDigest===active,now:()=>frozen});

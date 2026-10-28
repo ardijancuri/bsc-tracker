@@ -2,8 +2,9 @@ import{validateFreshAcquisitionCost,freshAcquisitionCostKey}from'./acquisitionCo
 import { createHash } from 'node:crypto';
 import {queueFreshTransferValuation} from './deferredTransferValuation.js';
 import type { PoolClient } from 'pg';
-import type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshPositionSummary, FreshScope,FreshFeeExclusions } from '../../shared/freshAccounting.js';
+import type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshPositionSummary, FreshScope,FreshFeeExclusions,FreshAirdropBasis } from '../../shared/freshAccounting.js';
 import{GANG_TOKEN_ADDRESS,FRESH_GANG_HISTORY_FROM_BLOCK,FRESH_GANG_CREATION_TIME,readFreshGangHistoryAdmission,freshScopeEventSql}from'./tracking.js';
+import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import {advanceFreshRollingKolTotals,addFreshRollingKolResult,addFreshRollingKolExcludedFee,rebuildFreshRollingKolTotals} from './rolling.js';
 export type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshScope } from '../../shared/freshAccounting.js';
 
@@ -62,13 +63,25 @@ const positive = (value: string) => { const parsed = q(value); if (parsed.compar
 const nullable = (value: string | null) => value === null ? null : positive(value);
 const sum = (values: string[]) => values.reduce((v, next) => v.add(q(next)), zero);
 export const freshRationalSum = (values: string[]) => sum(values).exact();
-const inScope = (scope: FreshScope, event: FreshFinancialEvent) => {
+export const freshAirdropBasisKey=(value:FreshAirdropBasis|undefined)=>value?JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)))):null;
+/** Tagged compact basis shares the existing acquisition_cost column. */
+export const freshFinancialBasis=(event:FreshFinancialEvent)=>event.airdropBasis??event.acquisitionCost??null;
+export function validateFreshAirdropBasis(event:FreshFinancialEvent){const p=event.airdropBasis;if(!p)return;
+ const fail=()=>{throw Error('invalid_airdrop_cost_basis')};
+ if(event.acquisitionCost||event.kind!=='transfer_in'||event.canonical===false||event.logIndex===null||Buffer.byteLength(JSON.stringify(p))>4096||p.version!==1||p.policy!=='verified_airdrop_zero_cost_v1'||p.provenance!=='node_authenticated_free_distribution'||!['authenticated_mint','authenticated_free_distribution','authenticated_free_claim'].includes(p.distributionKind)
+  ||p.eventId!==event.id||p.walletAddress!==event.walletAddress||p.tokenAddress!==event.tokenAddress||p.sourceAddress!==event.counterparty||p.sourceAddress===event.walletAddress||p.quantity!==event.quantity||p.blockNumber!==event.blockNumber||p.blockHash!==event.blockHash||p.transactionHash!==event.transactionHash||p.transactionIndex!==event.transactionIndex||p.executionIndex!==event.executionIndex||p.logIndex!==event.logIndex
+  ||p.sourceAddress!==null&&!/^0x[\da-f]{40}$/.test(p.sourceAddress)||p.distributionKind==='authenticated_mint'&&p.sourceAddress!=='0x'+'0'.repeat(40)||!Number.isSafeInteger(p.decimals)||p.decimals<0||p.decimals>255||!/^[1-9]\d{0,77}$/.test(p.quantityRaw)||BigInt(p.quantityRaw)>=(1n<<256n)||![p.traceSha256,p.contextSha256,p.authenticationSha256].every(v=>typeof v==='string'&&/^[\da-f]{64}$/.test(v)))fail();
+ if(q(event.quantity).mul(q((10n**BigInt(p.decimals)).toString())).compare(q(p.quantityRaw))!==0)fail();
+}
+export function validFreshAirdropBasis(event:FreshFinancialEvent){if(!event.airdropBasis)return false;try{validateFreshAirdropBasis(event);return true;}catch{return false;}}
+export const freshEventInScope = (scope: FreshScope, event: FreshFinancialEvent) => {
   const history=event.tokenAddress===GANG_TOKEN_ADDRESS&&scope.kind==='kol'&&scope.accountId===null&&scope.walletAddresses.length===1&&scope.id==='kol:'+scope.walletAddresses[0]
     ?scope.tokenHistoryStarts?.[GANG_TOKEN_ADDRESS]:undefined;
   const allowedHistory=history?.policy==='gmgn_gang_only_history_v1'&&history.startsBlock===String(FRESH_GANG_HISTORY_FROM_BLOCK)&&history.startsAt===FRESH_GANG_CREATION_TIME&&/^[0-9a-f]{64}$/.test(history.permissionDigest);
   const boundary = allowedHistory?history!:(scope.walletStarts?.[event.walletAddress] ?? scope);
   return scope.walletAddresses.includes(event.walletAddress) && BigInt(event.blockNumber) >= BigInt(boundary.startsBlock) && Date.parse(event.occurredAt) >= Date.parse(boundary.startsAt);
 };
+const inScope=freshEventInScope;
 /** Hydrate only trusted public books from a source-bound permission. This is
  * done in ingestion/repair and selected replay reconstruction, never a scan. */
 export async function hydrateFreshScopeTokenHistory(client:Pick<PoolClient,'query'>,scope:FreshScope,options:{lock?:boolean}={}){
@@ -99,6 +112,7 @@ export function freshEventQuote(event:Pick<FreshFinancialEvent,'kind'|'quoteAddr
  * recorded settlement is immutable unless a separate correction is reviewed. */
 export function assertFreshEventQuoteCompatible(saved:FreshFinancialEvent,next:FreshFinancialEvent){
   if(saved.acquisitionCost&&next.acquisitionCost&&freshAcquisitionCostKey(saved.acquisitionCost)!==freshAcquisitionCostKey(next.acquisitionCost))throw Error('conflicting_acquisition_cost_evidence');
+  if(saved.acquisitionCost&&next.airdropBasis||saved.airdropBasis&&next.acquisitionCost||saved.airdropBasis&&freshAirdropBasisKey(saved.airdropBasis)!==freshAirdropBasisKey(next.airdropBasis))throw Error('conflicting_airdrop_cost_evidence');
   const oldQuote=freshEventQuote(saved),newQuote=freshEventQuote(next);
   if(oldQuote&&newQuote&&(oldQuote.quoteAddress!==newQuote.quoteAddress||oldQuote.quoteSymbol!==newQuote.quoteSymbol
     ||q(oldQuote.quoteAmount).compare(q(newQuote.quoteAmount))!==0))throw Error('conflicting_trade_quote_evidence');
@@ -133,7 +147,7 @@ export function validateFreshFinancialEvent(event: FreshFinancialEvent) {
     || !['buy', 'sell', 'transfer_in', 'transfer_out', 'fee'].includes(event.kind)) throw new Error('invalid_financial_event');
   for(const amount of [event.quantity,event.amountUsd,event.feeUsd])if(amount!==null&&(amount.includes('/')||amount.length>1024))throw new Error('invalid_source_decimal');
   const quantity = positive(event.quantity); nullable(event.amountUsd); nullable(event.feeUsd);
-  freshEventQuote(event);validateFreshAcquisitionCost(event,FreshRational.parse);
+  freshEventQuote(event);validateFreshAcquisitionCost(event,FreshRational.parse);validateFreshAirdropBasis(event);
   if (event.kind !== 'fee' && quantity.compare(zero) <= 0 || event.kind === 'fee' && quantity.compare(zero) !== 0) throw new Error('invalid_event_quantity');
   if (event.feeUsd !== null && q(event.feeUsd).compare(zero) > 0 && !event.feeKey) throw new Error('fee_identity_required');
   if (event.counterparty !== null && !/^0x[\da-f]{40}$/.test(event.counterparty)) throw new Error('invalid_counterparty');
@@ -151,6 +165,18 @@ export function validateFreshFinancialEvent(event: FreshFinancialEvent) {
 }
 
 export interface FreshApplyState { position: FreshPosition | null; lots: FreshLot[]; feeAlreadyApplied?: boolean; internalTransferPaired?: boolean; }
+export type FreshRealizedResultFields=Pick<FreshEventResult,'realizedQ'|'knownRealizedQ'|'capitalQ'|'feeQ'>;
+/** Reproject already charged results without changing facts, FIFO or fee
+ * deduplication. A transfer moves inventory; its optional mark is not income. */
+export function freshReprojectRealizedResult(kind:FreshFinancialEvent['kind'],result:FreshRealizedResultFields):FreshRealizedResultFields{
+ if(kind!=='transfer_out')return{...result};const realizedQ=result.feeQ===null?null:zero.sub(q(result.feeQ)).exact();
+ return{...result,realizedQ,knownRealizedQ:realizedQ??'0',capitalQ:'0'};
+}
+/** Unknown transfer marks and basis of inventory no longer held cannot make
+ * a later fully costed sale unknown. Actual unknown sales remain unknown. */
+export function freshReprojectPositionUnknownCost(lots:readonly Pick<FreshLot,'costQ'|'feeKnown'>[],results:readonly{kind:FreshFinancialEvent['kind'];realizedQ:string|null}[]):boolean{
+ return lots.some(l=>l.costQ===null||!l.feeKnown)||results.some(r=>r.kind==='sell'&&r.realizedQ===null);
+}
 /** Apply exactly one normalized execution. Caller provides FIFO lots for one scope/token. */
 export function applyFreshEvent(scope: FreshScope, event: FreshFinancialEvent, state: FreshApplyState): { position: FreshPosition | null; lots: FreshLot[]; result: FreshEventResult } {
   validateFreshFinancialEvent(event);
@@ -161,24 +187,27 @@ export function applyFreshEvent(scope: FreshScope, event: FreshFinancialEvent, s
   const fee = state.feeAlreadyApplied ? zero : nullable(event.feeUsd), amount = nullable(event.amountUsd), quantity = positive(event.quantity);
   const result: FreshEventResult = { scopeId: scope.id, eventId: event.id, tokenAddress: event.tokenAddress, realizedQ: '0', knownRealizedQ: '0', capitalQ: '0', feeQ: fee?.exact() ?? null,
     feeKey: state.feeAlreadyApplied ? null : event.feeKey, tradeCount: event.kind === 'buy' || event.kind === 'sell' ? 1 : 0, volumeQ: event.kind === 'buy' || event.kind === 'sell' ? amount?.exact() ?? '0' : '0', tokensTrade: event.kind === 'buy' || event.kind === 'sell', occurredAt: event.occurredAt };
-  if (!position) { result.realizedQ = fee ? zero.sub(fee).exact() : null; result.knownRealizedQ = result.realizedQ ?? '0'; return { position, lots, result }; }
+  if (!position) { result.realizedQ = fee ? zero.sub(fee).exact() : null; result.knownRealizedQ = result.realizedQ ?? '0';if(result.realizedQ===null)result.estimatedRealizedQ=zero.sub(fee??zero).exact(); return { position, lots, result }; }
   const internal = event.counterparty !== null && inScope(scope, { ...event, walletAddress: event.counterparty }) && event.kind.startsWith('transfer_');
   if (internal && (!event.transferKey || !state.internalTransferPaired)) throw new Error('internal_transfer_unreconciled');
   const consume = () => {
-    let remaining = quantity, cost: FreshRational | null = zero; const parts: FreshLot[] = [];
+    let remaining = quantity, cost: FreshRational | null = zero,knownCost:FreshRational|null=zero; const parts: FreshLot[] = [];
     for (const lot of lots.filter(v => v.walletAddress === event.walletAddress).sort(lotOrder)) {
       if (!remaining.n) break;
       const available = q(lot.quantityQ), used = available.compare(remaining) > 0 ? remaining : available;
       const partCost = lot.costQ === null || !lot.feeKnown ? null : q(lot.costQ).mul(used).div(available);
-      parts.push({ ...lot, quantityQ: used.exact(), costQ: partCost?.exact() ?? null });
+      const knownPart=partCost??(lot.knownCostQ===null?null:q(lot.knownCostQ??'0').mul(used).div(available));
+      parts.push({ ...lot, quantityQ: used.exact(), costQ: partCost?.exact() ?? null,...(lot.knownCostQ!==undefined?{knownCostQ:knownPart?.exact()??null}:{}) });
       cost = cost !== null && partCost !== null ? cost.add(partCost) : null;
+      knownCost=knownCost!==null&&knownPart!==null?knownCost.add(knownPart):null;
       lot.quantityQ = available.sub(used).exact();
       if (lot.costQ !== null) lot.costQ = q(lot.costQ).sub(q(lot.costQ).mul(used).div(available)).exact();
+      if(lot.knownCostQ!=null)lot.knownCostQ=q(lot.knownCostQ).sub(q(lot.knownCostQ).mul(used).div(available)).exact();
       remaining = remaining.sub(used);
     }
     if (remaining.n) { cost = null; position.unknownCost = true; parts.push({ id: `${event.id}:missing`, scopeId: scope.id, tokenAddress: event.tokenAddress!, walletAddress: event.walletAddress,
       acquiredEventId: event.id, acquiredBlock: event.blockNumber, acquiredTransactionIndex: event.transactionIndex, acquiredExecutionIndex: event.executionIndex, quantityQ: remaining.exact(), costQ: null, feeKnown: false }); }
-    return { cost, parts };
+    return { cost, parts,knownCost };
   };
   if (fee) position.feesQ = add(position.feesQ, fee); else position.unknownFee = true;
   if(event.kind==='fee'){
@@ -187,13 +216,13 @@ export function applyFreshEvent(scope: FreshScope, event: FreshFinancialEvent, s
     // The outgoing half moved the original lots; this half only owns its own authenticated fee.
     result.realizedQ = fee ? zero.sub(fee).exact() : null;
   } else if (event.kind === 'buy' || event.kind === 'transfer_in') {
-    const cost = amount !== null && fee !== null ? amount.add(fee) : null;
-    if (event.kind === 'buy') position.investedQ = add(position.investedQ, amount ?? zero); else position.incomingQ = add(position.incomingQ, amount ?? zero);
-    if(amount===null){if(event.kind==='buy')position.unknownPurchaseValue=true;else position.unknownIncomingValue=true;}
-    position.capitalQ = add(position.capitalQ, (amount ?? zero).add(fee ?? zero));
+    const basis=event.kind==='transfer_in'&&event.airdropBasis?zero:amount,cost = basis !== null && fee !== null ? basis.add(fee) : null;
+    if (event.kind === 'buy') position.investedQ = add(position.investedQ, basis ?? zero); else position.incomingQ = add(position.incomingQ, basis ?? zero);
+    if(basis===null){if(event.kind==='buy')position.unknownPurchaseValue=true;else position.unknownIncomingValue=true;}
+    position.capitalQ = add(position.capitalQ, (basis ?? zero).add(fee ?? zero));
     if (cost === null) position.unknownCost = true;
     lots.push({ id: `${scope.id}:${event.id}`, scopeId: scope.id, tokenAddress: event.tokenAddress!, walletAddress: event.walletAddress, acquiredEventId: event.id,
-      acquiredBlock: event.blockNumber, acquiredTransactionIndex: event.transactionIndex, acquiredExecutionIndex: event.executionIndex, quantityQ: quantity.exact(), costQ: cost?.exact() ?? null, feeKnown: fee !== null });
+      acquiredBlock: event.blockNumber, acquiredTransactionIndex: event.transactionIndex, acquiredExecutionIndex: event.executionIndex, quantityQ: quantity.exact(), costQ: cost?.exact() ?? null, feeKnown: fee !== null,...(cost===null?{knownCostQ:(basis??zero).add(fee??zero).exact()}:{}) });
   } else if (event.kind === 'sell' || event.kind === 'transfer_out') {
     const consumed = consume();
     if (internal) {
@@ -202,13 +231,22 @@ export function applyFreshEvent(scope: FreshScope, event: FreshFinancialEvent, s
     } else {
       if (event.kind === 'sell') position.soldQ = add(position.soldQ, amount ?? zero); else position.outgoingQ = add(position.outgoingQ, amount ?? zero);
       if(amount===null){if(event.kind==='sell')position.unknownSaleValue=true;else position.unknownOutgoingValue=true;}
-      result.realizedQ = amount !== null && consumed.cost !== null && fee !== null ? amount.sub(consumed.cost).sub(fee).exact() : null;
-      result.capitalQ = (consumed.cost ?? zero).add(fee ?? zero).exact();
-      if (consumed.cost === null || amount === null) position.unknownCost = true;
+      if(event.kind==='sell'){
+        result.realizedQ = amount !== null && consumed.cost !== null && fee !== null ? amount.sub(consumed.cost).sub(fee).exact() : null;
+        // Missing proceeds omit the whole disposal, rather than manufacture a
+        // zero-proceeds loss. Only confirmed FIFO cost portions enter a priced
+        // disposal estimate; unknown lots keep their original null basis.
+        if(result.realizedQ===null)result.estimatedRealizedQ=amount===null?zero.sub(fee??zero).exact():consumed.knownCost!==null?amount.sub(consumed.knownCost).sub(fee??zero).exact():null;
+        result.capitalQ = (consumed.cost ?? zero).add(fee ?? zero).exact();
+        if (consumed.cost === null || amount === null) position.unknownCost = true;
+      }
     }
   }
+  Object.assign(result,freshReprojectRealizedResult(event.kind,result));
   result.knownRealizedQ = result.realizedQ ?? '0';
+  if(result.realizedQ===null&&result.estimatedRealizedQ===undefined)result.estimatedRealizedQ=zero.sub(fee??zero).exact();
   position.realizedQ = position.realizedQ !== null && result.realizedQ !== null ? add(position.realizedQ, q(result.realizedQ)) : null;
+  if(position.realizedQ!==null)position.unknownCost=lots.some(l=>q(l.quantityQ).n>0n&&(l.costQ===null||!l.feeKnown));
   position.quantityQ = sum(lots.filter(v => q(v.quantityQ).n > 0n).map(v => v.quantityQ)).exact();
   position.lastEventId = event.id; position.lastEventAt = event.occurredAt; position.revision = `${BigInt(position.revision) + 1n}`;
   return { position, lots: lots.filter(v => q(v.quantityQ).n > 0n), result };
@@ -217,15 +255,16 @@ export function applyFreshEvent(scope: FreshScope, event: FreshFinancialEvent, s
 /** No history reads: current position + current open lots + current quote only. */
 export function summarizeFreshPosition(position: FreshPosition, lots: FreshLot[], priceUsd: string | null): FreshPositionSummary {
   const quantity = q(position.quantityQ), price = nullable(priceUsd), value = price === null ? null : quantity.mul(price);
-  const costsKnown = !position.unknownCost && lots.every(l => l.costQ !== null && l.feeKnown), remaining = costsKnown ? sum(lots.map(l => l.costQ!)) : null;
-  const complete = costsKnown && !position.unknownFee;
-  const profit = complete && (value !== null || quantity.n === 0n) ? q(position.soldQ).add(q(position.outgoingQ)).add(value ?? zero).sub(q(position.investedQ)).sub(q(position.incomingQ)).sub(q(position.feesQ)) : null;
+  const costsKnown = lots.every(l => l.costQ !== null && l.feeKnown), remaining = costsKnown ? sum(lots.map(l => l.costQ!)) : null;
+  const complete = costsKnown && !position.unknownFee && position.realizedQ!==null;
+  const profit = complete && (value !== null || quantity.n === 0n) ? q(position.realizedQ!).add(value ?? zero).sub(remaining!) : null;
+  const capitalKnown=!position.unknownCost&&!position.unknownFee&&!position.unknownPurchaseValue&&!position.unknownIncomingValue;
   return { scopeId: position.scopeId, tokenAddress: position.tokenAddress, quantity: quantity.decimal(255), remainingCostUsd: remaining?.decimal() ?? null,
     investedUsd: position.unknownPurchaseValue?null:q(position.investedQ).decimal(), soldUsd:position.unknownSaleValue?null:q(position.soldQ).decimal(), incomingTransferCostUsd:position.unknownIncomingValue?null:q(position.incomingQ).decimal(), transferOutIncomeUsd:position.unknownOutgoingValue?null:q(position.outgoingQ).decimal(),
-    feesUsd:position.unknownFee?null:q(position.feesQ).decimal(), capitalUsd:position.unknownCost||position.unknownFee?null:q(position.capitalQ).decimal(), realizedProfitUsd: freshDecimal(position.realizedQ), valueUsd: value?.decimal() ?? (quantity.n === 0n ? '0' : null),
-    estimatedProfitUsd: quantity.n === 0n && complete ? freshDecimal(position.realizedQ) : profit?.decimal() ?? null,
-    roi: profit && q(position.capitalQ).n > 0n ? profit.div(q(position.capitalQ)).decimal() : null,
-    status: !costsKnown ? 'unknown_costs' : position.unknownFee ? 'unknown_fees' : value === null && quantity.n !== 0n ? 'quote_unavailable' : 'complete' };
+    feesUsd:position.unknownFee?null:q(position.feesQ).decimal(), capitalUsd:capitalKnown?q(position.capitalQ).decimal():null, realizedProfitUsd: freshDecimal(position.realizedQ), valueUsd: value?.decimal() ?? (quantity.n === 0n ? '0' : null),
+    estimatedProfitUsd: profit?.decimal() ?? null,
+    roi: profit && capitalKnown && q(position.capitalQ).n > 0n ? profit.div(q(position.capitalQ)).decimal() : null,
+    status: !costsKnown||position.realizedQ===null&&!position.unknownFee ? 'unknown_costs' : position.unknownFee ? 'unknown_fees' : value === null && quantity.n !== 0n ? 'quote_unavailable' : 'complete' };
 }
 
 type Row = Record<string, any>;
@@ -234,7 +273,7 @@ export function freshEventFromRow(row: Row): FreshFinancialEvent {
     kind: row.kind, quantity: row.quantity, amountUsd: row.amount_usd, feeUsd: row.fee_usd, feeKey: row.fee_key,
     counterparty: row.counterparty, transferKey: row.transfer_key, blockNumber: `${row.block_number}`, blockHash: row.block_hash,
     transactionHash: row.transaction_hash, transactionIndex: row.transaction_index, executionIndex: row.execution_index, logIndex: row.log_index,
-    occurredAt: new Date(row.occurred_at).toISOString(), canonical: row.canonical,...(row.acquisition_cost?{acquisitionCost:row.acquisition_cost}:{}),...(row.fee_attribution?{feeAttribution:row.fee_attribution}:{}),
+    occurredAt: new Date(row.occurred_at).toISOString(), canonical: row.canonical,...(row.acquisition_cost?.policy==='verified_airdrop_zero_cost_v1'?{airdropBasis:row.acquisition_cost}:row.acquisition_cost?{acquisitionCost:row.acquisition_cost}:{}),...(row.fee_attribution?{feeAttribution:row.fee_attribution}:{}),
     ...(row.quote_amount!=null?{quoteAddress:row.quote_address,quoteSymbol:row.quote_symbol,quoteAmount:row.quote_amount}:{}) };
 }
 export function freshScopeFromRow(row: Row): FreshScope {
@@ -253,9 +292,29 @@ export function freshLotFromRow(row: Row): FreshLot {
     acquiredEventId: row.acquired_event_id, acquiredBlock: `${row.acquired_block}`, acquiredTransactionIndex: row.acquired_transaction_index,
     acquiredExecutionIndex: row.acquired_execution_index, quantityQ: row.quantity_q, costQ: row.cost_q, feeKnown: row.fee_known };
 }
+/** Recover only the known components of an unknown lot, from its exact
+ * canonical acquisition and the fee actually charged to this same scope.
+ * No market lookups or new persisted lot value are involved. */
+export function hydrateFreshKnownLotCosts(lots:FreshLot[],sources:Row[]):FreshLot[]{
+ return lots.map(lot=>{
+  if(lot.costQ!==null&&lot.feeKnown)return lot;
+  const rows=sources.filter(r=>r.id===lot.acquiredEventId&&r.charged_scope_id===lot.scopeId),fail={...lot,knownCostQ:null};
+  if(rows.length!==1)return fail;const row=rows[0];
+  try{
+   const event=freshEventFromRow(row);validateFreshFinancialEvent(event);
+   if(event.canonical!==true||event.tokenAddress!==lot.tokenAddress||row.charged_token_address!==lot.tokenAddress||event.blockNumber!==lot.acquiredBlock||event.transactionIndex!==lot.acquiredTransactionIndex||event.executionIndex!==lot.acquiredExecutionIndex||q(lot.quantityQ).n<=0n||q(lot.quantityQ).compare(q(event.quantity))>0)return fail;
+   // A carried missing-inventory part names the outgoing source that created
+   // it. Its fee was a disposal fee, never an acquisition component.
+   if(event.kind==='transfer_out'||event.kind==='sell')return{...lot,knownCostQ:'0'};
+   if(!['buy','transfer_in'].includes(event.kind)||lot.feeKnown!==(row.charged_fee_q!==null))return fail;
+   const basis=event.kind==='transfer_in'&&event.airdropBasis?zero:nullable(event.amountUsd)??zero,fee=row.charged_fee_q===null?zero:positive(row.charged_fee_q);
+   return{...lot,knownCostQ:basis.add(fee).mul(q(lot.quantityQ)).div(q(event.quantity)).exact()};
+  }catch{return fail;}
+ });
+}
 const eventFingerprint = (event: FreshFinancialEvent) => createHash('sha256').update(JSON.stringify([event.id,event.executionKey,event.walletAddress,event.tokenAddress,event.kind,event.quantity,event.amountUsd,event.feeUsd,event.feeKey,event.counterparty,event.transferKey,
   event.blockNumber,event.blockHash,event.transactionHash,event.transactionIndex,event.executionIndex,event.logIndex,new Date(event.occurredAt).toISOString(),event.canonical!==false,
-  freshAcquisitionCostKey(event.acquisitionCost),event.feeAttribution?[event.feeAttribution.status,event.feeAttribution.tokenAddress??null,event.feeAttribution.contract??null,event.feeAttribution.selector??null,event.feeAttribution.nativeFeeWei,
+  freshAcquisitionCostKey(event.acquisitionCost),freshAirdropBasisKey(event.airdropBasis),event.feeAttribution?[event.feeAttribution.status,event.feeAttribution.tokenAddress??null,event.feeAttribution.contract??null,event.feeAttribution.selector??null,event.feeAttribution.nativeFeeWei,
     ...(event.feeAttribution.expensePolicy?[event.feeAttribution.expensePolicy,event.feeAttribution.batchExpenseNativeWei,event.feeAttribution.gasNativeWei]:[])]:null])).digest('hex');
 
 async function rollKolDay(client:PoolClient,wallet:string,day:string){await client.query(`UPDATE fresh.kols SET today_utc=$2,today_realized_q='0',today_known_realized_q='0',today_capital_q='0',today_volume_q='0',today_trade_count=0,today_buy_count=0,today_sell_count=0,today_token_count=0,today_unknown_count=0,
@@ -297,7 +356,7 @@ export async function applyFreshFinancialEvents(client: PoolClient, incoming: Fr
       block_number,block_hash,transaction_hash,transaction_index,execution_index,log_index,occurred_at,canonical,fee_attribution,quote_address,quote_symbol,quote_amount,acquisition_cost)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
     [event.id, event.executionKey, event.walletAddress, event.tokenAddress, event.kind, event.quantity, event.amountUsd, event.feeUsd, event.feeKey, event.counterparty, event.transferKey,
-      event.blockNumber, event.blockHash, event.transactionHash, event.transactionIndex, event.executionIndex, event.logIndex, event.occurredAt, event.canonical !== false,event.feeAttribution?JSON.stringify(event.feeAttribution):null,event.quoteAddress??null,event.quoteSymbol??null,event.quoteAmount??null,event.acquisitionCost?JSON.stringify(event.acquisitionCost):null]);
+      event.blockNumber, event.blockHash, event.transactionHash, event.transactionIndex, event.executionIndex, event.logIndex, event.occurredAt, event.canonical !== false,event.feeAttribution?JSON.stringify(event.feeAttribution):null,event.quoteAddress??null,event.quoteSymbol??null,event.quoteAmount??null,freshFinancialBasis(event)?JSON.stringify(freshFinancialBasis(event)):null]);
     if (saved.rowCount) inserted++;
     else {
       const prior = (await client.query('SELECT * FROM fresh.financial_events WHERE id=$1 OR execution_key=$2', [event.id, event.executionKey])).rows;
@@ -317,7 +376,10 @@ export async function applyFreshFinancialEvents(client: PoolClient, incoming: Fr
         const last = (await client.query('SELECT * FROM fresh.financial_events WHERE id=$1', [previous.lastEventId])).rows[0];
         if (last && freshEventOrder(freshEventFromRow(last), event) > 0) throw new Error('out_of_order_financial_event_requires_repair');
       }
-      const oldLots = event.tokenAddress ? (await client.query('SELECT * FROM fresh.open_lots WHERE scope_id=$1 AND token_address=$2', [scope.id, event.tokenAddress])).rows.map(freshLotFromRow) : [];
+      let oldLots = event.tokenAddress ? (await client.query('SELECT * FROM fresh.open_lots WHERE scope_id=$1 AND token_address=$2', [scope.id, event.tokenAddress])).rows.map(freshLotFromRow) : [];
+      const unknownAcquisitions=[...new Set(oldLots.filter(l=>l.costQ===null||!l.feeKnown).map(l=>l.acquiredEventId))];
+      if(unknownAcquisitions.length){const sources=(await client.query(`SELECT e.*,r.scope_id AS charged_scope_id,r.token_address AS charged_token_address,r.fee_q AS charged_fee_q
+        FROM fresh.financial_events e JOIN fresh.scope_event_results r ON r.event_id=e.id AND r.scope_id=$1 WHERE e.id=ANY($2::text[]) AND e.canonical`,[scope.id,unknownAcquisitions])).rows;oldLots=hydrateFreshKnownLotCosts(oldLots,sources);}
       const priorFees = event.feeKey ? (await client.query('SELECT fee_q FROM fresh.scope_event_results WHERE scope_id=$1 AND fee_key=$2 LIMIT 1', [scope.id, event.feeKey])).rows : [];
       if (priorFees.length && (event.feeUsd === null || priorFees[0].fee_q === null || q(priorFees[0].fee_q).compare(q(event.feeUsd)) !== 0)) throw new Error('conflicting_authenticated_fee');
       const internal = event.counterparty !== null && inScope(scope, { ...event, walletAddress: event.counterparty }) && event.kind.startsWith('transfer_');
@@ -335,8 +397,8 @@ export async function applyFreshFinancialEvents(client: PoolClient, incoming: Fr
         && !(await client.query(`SELECT 1 FROM fresh.scope_event_results WHERE scope_id=$1 AND token_address=$2 AND tokens_trade
           AND occurred_at >= ($3::date::timestamp AT TIME ZONE 'UTC') AND occurred_at < (($3::date+1)::timestamp AT TIME ZONE 'UTC') LIMIT 1`, [scope.id, event.tokenAddress, day])).rowCount;
       const r = output.result;
-      await client.query(`INSERT INTO fresh.scope_event_results(scope_id,event_id,token_address,realized_q,known_realized_q,capital_q,fee_q,fee_key,trade_count,volume_q,tokens_trade,occurred_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [r.scopeId, r.eventId, r.tokenAddress, r.realizedQ, r.knownRealizedQ, r.capitalQ, r.feeQ, r.feeKey, r.tradeCount, r.volumeQ, r.tokensTrade, r.occurredAt]);
+      await client.query(`INSERT INTO fresh.scope_event_results(scope_id,event_id,token_address,realized_q,known_realized_q,capital_q,fee_q,fee_key,trade_count,volume_q,tokens_trade,occurred_at,estimated_realized_q)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [r.scopeId, r.eventId, r.tokenAddress, r.realizedQ, r.knownRealizedQ, r.capitalQ, r.feeQ, r.feeKey, r.tradeCount, r.volumeQ, r.tokensTrade, r.occurredAt,r.realizedQ===null?r.estimatedRealizedQ??null:null]);
       await addFreshRollingKolResult(client,scope,event,r,now);
       if (event.kind === 'fee'&&event.tokenAddress===null) {
         const row = (await client.query('SELECT fee_only_realized_q,fee_only_fees_q FROM fresh.accounting_scopes WHERE id=$1 FOR UPDATE', [scope.id])).rows[0];
@@ -383,7 +445,7 @@ export async function applyFreshFinancialEvents(client: PoolClient, incoming: Fr
           isToday&&event.kind==='fee'&&r.realizedQ!==null?1:0,isToday&&event.kind==='fee'&&r.realizedQ===null?1:0,
           isToday&&event.kind==='fee'?add(kol.today_fee_only_q,q(r.feeQ??'0')):kol.today_fee_only_q]);
       }
-      if(event.tokenAddress&&(event.kind==='buy'||event.kind==='sell'))transferValuationSeeds.push({scopeId:scope.id,tokenAddress:event.tokenAddress,tradeEventId:event.id});
+      if(event.tokenAddress&&(event.kind==='buy'||event.kind==='sell'||event.kind==='transfer_out'&&!internal&&r.realizedQ===null))transferValuationSeeds.push({scopeId:scope.id,tokenAddress:event.tokenAddress,tradeEventId:event.id});
       applied++;
     }
     if (options.updateTokenCounters !== false && newPublicResult && event.tokenAddress && (event.kind === 'buy' || event.kind === 'sell')) {
@@ -415,13 +477,48 @@ export async function rolloverFreshUtcDay(client: PoolClient, now: string | Date
   return result.rowCount ?? 0;
 }
 
+/** A price/cost repair changes valuation, never movement identity or balances. */
+export function freshCostOnlyEventCorrection(before:FreshFinancialEvent,after:FreshFinancialEvent){
+ const keys=['id','executionKey','walletAddress','tokenAddress','kind','quantity','feeKey','counterparty','transferKey','blockNumber','blockHash','transactionHash','transactionIndex','executionIndex','logIndex','occurredAt']as const;
+ return before.canonical!==false&&after.canonical!==false&&keys.every(key=>before[key]===after[key])
+  &&!(before.acquisitionCost&&after.airdropBasis||before.airdropBasis&&after.acquisitionCost)
+  &&(!before.airdropBasis||freshAirdropBasisKey(before.airdropBasis)===freshAirdropBasisKey(after.airdropBasis))
+  &&(!after.airdropBasis||validFreshAirdropBasis(after)&&before.amountUsd===after.amountUsd);
+}
+/** Pure guard for a dated observation, not a new balance confirmation. */
+export function canCarryFreshCostOnlyBalance(before:any,after:any,scopeUnchanged:boolean){try{return scopeUnchanged&&before.balance_status==='matched'&&before.balance_quantity!==null&&before.balance_block!==null&&before.balance_hash!==null&&before.balance_checked_at!==null
+ &&before.last_event_at!==null&&after.last_event_at!==null&&before.scope_id===after.scope_id&&before.token_address===after.token_address&&before.last_event_id!==null&&before.last_event_id===after.last_event_id
+ &&new Date(before.last_event_at).getTime()===new Date(after.last_event_at).getTime()&&Number.isFinite(new Date(before.balance_checked_at).getTime())
+ &&new Date(before.balance_checked_at).getTime()>=new Date(before.last_event_at).getTime()&&before.last_event_block!==null&&after.last_event_block!==null
+ &&before.last_event_block===after.last_event_block&&before.last_event_hash===after.last_event_hash&&BigInt(before.balance_block)>=BigInt(after.last_event_block)
+ &&q(before.quantity_q).compare(q(after.quantity_q))===0&&q(before.balance_quantity).compare(q(before.quantity_q))===0;}catch{return false;}}
+const balanceScopeContext=async(client:PoolClient,id:string)=>{await client.query('SAVEPOINT fresh_cost_balance_context');try{await client.query('SELECT w.address FROM fresh.wallets w JOIN fresh.accounting_scopes s ON w.address=ANY(s.wallet_addresses)WHERE s.id=$1 ORDER BY w.address FOR SHARE OF w NOWAIT',[id]);await client.query('SELECT j.wallet_address FROM public.journal_wallets j JOIN fresh.accounting_scopes s ON j.user_id::text=s.account_id AND j.wallet_address=ANY(s.wallet_addresses)WHERE s.id=$1 ORDER BY j.wallet_address FOR SHARE OF j NOWAIT',[id]);const context=(await client.query(`SELECT s.id,s.kind,s.account_id,s.wallet_addresses,s.starts_at,s.starts_block::text,s.active,
+ COALESCE((SELECT jsonb_agg(jsonb_build_array(w.address,w.active,w.monitoring_from_block,w.monitoring_to_block)ORDER BY w.address)FROM fresh.wallets w WHERE w.address=ANY(s.wallet_addresses)),'[]'::jsonb) AS wallets,
+ COALESCE((SELECT jsonb_agg(jsonb_build_array(j.wallet_address,j.activity_from,j.registration_block,j.revision)ORDER BY j.wallet_address)FROM public.journal_wallets j WHERE j.user_id::text=s.account_id AND j.wallet_address=ANY(s.wallet_addresses)),'[]'::jsonb) AS members
+ FROM fresh.accounting_scopes s WHERE s.id=$1 FOR SHARE NOWAIT`,[id])).rows[0];await client.query('RELEASE SAVEPOINT fresh_cost_balance_context');return context;}catch(error){await client.query('ROLLBACK TO SAVEPOINT fresh_cost_balance_context');await client.query('RELEASE SAVEPOINT fresh_cost_balance_context');if((error as{code?:string}).code==='55P03')return null;throw error;}};
+const balancePositionRows=async(client:PoolClient,id:string)=>(await client.query(`SELECT p.*,last.block_number::text AS last_event_block,last.block_hash AS last_event_hash FROM fresh.positions p JOIN fresh.financial_events last ON last.id=p.last_event_id AND last.canonical WHERE p.scope_id=$1`,[id])).rows;
+async function carryCostOnlyBalances(client:PoolClient,id:string,oldRows:any[],oldContext:any){
+ const currentContext=await balanceScopeContext(client,id);if(!oldContext?.active||!currentContext?.active||JSON.stringify(oldContext)!==JSON.stringify(currentContext))return 0;
+ const current=await balancePositionRows(client,id),carried=oldRows.flatMap(old=>{const row=current.find(p=>p.token_address===old.token_address);return row&&canCarryFreshCostOnlyBalance(old,row,true)?[{token:row.token_address,quantity:row.quantity_q,last:row.last_event_id,lastAt:new Date(row.last_event_at).toISOString(),balance:old.balance_quantity,block:String(old.balance_block),hash:old.balance_hash,checkedAt:new Date(old.balance_checked_at).toISOString()}]:[];});if(!carried.length)return 0;
+ // Current dependency/readiness predicates stay in their shared readers. This
+ // restores only an already authenticated observation at its ORIGINAL block.
+ const result=await client.query(`UPDATE fresh.positions p SET balance_status='matched',balance_quantity=b.balance,balance_block=b.block::bigint,balance_hash=b.hash,balance_checked_at=b.checked_at
+ FROM jsonb_to_recordset($2::jsonb)AS b(token text,quantity text,last text,last_at timestamptz,balance text,block text,hash text,checked_at timestamptz),fresh.accounting_scopes s
+ WHERE p.scope_id=$1 AND s.id=p.scope_id AND s.active AND p.token_address=b.token AND p.quantity_q=b.quantity AND p.last_event_id=b.last AND p.last_event_at=b.last_at
+ AND EXISTS(SELECT 1 FROM fresh.financial_events e WHERE e.id=p.last_event_id AND e.canonical AND e.block_number<=b.block::bigint AND e.occurred_at<=b.checked_at)
+ AND EXISTS(SELECT 1 FROM fresh.recent_blocks h WHERE h.block_number=b.block::bigint AND h.block_hash=b.hash)
+ AND b.block::bigint<=${freshScopeTokenCaptureSql('s','p.token_address')}`, [id,JSON.stringify(carried.map(v=>({token:v.token,quantity:v.quantity,last:v.last,last_at:v.lastAt,balance:v.balance,block:v.block,hash:v.hash,checked_at:v.checkedAt})))]);return result.rowCount??0;
+}
+
 /** Exceptional repair only: replay compact retained facts, never RPC or archived responses. */
-export async function rebuildFreshScopesAfterReorg(client: PoolClient, scopeIds: string[], now: string | Date | number = Date.now()) {
+export async function rebuildFreshScopesAfterReorg(client: PoolClient, scopeIds: string[], now: string | Date | number = Date.now(), options:{preserveMatchedBalancesForCostOnly?:boolean}={}) {
   const scopes = (await client.query('SELECT * FROM fresh.accounting_scopes WHERE id=ANY($1::text[]) ORDER BY id', [scopeIds])).rows.map(freshScopeFromRow);
   for(const scope of scopes)await hydrateFreshScopeTokenHistory(client,scope,{lock:true});
   for (const scope of scopes) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`fresh-scope:${scope.id}`]);
   const affectedTokens = new Set<string>();
   for (const scope of scopes) {
+    const oldBalanceContext=options.preserveMatchedBalancesForCostOnly?await balanceScopeContext(client,scope.id):null;
+    const oldBalances=options.preserveMatchedBalancesForCostOnly?await balancePositionRows(client,scope.id):[];
     for (const row of (await client.query('SELECT token_address FROM fresh.positions WHERE scope_id=$1', [scope.id])).rows) affectedTokens.add(row.token_address);
     await client.query('DELETE FROM fresh.open_lots WHERE scope_id=$1', [scope.id]);
     await client.query('DELETE FROM fresh.positions WHERE scope_id=$1', [scope.id]);
@@ -434,6 +531,7 @@ export async function rebuildFreshScopesAfterReorg(client: PoolClient, scopeIds:
     for (const event of events) if (event.tokenAddress) affectedTokens.add(event.tokenAddress);
     await applyFreshFinancialEvents(client, events, { scopes: [scope], now, updateTokenCounters: false });
     for(const event of events)if(!freshEventAccountingEligible(event)&&inScope(scope,event))await recordUnallocatedFee(client,event,[scope],freshUtcDay(now));
+    if(options.preserveMatchedBalancesForCostOnly)await carryCostOnlyBalances(client,scope.id,oldBalances,oldBalanceContext);
     if(scope.kind==='kol')await rebuildFreshRollingKolTotals(client,scope.walletAddresses[0],now);
   }
   for (const token of affectedTokens) {

@@ -9,7 +9,7 @@ function fixture(){
  const sync=(n:number,index:number,reserve1=100n*10n**18n):FreshLog=>({address:pair,...abi.encodeEventLog('Sync',[5n*10n**6n,reserve1]),blockNumber:hex(n),blockHash:h(n),transactionIndex:hex(index),transactionHash:h(100000+n+index),logIndex:'0x1'});
  const logs=[sync(9990,1),sync(10000,2),sync(10000,5,999n*10n**18n)],calls:string[]=[],ranges:number[]=[],codes=new Map([[PCS_V2_FACTORY,factoryCode],[pair,pairCode]]);
  const rpc=(async(method:string,params:any[])=>{calls.push(method);if(method==='eth_chainId')return'0x38';if(method==='eth_getCode'){expect(params[1]).toEqual({blockHash:anchor.hash,requireCanonical:true});return codes.get(params[0]);}
-  if(method==='eth_getLogs'){const from=Number(BigInt(params[0].fromBlock));ranges.push(from);expect([9937,9745,8977,5905]).toContain(from);expect(params[0]).toEqual({address:pair,fromBlock:hex(from),toBlock:hex(10000),topics:[abi.getEvent('Sync')!.topicHash]});return logs.filter(log=>Number(BigInt(log.blockNumber))>=from);}throw Error('unapproved_rpc');})as Rpc;
+  if(method==='eth_getLogs'){const from=Number(BigInt(params[0].fromBlock));ranges.push(from);expect([9937,9745,8977,5905,0]).toContain(from);expect(params[0]).toEqual({address:pair,fromBlock:hex(from),toBlock:hex(10000),topics:[abi.getEvent('Sync')!.topicHash]});return logs.filter(log=>Number(BigInt(log.blockNumber))>=from);}throw Error('unapproved_rpc');})as Rpc;
  return{logs,calls,ranges,codes,sync,options:{rpc,quoteAddress:quote,target,anchor,transactionIndex:3,canonicalHash:async(n:number)=>h(n)}};
 }
 describe('historical authenticated raw quote/native conversion',()=>{
@@ -57,6 +57,16 @@ describe('historical authenticated raw quote/native conversion',()=>{
   expect(g.ranges).toEqual([9937,9745]);expect(older.fromBlock).toBe(9745);
   expect(await recoverFreshHistoricalPoolNativeQuote({...g.options,prior:older,rpc:(async()=>{throw Error('no_rpc');})as Rpc})).toEqual(older);
   await expect(recoverFreshHistoricalPoolNativeQuote({...g.options,prior:{...older,fromBlock:9744}})).rejects.toThrow('historical_pool_quote_prior_invalid');
-  const missing=fixture();missing.logs.length=0;await expect(recoverFreshHistoricalPoolNativeQuote(missing.options)).rejects.toThrow('flap_quote_sync_unavailable');expect(missing.ranges).toEqual([9937,9745,8977,5905]);
+  const missing=fixture();missing.logs.length=0;await expect(recoverFreshHistoricalPoolNativeQuote(missing.options)).rejects.toThrow('flap_quote_sync_unavailable');expect(missing.ranges).toEqual([9937,9745,8977,5905,0]);
+ });
+ it('recovers an old quiet-pool Sync through one final bounded window and retains its canonical proof',async()=>{
+  const f=fixture(),target={...f.options.target,number:300000,hash:h(300000)},anchor={...f.options.anchor,number:300020,hash:h(300020)},logs=[f.sync(110000,1)],ranges:number[]=[];
+  const rpc=(async(method:string,params:any[])=>{if(method==='eth_chainId')return'0x38';if(method==='eth_getCode'){expect(params[1]).toEqual({blockHash:anchor.hash,requireCanonical:true});return f.codes.get(params[0]);}
+   if(method==='eth_getLogs'){const from=Number(BigInt(params[0].fromBlock));ranges.push(from);expect(params[0]).toEqual({address:pair,fromBlock:hex(from),toBlock:hex(target.number),topics:[abi.getEvent('Sync')!.topicHash]});return logs.filter(l=>Number(BigInt(l.blockNumber))>=from);}throw Error('unapproved_rpc');})as Rpc;
+  const options={...f.options,rpc,target,anchor},proof=await recoverFreshHistoricalPoolNativeQuote(options);
+  expect(ranges).toEqual([299937,299745,298977,295905,37857]);expect(proof).toMatchObject({fromBlock:37857,quoteRaw:'5000000',nativeRaw:String(100n*10n**18n),pool:{lastSync:{blockNumber:hex(110000)}}});
+  expect(await recoverFreshHistoricalPoolNativeQuote({...options,prior:proof,rpc:(async()=>{throw Error('no_rpc');})as Rpc})).toEqual(proof);
+  await expect(recoverFreshHistoricalPoolNativeQuote({...options,prior:proof,canonicalHash:async n=>h(n===110000?9:n)})).rejects.toThrow('historical_pool_quote_noncanonical');
+  logs.splice(0,1,...Array(513).fill(f.sync(110000,1)));await expect(recoverFreshHistoricalPoolNativeQuote(options)).rejects.toThrow('flap_quote_work_bounds');
  });
 });

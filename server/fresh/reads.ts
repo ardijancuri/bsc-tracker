@@ -6,11 +6,18 @@ import { applyFreshEvent, freshDecimal, freshQuantity, freshEventFromRow, freshL
 import type { FreshFinancialEvent, FreshLot, FreshScope } from '../../shared/freshAccounting.js';
 import { freshPositionReceiptRelevantSql,freshPendingTradeScopeSql,freshPendingTradeInScopeSql } from './positionDependencies.js';
 import { freshPositionWalletGapSql } from './balanceScheduling.js';
-import { freshStoredKolRollingMetrics, rankFreshStoredLeaderboard, freshRollingLeaderboardPendingSql, freshPublicTokenDiscoveryPendingSql } from './leaderboard.js';
+import { freshStoredKolRollingMetrics, rankFreshStoredLeaderboard, freshRankedLeaderboardValue, freshRollingLeaderboardPendingSql, freshPublicTokenDiscoveryPendingSql } from './leaderboard.js';
 import {freshTradeBnbEquivalent} from './tradeBnbDisplay.js';
 import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeTokenBoundarySql,GANG_TOKEN_ADDRESS} from './tracking.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
+import{FRESH_REALIZED_POLICY,freshRealizedPolicyReadySql}from'./realizedPolicy.js';
+import{freshRealizedGapIrrelevantSql}from'./realizedGapCoverage.js';
+import{freshRealizedEstimateReadySql,FRESH_REALIZED_ESTIMATE_POLICY}from'./estimatedProjectionPolicy.js';
+import{readFreshPositionEstimates,freshPositionEstimateValues}from'./positionEstimate.js';
+import type{NodeCostEstimate}from'../../shared/nodeCostEstimate.js';
+import type{Rpc}from'../rpc.js';
+import{verifyFreshEstimatedMovement}from'./estimatedMovement.js';
 
 const iso = (v: unknown) => v == null ? null : new Date(v as string).toISOString();
 const fingerprint = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -19,7 +26,7 @@ const typedScope=(scope:any):FreshScope=>({id:scope.id,kind:scope.kind,walletAdd
 const tokenHistory=(scope:any,token:string)=>scope.tokenHistoryStarts?.[token] as NonNullable<FreshScope['tokenHistoryStarts']>[string]|undefined;
 const tokenFrom=(scope:any,token:string)=>tokenHistory(scope,token)?.startsBlock??String(scope.starts_block);
 const tokenFromTime=(scope:any,token:string)=>tokenHistory(scope,token)?.startsAt??iso(scope.starts_at);
-const preparationPending=(reasons:string[])=>reasons.length>0&&reasons.every(reason=>['balance_pending','decoding_pending','registration_pending','quote_unavailable'].includes(reason));
+const preparationPending=(reasons:string[])=>reasons.length>0&&reasons.every(reason=>['accounting_policy_pending','balance_pending','decoding_pending','registration_pending','quote_unavailable'].includes(reason));
 export const publicScope = (wallet: string) => `kol:${wallet}`;
 export const tokenIdentity = (r: Record<string, any>) => {
   const day=r.utc_date??(r.today_utc instanceof Date?r.today_utc.toISOString().slice(0,10):String(r.today_utc??'').slice(0,10)),today=day===freshUtcDay();
@@ -43,23 +50,28 @@ export function tradeIdentity(r: Record<string, any>): KolTokenTrade {
     tokenSymbol:r.symbol ?? null,tokenName:r.name ?? null,tokenLogoUrl:r.logo_data ? `/api/token-image/${r.token_address}` : r.logo_url ?? null,
     side:r.kind ?? r.side,tokenAmount:quantity,quoteSymbol:r.quote_symbol ?? null,quoteTokenAddress:r.quote_address??null,quoteAmount:freshQuantity(r.quote_amount ?? null),
     ...(bnbEquivalent!==null?{bnbEquivalentAmount:bnbEquivalent}:{}),
-    ...(r.acquisition_cost?{acquisitionCost:r.acquisition_cost}:{}),
+    ...(r.acquisition_cost?.policy==='actual_quote_acquisition_cost_v1'?{acquisitionCost:r.acquisition_cost}:{}),
     amountUsd:amount,priceUsd:r.price_usd ?? (amount && quantity && q(quantity).n !== 0n ? q(amount).div(q(quantity)).decimal() : null),
     marketCapUsd:r.market_cap_usd??null,timestamp:iso(r.occurred_at ?? r.timestamp)!,source:r.provenance?'mixed':'node',blockNumber:String(r.block_number),transactionIndex:r.transaction_index,
     valuationStatus:amount === null ? 'unpriced' : 'valued',accountingStatus:status,...(r.accounting_reason?{accountingReason:r.accounting_reason}:{}),
-    realizedProfitUsd:status==='ready'?freshDecimal(r.event_realized_q ?? null):null,cumulativeRealizedProfitUsd:status==='ready'?freshDecimal(r.cumulative_realized_q??null):null };
+    realizedProfitUsd:status==='ready'&&r.accounting_policy_ready!==false?freshDecimal(r.event_realized_q ?? null):null,cumulativeRealizedProfitUsd:status==='ready'&&r.accounting_policy_ready!==false?freshDecimal(r.cumulative_realized_q??null):null };
 }
 
 /** Read paths touch current rows and bounded pages. Financial history is replayed only for an explicitly requested export. */
-export function createFreshReads(db: Pool, now = Date.now, transactional=false) {
+export function createFreshReads(db: Pool, now = Date.now, transactional=false,options:{estimateRpc?:Rpc}={}) {
   async function hydrateReadScope(scope:any){const typed=await hydrateFreshScopeTokenHistory(db,typedScope(scope));return{...scope,tokenHistoryStarts:typed.tokenHistoryStarts};}
   async function boundary() { return (await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'`)).rows[0] ?? null; }
   async function state() { const rows = (await db.query(`SELECT key,block_number::text,block_hash,updated_at,value FROM fresh.checkpoints WHERE key IN('start','capture','decode','quote','utc_day','health:token_discovery')`)).rows;
     return Object.fromEntries(rows.map(row=>[row.key,row])); }
   async function leaderboard() {
     const at=now(),states=await state(),day=freshUtcDay(at),windowStart=new Date(at-86_400_000).toISOString(),windowEnd=new Date(at).toISOString();
-    const result=await db.query(`SELECT k.*,k.today_utc::text AS utc_date,p.address,p.display_name,p.avatar_url,p.twitter,p.creator_claimed,p.creator_bio,
+    const result=await db.query(`SELECT k.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS realized_estimate_policy_ready,
+      EXISTS(SELECT 1 FROM fresh.checkpoints estimate_capture JOIN fresh.recent_blocks estimate_header
+        ON estimate_header.block_number=estimate_capture.block_number AND estimate_header.block_hash=estimate_capture.block_hash WHERE estimate_capture.key='capture') AS estimate_capture_canonical,
+      k.today_utc::text AS utc_date,p.address,p.display_name,p.avatar_url,p.twitter,p.creator_claimed,p.creator_bio,
       w.decode_gap_from_block,w.decode_gap_reason,
+      (w.decode_gap_from_block IS NOT NULL AND NOT EXISTS(SELECT 1 FROM fresh.accounting_scopes gap_scope
+        WHERE gap_scope.id='kol:'||w.address AND ${freshRealizedGapIrrelevantSql('gap_scope','w')})) AS rolling_decode_gap_pending,
       EXISTS(SELECT 1 FROM fresh.financial_events imported JOIN fresh.accounting_scopes imported_scope ON imported_scope.id='kol:'||k.wallet_address AND imported_scope.active
         WHERE imported.wallet_address=k.wallet_address AND imported.canonical AND imported.provenance IS NOT NULL
         AND ${freshScopeEventSql('imported','imported_scope')}) AS imported_provenance,
@@ -73,24 +85,31 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
         valuedTransfer=stored.valuedTransferCount,excludedTransfer=stored.excludedTransferCount,
         valuedFee=stored.valuedFeeCount,excludedFee=stored.excludedFeeCount;
       const asOf=stored.updatedAt ?? iso(states.decode?.updated_at ?? states.start?.updated_at) ?? `${day}T00:00:00.000Z`;
-      return { ...kolIdentity(r),realizedProfitUsd:realized,knownRealizedProfitUsd:known,unrealizedProfitUsd:null,updatedAt:stored.updatedAt,
+      const estimated=stored.estimatedRealizedProfitUsd,estimate=estimated===null?null:{version:1 as const,policy:FRESH_REALIZED_ESTIMATE_POLICY,basis:'recorded_facts' as const,
+        asOf,windowStart,windowEnd,reasons:[...stored.reasons,Number(r.rolling_unknown_count)>0?'unknown_inputs_omitted':'recorded_activity_incomplete'],affectedSellCount:excludedSell,
+        missingCostCount:null,missingProceedsCount:null,missingFeeCount:null,unvaluedFeeOnlyCount:excludedFee};
+      const item={ ...kolIdentity(r),realizedProfitUsd:realized,estimatedRealizedProfitUsd:estimated,
+        pnlQuality:stored.complete?'exact' as const:estimated!==null?'estimated' as const:'unavailable' as const,
+        knownRealizedProfitUsd:known,unrealizedProfitUsd:null,updatedAt:stored.updatedAt,
         tradeCount24h:stored.tradeCount,buyCount24h:current?r.rolling_buy_count:0,sellCount24h:current?r.rolling_sell_count:0,
         unpricedSellCount24h:excludedSell,valuedSellCount:valuedSell,excludedSellCount:excludedSell,
-        accounting:{version:1,policy:'kollens_fifo_v1',period:'24h' as const,walletAddress:r.wallet_address,windowStart,windowEnd,
-          snapshotId:fingerprint([r.wallet_address,'24h',r.revision,Boolean(r.imported_provenance)]),asOf,source:r.imported_provenance?'mixed':'node',coveredThroughBlock:states.decode?.block_number ?? null,
+        accounting:{version:1 as const,policy:'kollens_fifo_v1' as const,realizedPolicy:FRESH_REALIZED_POLICY,period:'24h' as const,walletAddress:r.wallet_address,windowStart,windowEnd,
+          snapshotId:fingerprint([r.wallet_address,'24h',r.revision,Boolean(r.imported_provenance),'estimated_realized_v1',r.realized_estimate_policy_ready,estimated,stored.complete?'exact':estimated!==null?'estimated':'unavailable']),asOf,source:r.imported_provenance?'mixed' as const:'node' as const,coveredThroughBlock:states.decode?.block_number ?? null,
           coveredThroughHash:states.decode?.block_hash ?? null,complete:stored.complete,reasons:stored.reasons,
-          realizedProfitUsd:realized,knownRealizedProfitUsd:known,valuedSellCount:valuedSell,
+          ...(r.decode_gap_from_block!=null?{historicalGap:{fromBlock:String(r.decode_gap_from_block),status:'unresolved' as const,currentPeriodIsolated:r.rolling_decode_gap_pending===false}}:{}),
+          realizedProfitUsd:realized,estimatedRealizedProfitUsd:estimated,estimate,knownRealizedProfitUsd:known,valuedSellCount:valuedSell,
           excludedSellCount:excludedSell,valuedTransferOutCount:valuedTransfer,excludedTransferOutCount:excludedTransfer,
           valuedFeeCount:valuedFee,excludedFeeCount:excludedFee,feeOnlyFeesUsd:current?freshDecimal(r.rolling_fee_only_q):'0',exclusions:{feeOnly:freshFeeExclusions(current?{
             unallocated_fee_count:r.rolling_unallocated_fee_count,unallocated_fee_q:r.rolling_unallocated_fee_q,
             unallocated_fee_unknown_count:r.rolling_unallocated_fee_unknown_count,unattributed_fee_count:r.rolling_unattributed_fee_count}:undefined)}},
-        period:'24h' as const,windowStart,windowEnd,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingStatus:stored.complete?'ready':r.decoding_pending?'refreshing':'pending',
+        period:'24h' as const,windowStart,windowEnd,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingStatus:stored.complete?'ready':estimated!==null?'estimated':r.decoding_pending?'refreshing':'pending',
         ...(r.decoding_pending?{refreshStatus:'pending' as const}:{}), };
+      return{...item,rankingProfitUsd:freshRankedLeaderboardValue(item)};
     });
-    return {items:rankFreshStoredLeaderboard(items),windowStart,windowEnd,period:'24h' as const,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingPolicy:'kollens_fifo_v1'};
+    return {items:rankFreshStoredLeaderboard(items),windowStart,windowEnd,period:'24h' as const,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingPolicy:'kollens_fifo_v1',realizedPolicy:FRESH_REALIZED_POLICY};
   }
   async function positionRows(scopeId:string,tokens?:string[]) {
-    const rows=await db.query(`SELECT p.*,t.*,p.token_address AS address,p.revision AS position_revision,last.block_number AS last_event_block,${freshScopeTokenCaptureSql('s','p.token_address')} AS effective_capture_block,
+    const rows=await db.query(`SELECT p.*,t.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS estimate_policy_ready,p.token_address AS address,p.revision AS position_revision,last.block_number AS last_event_block,${freshScopeTokenCaptureSql('s','p.token_address')} AS effective_capture_block,
         EXISTS(SELECT 1 FROM fresh.financial_events imported WHERE imported.token_address=p.token_address AND imported.wallet_address=ANY(s.wallet_addresses)
           AND imported.canonical AND imported.provenance IS NOT NULL AND ${freshScopeEventSql('imported','s')}) AS imported_provenance,
         ${freshPositionWalletGapSql("(SELECT block_number FROM fresh.checkpoints WHERE key='capture')")} AS wallet_gap,
@@ -98,13 +117,15 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
         EXISTS(SELECT 1 FROM fresh.pending_trades precision WHERE precision.token_address=p.token_address
           AND ${freshPendingTradeInScopeSql('precision','s')}) AS pending_precision,
         (EXISTS(SELECT 1 FROM fresh.recent_evidence e LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.decoder_status<>'done'
-          AND ${freshPositionReceiptRelevantSql('e','p.token_address')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending
+          AND ${freshPositionReceiptRelevantSql('e','p.token_address','s')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending
         FROM fresh.positions p JOIN fresh.tokens t ON t.address=p.token_address JOIN fresh.accounting_scopes s ON s.id=p.scope_id
         LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id WHERE p.scope_id=$1 AND ${freshTrackedTokenSql('t')}
         AND (t.launch_status<>'preexisting' OR s.kind<>'kol' OR (${freshPublicTokenSql('t')})) ${tokens?'AND p.token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const lots=await db.query(`SELECT * FROM fresh.open_lots WHERE scope_id=$1 ${tokens?'AND token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const scopes=await db.query(`SELECT * FROM fresh.accounting_scopes WHERE id=$1 AND active`,[scopeId]),states=await state();
     let scope=scopes.rows[0]; if(!scope)return [];if(rows.rows.some(row=>row.token_address===GANG_TOKEN_ADDRESS))scope=await hydrateReadScope(scope);
+    const estimateTokens=rows.rows.filter(r=>r.estimate_policy_ready&&(r.unknown_cost||r.unknown_fee||r.realized_q===null||r.decoding_pending||r.wallet_gap||r.balance_status!=='matched')).map(r=>r.token_address);
+    const estimates=scope.kind==='kol'&&estimateTokens.length?await readFreshPositionEstimates(db,scopeId,estimateTokens,lots.rows.filter(l=>estimateTokens.includes(l.token_address)).map(freshLotFromRow)):new Map();
     const lotsByToken=new Map<string,FreshLot[]>();for(const row of lots.rows){const list=lotsByToken.get(row.token_address)??[];list.push(freshLotFromRow(row));lotsByToken.set(row.token_address,list);}
     return rows.rows.map(r=>{
       const owned=lotsByToken.get(r.token_address)??[];
@@ -115,15 +136,19 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
       const balanceReady=r.balance_status==='matched'&&r.balance_quantity!=null&&q(r.balance_quantity).compare(q(position.quantityQ))===0&&r.balance_block!=null&&/^0x[\da-f]{64}$/.test(r.balance_hash??'')&&r.last_event_block!=null
         &&BigInt(r.balance_block)>=BigInt(r.last_event_block)&&states.capture?.block_number!=null&&BigInt(r.balance_block)<=BigInt(r.effective_capture_block??states.capture.block_number)
         &&Date.parse(r.balance_checked_at)>=Date.parse(r.last_event_at??0)&&!r.wallet_gap&&!r.decoding_pending&&!r.registration_pending;
-      const realizedComplete=balanceReady&&!position.unknownCost&&!position.unknownFee&&position.realizedQ!==null;
-      const financialReasons=[...(r.pending_precision?['historical_precision_unavailable']:[]),...(position.unknownCost?['unknown_costs']:[]),...(position.unknownFee?['unknown_fees']:[]),...(balanceReady?[]:[r.wallet_gap?'wallet_decode_gap':r.registration_pending?'registration_pending':r.decoding_pending?'decoding_pending':r.balance_status==='mismatch'?'balance_mismatch':'balance_pending'])];
-      const endingReady=realizedComplete&&summary.status==='complete',endingReasons=[...financialReasons,...(summary.status==='quote_unavailable'?['quote_unavailable']:[])];
+      // Unsold lots can have unknown basis without changing already verified
+      // sale results. Export still needs the remaining inventory's actual cost.
+      const realizedComplete=r.accounting_policy_ready!==false&&balanceReady&&!position.unknownFee&&position.realizedQ!==null;
+      const financialReasons=[...(r.accounting_policy_ready===false?['accounting_policy_pending']:[]),...(r.pending_precision?['historical_precision_unavailable']:[]),...(position.realizedQ===null&&!position.unknownFee?['unknown_costs']:[]),...(position.unknownFee?['unknown_fees']:[]),...(balanceReady?[]:[r.wallet_gap?'wallet_decode_gap':r.registration_pending?'registration_pending':r.decoding_pending?'decoding_pending':r.balance_status==='mismatch'?'balance_mismatch':'balance_pending'])];
+      const endingReady=realizedComplete&&summary.status==='complete',endingReasons=[...financialReasons,...(summary.status==='unknown_costs'&&!financialReasons.includes('unknown_costs')?['unknown_costs']:[]),...(summary.status==='quote_unavailable'?['quote_unavailable']:[])];
       const history=tokenHistory(scope,r.token_address),snapshotId=fingerprint([scopeId,r.token_address,r.position_revision,r.observed_hash,r.observed_at,scope.correction_epoch,scope.revision,r.balance_block,r.balance_hash,r.balance_quantity,r.balance_status,r.wallet_gap,r.decoding_pending,r.registration_pending,Boolean(r.imported_provenance),history?.permissionDigest]);
-      const snapshot={version:2 as const,snapshotId,source:(r.imported_provenance?'mixed':'node')as'mixed'|'node',scope:(scope.kind==='kol'?'public':'portfolio') as 'public'|'portfolio',
+      const snapshot:{estimate?:NodeCostEstimate}&{version:2;snapshotId:string;source:'mixed'|'node';scope:'public'|'portfolio';asOf:string;historyFingerprint:string;historyFrom:string|null;coveredThroughBlock:string|null;valuationBlock:string|null;valuationHash:string|null;complete:boolean;reasons:string[];historyBoundary:any;refreshStatus?:'pending';refreshReason?:string}={version:2 as const,snapshotId:fingerprint([snapshotId,'token_cost_estimate_v1',estimates.get(r.token_address)??null]),source:(r.imported_provenance?'mixed':'node')as'mixed'|'node',scope:(scope.kind==='kol'?'public':'portfolio') as 'public'|'portfolio',
         asOf:iso(r.balance_checked_at)??iso(states.decode?.updated_at)??new Date(now()).toISOString(),historyFingerprint:fingerprint([scopeId,r.token_address,scope.correction_epoch,r.position_revision,Boolean(r.imported_provenance),history?.permissionDigest]),
         historyFrom:tokenFromTime(scope,r.token_address),coveredThroughBlock:balanceReady?String(r.balance_block):states.decode?.block_number??null,valuationBlock:r.observed_block==null?null:String(r.observed_block),
         valuationHash:r.observed_hash??null,complete:realizedComplete,reasons:financialReasons,historyBoundary:scope.kind==='kol'?(history?'token_creation' as const:r.launch_status==='preexisting'?'wallet_discovery' as const:'token_creation' as const):'membership_added' as const,
-        ...(realizedComplete&&!endingReady?{refreshStatus:'pending' as const,refreshReason:'quote_unavailable'}:{})};
+        ...(realizedComplete&&!endingReady?{refreshStatus:'pending' as const,refreshReason:endingReasons[0]??'quote_unavailable'}:{})};
+      const storedEstimate=estimates.get(r.token_address);
+      if(!endingReady&&storedEstimate&&r.accounting_policy_ready&&r.estimate_policy_ready&&!r.pending_precision){snapshot.estimate={version:1,policy:'omit_unknown_costs_v1',basis:'recorded_facts',snapshotId:snapshot.snapshotId,historyFingerprint:snapshot.historyFingerprint,asOf:snapshot.asOf,reasons:endingReasons.length?endingReasons:['unknown_costs'],...freshPositionEstimateValues(position,storedEstimate,summary.valueUsd),missingCostCount:null,missingFeeCount:null,missingProceedsCount:null};}
       return {r,position,lots:owned,summary,snapshot,scope,balanceReady,realizedComplete,endingReady,endingReasons};
     });
   }
@@ -146,7 +171,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
   async function summaries(wallet:string,tokens:string[],scopeId=publicScope(wallet)):Promise<Record<string,NodeAccountingSummary>> {
     const rows=await positionRows(scopeId,tokens),result:Record<string,NodeAccountingSummary>=Object.fromEntries(rows.map(({r,summary:s,snapshot,scope,realizedComplete,endingReady,endingReasons,balanceReady})=>[r.token_address,{
       tracking:{version:1,source:'fresh',fromBlock:tokenFrom(scope,r.token_address),utcDay:freshUtcDay(now())},walletAddress:wallet,quotedAt:iso(r.observed_at),
-      realizedStatus:realizedComplete?'ready':preparationPending(snapshot.reasons)?'pending':'unavailable',
+      realizedStatus:realizedComplete?'ready':snapshot.estimate?'estimated':preparationPending(snapshot.reasons)?'pending':'unavailable',
       tokenAddress:r.token_address,snapshot,status:endingReady?'ready':preparationPending(endingReasons)?'pending':'unavailable',position:s.quantity==='0'?'closed':'open',realizedProfitUsd:realizedComplete?s.realizedProfitUsd:null,
       estimatedProfitUsd:endingReady?s.estimatedProfitUsd:null,roi:endingReady?s.roi:null,remainingTokenAmount:s.quantity,valueUsd:balanceReady?s.valueUsd:null,...(endingReady?{}:{reason:endingReasons[0]}) }]));
     const missing=tokens.filter(token=>!result[token]);if(missing.length){const pending=await pendingPositionRows(scopeId,missing);if(pending.length){const states=await state();
@@ -169,7 +194,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
     if(options.window==='24h'||options.windowEnd){values.push(end);where.push(`e.occurred_at<=$${values.length}::timestamptz`);}
     if(options.cursor){try{const cursor=JSON.parse(Buffer.from(options.cursor,'base64url').toString());if(typeof cursor.ts==='string'&&Number.isFinite(Date.parse(cursor.ts))&&typeof cursor.id==='string'){values.push(cursor.ts,cursor.id);where.push(`(e.occurred_at,e.id)<($${values.length-1}::timestamptz,$${values.length})`);}}catch{}}
     values.push(Math.min(options.limit??50,100)+1);
-    const rows=(await db.query(`SELECT e.*,t.name,t.symbol,t.logo_url,t.logo_data,p.display_name,p.avatar_url,p.twitter,
+    const rows=(await db.query(`SELECT e.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,t.name,t.symbol,t.logo_url,t.logo_data,p.display_name,p.avatar_url,p.twitter,
       r.realized_q AS event_realized_q FROM fresh.visible_trades e JOIN fresh.tokens t ON t.address=e.token_address
       ${options.scopeId?'JOIN fresh.accounting_scopes s ON s.id=$1 LEFT JOIN fresh.scope_event_results r ON r.event_id=e.id AND r.scope_id=s.id':'LEFT JOIN fresh.scope_event_results r ON r.event_id=e.id AND r.scope_id=\'kol:\'||e.wallet_address'}
       LEFT JOIN published_kols p ON p.address=e.wallet_address WHERE ${where.join(' AND ')} ORDER BY e.occurred_at DESC,e.id DESC LIMIT $${values.length}`,values)).rows;
@@ -212,9 +237,15 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
       AND e.block_number<=${freshScopeTokenCaptureSql('s','e.token_address')}
       AND(s.kind<>'kol' OR (${freshPublicTradeScopeSql('e')}))`,[scopeId,token])).rows[0];
     const complete=row.endingReady,reason=row.endingReasons[0]??s.status,pending=preparationPending(row.endingReasons);
-    const profitPosition:KolTokenProfitPosition|undefined=s.capitalUsd===null?undefined:{status:s.quantity==='0'?'closed':'open',estimatedProfitUsd:complete?s.estimatedProfitUsd:null,estimatedRoi:complete?s.roi:null,
+    const estimate=row.snapshot.estimate;
+    if(replay&&estimate&&!row.balanceReady&&options.estimateRpc&&!row.r.wallet_gap&&!row.r.registration_pending&&!row.r.pending_precision&&row.r.balance_status!=='mismatch'){
+      const states=await state(),capture=states.capture;
+      if(capture?.block_number&&capture.block_hash){const proof=await verifyFreshEstimatedMovement(db,options.estimateRpc,{scopeId,wallet,token,decimals:row.r.decimals,quantityQ:row.position.quantityQ,block:String(capture.block_number),hash:capture.block_hash});
+        if(proof){row.balanceReady=true;Object.assign(row.r,{balance_block:proof.block,balance_hash:proof.hash,balance_quantity:proof.quantity,balance_checked_at:proof.checkedAt});row.snapshot.coveredThroughBlock=proof.block;}}
+    }
+    const profitPosition:KolTokenProfitPosition|undefined=s.capitalUsd===null&&!estimate?undefined:{status:s.quantity==='0'?'closed':'open',estimatedProfitUsd:complete?s.estimatedProfitUsd:estimate?.totalProfitUsd??null,estimatedRoi:complete?s.roi:null,
       unrealizedProfitUsd:complete&&s.valueUsd&&s.remainingCostUsd?q(s.valueUsd).sub(q(s.remainingCostUsd)).decimal():null,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,
-      feeInclusiveCostUsd:s.capitalUsd,priceUsd:row.r.valuation_status==='no_liquidity'?null:row.r.price_usd,pricedAt:iso(row.r.observed_at),valuationSource:'node',
+      feeInclusiveCostUsd:s.capitalUsd??estimate!.knownCapitalUsd,priceUsd:row.r.valuation_status==='no_liquidity'?null:row.r.price_usd,pricedAt:iso(row.r.observed_at),valuationSource:'node',
       ...(s.investedUsd!==null&&s.soldUsd!==null&&s.transferOutIncomeUsd!==null&&s.feesUsd!==null?{cashFlow:{investedUsd:s.investedUsd,soldUsd:s.soldUsd,transferOutIncomeUsd:s.transferOutIncomeUsd,feesUsd:s.feesUsd}}:{}),...(complete?{}:{reason})};
     const result:KolTokenActivity={kol:identity?{address:wallet,name:identity.display_name,avatarUrl:identity.avatar_url,twitter:identity.twitter,source:'node',lastSeenAt:iso(row.r.last_event_at)}:
       {address:wallet,name:null,avatarUrl:null,twitter:null,source:'node',lastSeenAt:iso(row.r.last_event_at)},
@@ -224,28 +255,32 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
         avgBoughtMcapUsd:null,avgSoldMcapUsd:null,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,buyCount:counts.buys,sellCount:counts.sells,
         valuedBuyCount:counts.valued_buys,valuedSellCount:counts.valued_sells,excludedSellCount:counts.sells-counts.valued_sells,unpricedTradeCount:counts.unpriced??(complete?0:1),firstTradeAt:iso(counts.first_at),lastTradeAt:iso(counts.last_at),
         status:s.quantity==='0'?'closed':'open',profitBasis:'observed_fifo'},accountingSnapshot:row.snapshot,
-      realizedAccounting:{version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:row.realizedComplete?'ready':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
+      realizedAccounting:{version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:row.realizedComplete?'ready':estimate?'estimated':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
         realizedProfitUsd:row.realizedComplete?s.realizedProfitUsd:null,coverage:{transactionsComplete:row.balanceReady,balanceMatched:row.balanceReady,verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',...(complete?{}:{reason})},
         ...(profitPosition?{position:profitPosition}:{})},
       coverage:{source:'indexed',indexedTradeCount:counts.buys+counts.sells,returnedTradeCount:page.items.length,complete:row.realizedComplete&&counts.buys+counts.sells<=100,historyLimit:100,costsIncluded:false},generatedAt:new Date(now()).toISOString()};
     Object.assign(result,{__freshRevision:{scopeId,correctionEpoch:String(row.scope.correction_epoch),membershipRevision:String(row.scope.revision),...(tokenHistory(row.scope,token)?{historyPermissionDigest:tokenHistory(row.scope,token)!.permissionDigest}:{})}});
     result.tracking={version:1,source:'fresh',fromBlock:tokenFrom(row.scope,token),utcDay:freshUtcDay(now()),realizedComplete:row.realizedComplete};
     if(replay){
-      if(!row.realizedComplete){result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
+      const estimatedReplay=!!estimate&&row.balanceReady&&estimate.totalProfitUsd!==null;
+      if(!row.realizedComplete&&!estimatedReplay){result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
         inventoryBlockNumber:row.r.balance_block==null?null:String(row.r.balance_block),inventoryBlockHash:row.r.balance_hash??null,events:[],final:null,
         coverage:{transactionsComplete:false,balanceMatched:row.balanceReady,exactFinal:false,verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',reason}};return result;}
       const events=(await db.query(`SELECT e.* FROM fresh.financial_events e JOIN fresh.scope_event_results r ON r.event_id=e.id JOIN fresh.tokens t ON t.address=e.token_address JOIN fresh.accounting_scopes s ON s.id=r.scope_id AND s.active WHERE r.scope_id=$1 AND r.token_address=$2 AND e.wallet_address=ANY(s.wallet_addresses) AND ${freshScopeEventSql('e','s')} AND e.canonical AND ${freshTrackedEventSql('e','t')} ORDER BY e.block_number,e.transaction_index,e.execution_index,e.log_index NULLS FIRST,e.id`,[scopeId,token])).rows;
       const scope:FreshScope={...typedScope(row.scope),tokenHistoryStarts:row.scope.tokenHistoryStarts};
-      let position=null as ReturnType<typeof freshPositionFromRow>|null,lots:FreshLot[]=[];const frames=[],feeKeys=new Set<string>(),profits=new Map<string,{event:string|null;cumulative:string|null}>();
+      let position=null as ReturnType<typeof freshPositionFromRow>|null,lots:FreshLot[]=[],estimatedRealized=FreshRational.fromStored('0');const frames=[],feeKeys=new Set<string>(),profits=new Map<string,{event:string|null;cumulative:string|null}>();
       for(const e of events){const event=freshEventFromRow(e);
         const feeKey=event.feeKey?`${event.walletAddress}:${event.feeKey}`:null;
         const applied=applyFreshEvent(scope,event,{position,lots,feeAlreadyApplied:feeKey!==null&&feeKeys.has(feeKey)});if(feeKey)feeKeys.add(feeKey);position=applied.position;lots=applied.lots;if(!position)continue;
-        const marked=summarizeFreshPosition(position,lots,null);profits.set(e.id,{event:applied.result.realizedQ,cumulative:position.realizedQ});frames.push({id:e.id,tradeId:['buy','sell'].includes(e.kind)?e.id:undefined,kind:e.kind,txHash:e.transaction_hash,timestamp:iso(e.occurred_at)!,blockNumber:String(e.block_number),transactionIndex:e.transaction_index,logIndex:e.log_index,
+        estimatedRealized=estimatedRealized.add(FreshRational.fromStored(applied.result.realizedQ??applied.result.estimatedRealizedQ??'0'));
+        const marked=summarizeFreshPosition(position,lots,null);if(estimatedReplay){marked.realizedProfitUsd=estimatedRealized.decimal();marked.remainingCostUsd=lots.reduce((n,l)=>n.add(FreshRational.fromStored(l.costQ??l.knownCostQ??'0')),FreshRational.fromStored('0')).decimal();marked.investedUsd=FreshRational.fromStored(position.investedQ).decimal();marked.soldUsd=FreshRational.fromStored(position.soldQ).decimal();marked.feesUsd=FreshRational.fromStored(position.feesQ).decimal();marked.capitalUsd=FreshRational.fromStored(position.capitalQ).decimal();}
+        profits.set(e.id,{event:applied.result.realizedQ,cumulative:position.realizedQ});frames.push({id:e.id,tradeId:['buy','sell'].includes(e.kind)?e.id:undefined,kind:e.kind,txHash:e.transaction_hash,timestamp:iso(e.occurred_at)!,blockNumber:String(e.block_number),transactionIndex:e.transaction_index,logIndex:e.log_index,
           remainingTokenAmount:marked.quantity,remainingCostBasisUsd:marked.remainingCostUsd,cumulativeRealizedProfitUsd:marked.realizedProfitUsd,investedUsd:marked.investedUsd,soldUsd:marked.soldUsd,transferOutIncomeUsd:marked.transferOutIncomeUsd,feesUsd:marked.feesUsd,feeInclusiveCostUsd:marked.capitalUsd});}
       const last=frames.at(-1),final=last?{...last,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,cumulativeRealizedProfitUsd:s.realizedProfitUsd,investedUsd:s.investedUsd,soldUsd:s.soldUsd,transferOutIncomeUsd:s.transferOutIncomeUsd,feesUsd:s.feesUsd,feeInclusiveCostUsd:s.capitalUsd,reportedProfitUsd:s.estimatedProfitUsd,reportedRoi:s.roi,priceUsd:s.quantity==='0'?null:row.r.price_usd,timestamp:s.quantity==='0'?iso(row.r.last_event_at)!:iso(row.r.observed_at)??row.snapshot.asOf}:null;
-      result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:complete?'ready':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
+      if(estimatedReplay&&final){if(estimatedRealized.compare(q(estimate.realizedProfitUsd))!==0&&estimatedRealized.decimal()!==estimate.realizedProfitUsd)throw Error('estimated_replay_projection_mismatch');Object.assign(final,{...last,remainingTokenAmount:s.quantity,remainingCostBasisUsd:estimate.knownRemainingCostUsd,cumulativeRealizedProfitUsd:estimate.realizedProfitUsd,feeInclusiveCostUsd:estimate.knownCapitalUsd,reportedProfitUsd:estimate.totalProfitUsd,reportedRoi:null,priceUsd:s.quantity==='0'?null:row.r.price_usd,timestamp:s.quantity==='0'?iso(row.r.last_event_at)!:iso(row.r.observed_at)??row.snapshot.asOf});}
+      result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:complete?'ready':estimatedReplay?'estimated':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
         inventoryBlockNumber:row.r.balance_block==null?null:String(row.r.balance_block),inventoryBlockHash:row.r.balance_hash??null,events:frames,final,
-        coverage:{transactionsComplete:row.balanceReady,balanceMatched:row.balanceReady,exactFinal:complete,verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',...(complete?{}:{reason})}};
+        coverage:{transactionsComplete:row.balanceReady,balanceMatched:row.balanceReady,exactFinal:complete,...(estimatedReplay?{estimatedFinal:true}:{}),verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',...(complete?{}:{reason})}};
       const eventsById=new Map(events.map(event=>[event.id,event]));
       result.inventory={version:1,events:frames.map(frame=>({...frame,tokenAmount:freshQuantity(eventsById.get(frame.id)!.quantity)})),
         coverage:{complete:row.balanceReady,reconciled:row.balanceReady,fromBlock:tokenFrom(row.scope,token),toBlock:row.r.balance_block==null?null:String(row.r.balance_block),blockHash:row.r.balance_hash??null,
@@ -262,7 +297,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false) 
   const wrapped={...service};
   for(const key of ['leaderboard','positionRows','summaries','trades','activity'] as const){
     (wrapped as unknown as Record<string,(...values:unknown[])=>Promise<unknown>>)[key]=async(...args:unknown[])=>{const client=await db.connect();try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const inner:typeof service=createFreshReads(client as unknown as Pool,now,true);const value=await (inner[key] as (...values:unknown[])=>Promise<unknown>)(...args);await client.query('COMMIT');return value;
+      const inner:typeof service=createFreshReads(client as unknown as Pool,now,true,options);const value=await (inner[key] as (...values:unknown[])=>Promise<unknown>)(...args);await client.query('COMMIT');return value;
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}};
   }
   return wrapped;

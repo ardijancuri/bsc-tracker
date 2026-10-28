@@ -25,7 +25,7 @@ describe('preexisting token accounting read boundary',()=>{
    if(sql.includes("key IN('start','capture'"))return{rows:[{key:'capture',block_number:'103',block_hash:hash}]};
    throw Error('Unexpected read fixture SQL');
   });
-  return{reads:createFreshReads({query}as unknown as Pool,()=>now,true),query,scopeId};
+  return{reads:createFreshReads({query}as unknown as Pool,()=>now,true),query,scopeId,row};
  }
  it('requires a genuine public swap before exposing a preexisting public position and never invents its original costs',async()=>{
   const{reads,query,scopeId}=fixture('kol'),summary=(await reads.summaries(wallet,[GANG_TOKEN_ADDRESS],scopeId))[GANG_TOKEN_ADDRESS];
@@ -39,6 +39,19 @@ describe('preexisting token accounting read boundary',()=>{
  it('keeps private Portfolio admission separate from public publication and its membership boundary unchanged',async()=>{
   const{reads,scopeId}=fixture('portfolio_wallet'),summary=(await reads.summaries(wallet,[GANG_TOKEN_ADDRESS],scopeId))[GANG_TOKEN_ADDRESS];
   expect(summary).toMatchObject({realizedProfitUsd:null,estimatedProfitUsd:null,roi:null,snapshot:{scope:'portfolio',historyBoundary:'membership_added',complete:false}});
+ });
+ it('shows fully known realized sales even when unsold incoming lots still have unknown acquisition costs',async()=>{
+  const{reads,scopeId,row,query}=fixture('kol');(row as any).realized_q='7';
+  const summary=(await reads.summaries(wallet,[GANG_TOKEN_ADDRESS],scopeId))[GANG_TOKEN_ADDRESS];
+  expect(summary).toMatchObject({realizedStatus:'ready',realizedProfitUsd:'7',estimatedProfitUsd:null,roi:null,reason:'unknown_costs',
+   snapshot:{complete:true,reasons:[],refreshStatus:'pending',refreshReason:'unknown_costs'}});
+  expect(query.mock.calls.every(([sql])=>sql.startsWith('SELECT'))).toBe(true);
+  expect(query.mock.calls.some(([sql])=>sql.includes('SELECT e.* FROM fresh.financial_events'))).toBe(false);
+ });
+ it('does not expose old position totals while the explicit policy migration is incomplete',async()=>{
+  const{reads,scopeId,row}=fixture('kol');Object.assign(row,{realized_q:'7',accounting_policy_ready:false});
+  const summary=(await reads.summaries(wallet,[GANG_TOKEN_ADDRESS],scopeId))[GANG_TOKEN_ADDRESS];
+  expect(summary.realizedProfitUsd).toBeNull();expect(summary.snapshot?.complete).toBe(false);expect(summary.snapshot?.reasons).toContain('accounting_policy_pending');
  });
  it('truthfully labels a shared accounting snapshot mixed when its canonical own-book facts include imported evidence',async()=>{
   const{reads,scopeId,query}=fixture('kol',true),summary=(await reads.summaries(wallet,[GANG_TOKEN_ADDRESS],scopeId))[GANG_TOKEN_ADDRESS];

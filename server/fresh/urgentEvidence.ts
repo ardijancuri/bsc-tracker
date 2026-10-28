@@ -5,13 +5,16 @@ import { Interface } from 'ethers';
 import type { Pool } from 'pg';
 import type { Rpc } from '../rpc.js';
 import { transferTopic } from '../swap.js';
-import { WBNB } from '../launchpad.js';
+import { WBNB,PCS_V2_FACTORY,FOUR_HELPER,FLAP_PORTAL,fourInterface,flapInterface } from '../launchpad.js';
 import { decodeFreshEvidence, encodeFreshEvidence, freshAddress, freshInteger, type FreshCapturedReceipt } from './capture.js';
 import { createFreshStateEvidenceRpc, type FreshStateReadEvidence } from './stateEvidence.js';
 import { freshCurrentQuote, freshQuoteUsd, type FreshPriceBlock } from './pricing.js';
 import {readFreshV4MarketIdentities} from './v4Discovery.js';
 import{createFreshCurrentMarketCanonicalHash}from'./currentMarketAnchor.js';
 import{readFreshTokenAdmission}from'./tracking.js';
+import{FRESH_3XD_NATIVE_CURVE_AUDITS,recoverFreshHistorical3XdCurvePrice,type FreshHistorical3XdCurvePrice}from'./historical3XdCurvePrice.js';
+import{freshPoolNativePair}from'./currentPoolQuote.js';
+import{recoverFreshRetainedPoolNativeQuote,type FreshRetainedPoolNativeQuote}from'./retainedPoolQuote.js';
 
 export const FRESH_URGENT_EVIDENCE_WINDOW_MS = 45_000;
 export const FRESH_URGENT_EVIDENCE_MAX_RPC = 80;
@@ -21,6 +24,20 @@ const directTokenAbi = new Interface(['function transfer(address to,uint256 amou
 const topicAddress = (value: string | undefined) => value && /^0x0{24}[\da-f]{40}$/i.test(value) ? `0x${value.slice(-40).toLowerCase()}` : null;
 const identity = (entry: FreshCapturedReceipt) => JSON.stringify({ transaction: entry.transaction, receipt: entry.receipt,
   wallets: [...entry.wallets].sort(), observedAt: entry.observedAt, historicalWallets: entry.historicalWallets });
+
+// Controller responses select only a bounded original-block capture target.
+// They never grant a peg, token precision or a historical financial value.
+function capturedControllerQuotes(tokens:readonly string[],source:FreshStateReadEvidence|undefined){
+ const quotes=new Set<string>();
+ for(const token of tokens)for(const[to,iface,method]of[[FOUR_HELPER,fourInterface,'getTokenInfo'],[FLAP_PORTAL,flapInterface,'getTokenV8Safe']]as const)try{
+  const call=source?.calls.find(c=>c.to===to&&c.data===iface.encodeFunctionData(method,[token]));if(!call)continue;
+  const decoded=iface.decodeFunctionResult(method,call.result);if(iface.encodeFunctionResult(method,[...decoded])!==call.result)continue;
+  const value=method==='getTokenInfo'?decoded:decoded[0],active=method==='getTokenInfo'?[1n,2n].includes(BigInt(value.version)):[1n,4n].includes(BigInt(value.status));
+  const quote=freshAddress(String(method==='getTokenInfo'?value.quote:value.quoteTokenAddress));
+  if(active&&quote&&BigInt(quote)!==0n&&quote!==token&&quote!==WBNB)quotes.add(quote);
+ }catch{/* Unsupported controller responses do not select capture targets. */}
+ return[...quotes];
+}
 
 /** Wallet flows come first, then intermediate assets actually present in this
  * transaction's transfers. No symbol, token row or public metadata provider
@@ -68,19 +85,54 @@ export function mergeFreshUrgentEvidence(selected: FreshCapturedReceipt, latest:
   return encodeFreshEvidence({ ...latest, stateEvidence: combined });
 }
 
-export async function persistFreshUrgentEvidence(database: Pool, selected: FreshCapturedReceipt, proof: FreshStateReadEvidence) {
+export async function persistFreshUrgentEvidence(database: Pool, selected: FreshCapturedReceipt, proof: FreshStateReadEvidence, curves:FreshHistorical3XdCurvePrice[] = [],retainedQuotes:FreshRetainedPoolNativeQuote[] = []) {
   const client = await database.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(73621941)');
     const number = Number(freshInteger(selected.receipt.blockNumber)), hash = selected.receipt.blockHash.toLowerCase();
-    const canonical = (await client.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE', [number])).rows[0];
+    const canonical = (await client.query('SELECT block_hash,occurred_at FROM fresh.recent_blocks WHERE block_number=$1 FOR SHARE', [number])).rows[0];
     if (canonical?.block_hash !== hash) { await client.query('ROLLBACK'); return false; }
     const row = (await client.query('SELECT payload,wallet_addresses FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2 FOR UPDATE', [selected.transaction.hash.toLowerCase(), hash])).rows[0];
     if (!row) { await client.query('ROLLBACK'); return false; }
     const latest = decodeFreshEvidence(row.payload);
     if (!Array.isArray(row.wallet_addresses) || [...row.wallet_addresses].sort().join(',') !== [...latest.wallets].sort().join(',')) throw Error('urgent_wallet_context_changed');
-    const payload = mergeFreshUrgentEvidence(selected, latest, proof);
+    let payload = mergeFreshUrgentEvidence(selected, latest, proof);
+    if(curves.length){
+      if(curves.length>4||Buffer.byteLength(JSON.stringify(curves))>256*1024)throw Error('urgent_curve_capacity');
+      const merged=payload?decodeFreshEvidence(payload):latest,target={number,hash,timestamp:new Date(canonical.occurred_at).toISOString()},old=merged.recoveryEvidence;
+      if(old&&(old.version!==1||JSON.stringify(old.target)!==JSON.stringify(target)||Buffer.byteLength(JSON.stringify(old))>256*1024))throw Error('urgent_curve_context_changed');
+      const prior=old?.threeXdCurvePrices??[];if(!Array.isArray(prior)||prior.length>4)throw Error('urgent_curve_capacity');const values=[...prior];
+      for(const curve of curves){
+        if(JSON.stringify(curve.target)!==JSON.stringify(target))throw Error('urgent_curve_context_changed');
+        if(!merged.stateEvidence?.calls.some(c=>c.to===curve.tokenAddress&&c.data===abi.encodeFunctionData('decimals')&&c.result===abi.encodeFunctionResult('decimals',[18])))throw Error('urgent_curve_missing_precision');
+        await recoverFreshHistorical3XdCurvePrice({rpc:(async()=>{throw Error('urgent_curve_missing_proof');})as Rpc,tokenAddress:curve.tokenAddress,poolAddress:curve.poolAddress,target,
+          verifiedMetadata:{address:curve.tokenAddress,name:null,symbol:null,decimals:18,supplyRaw:null,block:target},canonicalHash:async n=>n===number?hash:null,prior:curve});
+        if(!freshUrgentTokenTargets(selected).includes(curve.tokenAddress))throw Error('urgent_curve_token_context_changed');
+        for(const call of curve.state.calls)if(!merged.stateEvidence?.calls.some(c=>c.to===call.to&&c.data===call.data&&c.result===call.result))throw Error('urgent_curve_missing_original_state');
+        const match=values.find(p=>p.tokenAddress===curve.tokenAddress&&p.poolAddress===curve.poolAddress);
+        if(match&&JSON.stringify(match)!==JSON.stringify(curve))throw Error('urgent_curve_proof_conflict');if(!match)values.push(curve);
+      }
+      if(values.length>4)throw Error('urgent_curve_capacity');
+      const recovery={...(old??{version:1 as const,target,metadata:{},quotes:[],pools:[]}),threeXdCurvePrices:values};
+      if(Buffer.byteLength(JSON.stringify(recovery))>256*1024)throw Error('urgent_curve_capacity');
+      if(JSON.stringify(prior)!==JSON.stringify(values))payload=encodeFreshEvidence({...merged,recoveryEvidence:recovery});
+    }
+    if(retainedQuotes.length){
+      const merged=payload?decodeFreshEvidence(payload):latest,target={number,hash,timestamp:new Date(canonical.occurred_at).toISOString()},old=merged.recoveryEvidence;
+      if(retainedQuotes.length>4||old&&(old.version!==1||JSON.stringify(old.target)!==JSON.stringify(target)))throw Error('urgent_quote_context_changed');
+      const prior=old?.retainedNativeQuotes??[];if(!Array.isArray(prior)||prior.length>4)throw Error('urgent_quote_capacity');const values=[...prior];
+      const tokens=freshUrgentTokenTargets(selected),allowed=new Set([...tokens,...capturedControllerQuotes(tokens,merged.stateEvidence)]);
+      for(const quote of retainedQuotes){
+        if(!allowed.has(quote.quoteAddress))throw Error('urgent_quote_token_context_changed');
+        await recoverFreshRetainedPoolNativeQuote({rpc:(async()=>{throw Error('urgent_quote_missing_proof');})as Rpc,quoteAddress:quote.quoteAddress,target,
+          canonicalHash:async n=>n===number?hash:null,source:merged.stateEvidence,prior:quote});
+        const existing=values.find(p=>p.quoteAddress===quote.quoteAddress);if(existing&&JSON.stringify(existing)!==JSON.stringify(quote))throw Error('urgent_quote_proof_conflict');if(!existing)values.push(quote);
+      }
+      const recovery={...(old??{version:1 as const,target,metadata:{},quotes:[],pools:[]}),retainedNativeQuotes:values};
+      if(values.length>4||Buffer.byteLength(JSON.stringify(recovery))>256*1024)throw Error('urgent_quote_capacity');
+      if(JSON.stringify(prior)!==JSON.stringify(values))payload=encodeFreshEvidence({...merged,recoveryEvidence:recovery});
+    }
     if (payload) await client.query('UPDATE fresh.recent_evidence SET payload=$3 WHERE tx_hash=$1 AND block_hash=$2', [selected.transaction.hash.toLowerCase(), hash, payload]);
     await client.query('COMMIT'); return Boolean(payload);
   } catch (error) { await client.query('ROLLBACK'); throw error; }
@@ -101,9 +153,11 @@ export function createFreshUrgentEvidenceCapture(database: Pool, nodeRpc: Rpc) {
     [new Date(now.getTime() - FRESH_URGENT_EVIDENCE_WINDOW_MS), new Date(now.getTime() + 5_000), 32]);
     const blockTimes = new Map(selected.rows.map(row => [row.block_hash, new Date(row.occurred_at).getTime()]));
     let contextChoice:{hash:string;number:number;wallet:string;tx:string}|undefined;
+    const curveCodeTargets=new Set<string>();
+    const quoteChainBlocks=new Set<string>();
     const withinWindow = (params: unknown[],method='eth_call') => {
       const elapsed = Math.max(0, performance.now() - started), requestBlock = params[1] as { blockHash?: string } | undefined;
-      const hash=method==='eth_getBlockByNumber'&&contextChoice&&params[0]==='0x'+contextChoice.number.toString(16)&&params[1]===true?contextChoice.hash:requestBlock?.blockHash;
+      const hash=method==='eth_chainId'? [...quoteChainBlocks].find(hash=>{const time=blockTimes.get(hash);return time!==undefined&&time>=now.getTime()+elapsed-FRESH_URGENT_EVIDENCE_WINDOW_MS;}):method==='eth_getBlockByNumber'&&contextChoice&&params[0]==='0x'+contextChoice.number.toString(16)&&params[1]===true?contextChoice.hash:requestBlock?.blockHash;
       const time = hash ? blockTimes.get(hash) : undefined;
       return elapsed <= FRESH_URGENT_EVIDENCE_MAX_PASS_MS && time !== undefined
         && time >= now.getTime() + elapsed - FRESH_URGENT_EVIDENCE_WINDOW_MS && time <= now.getTime() + elapsed + 5_000;
@@ -118,7 +172,8 @@ export function createFreshUrgentEvidenceCapture(database: Pool, nodeRpc: Rpc) {
     const waiters: (() => void)[] = [];
     const boundedRpc: Rpc = async <T>(method: string, params: unknown[]): Promise<T> => {
       if (options.signal?.aborted) throw Error('urgent_evidence_aborted');
-      const contextAllowed=contextChoice&&(method==='eth_getBlockByNumber'&&params.length===2&&params[0]==='0x'+contextChoice.number.toString(16)&&params[1]===true||method==='eth_getCode'&&params.length===2&&[contextChoice.wallet,FRESH_SELF_CALL_DELEGATE].includes(String(params[0]))&&Object.keys((params[1]as any)??{}).sort().join(',')==='blockHash,requireCanonical'&&(params[1]as any)?.blockHash===contextChoice.hash&&(params[1]as any)?.requireCanonical===true);
+      const curveCodeAllowed=method==='eth_getCode'&&params.length===2&&Object.keys((params[1]as any)??{}).sort().join(',')==='blockHash,requireCanonical'&&(params[1]as any)?.requireCanonical===true&&curveCodeTargets.has(String(params[0])+':'+(params[1]as any)?.blockHash);
+      const contextAllowed=curveCodeAllowed||method==='eth_chainId'&&params.length===0&&quoteChainBlocks.size>0||contextChoice&&(method==='eth_getBlockByNumber'&&params.length===2&&params[0]==='0x'+contextChoice.number.toString(16)&&params[1]===true||method==='eth_getCode'&&params.length===2&&[contextChoice.wallet,FRESH_SELF_CALL_DELEGATE].includes(String(params[0]))&&Object.keys((params[1]as any)??{}).sort().join(',')==='blockHash,requireCanonical'&&(params[1]as any)?.blockHash===contextChoice.hash&&(params[1]as any)?.requireCanonical===true);
       if (method !== 'eth_call'&&!contextAllowed || !withinWindow(params,method)) throw Error('urgent_evidence_window_expired');
       const key = JSON.stringify([method, params]);
       let pending = wire.get(key);
@@ -191,6 +246,43 @@ export function createFreshUrgentEvidenceCapture(database: Pool, nodeRpc: Rpc) {
         if (options.signal?.aborted || performance.now() - started > FRESH_URGENT_EVIDENCE_MAX_PASS_MS) return;
         const admitted=await Promise.all([...targets].sort().map(async token=>({token,admission:await readFreshTokenAdmission(database,token,{blockNumber:block.number})})));
         const eligible=admitted.find(candidate=>candidate.admission!==null);
+        // Capture raw quote/native state before the generic valuation path.
+        // That path's state-only recorder intentionally rejects chain/code
+        // requests, so it cannot preserve generic conversion on its own. Only
+        // the fixed factory and exact derived pair receive code permission.
+        if(eligible){
+          await Promise.allSettled([[FOUR_HELPER,fourInterface,'getTokenInfo'],[FLAP_PORTAL,flapInterface,'getTokenV8Safe']].map(([to,iface,method])=>savingRpc('eth_call',[
+            {to:to as string,data:(iface as Interface).encodeFunctionData(method as string,[eligible.token])},{blockHash:block.hash,requireCanonical:true}])));
+          const quoteTargets=[...new Set([...capturedControllerQuotes([eligible.token],state.snapshot()),eligible.token,...targets])].filter(t=>t!==WBNB).slice(0,4);
+          for(const quoteAddress of quoteTargets)try{
+            if(options.signal?.aborted||performance.now()-started>FRESH_URGENT_EVIDENCE_MAX_PASS_MS)break;
+            const existing=entry.recoveryEvidence?.retainedNativeQuotes?.find(p=>p.quoteAddress===quoteAddress);
+            if(existing)continue;
+            const pair=freshPoolNativePair(quoteAddress);curveCodeTargets.add(PCS_V2_FACTORY+':'+block.hash);curveCodeTargets.add(pair+':'+block.hash);quoteChainBlocks.add(block.hash);
+            const quote=await recoverFreshRetainedPoolNativeQuote({rpc:(async<T>(method:string,p:unknown[])=>method==='eth_call'?savingRpc<T>(method,p):boundedRpc<T>(method,p))as Rpc,
+              quoteAddress,target:block,canonicalHash:async n=>n===block.number?(await database.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[n])).rows[0]?.block_hash??null:null});
+            const raw=state.snapshot();if(raw&&await persistFreshUrgentEvidence(database,entry,raw,[],[quote]))saved++;
+          }catch{unavailable++;}
+        }
+        // Preserve exact native-curve state before pruning. Registry lookups
+        // only choose bounded evidence reads; the complete historical runtime
+        // and every binding are authenticated again by the shared verifier.
+        for(const candidate of admitted.filter(c=>c.admission?.kind==='new_launch'&&c.admission.fact.protocol==='evm_creation').slice(0,4)){
+          if(options.signal?.aborted||performance.now()-started>FRESH_URGENT_EVIDENCE_MAX_PASS_MS)break;
+          for(const audit of FRESH_3XD_NATIVE_CURVE_AUDITS)try{
+            const at={blockHash:block.hash,requireCanonical:true},data='0x3cf28b5a'+candidate.token.slice(2).padStart(64,'0'),registry=await savingRpc<string>('eth_call',[{to:audit.factory,data},at]);
+            if(typeof registry!=='string'||!/^0x(?:[a-f0-9]{64}){3,256}$/.test(registry)||registry.slice(2,66)!==candidate.token.slice(2).padStart(64,'0')||!/^0{24}[a-f0-9]{40}$/.test(registry.slice(66,130))||!/^0{24}[a-f0-9]{40}$/.test(registry.slice(130,194)))continue;
+            const pool='0x'+registry.slice(90,130),creator='0x'+registry.slice(154,194);if(BigInt(pool)===0n||BigInt(creator)===0n||pool===candidate.token)continue;
+            const precision=await savingRpc<string>('eth_call',[{to:candidate.token,data:abi.encodeFunctionData('decimals')},at]);if(precision!==abi.encodeFunctionResult('decimals',[18]))continue;
+            curveCodeTargets.add(pool+':'+block.hash);
+            const curve=await recoverFreshHistorical3XdCurvePrice({rpc:(async<T>(method:string,params:unknown[])=>method==='eth_getCode'?boundedRpc<T>(method,params):savingRpc<T>(method,params))as Rpc,
+              tokenAddress:candidate.token,poolAddress:pool,target:block,verifiedMetadata:{address:candidate.token,name:null,symbol:null,decimals:18,supplyRaw:null,block},source:state.snapshot(),
+              canonicalHash:async n=>n===block.number?(await database.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[n])).rows[0]?.block_hash??null:null});
+            if(curve.factory!==audit.factory)throw Error('urgent_curve_factory_conflict');
+            const raw=state.snapshot();if(raw&&await persistFreshUrgentEvidence(database,entry,raw,[curve]))saved++;
+            break;
+          }catch{unavailable++;}
+        }
         // Optional valuation starts only after every selected receipt's urgent
         // metadata/feed work has settled and successful siblings are durable.
         if (eligible && !options.signal?.aborted) {

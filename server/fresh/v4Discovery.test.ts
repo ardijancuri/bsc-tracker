@@ -4,6 +4,7 @@ import type { Rpc } from '../rpc.js';
 import type { FreshBlock, FreshLog, FreshReceipt } from './capture.js';
 import { FRESH_UNISWAP_V4_BSC_MANAGER as manager, FRESH_UNISWAP_V4_INITIALIZE_TOPIC as topic, freshStockwavePoolId, stockwavePoolManagerInterface } from './stockwaveMarket.js';
 import { collectFreshV4DiscoveryPage, freshV4DiscoveryProgress, readFreshV4MarketIdentities, runFreshV4MarketDiscovery } from './v4Discovery.js';
+import{freshInfinityClInterface,freshInfinityClPoolId}from'./infinityClMarket.js';import{INFINITY_CL}from'../nodeMarketProtocols.js';import{AbiCoder,keccak256}from'ethers';
 
 const address=(n:number)=>`0x${n.toString(16).padStart(40,'0')}`,hash=(n:number)=>`0x${n.toString(16).padStart(64,'0')}`;
 const token=address(4),quote=address(8),wallet=address(3),Q96=1n<<96n;
@@ -17,7 +18,7 @@ function fixture(){
  const block:FreshBlock={number:blockNumber,hash:blockHash,parentHash:hash(100),timestamp:'0x69000000',transactions:[{hash:txHash,from:wallet,to:manager,value:'0x0',gasPrice:'0x1',blockHash,blockNumber,transactionIndex:'0x0'}]};
  const receipt:FreshReceipt={transactionHash:txHash,transactionIndex:'0x0',blockHash,blockNumber,status:'0x1',gasUsed:'0x5208',effectiveGasPrice:'0x1',logs};
  const rpc=vi.fn(async(method:string,params:unknown[])=>{
-  if(method==='eth_getLogs'){const topics=(params[0]as any).topics;return topics[2]?logs:[];}
+  if(method==='eth_getLogs'){const request=params[0]as any;if(request.address!==manager)return[];return request.topics[2]?logs:[];}
   if(method==='eth_getBlockByNumber'){const n=Number(BigInt(params[0]as string));return n===number?block:{...block,number:`0x${n.toString(16)}`,hash:hash(n),parentHash:hash(n-1),transactions:[]};}
   if(method==='eth_getTransactionReceipt')return receipt;
   throw Error('unexpected_fixture_rpc');
@@ -26,18 +27,24 @@ function fixture(){
  return{logs,block,receipt,rpc,canonicalHash};
 }
 describe('bounded background Uniswap v4 market discovery',()=>{
+ it('discovers a supported native Infinity pool while retaining a bounded diagnostic for another authentic unsupported key',async()=>{
+  const f=fixture(),native='0x'+'0'.repeat(40),parameters='0x'+(1n<<16n).toString(16).padStart(64,'0'),key={currency0:native,currency1:token,hooks:native,poolManager:INFINITY_CL,fee:100,parameters},unsupported={...key,currency0:token,currency1:quote},unsupportedId=keccak256(AbiCoder.defaultAbiCoder().encode(['address','address','address','address','uint24','bytes32'],Object.values(unsupported)));
+  const extra=[{id:unsupportedId,key:unsupported},{id:freshInfinityClPoolId(key),key}].map((p,index)=>({address:INFINITY_CL,...freshInfinityClInterface.encodeEventLog('Initialize',[p.id,p.key.currency0,p.key.currency1,p.key.hooks,p.key.fee,p.key.parameters,Q96,0]),blockHash:f.block.hash,blockNumber:f.block.number,transactionHash:f.receipt.transactionHash,transactionIndex:'0x0',logIndex:'0x'+(index+2).toString(16)}));
+  f.logs.push(...extra);const rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>{if(method==='eth_getLogs'){const req=params[0]as any;return f.logs.filter(l=>l.address===req.address&&l.topics[req.topics[2]?2:3]===req.topics[req.topics[2]?2:3])as T;}return f.rpc<T>(method,params);};
+  const page=await collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200});expect(page.identities).toHaveLength(3);expect(page.identities.some(m=>m.manager===INFINITY_CL&&m.quoteAddress!==native)).toBe(true);expect(page.unsupportedPools).toEqual([{manager:INFINITY_CL,poolId:unsupportedId,blockNumber:101,blockHash:hash(101),reason:'infinity_cl_pool_key_unsupported'}]);
+ });
  it('authenticates two pools sharing the same manager using complete canonical transaction and receipt evidence',async()=>{
   const f=fixture(),page=await collectFreshV4DiscoveryPage({...f,token,fromBlock:100,toBlock:200});
   expect(page.identities).toHaveLength(2);expect(new Set(page.identities.map(m=>m.poolId)).size).toBe(2);expect(page.identities.every(m=>m.manager===manager&&m.tokenAddress===token)).toBe(true);
   expect(page.receipts).toBe(1);expect(page.headers.map(h=>h.number)).toEqual([101,200]);
-  const calls=(f.rpc as any).mock.calls;expect(calls.filter(([method]:[string])=>method==='eth_getLogs')).toHaveLength(2);
+  const calls=(f.rpc as any).mock.calls;expect(calls.filter(([method]:[string])=>method==='eth_getLogs')).toHaveLength(4);
   expect(calls.filter(([method]:[string])=>method==='eth_getTransactionReceipt')).toHaveLength(1);
   expect(calls.find(([method,params]:[string,unknown[]])=>method==='eth_getBlockByNumber'&&params[0]==='0x65')[1][1]).toBe(true);
  });
  it('keeps an empty complete page compact without downloading unrelated trader receipts',async()=>{
   const f=fixture(),rpc=vi.fn(async(method:string,params:unknown[])=>method==='eth_getLogs'?[]:await f.rpc(method,params))as unknown as Rpc;
   const page=await collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200});expect(page.identities).toEqual([]);expect(page.receipts).toBe(0);
-  expect((rpc as any).mock.calls).toHaveLength(3);expect(page.headers).toHaveLength(1);
+  expect((rpc as any).mock.calls).toHaveLength(5);expect(page.headers).toHaveLength(1);
  });
  it('requires exact indexed-token orientation and authenticates receipt bodies instead of trusting discovery logs',async()=>{
   const f=fixture(),wrong=vi.fn(async(method:string,params:unknown[])=>method==='eth_getLogs'?f.logs:await f.rpc(method,params))as unknown as Rpc;
@@ -58,11 +65,11 @@ describe('bounded background Uniswap v4 market discovery',()=>{
  });
  it('bounds queried ranges and matching receipts before full body requests',async()=>{
   const f=fixture();await expect(collectFreshV4DiscoveryPage({...f,token,fromBlock:100,toBlock:4196})).rejects.toThrow('v4_discovery_range_invalid');expect(f.rpc).not.toHaveBeenCalled();
-  const rpc=vi.fn(async(_method:string,params:unknown[])=>(params[0]as any).topics[2]?Array.from({length:17},(_,i)=>({...f.logs[0],transactionHash:hash(200+i)})):[])as unknown as Rpc;
-  await expect(collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200})).rejects.toThrow('v4_discovery_log_limit');expect(rpc).toHaveBeenCalledTimes(2);
+  const rpc=vi.fn(async(_method:string,params:unknown[])=>(params[0]as any).address===manager&&(params[0]as any).topics[2]?Array.from({length:17},(_,i)=>({...f.logs[0],transactionHash:hash(200+i)})):[])as unknown as Rpc;
+  await expect(collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200})).rejects.toThrow('v4_discovery_log_limit');expect(rpc).toHaveBeenCalledTimes(4);
  });
  it('deduplicates identical log delivery without copying transaction receipts or financial facts',async()=>{
-  const f=fixture(),rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>method==='eth_getLogs'&&(params[0]as any).topics[2]?[...f.logs,...f.logs]as T:await f.rpc<T>(method,params);
+  const f=fixture(),rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>method==='eth_getLogs'&&(params[0]as any).address===manager&&(params[0]as any).topics[2]?[...f.logs,...f.logs]as T:await f.rpc<T>(method,params);
   const page=await collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200});expect(page.identities).toHaveLength(2);expect(page.receipts).toBe(1);
  });
  it('rewinds cursors when canonical evidence, capture revision or creation identity changes without losing prior audit evidence',()=>{

@@ -1,8 +1,10 @@
 import { getCreateAddress, keccak256 } from 'ethers';
-import type { FreshBlock, FreshReceipt, FreshTransaction } from './capture.js';
+import {validateFreshBlock,validateFreshReceipt,freshInteger,type FreshBlock,type FreshReceipt,type FreshTransaction} from './capture.js';
 import { classifyFreshFixedBalanceEmitter } from './fixedBalanceEmitter.js';
 import { FRESH_BNB_CONTROLLER_NONLEDGER_TEMPLATE } from './bnbNonledgerTemplate.js';
 import { FRESH_ADDITIONAL_BNB_LITERAL_TEMPLATES } from './bnbAdditionalNonledgerTemplates.js';
+import { FRESH_RANKING_IMMUTABLE_NONLEDGER_TEMPLATES, FRESH_RANKING_LITERAL_NONLEDGER_TEMPLATES } from './rankingNonledgerTemplates.js';
+import {freshCopiedNameNonledgerFamily}from'./copiedNameNonledgerFamily.js';
 
 /** Exact, audited bytecode only. These two contracts initialize fixed identity
  * and metadata slots, then expose getters and functions that emit Transfer
@@ -327,6 +329,7 @@ export const FRESH_IMMUTABLE_NONLEDGER_TEMPLATES = [
     "initcode": "0x610140346100d957601f6104e738819003918201601f19168301916001600160401b038311848410176100dd5780849260c0946040528339810103126100d95780516001600160a01b03811681036100d9576020820151610062604084016100f1565b60608401519161008060a0610079608088016100f1565b96016100f1565b9360805260a05260c05260e052610100918252610120908152604051906103e7928361010084396080518361034f015260a0518360b7015260c051836090015260e0518361024d01525182610226015251816101ca0152f35b5f80fd5b634e487b7160e01b5f52604160045260245ffd5b519060ff821682036100d95756fe60806040526004361015610019575b341561034d575b5f80fd5b5f3560e01c806306fdde031461005857806318160ddd14610053578063313ce5671461004e576395d89b410361000e576101ee565b610193565b61014f565b34610015575f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc360112610015576100e76100b560ff7f0000000000000000000000000000000000000000000000000000000000000000166102e9565b7f00000000000000000000000000000000000000000000000000000000000000006020820152604051918291826100eb565b0390f35b6020808252825181830181905293925f5b85811061013b575050507fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe0601f845f6040809697860101520116010190565b8181018301518482016040015282016100fc565b34610015575f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc3601126100155760206040516b204fce5e3e250261100000008152f35b34610015575f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc36011261001557602060405160ff7f0000000000000000000000000000000000000000000000000000000000000000168152f35b34610015575f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc360112610015576100e761024b60ff7f0000000000000000000000000000000000000000000000000000000000000000166102e9565b7f00000000000000000000000000000000000000000000000000000000000000006020820152604051918291826100eb565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52604160045260245ffd5b67ffffffffffffffff81116102e457601f017fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe01660200190565b61027d565b906102f3826102aa565b604051907fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe090601f018116820167ffffffffffffffff8111838210176102e45760405283825261034382946102aa565b0190602036910137565b7f000000000000000000000000000000000000000000000000000000000000000033036103d85763a9059cbb5f3560e01c036103d8573660010160045b6060810190828210156103cf57602060408201355f527fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef818301359235915fa361038a565b60015f5260205ff35b00fea164736f6c6343000818000a000000000000000000000000044bab308f826a2ac9bfa1d4126026f8b97c48ec55e281af53e281af44cea4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b55e281af53e281af44cea4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b0000000000000000000000000000000000000000000000000000000000000012"
   },
   FRESH_BNB_CONTROLLER_NONLEDGER_TEMPLATE,
+  ...FRESH_RANKING_IMMUTABLE_NONLEDGER_TEMPLATES,
 ] as const;
 for (const template of FRESH_IMMUTABLE_NONLEDGER_TEMPLATES) {
   for (const patch of template.immutablePatches) Object.freeze(patch);
@@ -351,6 +354,7 @@ export const FRESH_LITERAL_NONLEDGER_TEMPLATES = [
     "initcode": "0x6080604052348015600e575f5ffd5b506106838061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610055575f3560e01c806306fdde0314610059578063313ce567146100775780636d47996b146100955780637111a994146100b157806395d89b41146100cd575b5f5ffd5b6100616100eb565b60405161006e919061032e565b60405180910390f35b61007f610124565b60405161008c9190610369565b60405180910390f35b6100af60048036038101906100aa9190610417565b610129565b005b6100cb60048036038101906100c6919061051d565b610193565b005b6100d5610285565b6040516100e2919061032e565b60405180910390f35b6040518060400160405280600f81526020017fd092e2808bce9de2808be2808bce92000000000000000000000000000000000081525081565b601281565b8173ffffffffffffffffffffffffffffffffffffffff168373ffffffffffffffffffffffffffffffffffffffff167fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef8360405161018691906105dc565b60405180910390a3505050565b5f5f90505b8686905081101561027c578484828181106101b6576101b56105f5565b5b90506020020160208101906101cb9190610622565b73ffffffffffffffffffffffffffffffffffffffff168787838181106101f4576101f36105f5565b5b90506020020160208101906102099190610622565b73ffffffffffffffffffffffffffffffffffffffff167fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef858585818110610253576102526105f5565b5b9050602002013560405161026791906105dc565b60405180910390a38080600101915050610198565b50505050505050565b6040518060400160405280601381526020017fce92e2808ce2808dce9de2808be2808ce18fb40000000000000000000000000081525081565b5f81519050919050565b5f82825260208201905092915050565b8281835e5f83830152505050565b5f601f19601f8301169050919050565b5f610300826102be565b61030a81856102c8565b935061031a8185602086016102d8565b610323816102e6565b840191505092915050565b5f6020820190508181035f83015261034681846102f6565b905092915050565b5f60ff82169050919050565b6103638161034e565b82525050565b5f60208201905061037c5f83018461035a565b92915050565b5f5ffd5b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f6103b38261038a565b9050919050565b6103c3816103a9565b81146103cd575f5ffd5b50565b5f813590506103de816103ba565b92915050565b5f819050919050565b6103f6816103e4565b8114610400575f5ffd5b50565b5f81359050610411816103ed565b92915050565b5f5f5f6060848603121561042e5761042d610382565b5b5f61043b868287016103d0565b935050602061044c868287016103d0565b925050604061045d86828701610403565b9150509250925092565b5f5ffd5b5f5ffd5b5f5ffd5b5f5f83601f84011261048857610487610467565b5b8235905067ffffffffffffffff8111156104a5576104a461046b565b5b6020830191508360208202830111156104c1576104c061046f565b5b9250929050565b5f5f83601f8401126104dd576104dc610467565b5b8235905067ffffffffffffffff8111156104fa576104f961046b565b5b6020830191508360208202830111156105165761051561046f565b5b9250929050565b5f5f5f5f5f5f6060878903121561053757610536610382565b5b5f87013567ffffffffffffffff81111561055457610553610386565b5b61056089828a01610473565b9650965050602087013567ffffffffffffffff81111561058357610582610386565b5b61058f89828a01610473565b9450945050604087013567ffffffffffffffff8111156105b2576105b1610386565b5b6105be89828a016104c8565b92509250509295509295509295565b6105d6816103e4565b82525050565b5f6020820190506105ef5f8301846105cd565b92915050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52603260045260245ffd5b5f6020828403121561063757610636610382565b5b5f610644848285016103d0565b9150509291505056fea26469706673582212205a5d0b5551c7e0593e399646830c6afd0964a5245256a345c2cfab1bea7920d864736f6c63430008230033"
   },
   ...FRESH_ADDITIONAL_BNB_LITERAL_TEMPLATES,
+  ...FRESH_RANKING_LITERAL_NONLEDGER_TEMPLATES,
 ] as const;
 for (const template of FRESH_LITERAL_NONLEDGER_TEMPLATES) Object.freeze(template);
 Object.freeze(FRESH_LITERAL_NONLEDGER_TEMPLATES);
@@ -359,7 +363,8 @@ export interface FreshTokenAuthenticityProof {
   version: 1;
   classification: 'proven_nonledger_event_emitter';
   templateId: typeof FRESH_NONLEDGER_TEMPLATES[number]['id'] | typeof FRESH_IMMUTABLE_NONLEDGER_TEMPLATES[number]['id']
-    | typeof FRESH_LITERAL_NONLEDGER_TEMPLATES[number]['id'] | 'fixed_balance_batch_log_emitter_v1';
+    | typeof FRESH_LITERAL_NONLEDGER_TEMPLATES[number]['id'] | 'fixed_balance_batch_log_emitter_v1'
+    | 'audited_immutable_stateless_emitter_family_v1' | 'audited_literal_stateless_emitter_family_v1' | 'audited_copied_name_stateless_emitter_family_v1';
   ledgerAbsent: true;
   creationEvidence: {
     transaction: { hash: string; from: string; to: null; nonce: string; value: string; input: string; blockHash: string; blockNumber: string; transactionIndex: string };
@@ -380,17 +385,24 @@ const same = (left: string, right: string) => left.toLowerCase() === right.toLow
  * a valid JUMPDEST. The metadata has no such destination and follows INVALID.
  * The executable instructions cannot change storage, delegate, destroy the
  * contract or call another contract that maintains a ledger on its behalf. */
-function auditedRuntimeIsNonledger(runtime: Buffer, metadataStart: number, requireStateless = false) {
-  if (runtime.length < 2 || runtime.length - runtime.readUInt16BE(runtime.length - 2) - 2 !== metadataStart
-    || runtime[metadataStart - 1] !== 0xfe) return false;
+function auditedRuntimeIsNonledger(runtime: Buffer, metadataStart: number, requireStateless = false, unreachableDataStart?: number, closedMetadataJumps=false) {
+  if (runtime.length < 2 || runtime.length - runtime.readUInt16BE(runtime.length - 2) - 2 !== metadataStart) return false;
+  // Two individually pinned literal creations append string bytes between the
+  // final INVALID and CBOR. Their complete suffix cannot be entered by JUMP;
+  // the instruction walk below also proves INVALID is an opcode, not PUSH data.
+  const codeEnd = unreachableDataStart ?? metadataStart;
+  if (!Number.isSafeInteger(codeEnd) || codeEnd < 1 || codeEnd > metadataStart || runtime[codeEnd - 1] !== 0xfe
+    || unreachableDataStart !== undefined && !requireStateless) return false;
   const forbidden = new Set([0x55, 0x5d, 0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa, 0xff]);
   if (requireStateless) { forbidden.add(0x54); forbidden.add(0x5c); }
   // The literal runtime's CBOR bytes follow INVALID and contain no possible
   // jump entry. They are data, so a random PUSH byte there is not executable.
   // Preserve the original templates' audit path unchanged.
-  if (requireStateless && runtime.subarray(metadataStart).includes(0x5b)) return false;
-  const end = requireStateless ? metadataStart : runtime.length;
+  if (requireStateless && !closedMetadataJumps && runtime.subarray(codeEnd).includes(0x5b)) return false;
+  const end = requireStateless ? codeEnd : runtime.length;
+  let lastInstruction = -1;
   for (let offset = 0; offset < end; offset++) {
+    lastInstruction = offset;
     const opcode = runtime[offset];
     if (offset < metadataStart && forbidden.has(opcode) || offset >= metadataStart && opcode === 0x5b) return false;
     if (opcode >= 0x60 && opcode <= 0x7f) {
@@ -398,7 +410,7 @@ function auditedRuntimeIsNonledger(runtime: Buffer, metadataStart: number, requi
       if (offset >= end) return false;
     }
   }
-  return true;
+  return !requireStateless || lastInstruction === codeEnd - 1 && runtime[lastInstruction] === 0xfe;
 }
 
 /** The caller supplies the already canonical, confirmed block used by capture.
@@ -423,7 +435,7 @@ function auditedRuntimeIsNonledger(runtime: Buffer, metadataStart: number, requi
  * The separate literal list accepts only its entire fixed creation. Its short
  * constructor returns the exact embedded runtime without state or arguments.
  */
-export function classifyFreshCreationToken(input: { transaction: FreshTransaction; receipt: FreshReceipt; block: FreshBlock }): FreshTokenAuthenticityProof | null {
+export function classifyFreshPinnedCreationToken(input: { transaction: FreshTransaction; receipt: FreshReceipt; block: FreshBlock }): FreshTokenAuthenticityProof | null {
   try {
     // A separate exact, fully audited family admits its 3,109-byte creations.
     // Legacy byte limits and the general no-CALL guard below stay unchanged.
@@ -472,7 +484,8 @@ export function classifyFreshCreationToken(input: { transaction: FreshTransactio
         args.copy(runtime, patch.runtimeOffset, patch.argumentWord * 32, (patch.argumentWord + 1) * 32);
       }
     }
-    if (runtime.length !== template.runtimeBytes || keccak256(runtime) !== template.runtimeHash || !auditedRuntimeIsNonledger(runtime, template.metadataStart, literal != null)) return null;
+    const unreachableDataStart = literal && 'unreachableDataStart' in literal ? literal.unreachableDataStart : undefined;
+    if (runtime.length !== template.runtimeBytes || keccak256(runtime) !== template.runtimeHash || !auditedRuntimeIsNonledger(runtime, template.metadataStart, literal != null, unreachableDataStart)) return null;
 
     return { version: 1, classification: 'proven_nonledger_event_emitter', templateId: template.id, ledgerAbsent: true,
       creationEvidence: {
@@ -487,4 +500,132 @@ export function classifyFreshCreationToken(input: { transaction: FreshTransactio
         ...(immutable ? {constructorArguments: {offset: immutable.argumentsOffset, bytes: immutable.argumentsBytes, hash: immutable.argumentsHash,
           returnPc: immutable.returnPc, immutablePatches: immutable.immutablePatches.map(patch => ({...patch}))}} : {}) } };
   } catch { return null; }
+}
+
+/** Only fixed metadata literal data may vary in this already audited code
+ * family. Selectors, branches, jump destinations, Transfer topic, memory and
+ * calldata operations remain byte-for-byte identical. This is deliberately
+ * not an opcode-only classifier for arbitrary no-SSTORE contracts. */
+function normalizeAuditedLiteralGetters(runtime:Buffer,metadataStart:number):Buffer|null{
+  const normalized=Buffer.from(runtime),prefix=Buffer.from('604051806040016040528060','hex'),middle=Buffer.from('81526020017f','hex'),tail=Buffer.from('81525081565b','hex');
+  let count=0;
+  for(let pc=0;pc<metadataStart;pc++){
+    if(!runtime.subarray(pc,pc+prefix.length).equals(prefix)){const op=runtime[pc];if(op>=0x60&&op<=0x7f)pc+=op-0x5f;continue;}
+    const lengthAt=pc+prefix.length,length=runtime[lengthAt],middleAt=lengthAt+1,wordAt=middleAt+middle.length,tailAt=wordAt+32;
+    if(length<1||length>32||tailAt+tail.length>metadataStart||!runtime.subarray(middleAt,wordAt).equals(middle)
+      ||!runtime.subarray(tailAt,tailAt+tail.length).equals(tail)||!runtime.subarray(wordAt+length,tailAt).equals(Buffer.alloc(32-length)))return null;
+    normalized[lengthAt]=0;normalized.fill(0,wordAt,tailAt);count++;pc=tailAt+tail.length-1;
+  }
+  // Exactly the original name and symbol getter; no other immediates vary.
+  if(count!==2)return null;
+  const metadata=runtime.subarray(metadataStart),ipfsPrefix=Buffer.from('a2646970667358221220','hex'),solcSuffix=Buffer.from('64736f6c63430008230033','hex');
+  if(metadata.length!==53||!metadata.subarray(0,ipfsPrefix.length).equals(ipfsPrefix)||!metadata.subarray(-solcSuffix.length).equals(solcSuffix))return null;
+  normalized.fill(0,metadataStart+ipfsPrefix.length,metadataStart+ipfsPrefix.length+32);return normalized;
+}
+
+/** Conservative finite stack analysis of the exact audited literal dispatcher.
+ * A jump is accepted only when every abstract target is an actual executable
+ * JUMPDEST before INVALID. Memory/calldata/environment values are unknown;
+ * an unknown jump target rejects. Joining loop states loses precision instead
+ * of assuming a branch cannot occur. Thus random IPFS bytes containing 0x5b
+ * cannot become executable merely because metadata data varies. */
+function auditedLiteralJumpsStayInCode(runtime:Buffer,end:number):boolean{
+  type Value=Set<number>|null;const unknown:Value=null,copy=(v:Value):Value=>v&&new Set(v),instructions=new Map<number,number>(),maxStates=20_000;
+  for(let pc=0;pc<end;pc++){const op=runtime[pc];instructions.set(pc,op);if(op>=0x60&&op<=0x7f)pc+=op-0x5f;if(pc>=end)return false;}
+  const states=new Map<string,Value[]>(),queue:{pc:number;stack:Value[]}[]=[];let work=0;
+  const enqueue=(pc:number,stack:Value[])=>{
+    if(!instructions.has(pc)||stack.length>128)throw Error('stateless_cfg_boundary');
+    // Solidity's internal return addresses stay on the stack. Keep their
+    // calling contexts separate rather than merge a return slot with an ABI
+    // data slot from a different call of the same helper at the same depth.
+    const context=stack.map(v=>v&&[...v].every(n=>instructions.get(n)===0x5b)?[...v].sort((a,b)=>a-b).join(','):'*').join('|');
+    const key=pc+':'+stack.length+':'+context,old=states.get(key);
+    if(!old){const saved=stack.map(copy);states.set(key,saved);queue.push({pc,stack:saved.map(copy)});return;}
+    let changed=false;const merged=old.map((v,i)=>{const incoming=stack[i];if(v===null)return null;if(incoming===null){changed=true;return null;}const union=new Set([...v,...incoming]);if(union.size>32){changed=true;return null;}if(union.size!==v.size)changed=true;return union;});
+    if(changed){states.set(key,merged);queue.push({pc,stack:merged.map(copy)});}
+  };
+  try{enqueue(0,[]);while(queue.length){if(++work>maxStates)return false;const{pc,stack}=queue.shift()!,op=instructions.get(pc)!;let next=pc+1;
+    const pop=():Value=>{if(!stack.length)throw Error('stateless_cfg_stack');return stack.pop()!;},push=(v:Value)=>stack.push(v),drop=(n:number)=>{for(let i=0;i<n;i++)pop();};
+    if(op>=0x60&&op<=0x7f){const n=op-0x5f,value=BigInt('0x'+runtime.subarray(next,next+n).toString('hex'));push(value<=65535n?new Set([Number(value)]):unknown);next+=n;}
+    else if(op>=0x80&&op<=0x8f){const at=stack.length-(op-0x7f);if(at<0)return false;push(copy(stack[at]));}
+    else if(op>=0x90&&op<=0x9f){const at=stack.length-1-(op-0x8f);if(at<0)return false;[stack[at],stack[stack.length-1]]=[stack[stack.length-1],stack[at]];}
+    else if(op===0x56||op===0x57){const target=pop(),condition=op===0x57?pop():new Set([1]);if(!target)return false;
+      if(condition===null||[...condition].some(x=>x!==0))for(const to of target){if(to>=end||instructions.get(to)!==0x5b)return false;enqueue(to,stack);}
+      if(op===0x56||condition!==null&&![...condition].includes(0))continue;
+    }else if(op===0x00||op===0xfe)continue;
+    else if(op===0xf3||op===0xfd){drop(2);continue;}
+    else if(op===0x5b){}
+    else if(op===0x5f)push(new Set([0]));
+    else if(op===0x58)push(new Set([pc]));
+    else if(op===0x50)drop(1);
+    else if(op===0x51){drop(1);push(unknown);}
+    else if(op===0x52||op===0x53)drop(2);
+    else if(op===0x37||op===0x39||op===0x3e||op===0x5e)drop(3);
+    else if(op>=0xa0&&op<=0xa4)drop(2+op-0xa0);
+    else if(op===0x15){const value=pop();push(value?new Set([...value].map(n=>n===0?1:0)):unknown);}
+    else if(op>=0x01&&op<=0x1d){drop(op===0x08||op===0x09?3:op===0x19?1:2);push(unknown);}
+    else if(op===0x20){drop(2);push(unknown);}
+    else if(op===0x35||op===0x40||op===0x49){drop(1);push(unknown);}
+    else if([0x30,0x32,0x33,0x34,0x36,0x38,0x3a,0x3d,0x41,0x42,0x43,0x44,0x45,0x46,0x48,0x4a,0x59,0x5a].includes(op))push(unknown);
+    else return false;
+    enqueue(next,stack);
+  }return true;}catch{return false;}
+}
+
+function classifyFreshAuditedStatelessFamily(input:{transaction:FreshTransaction;receipt:FreshReceipt;block:FreshBlock}):FreshTokenAuthenticityProof|null{
+  try{
+    const{transaction:tx,receipt,block}=input;
+    if(!tx||tx.to!==null||!address(tx.from)||tx.chainId!==undefined&&freshInteger(tx.chainId)!==56n||!quantity(tx.nonce)||BigInt(tx.nonce)>0xffffffffffffffffn||!quantity(tx.value)||BigInt(tx.value)!==0n
+      ||typeof tx.input!=='string'||!/^0x(?:[\da-f]{2})+$/i.test(tx.input)||tx.input.length>2+3086*2)return null;
+    const blockNumber=Number(freshInteger(block.number));validateFreshBlock(block,blockNumber);validateFreshReceipt(receipt,tx,block);
+    const included=block.transactions[Number(freshInteger(tx.transactionIndex))],contractAddress=getCreateAddress({from:tx.from,nonce:freshInteger(tx.nonce)}).toLowerCase();
+    if(receipt.status!=='0x1'||!receipt.contractAddress||!same(receipt.contractAddress,contractAddress)||!included||JSON.stringify(included)!==JSON.stringify(tx))return null;
+    const initcode=tx.input.toLowerCase(),bytes=Buffer.from(initcode.slice(2),'hex');
+    let accepted:{templateId:FreshTokenAuthenticityProof['templateId'];constructorHash:string;runtime:Buffer;runtimeOffset:number;returnOffset:number;arguments?:NonNullable<FreshTokenAuthenticityProof['bytecode']['constructorArguments']>}|undefined;
+    for(const template of FRESH_IMMUTABLE_NONLEDGER_TEMPLATES){
+      const constructor=bytes.subarray(0,template.runtimeOffset),embedded=bytes.subarray(template.runtimeOffset,template.argumentsOffset),args=bytes.subarray(template.argumentsOffset);
+      if(bytes.length!==template.argumentsOffset+template.argumentsBytes||keccak256(constructor)!==template.constructorHash||keccak256(embedded)!==template.runtimeTemplateHash
+        ||'0x'+constructor.subarray(template.returnOffset).toString('hex')!==template.constructorReturnTail)continue;
+      // Exact six ABI words read by this constructor. Lengths and precision
+      // are uint8; address has canonical zero padding. Text bytes are data.
+      const word=(n:number)=>args.subarray(n*32,(n+1)*32),uint=(n:number)=>BigInt('0x'+word(n).toString('hex'));
+      if(args.length!==192||!word(0).subarray(0,12).equals(Buffer.alloc(12))||uint(2)<1n||uint(2)>32n||uint(4)<1n||uint(4)>32n||uint(5)>255n
+        ||!word(1).subarray(Number(uint(2))).equals(Buffer.alloc(32-Number(uint(2))))||!word(3).subarray(Number(uint(4))).equals(Buffer.alloc(32-Number(uint(4)))))continue;
+      const runtime=Buffer.from(embedded);
+      for(const patch of template.immutablePatches){if(runtime[patch.runtimeOffset-1]!==0x7f||!runtime.subarray(patch.runtimeOffset,patch.runtimeOffset+32).equals(Buffer.alloc(32)))throw Error('stateless_patch_invalid');args.copy(runtime,patch.runtimeOffset,patch.argumentWord*32,(patch.argumentWord+1)*32);}
+      if(!auditedRuntimeIsNonledger(runtime,template.metadataStart,true))continue;
+      accepted={templateId:'audited_immutable_stateless_emitter_family_v1',constructorHash:template.constructorHash,runtime,runtimeOffset:template.runtimeOffset,returnOffset:template.returnOffset,
+        arguments:{offset:template.argumentsOffset,bytes:192,hash:keccak256(args),returnPc:template.returnPc,immutablePatches:template.immutablePatches.map(x=>({...x}))}};break;
+    }
+    if(!accepted)for(const template of FRESH_LITERAL_NONLEDGER_TEMPLATES){
+      // Only the fixed two-inline-string dispatcher is generalized. Longer
+      // copied strings and storage-backed legacy emitters keep exact pins.
+      if(template.runtimeBytes!==1667||template.runtimeOffset!==28||template.metadataStart!==1614)continue;
+      const constructor=bytes.subarray(0,28),runtime=bytes.subarray(28);
+      if(runtime.length!==template.runtimeBytes||keccak256(constructor)!==template.constructorHash
+        ||'0x'+constructor.subarray(template.returnOffset).toString('hex')!==template.constructorReturnTail)continue;
+      const known=Buffer.from(template.initcode.slice(2+28*2),'hex'),actual=normalizeAuditedLiteralGetters(runtime,template.metadataStart),expected=normalizeAuditedLiteralGetters(known,template.metadataStart);
+      if(!actual||!expected||!actual.equals(expected)||!auditedLiteralJumpsStayInCode(runtime,template.metadataStart)
+        ||!auditedRuntimeIsNonledger(runtime,template.metadataStart,true,undefined,true))continue;
+      accepted={templateId:'audited_literal_stateless_emitter_family_v1',constructorHash:template.constructorHash,runtime,runtimeOffset:28,returnOffset:template.returnOffset};break;
+    }
+    if(!accepted){const copied=freshCopiedNameNonledgerFamily(bytes);
+      if(copied&&auditedLiteralJumpsStayInCode(copied.runtime,copied.codeEnd)
+        &&auditedRuntimeIsNonledger(copied.runtime,copied.metadataStart,true,copied.codeEnd,true))accepted={templateId:'audited_copied_name_stateless_emitter_family_v1',constructorHash:copied.constructorHash,runtime:copied.runtime,runtimeOffset:copied.runtimeOffset,returnOffset:copied.returnOffset};
+    }
+    if(!accepted)return null;
+    return{version:1,classification:'proven_nonledger_event_emitter',templateId:accepted.templateId,ledgerAbsent:true,
+      creationEvidence:{transaction:{hash:tx.hash.toLowerCase(),from:tx.from.toLowerCase(),to:null,nonce:tx.nonce as string,value:tx.value,input:initcode,blockHash:block.hash.toLowerCase(),blockNumber:tx.blockNumber,transactionIndex:tx.transactionIndex},
+        receipt:{transactionHash:tx.hash.toLowerCase(),blockHash:block.hash.toLowerCase(),blockNumber:receipt.blockNumber,transactionIndex:receipt.transactionIndex,status:'0x1',contractAddress},
+        block:{hash:block.hash.toLowerCase(),parentHash:block.parentHash.toLowerCase(),number:block.number,timestamp:block.timestamp}},
+      bytecode:{initcodeHash:keccak256(initcode),constructorHash:accepted.constructorHash,runtimeHash:keccak256(accepted.runtime),runtimeOffset:accepted.runtimeOffset,runtimeBytes:accepted.runtime.length,returnOffset:accepted.returnOffset,
+        ...(accepted.arguments?{constructorArguments:accepted.arguments}:{})}};
+  }catch{return null;}
+}
+
+/** Canonical exact creations first, then the two audited stateless code
+ * families with narrowly variable metadata. No name, address, deployer,
+ * balanceOf failure, current price or caller assertion can approve this. */
+export function classifyFreshCreationToken(input:{transaction:FreshTransaction;receipt:FreshReceipt;block:FreshBlock}):FreshTokenAuthenticityProof|null{
+  return classifyFreshPinnedCreationToken(input)??classifyFreshAuditedStatelessFamily(input);
 }

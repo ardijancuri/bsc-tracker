@@ -36,11 +36,15 @@ export const FRESH_TRANSFER_VALUATION_ELIGIBLE_SQL=`SELECT DISTINCT e.tx_hash,e.
 
 export const FRESH_TRANSFER_VALUATION_TRADE_SQL=`SELECT 1 FROM fresh.scope_event_results r JOIN fresh.financial_events f ON f.id=r.event_id
  LEFT JOIN public.journal_wallets m ON m.user_id::text=$4 AND m.wallet_address=f.wallet_address
- WHERE r.scope_id=$1 AND r.event_id=$2 AND r.token_address=$3 AND r.tokens_trade AND f.canonical AND f.kind IN('buy','sell')
+ LEFT JOIN public.journal_wallets cp ON cp.user_id::text=$4 AND cp.wallet_address=f.counterparty
+ WHERE r.scope_id=$1 AND r.event_id=$2 AND r.token_address=$3 AND f.canonical
+ AND ((r.tokens_trade AND f.kind IN('buy','sell')) OR (f.kind='transfer_out' AND r.realized_q IS NULL
+   AND NOT(COALESCE(f.counterparty=ANY($5::text[]),false) AND ($4::text IS NULL OR cp.wallet_address IS NOT NULL
+     AND f.block_number>=COALESCE(cp.registration_block,$6) AND f.occurred_at>=cp.activity_from))))
  AND f.wallet_address=ANY($5::text[]) AND f.block_number>=$6 AND f.occurred_at>=$7
  AND ($4::text IS NULL OR m.wallet_address IS NOT NULL AND f.block_number>=COALESCE(m.registration_block,$6) AND f.occurred_at>=m.activity_from)`;
 
-/** Called only after NEW scope trade results were applied, in their existing
+/** Called only after NEW scope trade or unknown external disposal results were applied, in their existing
  * accounting transaction. Duplicate delivery creates no new result or job.
  * A rebuilt/membership-changed book resets its one bounded cursor. */
 export async function queueFreshTransferValuation(database:Pick<PoolClient,'query'>,seeds:Seed[],now:Date){
@@ -57,9 +61,13 @@ export async function queueFreshTransferValuation(database:Pick<PoolClient,'quer
      'scopeRevision',s.revision::text,'tradeEventId',seed.trade_event_id,'wallet',NULL,'afterId',''),$2
    FROM jsonb_to_recordset($1::jsonb)AS seed(id text,reference text,scope_id text,token_address text,trade_event_id text)
    JOIN fresh.accounting_scopes s ON s.id=seed.scope_id JOIN fresh.positions p ON p.scope_id=s.id AND p.token_address=seed.token_address
-   JOIN fresh.scope_event_results r ON r.scope_id=s.id AND r.event_id=seed.trade_event_id AND r.token_address=p.token_address AND r.tokens_trade
-   JOIN fresh.financial_events f ON f.id=r.event_id AND f.canonical AND f.kind IN('buy','sell')
+   JOIN fresh.scope_event_results r ON r.scope_id=s.id AND r.event_id=seed.trade_event_id AND r.token_address=p.token_address
+   JOIN fresh.financial_events f ON f.id=r.event_id AND f.canonical
+   LEFT JOIN public.journal_wallets cp ON cp.user_id::text=s.account_id AND cp.wallet_address=f.counterparty
    WHERE s.active AND (p.unknown_incoming_value OR p.unknown_outgoing_value)
+   AND ((r.tokens_trade AND f.kind IN('buy','sell')) OR (f.kind='transfer_out' AND r.realized_q IS NULL
+     AND NOT(COALESCE(f.counterparty=ANY(s.wallet_addresses),false) AND (s.account_id IS NULL OR cp.wallet_address IS NOT NULL
+       AND f.block_number>=COALESCE(cp.registration_block,s.starts_block) AND f.occurred_at>=cp.activity_from))))
    ON CONFLICT(kind,reference) DO UPDATE SET progress=EXCLUDED.progress,state='pending',due_at=EXCLUDED.due_at,
      lease_id=NULL,lease_until=NULL,updated_at=clock_timestamp()
    WHERE fresh.jobs.progress->>'scopeRevision' IS DISTINCT FROM EXCLUDED.progress->>'scopeRevision'`,

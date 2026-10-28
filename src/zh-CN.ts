@@ -2,6 +2,15 @@
 import { creatorJournalChinese } from './creatorJournalChinese';
 import { championshipChinese } from './championshipChinese';
 export const chinese: Record<string, string> = {
+  '{matched} accounted movements · {pending} pending': '{matched} 笔已核算变动 · {pending} 笔待核对',
+  'Estimated': '估算',
+  'Missing costs excluded. Unknown proceeds and fees are excluded.': '未扣除缺失的成本，未知的卖出收入和费用不计入。',
+  'Recorded sales affected: {count} · Unvalued fee-only entries: {fees}': '受影响的已记录卖出：{count} 笔 · 尚未计价的费用记录：{fees} 笔',
+  'Missing costs: {costs}; proceeds: {proceeds}; fees: {fees}': '缺失成本：{costs}；收入：{proceeds}；费用：{fees}',
+  'Window: {start} — {end}': '统计时段：{start} — {end}',
+  'Rankings use realized trading profit from the last 24 hours: sales minus FIFO purchase costs and fees. When amounts are missing, an Estimated result excludes unknown amounts. Transfers move inventory without creating profit. Earlier known purchase costs remain included.': '排行榜按最近 24 小时已实现交易盈亏排序：卖出收入减去 FIFO 买入成本及费用。金额缺失时，估算结果不计入未知金额。转账只转移持仓，不产生利润。更早的已知买入成本仍会计入。',
+  'Realized trading P&L · Last 24 hours · Sales minus FIFO costs and fees.': '已实现交易盈亏 · 最近 24 小时 · 卖出收入减去 FIFO 买入成本及费用。',
+  'Rankings use complete realized trading profit from the last 24 hours: sales minus FIFO purchase costs and fees. Transfers move inventory without creating profit. Earlier purchase costs remain included. Incomplete sales are not ranked.': '排行榜按最近 24 小时完整的已实现交易盈亏排序：卖出收入减去 FIFO 买入成本及费用。转账只转移持仓，不产生利润。更早的买入成本仍会计入，记录不完整的卖出不参与排名。',
   'Tokens traded by tracked KOLs in the last 8 hours.': '最近 8 小时内被已跟踪 KOL 交易的代币。',
   'Cost unknown': '成本未知',
   'Fee unknown': '费用未知',

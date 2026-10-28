@@ -9,7 +9,7 @@ const membershipMissing=`(s.account_id IS NOT NULL AND EXISTS(SELECT 1 FROM unne
 const decodingPending=(block:string)=>`(EXISTS(SELECT 1 FROM fresh.recent_evidence e
  LEFT JOIN fresh.recent_blocks h USING(block_number,block_hash)
  WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.block_number<=${block} AND e.decoder_status<>'done'
- AND ${freshPositionReceiptRelevantSql('e','p.token_address')} AND EXISTS(
+ AND ${freshPositionReceiptRelevantSql('e','p.token_address','s')} AND EXISTS(
   SELECT 1 FROM unnest(s.wallet_addresses) member(wallet_address)
   LEFT JOIN public.journal_wallets j ON s.account_id IS NOT NULL AND j.user_id::text=s.account_id AND j.wallet_address=member.wallet_address
   WHERE member.wallet_address=ANY(e.wallet_addresses) AND (

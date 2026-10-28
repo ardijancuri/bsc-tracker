@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { freshPositionDependencies, freshPositionReceiptRelevantSql,freshPositionReceiptPredatesTokenBirthSql,freshPositionReceiptRawRelevantSql } from './positionDependencies.js';
 import type { FreshCapturedReceipt } from './capture.js';
+import{decodeFreshEvidence}from'./capture.js';
+import{readFileSync}from'node:fs';
+import{gunzipSync}from'node:zlib';
+import{createHash}from'node:crypto';
+import{transferTopic}from'../swap.js';
 const address=(n:number)=>`0x${n.toString(16).padStart(40,'0')}`,hash=(n:number)=>`0x${n.toString(16).padStart(64,'0')}`;
 function fixture():FreshCapturedReceipt {
   const transaction={hash:hash(1),blockHash:hash(2),blockNumber:'0xa',transactionIndex:'0x0',from:address(1),to:address(2),input:'0x12345678',value:'0x1',gasPrice:'0x1'};
@@ -9,6 +14,8 @@ function fixture():FreshCapturedReceipt {
       {type:'DELEGATECALL',from:address(2),to:address(3),calls:[{type:'CALL',from:address(2),to:address(4),error:'reverted',input:'0x'}]},
     ]}};
 }
+const actual=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/position-transfer-participants.json.gz',import.meta.url))).toString());
+const transfer=(from:string,to:string,index=0)=>({address:address(9),topics:[transferTopic,'0x'+from.slice(2).padStart(64,'0'),'0x'+to.slice(2).padStart(64,'0')],data:'0x'+'1'.padStart(64,'0'),logIndex:'0x'+index.toString(16),transactionHash:hash(1),transactionIndex:'0x0',blockHash:hash(2),blockNumber:'0xa'});
 describe('temporary full-execution position dependency index',()=>{
   it('retains every entered contract including delegates and reverted child calls',()=>{
     const proof=freshPositionDependencies(fixture());expect(proof?.addresses).toEqual([1,2,3,4].map(address));expect(proof?.proofHash).toMatch(/^[a-f0-9]{64}$/);
@@ -17,6 +24,34 @@ describe('temporary full-execution position dependency index',()=>{
   it('retains original log contracts in addition to the trace',()=>{
     const entry=fixture();entry.receipt.logs=[{address:address(9),topics:[hash(3)],data:'0x',logIndex:'0x0',transactionHash:hash(1),transactionIndex:'0x0',blockHash:hash(2),blockNumber:'0xa'}];
     expect(freshPositionDependencies(entry)?.addresses).toContain(address(9));
+  });
+  it('includes canonical passive incoming and outgoing participants without replacing the complete trace',()=>{
+    const entry=fixture();entry.receipt.logs=[transfer(address(5),address(6)),transfer(address(7),address(5),1)];
+    const proof=freshPositionDependencies(entry)!;expect(proof.addresses).toEqual([1,2,3,4,5,6,7,9].map(address));
+    expect(entry.trace!.calls!.some(c=>c.to===address(6))).toBe(false);
+    delete entry.trace;expect(freshPositionDependencies(entry)).toBeNull();
+  });
+  it('indexes the actual passive David receipt while preserving every original byte and unknown-cost financial fact',()=>{
+    const bytes=Buffer.from(actual.payloadBase64,'base64');expect(createHash('sha256').update(bytes).digest('hex')).toBe(actual.payloadSha256);
+    const entry=decodeFreshEvidence(bytes),original=structuredClone(entry),proof=freshPositionDependencies(entry)!;
+    expect(proof.addresses).toContain(actual.fact.wallet_address);expect(proof.addresses).toContain(actual.fact.counterparty);
+    expect(proof.addresses).toContain(actual.fact.token_address);expect(proof.addresses).toContain('0x5e972ac496e6875b2eb70e88d2d67793662ba029');
+    const calls:string[]=[];const visit=(c:NonNullable<FreshCapturedReceipt['trace']>)=>{calls.push(c.to!);c.calls?.forEach(visit);};visit(entry.trace!);
+    expect(calls).not.toContain(actual.fact.wallet_address);expect(entry).toEqual(original);
+    expect(actual.fact.amount_usd).toBeNull();expect(actual.fact.fee_usd).toBe('0');expect(actual.fact.realized_q).toBe('0');
+    expect(proof.proofHash).toBe(createHash('sha256').update(JSON.stringify([entry.transaction,entry.receipt,entry.trace])).digest('hex'));
+  });
+  it.each(['from_high_bits','to_high_bits','short_topic','extra_topic','missing_topic','short_data','foreign_topic'])('does not derive participants from malformed or non-ERC20 %s logs',change=>{
+    const entry=fixture(),log=transfer(address(5),address(6));
+    if(change==='from_high_bits')log.topics[1]='0x1'+log.topics[1].slice(3);
+    if(change==='to_high_bits')log.topics[2]='0x1'+log.topics[2].slice(3);
+    if(change==='short_topic')log.topics[1]='0x05';if(change==='extra_topic')log.topics.push(hash(4));
+    if(change==='missing_topic')log.topics.pop();if(change==='short_data')log.data='0x01';if(change==='foreign_topic')log.topics[0]=hash(3);
+    entry.receipt.logs=[log];const proof=freshPositionDependencies(entry);expect(proof?.addresses??[]).not.toContain(address(5));expect(proof?.addresses??[]).not.toContain(address(6));
+  });
+  it('fails closed when genuine transfer participants exceed the unchanged 512-address bound',()=>{
+    const entry=fixture();entry.receipt.logs=Array.from({length:255},(_,n)=>transfer(address(1000+n*2),address(1001+n*2),n));
+    expect(freshPositionDependencies(entry)).toBeNull();
   });
   it('does not accept Transfer logs as a substitute for an unavailable call tree',()=>{const entry=fixture();delete entry.trace;expect(freshPositionDependencies(entry)).toBeNull();});
   it.each(['wrong_root','wrong_input','invalid_transaction_hash','wrong_transaction_block_hash','wrong_transaction_block_number','failed_receipt','bad_log','unknown_call','missing_destination','bad_child','too_many_addresses'])('fails closed for %s',change=>{

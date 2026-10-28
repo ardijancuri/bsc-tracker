@@ -1,5 +1,7 @@
 import {WBNB} from '../launchpad.js';
-import {isFreshSettlementQuote} from './settlementQuote.js';
+import {isFreshSettlementQuote,FRESH_NATIVE_SETTLEMENT_SYMBOLS} from './settlementQuote.js';
+import{TRUSTED_QUOTE_FEEDS}from'../nodeMarketProtocols.js';
+import{validFreshCompleteCallTrace}from'./passiveIncoming.js';
 import {beforeExecutionTopic,userOperationTopic} from '../smartAccountTrades.js';
 import {transferTopic} from '../swap.js';
 import {FRESH_ENTRY_POINTS,freshAddress,freshHash,freshInteger,type FreshCapturedReceipt} from './capture.js';
@@ -64,6 +66,8 @@ export function freshQuotePayment(entry:FreshCapturedReceipt,block:FreshPriceBlo
       &&(buy?flow.outgoing>flow.incoming:flow.incoming>flow.outgoing));
     if(opposing.length!==1)return null;
     const [quoteAddress,payment]=opposing[0];
+    if(!Object.hasOwn(TRUSTED_QUOTE_FEEDS,quoteAddress)&&!Object.hasOwn(FRESH_NATIVE_SETTLEMENT_SYMBOLS,quoteAddress)
+      &&(!entry.trace||!validFreshCompleteCallTrace(entry,validateFreshTrace(entry.trace))))return null;
     // A returned payment comes from this route or a counterparty we paid;
     // unrelated mints/airdrops cannot silently reduce acquisition capital.
     if(buy){

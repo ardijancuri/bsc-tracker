@@ -76,7 +76,7 @@ describe('artwork durable work and read identities',()=>{
     expect(await runFreshArtwork({query} as unknown as Pool)).toEqual({ready:0,failed:0});
     expect(query.mock.calls[0][0]).toContain('k.is_tracked');expect(query.mock.calls[0][0]).toContain('e.canonical');expect(query.mock.calls[0][0]).toContain("e.kind IN('buy','sell')");
     expect(query.mock.calls[0][0]).toContain("t.launch_status='eligible'");expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0][0]).toContain("lf.protocol='flap' AND lf.status='eligible'");
+    expect(query.mock.calls[0][0]).toContain("lf.token_address=t.address AND lf.status='eligible'");
   });
   it('an existing active lease prevents duplicate upstream work',async()=>{
     const query=vi.fn().mockResolvedValueOnce({rows:[{address:token}],rowCount:1}).mockResolvedValue({rows:[],rowCount:0});

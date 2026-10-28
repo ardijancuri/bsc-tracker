@@ -1,7 +1,9 @@
 import{describe,expect,it}from'vitest';
-import{createFreshDecodeWorkBudget,groupFreshDecodeRows}from'./decodeWorkBudget.js';
+import{createFreshDecodeWorkBudget,createFreshDecodeServiceCycle,groupFreshDecodeRows}from'./decodeWorkBudget.js';
 
 describe('bounded decoder normalization scheduling',()=>{
+  it('reserves every fourth worker pass for due repairs while serving fresh work on the other three',()=>{const next=createFreshDecodeServiceCycle();expect(Array.from({length:12},()=>next().repairFirst)).toEqual([false,false,false,true,false,false,false,true,false,false,false,true]);});
+  it('keeps service counters local to each worker with no clock or shared queue state',()=>{const first=createFreshDecodeServiceCycle(),second=createFreshDecodeServiceCycle();for(let i=0;i<3;i++)expect(first().repairFirst).toBe(false);expect(first().repairFirst).toBe(true);expect(second().repairFirst).toBe(false);expect(first().repairFirst).toBe(false);});
   it('keeps legacy callers unbounded when no budget was requested',()=>{
     let at=0;const next=createFreshDecodeWorkBudget({now:()=>at});
     for(const value of[0,3_000,60_000,86_400_000]){at=value;expect(next()).toBe(true);}

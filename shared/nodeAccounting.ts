@@ -1,4 +1,5 @@
 import type { KolTokenBalanceProof } from './kolTokenTrades.js';
+import type {NodeCostEstimate} from './nodeCostEstimate.js';
 
 export type NodeAccountingSource = 'node' | 'mixed' | 'imported';
 /** Account and membership are part of private cache identity, never public identity. */
@@ -10,6 +11,7 @@ export interface NodeAccountingSnapshotIdentity {
   asOf: string; historyFingerprint: string; historyFrom: string | null;
   coveredThroughBlock: string | null; valuationBlock: string | null; valuationHash: string | null;
   complete: boolean; reasons: string[]; lastValid?: { snapshotId: string; asOf: string };
+  estimate?: NodeCostEstimate;
   /** Original dated values remain visible while independent refresh work waits. */
   refreshStatus?: 'pending'; refreshReason?: string;
   historyBoundary?: 'token_creation' | 'wallet_discovery' | 'imported_baseline' | 'membership_added' | 'verified_zero_position';
@@ -21,7 +23,7 @@ export interface NodeAccountingSnapshotIdentity {
 export interface NodeAccountingSummary {
   tracking?: { version: 1; source: 'fresh'; fromBlock: string; utcDay: string };
   walletAddress?: string;
-  realizedStatus?: 'ready' | 'pending' | 'unavailable';
+  realizedStatus?: 'ready' | 'estimated' | 'pending' | 'unavailable';
   quotedAt?: string | null;
   tokenAddress: string; snapshot: NodeAccountingSnapshotIdentity | null;
   status: 'ready' | 'pending' | 'unavailable'; position: 'open' | 'closed' | 'unknown';

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { certifyFreshCompleteCallTrace, validFreshCompleteCallTrace } from './pa
 import { EXPECTED_SOURCE, EXPECTED_BOUNDARY, EXPECTED_BOUNDARY_HASH, archiveEndpoint, createArchiveRpc, fetchHistoricalTrace, recoverHistoricalTraces, parseRecoveryArguments, historicalTraceCandidatesSql } from '../../scripts/fresh/recover-historical-traces.mjs';
 
 const validators = { ...capture, ...trace, certifyFreshCompleteCallTrace }, directories: string[] = [];
-afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 const hash = (digit: string) => `0x${digit.repeat(64)}`, address = (digit: string) => `0x${digit.repeat(40)}`;
 async function directory() { const value = await mkdtemp(join(tmpdir(), 'fresh-trace-test-')); directories.push(value); return value; }
 function fixture() {
@@ -94,6 +94,7 @@ describe('operator historical trace recovery', () => {
 
   it('applies only trace/provenance and pending status while preserving concurrent state and first failure', async () => {
     const f = fixture(), db = database(f, { alterLatest: entry => { entry.recoveryEvidence.concurrent = 'kept'; } }), out = await directory();
+    vi.spyOn(Date, 'now').mockReturnValue(f.at.getTime());
     const report = await recoverHistoricalTraces({ db, validators, verifySource: async () => EXPECTED_SOURCE, transport: transport(f), directory: out, now: f.at.getTime(), apply: true });
     expect(report.applied).toBe(1);
     const entry = capture.decodeFreshEvidence(db.payload) as any;
@@ -186,6 +187,7 @@ describe('operator historical trace recovery', () => {
 
   it('refuses local reorgs and conflicting traces without touching original evidence', async () => {
     const f = fixture(), out = await directory();
+    vi.spyOn(Date, 'now').mockReturnValue(f.at.getTime());
     const db = database(f, { reorg: true });
     const report = await recoverHistoricalTraces({ db, validators, verifySource: async () => EXPECTED_SOURCE, transport: transport(f), directory: out, now: f.at.getTime(), apply: true });
     expect(report.results[0].reason).toBe('archive_canonical_changed'); expect(db.payload.equals(f.row.payload)).toBe(true);

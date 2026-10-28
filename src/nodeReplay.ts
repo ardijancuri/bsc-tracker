@@ -3,6 +3,7 @@ import type { JournalTokenActivity } from '../shared/journal';
 import type { ReplayAccountingSnapshot } from '../shared/tradeReplayAccounting';
 import type { ReplayAccounting, ReplayInventory } from './tradeReplayData';
 import type { TradeRequestContext } from './tradeRequestContext';
+import{validNodeCostEstimate}from'../shared/nodeCostEstimate';
 
 const fields: (keyof ReplayAccountingSnapshot)[] = ['remainingTokenAmount', 'remainingCostBasisUsd', 'cumulativeRealizedProfitUsd',
   'investedUsd', 'soldUsd', 'transferOutIncomeUsd', 'feesUsd', 'feeInclusiveCostUsd'];
@@ -21,7 +22,8 @@ export function prepareNodeReplay(activity: KolTokenActivity, now: number, conte
   // contract. It does not pretend those events are GMGN recovered history.
   if (!history && identity?.version === 2 && raw?.version === 2 && activity.inventory) {
     const inventory = activity.inventory, coverage = inventory.coverage;
-    if (!identity.complete || !/^[a-f0-9]{64}$/.test(identity.snapshotId) || !['node','mixed'].includes(identity.source) || raw.source !== identity.source
+    const estimate=validNodeCostEstimate(identity),estimated=raw.status==='estimated'&&raw.coverage.estimatedFinal===true&&estimate!==null&&raw.final?.reportedProfitUsd===estimate.totalProfitUsd&&raw.final?.cumulativeRealizedProfitUsd===estimate.realizedProfitUsd&&raw.final?.feeInclusiveCostUsd===estimate.knownCapitalUsd&&raw.final?.reportedRoi===null;
+    if ((!identity.complete&&!estimated) || !/^[a-f0-9]{64}$/.test(identity.snapshotId) || !['node','mixed'].includes(identity.source) || raw.source !== identity.source
       || raw.policy !== 'kollens_fifo_v1' || !['ready', 'estimated'].includes(raw.status) || !raw.coverage.transactionsComplete || !raw.coverage.balanceMatched
       || raw.walletAddress !== activity.kol.address.toLowerCase() || raw.tokenAddress !== activity.token.address.toLowerCase()
       || inventory.version !== 1 || !coverage.complete || !coverage.reconciled || !Array.isArray(inventory.events) || !Array.isArray(raw.events)
@@ -49,7 +51,7 @@ export function prepareNodeReplay(activity: KolTokenActivity, now: number, conte
     if (raw.final) {
       const values = Object.fromEntries(fields.map(field => [field, numeric(raw.final![field])])) as { [Key in keyof ReplayAccountingSnapshot]: number | null };
       const profit = numeric(raw.final.reportedProfitUsd), roi = numeric(raw.final.reportedRoi), price = numeric(raw.final.priceUsd), timestamp = Date.parse(raw.final.timestamp);
-      if (fields.some(field => raw.final![field] !== null && values[field] === null) || profit === null || roi === null || !Number.isFinite(timestamp)
+      if (fields.some(field => raw.final![field] !== null && values[field] === null) || profit === null || roi === null&&!estimated || !Number.isFinite(timestamp)
         || timestamp < last || timestamp > now + 1000 || values.remainingTokenAmount! > 0 && (price === null || price <= 0)) return;
       final = { ...raw.final, ...values, reportedProfitUsd: profit, reportedRoi: roi, priceUsd: price };
     }

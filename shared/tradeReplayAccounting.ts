@@ -62,6 +62,8 @@ export interface TradeReplayAccounting {
     transactionsComplete: boolean;
     balanceMatched: boolean;
     exactFinal: boolean;
+    /** Signed display-only ending. It does not certify unknown purchase basis. */
+    estimatedFinal?: boolean;
     verification?: 'gmgn_history' | 'node_history' | 'mixed_history' | 'imported_history';
     reason?: string;
   };

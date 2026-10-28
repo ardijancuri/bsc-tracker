@@ -1,4 +1,5 @@
 import type { NodeAccountingSummary } from '../shared/nodeAccounting';
+import{validNodeCostEstimate}from'../shared/nodeCostEstimate';
 
 const address = /^0x[a-f0-9]{40}$/i, digest = /^[a-f0-9]{64}$/i;
 const exactNumber = (raw: unknown) => typeof raw === 'string' && raw.trim() !== '' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw.trim()) && Number.isFinite(Number(raw)) ? Number(raw) : null;
@@ -23,6 +24,8 @@ export function nodeSummaryDisplay(summary: NodeAccountingSummary | undefined, w
   const unavailable = { value: null, kind: 'unavailable' as const };
   if (!validNodeSummaryIdentity(summary, wallet, token, now)) return unavailable;
   const value = summary!, snapshot = value.snapshot!, fresh = value.tracking?.source === 'fresh';
+  const fallback=fresh&&value.realizedStatus==='estimated'?validNodeCostEstimate(snapshot):null;
+  if(fallback){const amount=exactNumber(fallback.realizedProfitUsd);if(amount!==null)return{value:amount,kind:'estimated'};}
   const realizedReady = fresh ? value.realizedStatus === 'ready' && snapshot.complete
     && ![value.reason, ...(snapshot.reasons ?? [])].some(reason => reason && /unknown_cost|unknown_fee|unknown_purchase|unknown_sale|unknown_incoming|unknown_outgoing|balance_mismatch|wallet_decode_gap|decoding_pending|registration_pending/.test(reason))
     : value.status === 'ready' && snapshot.complete;

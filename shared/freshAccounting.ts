@@ -1,4 +1,8 @@
-export interface FreshAcquisitionCost{version:1;policy:'actual_quote_acquisition_cost_v1';provenance:'node_execution_acquisition';quoteScope:'this_execution_acquired_quote_only';quoteAddress:string;grossNativeWei:string;wrappedNativeWei:string;nativeRouterDeductionWei:string;nativeRouterDeductionRecipient:string;quoteAcquiredRaw:string;quoteSpentRaw:string;quoteChangeRaw:string;nativePriceUsd:string;grossCostUsd:string;tokenCostUsd:string;remainingQuoteCostUsd:string;grossCostQ:string;tokenCostQ:string;remainingQuoteCostQ:string;gasNativeWei:string;}
+export interface FreshIntermediateAcquisitionProof{version:1;kind:'closed_native_intermediate_acquisition_v1';transactionHash:string;blockNumber:string;blockHash:string;walletAddress:string;tokenAddress:string;quoteAddress:string;poolAddress:string;traceSha256:string;proofSha256:string;}
+export interface FreshAcquisitionCost{version:1;policy:'actual_quote_acquisition_cost_v1';provenance:'node_execution_acquisition';quoteScope:'this_execution_acquired_quote_only';quoteAddress:string;grossNativeWei:string;wrappedNativeWei:string;nativeRouterDeductionWei:string;nativeRouterDeductionRecipient:string;quoteAcquiredRaw:string;quoteSpentRaw:string;quoteChangeRaw:string;nativePriceUsd:string;grossCostUsd:string;tokenCostUsd:string;remainingQuoteCostUsd:string;grossCostQ:string;tokenCostQ:string;remainingQuoteCostQ:string;gasNativeWei:string;intermediateQuoteProof?:FreshIntermediateAcquisitionProof;}
+/** Zero acquisition basis is an explicit verified-distribution policy, never
+ * an inference from a missing purchase, an incoming transfer or an absent mark. */
+export interface FreshAirdropBasis{version:1;policy:'verified_airdrop_zero_cost_v1';provenance:'node_authenticated_free_distribution';distributionKind:'authenticated_mint'|'authenticated_free_distribution'|'authenticated_free_claim';eventId:string;walletAddress:string;tokenAddress:string;sourceAddress:string|null;quantity:string;quantityRaw:string;decimals:number;blockNumber:string;blockHash:string;transactionHash:string;transactionIndex:number;executionIndex:number;logIndex:number;traceSha256:string;contextSha256:string;authenticationSha256:string;}
 /** Compact, source-neutral financial facts. Decimal inputs are never JS numbers. */
 export interface FreshFinancialEvent {
   id: string; executionKey: string; walletAddress: string; tokenAddress: string | null;
@@ -8,6 +12,9 @@ export interface FreshFinancialEvent {
    * BNB is a native settlement; WBNB denotes a genuine ERC20 movement. */
   quoteAddress?: string; quoteSymbol?: string; quoteAmount?: string;
   acquisitionCost?:FreshAcquisitionCost;
+  /** Original amountUsd remains the observed fair value or null. This proof
+   * changes only external incoming acquisition basis; fees remain payable. */
+  airdropBasis?:FreshAirdropBasis;
   counterparty: string | null; transferKey: string | null;
   blockNumber: string; blockHash: string; transactionHash: string;
   transactionIndex: number; executionIndex: number; logIndex: number | null;
@@ -29,6 +36,9 @@ export interface FreshLot {
   id: string; scopeId: string; tokenAddress: string; walletAddress: string;
   acquiredEventId: string; acquiredBlock: string; acquiredTransactionIndex: number; acquiredExecutionIndex: number;
   quantityQ: string; costQ: string | null; feeKnown: boolean;
+  /** Ephemeral known acquisition components for the explicit estimate. This
+   * is reconstructed from original facts on load, never a persisted basis. */
+  knownCostQ?:string|null;
 }
 export interface FreshPosition {
   scopeId: string; tokenAddress: string; quantityQ: string; investedQ: string; soldQ: string;
@@ -38,13 +48,19 @@ export interface FreshPosition {
 }
 export interface FreshEventResult {
   scopeId: string; eventId: string; tokenAddress: string | null; realizedQ: string | null;
+  /** Explicit omit_unknown_costs_v1 display only. Exact/known results and
+   * unknown FIFO basis remain unchanged; complete results store no copy. */
+  estimatedRealizedQ?:string|null;
   knownRealizedQ: string; capitalQ: string; feeQ: string | null; feeKey: string | null;
   tradeCount: number; volumeQ: string; tokensTrade: boolean; occurredAt: string;
 }
 export interface FreshPositionSummary {
   scopeId: string; tokenAddress: string; quantity: string; remainingCostUsd: string | null;
+  /** Transfer marks remain observed history; transferOutIncomeUsd is a legacy
+   * field name and never contributes to realized or estimated trading P&L. */
   investedUsd: string | null; soldUsd: string | null; incomingTransferCostUsd: string | null; transferOutIncomeUsd: string | null;
   feesUsd: string | null; capitalUsd: string | null; realizedProfitUsd: string | null; valueUsd: string | null;
+  /** Realized trading P&L plus remaining market value minus remaining FIFO cost. */
   estimatedProfitUsd: string | null; roi: string | null; status: 'complete' | 'unknown_costs' | 'unknown_fees' | 'quote_unavailable';
 }
 export interface FreshFeeExclusions {

@@ -1,15 +1,24 @@
 import{compactFreshAcquisitionCost}from'./acquisitionCost.js';
+import{recoverFreshHistorical3XdCurvePrice,type FreshHistorical3XdCurvePrice}from'./historical3XdCurvePrice.js';
+import{findFreshV2BridgeQuoteHints,recoverFreshHistoricalV2BridgePrice,type FreshHistoricalV2BridgePrice}from'./historicalV2BridgePrice.js';
+import{recoverFreshRegisteredV3Price,type FreshRegisteredV3HistoricalPrice}from'./historicalRegisteredV3Price.js';
+import{recoverFreshRegisteredV4Price,type FreshRegisteredV4HistoricalPrice}from'./historicalRegisteredV4Price.js';
+import{recoverFreshRegisteredInfinityClPrice,type FreshRegisteredInfinityClHistoricalPrice}from'./historicalRegisteredInfinityClPrice.js';
+import{validFreshInfinityClMarketIdentity}from'./infinityClMarket.js';
+import{recoverFreshHistoricalGenericNativeQuote,recoverFreshHistoricalGenericCapturedPrice,type FreshHistoricalGenericNativeQuote,type FreshHistoricalGenericCapturedPrice}from'./historicalGenericQuote.js';
 import{recoverFreshQuotePaymentV3,type FreshQuotePaymentV3Evidence}from'./quotePaymentV3.js';
 import{freshNativeStockAcquisitionCost,type FreshNativeStockAcquisitionCost}from'./nativeStockAcquisitionCost.js';
+import{freshNativeIntermediateAcquisitionCost,type FreshNativeIntermediateAcquisitionCost}from'./nativeIntermediateAcquisitionCost.js';
 import{captureFreshParentPoolQuote,type FreshParentPoolCapture}from'./parentPoolCapture.js';
 import{valueFreshParentFlapPurchase,type FreshHistoricalParentPoolQuoteEvidence}from'./historicalParentPoolQuote.js';
 import type {Pool} from 'pg';
+import type{FreshFinancialEvent,FreshAirdropBasis}from'../../shared/freshAccounting.js';
 import type {Rpc} from '../rpc.js';
 import {blockHex} from '../rpc.js';
 import {TRUSTED_QUOTE_FEEDS} from '../nodeMarketProtocols.js';
 import {MarketDecimal} from '../nodeMarketMath.js';
 import {validateFreshBlock,validateFreshReceipt,type FreshCapturedReceipt,type FreshBlock,type FreshReceipt} from './capture.js';
-import {freshTokenMetadata,type FreshPriceBlock,type FreshTokenMetadata} from './pricing.js';
+import {freshTokenMetadata,freshQuoteUsd,type FreshPriceBlock,type FreshTokenMetadata} from './pricing.js';
 import type {FreshStateReadEvidence} from './stateEvidence.js';
 import {createFreshStateEvidenceRpc} from './stateEvidence.js';
 import {recoverFreshHistoricalQuote,type FreshHistoricalQuoteEvidence} from './historicalQuote.js';
@@ -27,11 +36,14 @@ import {recoverFreshHistoricalPoolNativeQuote,type FreshHistoricalPoolNativeQuot
 import {FRESH_BTCB_QUOTE} from './currentBtcQuote.js';
 import {createFreshRecoveryBatch,type FreshRecoveryBatch} from './recoveryBatch.js';
 import {createFreshTemplateMetadataRecovery} from './templateMetadataRecovery.js';
+import{createFreshPinnedCloneMetadataRecovery}from'./pinnedCloneMetadataLoader.js';
 import {createFreshImportedMetadataRecovery,freshImportedMetadataMatchesState} from './importedMetadata.js';
 import {freshQuotePayment,type FreshQuotePayment} from './quotePayment.js';
 import {freshNativeQuoteChange,valueFreshNativeQuoteChange,freshNativeStockQuoteChange,valueFreshNativeStockQuoteChange,type FreshNativeQuoteChangeValue,type FreshNativeStockQuoteChangeValue} from './nativeQuoteChange.js';
 import {recoverFreshSignedBatchPurchase,type FreshSignedBatchPurchaseValue} from './signedBatchValuation.js';
 import type {FreshCallTrace} from './trace.js';
+import{freshVerifiedAirdropClaimCandidate,recoverFreshVerifiedAirdropBasis}from'./verifiedAirdropClaim.js';
+import{recoverFreshRetainedPoolNativeQuote,type FreshRetainedPoolNativeQuote}from'./retainedPoolQuote.js';
 
 export interface FreshDirectFlapPurchaseEvidence {
  version:1;kind:'historical_direct_flap_purchase';payment:FreshDirectFlapPurchase;
@@ -43,7 +55,17 @@ export interface FreshQuotePaymentEvidence {
 }
 
 export interface FreshReceiptRecoveryEvidence {
+ retainedNativeQuotes?:FreshRetainedPoolNativeQuote[];
+ threeXdCurvePrices?:FreshHistorical3XdCurvePrice[];
+ v2BridgePrices?:{proof:FreshHistoricalV2BridgePrice;nativePriceUsd:string;priceUsd:string}[];
+ registeredV3Prices?:{proof:FreshRegisteredV3HistoricalPrice;nativePriceUsd:string;priceUsd:string}[];
+ directNativePrices?:{tokenAddress:string;conversion:FreshHistoricalPoolNativeQuote;nativePriceUsd:string;priceUsd:string}[];
+ registeredV4Prices?:FreshRegisteredV4HistoricalPrice[];
+ registeredInfinityClPrices?:FreshRegisteredInfinityClHistoricalPrice[];
+ genericQuotePayments?:{payment:FreshQuotePayment;conversion:FreshHistoricalGenericNativeQuote;nativePriceUsd:string;amountUsd:string}[];
+ genericCapturedPrices?:FreshHistoricalGenericCapturedPrice[];
  nativeStockAcquisitionCosts?:FreshNativeStockAcquisitionCost[];
+ nativeIntermediateAcquisitionCosts?:FreshNativeIntermediateAcquisitionCost[];
  parentPoolQuotes?:FreshHistoricalParentPoolQuoteEvidence[];
  parentPoolQuoteCaptures?:FreshParentPoolCapture[];
  version:1;target:FreshPriceBlock;metadata:Record<string,unknown>;quotes:FreshHistoricalQuoteEvidence[];pools:FreshHistoricalPoolEvidence[];
@@ -59,15 +81,26 @@ export interface FreshReceiptRecoveryEvidence {
  signedBatchPurchases?:FreshSignedBatchPurchaseValue[];
 }
 const targetOf=(b:any):FreshPriceBlock=>({number:Number(b.block_number),hash:b.block_hash,timestamp:new Date(b.occurred_at).toISOString()});
+const stableQuoteProof=(v:unknown):string=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 /** Ingestion/repair only. Ordinary API reads never instantiate this adapter.
  * Each derived observation retains its real source/anchor and is bounded by
  * the same 72-hour receipt lifetime. No current token row supplies old costs. */
 export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedReceipt,target:FreshPriceBlock,options:{state?:()=>FreshStateReadEvidence|undefined;batch?:FreshRecoveryBatch}={}){
- const approvedAcquisitionCosts=new Map<string,FreshNativeStockAcquisitionCost>();
+ const approvedAcquisitionCosts=new Map<string,FreshNativeStockAcquisitionCost|FreshNativeIntermediateAcquisitionCost>();
  const acquisitionCost=(token:string,wallet:string)=>{const p=approvedAcquisitionCosts.get(token+':'+wallet);return p?compactFreshAcquisitionCost(p):null;};
  const prior=entry.recoveryEvidence;
- const validPrior=prior?.version===1&&JSON.stringify(prior.target)===JSON.stringify(target)&&Buffer.byteLength(JSON.stringify(prior))<=256*1024?prior:undefined;
+ const validPrior=prior?.version===1&&stableQuoteProof(prior.target)===stableQuoteProof(target)&&Buffer.byteLength(JSON.stringify(prior))<=256*1024?prior:undefined;
  const evidence:FreshReceiptRecoveryEvidence={version:1,target:{...target},v3QuotePayments:validPrior&&Array.isArray(validPrior.v3QuotePayments)&&validPrior.v3QuotePayments.length<=4?[...validPrior.v3QuotePayments]:[],nativeStockAcquisitionCosts:validPrior&&Array.isArray(validPrior.nativeStockAcquisitionCosts)&&validPrior.nativeStockAcquisitionCosts.length<=4?[...validPrior.nativeStockAcquisitionCosts]:[],parentPoolQuoteCaptures:validPrior&&Array.isArray(validPrior.parentPoolQuoteCaptures)&&validPrior.parentPoolQuoteCaptures.length<=4?[...validPrior.parentPoolQuoteCaptures]:[],parentPoolQuotes:validPrior&&Array.isArray(validPrior.parentPoolQuotes)&&validPrior.parentPoolQuotes.length<=4?[...validPrior.parentPoolQuotes]:[],metadata:{},quotes:[],pools:[],stockwaveMarkets:[],stockQuotes:[],flapQuotes:[],flapCurveQuotes:[],capturedPoolQuotes:[],directFlapPurchases:[],quotePayments:[],nativeQuoteChanges:[],nativeStockQuoteChanges:[],signedBatchPurchases:[]};
+ evidence.genericQuotePayments=validPrior&&Array.isArray(validPrior.genericQuotePayments)&&validPrior.genericQuotePayments.length<=4?[...validPrior.genericQuotePayments]:[];
+ evidence.genericCapturedPrices=validPrior&&Array.isArray(validPrior.genericCapturedPrices)&&validPrior.genericCapturedPrices.length<=4?[...validPrior.genericCapturedPrices]:[];
+ evidence.nativeIntermediateAcquisitionCosts=validPrior&&Array.isArray(validPrior.nativeIntermediateAcquisitionCosts)&&validPrior.nativeIntermediateAcquisitionCosts.length<=4?[...validPrior.nativeIntermediateAcquisitionCosts]:[];
+ evidence.registeredV4Prices=[];
+ evidence.registeredInfinityClPrices=[];
+ evidence.directNativePrices=[];
+ evidence.v2BridgePrices=[];
+ evidence.registeredV3Prices=[];
+ evidence.threeXdCurvePrices=[];
+ evidence.retainedNativeQuotes=validPrior&&Array.isArray(validPrior.retainedNativeQuotes)&&validPrior.retainedNativeQuotes.length<=4?[...validPrior.retainedNativeQuotes]:[];
  type Source={entry:FreshCapturedReceipt;payload:Buffer;block:FreshPriceBlock};
  const batch=options.batch??createFreshRecoveryBatch(db,rpc);
  const hashCache=new Map<number,Promise<string|null>>(),sources=new Map<string,Promise<Source[]>>();
@@ -77,6 +110,7 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const canonicalHash=(number:number)=>{let work=hashCache.get(number);if(!work){work=db.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[number]).then(r=>r.rows[0]?.block_hash??null);hashCache.set(number,work);}return work;};
  const imported=createFreshImportedMetadataRecovery({canonicalHash:async number=>(await db.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[number])).rows[0]?.block_hash??null});
  const templates=createFreshTemplateMetadataRecovery(db,rpc,batch,{target,entry,anchor,canonicalHash});
+ const pinnedClones=createFreshPinnedCloneMetadataRecovery(db,rpc,batch,{target,entry,anchor,canonicalHash});
  const findSources=(token:string):Promise<Source[]>=>{let work=sources.get(token);if(!work){work=batch.sources(token,target);sources.set(token,work);}return work;};
  const metadataValues=new Map<string,FreshTokenMetadata>();
  const importedMetadata=async(token:string):Promise<FreshTokenMetadata|null>=>{
@@ -111,6 +145,7 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
   const factory=await import('./factoryLaunch.js');
   const fromFactory=factory.freshStockwaveMetadataFromFact(fact,target);
   if(fromFactory){metadataValues.set(token,fromFactory);evidence.metadata[token]={kind:'authenticated_factory_constant_precision',creationBlock:Number(fact.block_number),creationHash:fact.block_hash,initcodeHash:fact.proof.initcodeHash};return fromFactory;}
+  const fromPinned=await pinnedClones.metadata(token,fact).catch(()=>null);if(fromPinned){metadataValues.set(token,fromPinned.value);evidence.metadata[token]=fromPinned.proof;return fromPinned.value;}
   // Reuse existing same-token raw proof before discovering another clone's
   // initializer. Valid retained metadata must not trigger additional log scans.
   const fromEarlier=await(async():Promise<FreshTokenMetadata|null>=>{
@@ -138,18 +173,41 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const quoteValues=new Map<string,Promise<string|null>>();
  const priceUsd=(token:string):Promise<string|null>=>{let work=quoteValues.get(token);if(!work){work=(async()=>{
   if(TRUSTED_QUOTE_FEEDS[token]){
+   if(!validPrior?.quotes.find(p=>p.tokenAddress===token)){const retained=options.state?.()??entry.stateEvidence;if(retained){try{const saved=createFreshStateEvidenceRpc(async()=>{throw Error('retained_feed_missing');},target,retained);return await freshQuoteUsd(token,{rpc:saved.rpc,block:target});}catch{/* Existing bracketed oracle recovery remains available. */}}}
    const old=validPrior?.quotes.find(p=>p.tokenAddress===token);let current=old?.anchor??await anchor();
    if(await canonicalHash(current.number)!==current.hash)throw Error('recovery_quote_noncanonical');
    const proof=await recoverFreshHistoricalQuote({rpc,tokenAddress:token,target,anchor:current,prior:old});evidence.quotes.push(proof);return proof.priceUsd;
   }
   const precision=await metadata(token);if(!precision)return null;
+  const retainedFlap=validPrior?.genericCapturedPrices?.find(p=>p.tokenAddress===token
+   &&p.conversion.kind==='historical_registered_quote_native_v3_bridge'&&p.conversion.capturedFlapAuthorization);
+  // A saved scoped curve mark must revalidate its original block and both
+  // historical conversion legs before reuse. Do not probe a different route
+  // or replace this proof with current state when its source is invalid.
+  // Older existing curve/pool proofs retain their established priority.
+  if(retainedFlap&&!validPrior?.flapCurveQuotes?.some(p=>p.tokenAddress===token)
+   &&!validPrior?.flapQuotes?.some(p=>p.tokenAddress===token)&&!validPrior?.capturedPoolQuotes?.some(p=>p.tokenAddress===token)){
+   try{const source=options.state?.()??entry.stateEvidence;if(!source)return null;
+    const proof=await recoverFreshHistoricalGenericCapturedPrice({rpc,tokenAddress:token,target,source,verifiedMetadata:precision,
+     anchor:retainedFlap.conversion.quote.anchor,canonicalHash,prior:retainedFlap}),nativeUsd=await priceUsd(WBNB);
+    if(nativeUsd===null)return null;const next=[...evidence.genericCapturedPrices!.filter(p=>p.tokenAddress!==token),proof];
+    if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,genericCapturedPrices:next}))>256*1024)return null;
+    evidence.genericCapturedPrices=next;return new MarketDecimal(BigInt(proof.rawNativeRatio.numerator)*10n**BigInt(precision.decimals),
+     BigInt(proof.rawNativeRatio.denominator)*10n**18n).mul(MarketDecimal.parse(nativeUsd)).text();
+   }catch{return null;}
+  }
   const fact=(await db.query('SELECT * FROM fresh.launch_facts WHERE token_address=$1',[token])).rows[0];
+  const retainedNative=validPrior?.retainedNativeQuotes?.find(p=>p.quoteAddress===token);
+  if(retainedNative)try{
+   const conversion=await recoverFreshRetainedPoolNativeQuote({rpc,quoteAddress:token,target,canonicalHash,source:options.state?.()??entry.stateEvidence,prior:retainedNative});
+   const nativeUsd=await priceUsd(WBNB);if(nativeUsd!==null)return new MarketDecimal(BigInt(conversion.nativeRaw)*10n**BigInt(precision.decimals),BigInt(conversion.quoteRaw)*10n**18n).mul(MarketDecimal.parse(nativeUsd)).text();
+  }catch{/* Foreign, empty or contradictory retained state cannot approve a mark. */}
   if(fact?.protocol==='flap'&&fact.status==='eligible'&&Number(fact.block_number)<=target.number){
    const source=options.state?.()??entry.stateEvidence;
    if(source){
     try{const old=validPrior?.flapCurveQuotes?.find(p=>p.tokenAddress===token);
      const proof=await recoverFreshHistoricalFlapCurveQuote({rpc,tokenAddress:token,verifiedMetadata:precision,source,target,
-      anchor:old?.conversion?.code.block??await anchor(),canonicalHash,prior:old});
+      anchor:old?.v3Conversion?.anchor??old?.conversion?.code.block??validPrior?.retainedNativeQuotes?.[0]?.target??await anchor(),canonicalHash,prior:old,retainedNativeQuotes:validPrior?.retainedNativeQuotes});
      const nativeUsd=await priceUsd(WBNB);if(nativeUsd===null)return null;
      const raw=proof.rawNativeRatio,priceNative=new MarketDecimal(BigInt(raw.numerator)*10n**BigInt(precision.decimals),BigInt(raw.denominator)*10n**18n);
      evidence.flapCurveQuotes!.push(proof);return priceNative.mul(MarketDecimal.parse(nativeUsd)).text();
@@ -180,14 +238,54 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    return nativePerToken.mul(MarketDecimal.parse(nativeUsd)).text();
   }
   const captured=options.state?.()??entry.stateEvidence;
+  // Exact-block native curve observations are captured urgently or imported
+  // as a finite historical repair. They are re-authenticated here; a current
+  // reserve or an unrelated nearby trade can never become an old mark.
+  const curvePrior=validPrior?.threeXdCurvePrices?.find(p=>p.tokenAddress===token);
+  if(curvePrior)try{
+   const proof=await recoverFreshHistorical3XdCurvePrice({rpc,tokenAddress:token,poolAddress:curvePrior.poolAddress,target,verifiedMetadata:precision,canonicalHash,source:captured,prior:curvePrior});
+   const next=[...evidence.threeXdCurvePrices!.filter(p=>p.tokenAddress!==token),proof];if(next.length<=4&&Buffer.byteLength(JSON.stringify({...evidence,threeXdCurvePrices:next}))<=256*1024){evidence.threeXdCurvePrices=next;const usd=await priceUsd(WBNB);if(usd!==null){const price=MarketDecimal.parse(proof.priceNative).mul(MarketDecimal.parse(usd)).text();if(MarketDecimal.parse(price).n>0n)return price;}}
+  }catch{/* Unsupported, graduated, orphaned or conflicting native curves remain explicit. */}
+  // Registered markets are independently authenticated during capture. Their
+  // current price/status never supplies an earlier transfer's historical mark.
+  if(fact?.status==='eligible')try{
+   const context=(await db.query("SELECT s.block_number AS start_number,s.block_hash AS start_hash,c.block_number AS capture_number,c.revision FROM fresh.checkpoints s CROSS JOIN fresh.checkpoints c WHERE s.key='start' AND c.key='capture'")).rows[0];
+   // The registry digest was issued from PostgreSQL JSON, preserving its
+   // numeric/timestamp representation rather than the pg driver row types.
+   const launch=(await db.query("SELECT to_jsonb(lf) AS fact FROM fresh.launch_facts lf WHERE token_address=$1 AND status='eligible'",[token])).rows[0]?.fact;
+   const markets=(await db.query("SELECT identity FROM fresh.markets WHERE token_address=$1 AND protocol IN('uniswap_v4','infinity_cl') ORDER BY id LIMIT 8",[token])).rows;
+   const candidates:{proof:FreshRegisteredV4HistoricalPrice|FreshRegisteredInfinityClHistoricalPrice;liquidity:MarketDecimal}[]=[];
+   if(context&&launch)for(const row of markets){const identity=row.identity?.market??row.identity;if(row.identity?.canonicalIdentityInvalid===true)continue;try{
+    const common={rpc,tokenAddress:token,target,verifiedMetadata:precision,identity,launchFact:launch,boundary:{number:Number(context.start_number),hash:context.start_hash},captureRevision:String(context.revision),captureNumber:Number(context.capture_number),canonicalHash};
+    let proof:FreshRegisteredV4HistoricalPrice|FreshRegisteredInfinityClHistoricalPrice;
+    if(validFreshInfinityClMarketIdentity(identity)){const old=validPrior?.registeredInfinityClPrices?.find(p=>p.tokenAddress===token&&p.identity.poolId===identity.poolId);proof=await recoverFreshRegisteredInfinityClPrice({...common,prior:old});}
+    else{const old=validPrior?.registeredV4Prices?.find(p=>p.tokenAddress===token&&p.identity.poolId===identity?.poolId);proof=await recoverFreshRegisteredV4Price({...common,anchor:old?.conversion?.kind==='historical_raw_pool_trusted_v3'?old.conversion.anchor:old?.conversion?.quote.anchor??await anchor(),source:captured,prior:old});}
+    candidates.push({proof,liquidity:MarketDecimal.parse(proof.quoteLiquidityNative)});
+   }catch{/* Incomplete, future, orphaned or empty markets cannot approve a mark. */}}
+   candidates.sort((a,b)=>b.liquidity.compare(a.liquidity));
+   if(candidates.length){const proof=candidates[0].proof,nativeUsd=await priceUsd(WBNB);if(nativeUsd!==null){
+    if(proof.kind==='historical_registered_infinity_cl_native_price'){const next=[...evidence.registeredInfinityClPrices!.filter(p=>p.tokenAddress!==token),proof];if(next.length<=4&&Buffer.byteLength(JSON.stringify({...evidence,registeredInfinityClPrices:next}))<=256*1024){evidence.registeredInfinityClPrices=next;const raw=proof.rawNativeRatio;return new MarketDecimal(BigInt(raw.numerator)*10n**BigInt(precision.decimals),BigInt(raw.denominator)*10n**18n).mul(MarketDecimal.parse(nativeUsd)).text();}}
+    else{const next=[...evidence.registeredV4Prices!.filter(p=>p.tokenAddress!==token),proof];if(next.length<=4&&Buffer.byteLength(JSON.stringify({...evidence,registeredV4Prices:next}))<=256*1024){evidence.registeredV4Prices=next;return MarketDecimal.parse(proof.priceNative).mul(MarketDecimal.parse(nativeUsd)).text();}}
+   }}
+  }catch{/* Missing canonical registry context remains explicit. */}
+  if(fact?.status==='eligible')try{
+   const markets=(await db.query("SELECT id,protocol,identity FROM fresh.markets WHERE token_address=$1 AND protocol='pcs_v3' ORDER BY id LIMIT 4",[token])).rows;
+   for(const market of markets){try{
+    const old=validPrior?.registeredV3Prices?.find(p=>p.proof.tokenAddress===token&&p.proof.market.id===market.id),proof=await recoverFreshRegisteredV3Price({rpc,tokenAddress:token,target,verifiedMetadata:precision,market,anchor:old?.proof.conversion.anchor??await anchor(),canonicalHash,prior:old?.proof}),nativeUsd=await priceUsd(WBNB);if(nativeUsd===null)continue;
+    const price=MarketDecimal.parse(proof.priceNative).mul(MarketDecimal.parse(nativeUsd)).text();if(MarketDecimal.parse(price).n<=0n)continue;
+    const next=[...evidence.registeredV3Prices!.filter(p=>p.proof.tokenAddress!==token),{proof,nativePriceUsd:nativeUsd,priceUsd:price}];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,registeredV3Prices:next}))>256*1024)continue;
+    evidence.registeredV3Prices=next;return price;
+   }catch{/* An orphaned, future, empty or unsupported registered pool cannot approve a mark. */}}
+  }catch{/* Registry discovery is optional; canonical market proof remains mandatory. */}
   if(captured){try{
    const old=validPrior?.capturedPoolQuotes?.find(p=>p.tokenAddress===token);
    const proof=await recoverFreshHistoricalCapturedPoolQuote({rpc,tokenAddress:token,verifiedMetadata:precision,source:captured,target,
-    anchor:old?.code.block??await anchor(),canonicalHash,prior:old});
+    anchor:old?.code.block??await anchor(),canonicalHash,prior:old,retainedNativeQuotes:validPrior?.retainedNativeQuotes});
    const nativeUsd=await priceUsd(WBNB);if(nativeUsd===null)return null;
    const raw=proof.rawNativeRatio,priceNative=new MarketDecimal(BigInt(raw.numerator)*10n**BigInt(precision.decimals),BigInt(raw.denominator)*10n**18n);
    evidence.capturedPoolQuotes!.push(proof);return priceNative.mul(MarketDecimal.parse(nativeUsd)).text();
   }catch{/* A complete earlier original pool observation may still cover the target. */}}
+  if(captured){try{const old=validPrior?.genericCapturedPrices?.find(p=>p.tokenAddress===token),proof=await recoverFreshHistoricalGenericCapturedPrice({rpc,tokenAddress:token,target,source:captured,verifiedMetadata:precision,anchor:old?.conversion.quote.anchor??await anchor(),canonicalHash,prior:old}),nativeUsd=await priceUsd(WBNB);if(nativeUsd!==null){const next=[...evidence.genericCapturedPrices!.filter(p=>p.tokenAddress!==token),proof];if(next.length<=4&&Buffer.byteLength(JSON.stringify({...evidence,genericCapturedPrices:next}))<=256*1024){evidence.genericCapturedPrices=next;return new MarketDecimal(BigInt(proof.rawNativeRatio.numerator)*10n**BigInt(precision.decimals),BigInt(proof.rawNativeRatio.denominator)*10n**18n).mul(MarketDecimal.parse(nativeUsd)).text();}}}catch{/* New quote routes require complete dated bridge evidence. */}}
   const earlier=await findSources(token);
   for(const source of earlier){const seed=source.entry.stateEvidence;if(!seed||target.number-seed.blockNumber>4096)continue;
    try{const old=validPrior?.pools.find(p=>p.tokenAddress===token&&p.source.blockNumber===seed.blockNumber&&p.source.blockHash===seed.blockHash);
@@ -195,6 +293,29 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
     const usd=await priceUsd(proof.quoteAddress);if(usd===null)return null;evidence.pools.push(proof);return MarketDecimal.parse(proof.priceQuote).mul(MarketDecimal.parse(usd)).text();
    }catch{/* Another earlier authentic seed may cover this pool. No current-price fallback. */}
   }
+  // Exact eligible token/native PCS V2 markets need no captured state seed.
+  // The existing immutable-pool verifier reads genuine canonical block-end
+  // Sync evidence; independently recovered precision and dated BNB/USD give
+  // a transfer mark, never a substitute for the transaction's settled cost.
+  if(fact?.status==='eligible'&&fact.protocol==='evm_creation'&&Number(fact.block_number)<=target.number){try{
+   const old=validPrior?.directNativePrices?.find(p=>p.tokenAddress===token);
+   const conversion=await recoverFreshHistoricalPoolNativeQuote({rpc,quoteAddress:token,target,transactionIndex:0,observation:'block_end',anchor:old?.conversion.code.block??await anchor(),canonicalHash,prior:old?.conversion});
+   const nativeUsd=await priceUsd(WBNB);if(nativeUsd===null)return null;
+   const price=new MarketDecimal(BigInt(conversion.nativeRaw)*10n**BigInt(precision.decimals),BigInt(conversion.quoteRaw)*10n**18n).mul(MarketDecimal.parse(nativeUsd)).text();
+   const proof={tokenAddress:token,conversion,nativePriceUsd:nativeUsd,priceUsd:price};
+   if(old&&JSON.stringify(old)!==JSON.stringify(proof))return null;
+   const next=[...evidence.directNativePrices!.filter(p=>p.tokenAddress!==token),proof];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,directNativePrices:next}))>256*1024)return null;
+   evidence.directNativePrices=next;return price;
+  }catch{/* Missing, empty or contradictory canonical markets remain unknown. */}}
+  if(fact?.status==='eligible'&&fact.protocol==='evm_creation'&&Number(fact.block_number)<=target.number)try{
+   const previous=validPrior?.v2BridgePrices?.find(p=>p.proof.tokenAddress===token),hints=previous?[previous.proof.quoteAddress]:await findFreshV2BridgeQuoteHints(db,token,entry);
+   const candidates:{proof:FreshHistoricalV2BridgePrice;nativeUsd:string;price:string;liquidity:MarketDecimal}[]=[];
+   for(const quote of hints){try{const proof=await recoverFreshHistoricalV2BridgePrice({rpc,tokenAddress:token,quoteAddress:quote,target,anchor:previous?.proof.market.code.block??await anchor(),verifiedMetadata:precision,canonicalHash,prior:previous?.proof}),nativeUsd=await priceUsd(WBNB);if(nativeUsd===null)continue;
+    const price=MarketDecimal.parse(proof.priceNative).mul(MarketDecimal.parse(nativeUsd)).text();if(MarketDecimal.parse(price).n<=0n)continue;
+    const liquidity=new MarketDecimal(BigInt(proof.market.quoteRaw)*BigInt(proof.conversion.quoteRaw),BigInt(proof.conversion.baseRaw));candidates.push({proof,nativeUsd,price,liquidity});
+   }catch{/* A quote hint never substitutes for genuine historical liquidity. */}}
+   candidates.sort((a,b)=>b.liquidity.compare(a.liquidity));if(candidates.length){const selected=candidates[0],next=[...evidence.v2BridgePrices!.filter(p=>p.proof.tokenAddress!==token),{proof:selected.proof,nativePriceUsd:selected.nativeUsd,priceUsd:selected.price}];if(next.length<=4&&Buffer.byteLength(JSON.stringify({...evidence,v2BridgePrices:next}))<=256*1024){evidence.v2BridgePrices=next;return selected.price;}}
+  }catch{/* Missing original routes or historical pool states remain explicit. */}
   return null;
  })().catch(()=>null);quoteValues.set(token,work);}return work;};
  const additionalNativeFeeWei=async(token:string):Promise<bigint|null>=>{
@@ -205,6 +326,15 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
   const fee=freshStockwaveBridgeFee(entry,token);
   if(fee!==null)evidence.metadata[token]={...(evidence.metadata[token] as Record<string,unknown>??{}),bridgeNativeFee:{kind:'layerzero_receipt_worker_fees',nativeFeeWei:String(fee),transactionHash:entry.transaction.hash}};
   return fee;
+ };
+ const airdropBasis=async(event:FreshFinancialEvent,precision:FreshTokenMetadata,loadTrace:()=>Promise<FreshCallTrace|null>):Promise<FreshAirdropBasis|null>=>{
+  if(event.kind!=='transfer_in'||!freshVerifiedAirdropClaimCandidate(entry)||event.blockNumber!==String(target.number)||event.blockHash!==target.hash||event.transactionHash!==entry.transaction.hash
+   ||event.tokenAddress!==precision.address||precision.block.number!==target.number||precision.block.hash!==target.hash||await canonicalHash(target.number)!==target.hash)return null;
+  const trace=entry.trace??await loadTrace();if(!trace)return null;
+  // Membership and internal-transfer treatment belong to each accounting
+  // scope. A shared positive claim proof never replaces its carried FIFO lots.
+  const proofEntry:FreshCapturedReceipt={...entry,trace,...((options.state?.()??entry.stateEvidence)?{stateEvidence:options.state?.()??entry.stateEvidence}:{}),recoveryEvidence:evidence};
+  return recoverFreshVerifiedAirdropBasis({entry:proofEntry,event,metadata:precision});
  };
  const directFlapPurchaseUsd=async(token:string,wallet:string,receivedRaw:bigint,nativePriceUsd:string|null,traceLoader?:()=>Promise<FreshCallTrace|null>):Promise<string|null>=>{
   const payment=freshDirectFlapPurchase(entry,target,token,wallet,receivedRaw);
@@ -255,7 +385,8 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const quotePaymentUsd=async(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly=false):Promise<string|null>=>{
   const old=validPrior?.quotePayments?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
   const oldV3=validPrior?.v3QuotePayments?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
-  if(retainedOnly&&!old&&!oldV3)return null;
+  const oldGeneric=validPrior?.genericQuotePayments?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
+  if(retainedOnly&&!old&&!oldV3&&!oldGeneric)return null;
   const payment=freshQuotePayment(entry,target,token,wallet,targetRaw);if(!payment||nativePriceUsd===null)return null;
   const v3=async()=>{const proof=await recoverFreshQuotePaymentV3({rpc,payment,target,anchor:oldV3?.conversion.anchor??await anchor(),canonicalHash,state:options.state?.()??entry.stateEvidence,prior:oldV3});
    if(!evidence.v3QuotePayments!.some(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet)){const next=[...evidence.v3QuotePayments!,proof];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,v3QuotePayments:next}))>256*1024)return null;evidence.v3QuotePayments=next;}return proof.amountUsd;};
@@ -270,18 +401,28 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    if(old&&stable(old)!==stable(proof))return null;
    if(!evidence.quotePayments!.some(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet))evidence.quotePayments!.push(proof);
    return amountUsd;
-  }catch{try{return await v3();}catch{return null;}}
+  }catch{try{return await v3();}catch{try{const conversion=await recoverFreshHistoricalGenericNativeQuote({rpc,quoteAddress:payment.quoteAddress,target,transactionIndex:payment.transactionIndex,observation:'before_execution',anchor:oldGeneric?.conversion.quote.anchor??await anchor(),canonicalHash,prior:oldGeneric?.conversion}),ratio=conversion.rawNativeRatio,amountUsd=new MarketDecimal(BigInt(payment.quoteRaw)*BigInt(ratio.numerator),BigInt(ratio.denominator)*10n**18n).mul(MarketDecimal.parse(nativePriceUsd)).text(),proof={payment,conversion,nativePriceUsd,amountUsd};if(oldGeneric&&stableQuoteProof(oldGeneric)!==stableQuoteProof(proof))return null;const next=[...evidence.genericQuotePayments!.filter(p=>p.payment.tokenAddress!==token||p.payment.walletAddress!==wallet),proof];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,genericQuotePayments:next}))>256*1024)return null;evidence.genericQuotePayments=next;return amountUsd;}catch{return null;}}}
  };
  const nativeQuoteChangeUsd=async(token:string,wallet:string,targetRaw:bigint,nativePriceUsd:string|null,retainedOnly=false):Promise<string|null>=>{
   const old=validPrior?.nativeQuoteChanges?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
   const oldStock=validPrior?.nativeStockQuoteChanges?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
-  if(retainedOnly&&!old&&!oldStock||nativePriceUsd===null)return null;
+  const oldIntermediate=validPrior?.nativeIntermediateAcquisitionCosts?.find(value=>value.payment.tokenAddress===token&&value.payment.walletAddress===wallet);
+  if(retainedOnly&&!old&&!oldStock&&!oldIntermediate||nativePriceUsd===null)return null;
   const stockPayment=freshNativeStockQuoteChange(entry,target,token,wallet,targetRaw);
   if(stockPayment){try{
    // Previously verified market-reference accounting remains stable. New exact
    // acquisitions can instead carry their actual input cost into spent/retained
    // quote units, without asserting an independent market valuation.
-   if(!oldStock){const cost=freshNativeStockAcquisitionCost(entry,target,token,wallet,targetRaw,nativePriceUsd);if(cost){const old=evidence.nativeStockAcquisitionCosts!.find(p=>p.payment.tokenAddress===token&&p.payment.walletAddress===wallet);if(old&&JSON.stringify(old)!==JSON.stringify(cost))return null;if(!old){if(evidence.nativeStockAcquisitionCosts!.length>=4)return null;evidence.nativeStockAcquisitionCosts!.push(cost);}approvedAcquisitionCosts.set(token+':'+wallet,cost);return cost.amountUsd;}}
+   if(!oldStock){const cost=freshNativeStockAcquisitionCost(entry,target,token,wallet,targetRaw,nativePriceUsd);if(cost){const old=evidence.nativeStockAcquisitionCosts!.find(p=>p.payment.tokenAddress===token&&p.payment.walletAddress===wallet);if(old&&JSON.stringify(old)!==JSON.stringify(cost))return null;if(!old){if(evidence.nativeStockAcquisitionCosts!.length>=4)return null;evidence.nativeStockAcquisitionCosts!.push(cost);}approvedAcquisitionCosts.set(token+':'+wallet,cost);return cost.amountUsd;}
+    // A registered settlement asset can use a different signed purchase leg.
+    // Keep all existing stock/market proofs first, then prove actual cash and
+    // quote conservation before attempting a new historical market conversion.
+    if(!old&&!validPrior?.nativeStockAcquisitionCosts?.some(p=>p.payment.tokenAddress===token&&p.payment.walletAddress===wallet)){
+     const cost=freshNativeIntermediateAcquisitionCost(entry,target,token,wallet,targetRaw,nativePriceUsd);
+     if(cost){if(oldIntermediate&&stableQuoteProof(oldIntermediate)!==stableQuoteProof(cost))return null;const next=[...evidence.nativeIntermediateAcquisitionCosts!.filter(p=>p.payment.tokenAddress!==token||p.payment.walletAddress!==wallet),cost];if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,nativeIntermediateAcquisitionCosts:next}))>256*1024)return null;evidence.nativeIntermediateAcquisitionCosts=next;approvedAcquisitionCosts.set(token+':'+wallet,cost);return cost.amountUsd;}
+     if(oldIntermediate)return null;
+    }
+   }
    if(old)return null;
    const conversion=await recoverFreshStockRawQuote({rpc,target,canonicalHash,prior:oldStock?.conversion});
    const proof=valueFreshNativeStockQuoteChange(stockPayment,conversion,nativePriceUsd);if(!proof)return null;
@@ -291,6 +432,15 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    return proof.amountUsd;
   }catch{return null;}}
   if(oldStock)return null;
+  // Actual acquired/used/returned quote units allocate the original input cost.
+  // This proof grants no quote identity, independent price or airdrop basis.
+  if(!old){const cost=freshNativeIntermediateAcquisitionCost(entry,target,token,wallet,targetRaw,nativePriceUsd);
+   if(cost){if(oldIntermediate&&JSON.stringify(oldIntermediate)!==JSON.stringify(cost))return null;
+    const next=[...evidence.nativeIntermediateAcquisitionCosts!.filter(p=>p.payment.tokenAddress!==token||p.payment.walletAddress!==wallet),cost];
+    if(next.length>4||Buffer.byteLength(JSON.stringify({...evidence,nativeIntermediateAcquisitionCosts:next}))>256*1024)return null;
+    evidence.nativeIntermediateAcquisitionCosts=next;approvedAcquisitionCosts.set(token+':'+wallet,cost);return cost.amountUsd;}
+   if(oldIntermediate)return null;
+  }
   const payment=freshNativeQuoteChange(entry,target,token,wallet,targetRaw);if(!payment)return null;
   try{
    const conversion=await recoverFreshHistoricalPoolNativeQuote({rpc,quoteAddress:payment.quoteAddress,target,transactionIndex:payment.transactionIndex,
@@ -312,5 +462,5 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    return proof.amountUsd;
   }catch{return null;}
  };
- return{acquisitionCost,metadata,importedMetadata,priceUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.v3QuotePayments!.length||evidence.nativeStockAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
+ return{acquisitionCost,airdropBasis,metadata,importedMetadata,priceUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.retainedNativeQuotes!.length||evidence.threeXdCurvePrices!.length||evidence.v2BridgePrices!.length||evidence.registeredV3Prices!.length||evidence.directNativePrices!.length||evidence.registeredInfinityClPrices!.length||evidence.registeredV4Prices!.length||evidence.genericQuotePayments!.length||evidence.genericCapturedPrices!.length||evidence.v3QuotePayments!.length||evidence.nativeStockAcquisitionCosts!.length||evidence.nativeIntermediateAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
 }

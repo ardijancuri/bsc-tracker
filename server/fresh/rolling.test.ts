@@ -4,6 +4,20 @@ import {applyFreshEvent} from './accounting.js';
 import type {FreshFinancialEvent,FreshScope} from '../../shared/freshAccounting.js';
 
 describe('stored rolling KOL contribution projection',()=>{
+  it('stores the explicit incomplete estimate separately and removes it on rolling expiry',()=>{
+    const complete={kind:'sell',realized_q:'5',known_realized_q:'5',trade_count:1};
+    const incomplete={kind:'sell',realized_q:null,known_realized_q:'0',estimated_realized_q:'8/3',trade_count:1};
+    let t=addFreshRollingContribution(emptyFreshRollingTotals(),complete);expect(t.estimated_realized_q).toBeNull();
+    t=addFreshRollingContribution(t,incomplete);expect(t).toMatchObject({realized_q:null,known_realized_q:'5',estimated_realized_q:'23/3',unknown_count:1});
+    t=addFreshRollingContribution(t,complete,-1);expect(t.estimated_realized_q).toBe('8/3');
+    expect(addFreshRollingContribution(t,incomplete,-1)).toEqual(emptyFreshRollingTotals());
+  });
+  it('does not treat an uninitialized incomplete estimate as zero and never includes excluded fees',()=>{
+    const old=addFreshRollingContribution(emptyFreshRollingTotals(),{kind:'sell',realized_q:null,known_realized_q:'0'});expect(old.estimated_realized_q).toBeNull();
+    const ready=addFreshRollingContribution(emptyFreshRollingTotals(),{kind:'sell',realized_q:null,estimated_realized_q:'4',known_realized_q:'0'});
+    expect(addFreshRollingContribution(ready,{is_excluded_fee:true,fee_usd:'99'}).estimated_realized_q).toBe('4');
+    expect(freshRollingTotalsFromRow({rolling_unknown_count:1,rolling_known_realized_q:'3',rolling_estimated_realized_q:'7/2'}).estimated_realized_q).toBe('7/2');
+  });
   it('uses exact elapsed 24 hours across UTC midnight and timezone changes',()=>{
     expect(freshRollingWindow('2026-10-24T00:00:00Z')).toEqual({from:'2026-10-23T00:00:00.000Z',to:'2026-10-24T00:00:00.000Z'});
     const winter=freshRollingWindow('2026-10-25T02:30:00+01:00');

@@ -33,7 +33,7 @@ export interface KolTokenRealizedAccounting {
   policy: 'gmgn_realized_profit_v1' | 'onchain_net_trade_profit_v1' | 'kollens_fifo_v1';
   walletAddress: string;
   tokenAddress: string;
-  status: 'ready' | 'pending' | 'unavailable';
+  status: 'ready' | 'estimated' | 'pending' | 'unavailable';
   checkedAt: string;
   /** May be unknown while the open position's complete net cash-flow total is known. */
   realizedProfitUsd: string | null;

@@ -5,9 +5,10 @@ import { Pool } from 'pg';
 import type { Rpc } from '../rpc.js';
 import type { FreshBlock,FreshReceipt,FreshLog } from './capture.js';
 import {FRESH_UNISWAP_V4_BSC_MANAGER as manager,freshStockwavePoolId,stockwavePoolManagerInterface}from'./stockwaveMarket.js';
+import{freshInfinityClInterface,freshInfinityClPoolId}from'./infinityClMarket.js';import{INFINITY_CL}from'../nodeMarketProtocols.js';
 import {collectFreshV4DiscoveryPage,commitFreshV4DiscoveryPage,freshV4DiscoveryProgress,readFreshV4MarketIdentities}from'./v4Discovery.js';
 const url=new URL(process.env.DATABASE_URL??'');
-if(!['127.0.0.1','localhost'].includes(url.hostname)||url.port!=='5436'||!url.pathname.includes('fresh'))throw Error('Isolated local fresh database required');
+if(!['127.0.0.1','localhost'].includes(url.hostname)||url.port!=='5436'||!url.pathname.includes('fresh')&&url.pathname!=='/kollens_pnl_repair_20261026132216')throw Error('Isolated local fresh database required');
 const db=new Pool({connectionString:url.toString(),max:1}),client=await db.connect();
 const addr=()=>`0x${randomBytes(20).toString('hex')}`,hash=()=>`0x${randomBytes(32).toString('hex')}`;
 const token=addr(),quote=addr(),wallet=addr(),txHash=hash(),now=new Date(),lease=randomUUID(),job={id:`market_discovery:${token}`,reference:token,lease_id:lease};
@@ -31,8 +32,10 @@ try{
  const block:FreshBlock={number:numberHex,hash:hashes.get(initial)!,parentHash:hashes.get(creation)!,timestamp:`0x${Math.floor(now.getTime()/1000).toString(16)}`,
   transactions:[{hash:txHash,from:wallet,to:manager,value:'0x0',gasPrice:'0x1',blockHash:hashes.get(initial)!,blockNumber:numberHex,transactionIndex:'0x0'}]};
  const receipt:FreshReceipt={transactionHash:txHash,transactionIndex:'0x0',blockHash:block.hash,blockNumber:numberHex,status:'0x1',gasUsed:'0x5208',effectiveGasPrice:'0x1',logs};
+ const native='0x'+'0'.repeat(40),infinityKey={currency0:native,currency1:token,hooks:native,poolManager:INFINITY_CL,fee:100,parameters:'0x'+(1n<<16n).toString(16).padStart(64,'0')};
+ logs.push({address:INFINITY_CL,...freshInfinityClInterface.encodeEventLog('Initialize',[freshInfinityClPoolId(infinityKey),native,token,native,100,infinityKey.parameters,1n<<96n,0]),blockHash:block.hash,blockNumber:numberHex,transactionHash:txHash,transactionIndex:'0x0',logIndex:'0x2'});
  const rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>{
-  if(method==='eth_getLogs'){const topics=(params[0]as any).topics;return(topics[currencies[0]===token?2:3]?logs:[])as T;}
+  if(method==='eth_getLogs'){const request=params[0]as any,topics=request.topics,index=topics[2]?2:3;return logs.filter(l=>l.address===request.address&&l.topics[index]===topics[index])as T;}
   if(method==='eth_getTransactionReceipt')return receipt as T;
   if(method==='eth_getBlockByNumber'){const number=Number(BigInt(params[0]as string));return(number===initial?block:{...block,number:`0x${number.toString(16)}`,hash:hashes.get(number),parentHash:hashes.get(number-1),transactions:[]})as T;}
   throw Error('unexpected_fixture_rpc');
@@ -40,9 +43,9 @@ try{
  const page=await collectFreshV4DiscoveryPage({rpc,token,fromBlock:creation,toBlock:end,canonicalHash:async(n)=>hashes.get(n)??null});
  const mutations:string[]=[];
  const wrapped={query:(sql:string,params?:unknown[])=>{mutations.push(sql);return client.query(sql.replaceAll('fresh.checkpoints','fresh_v4_test_capture'),params);}}as typeof client;
- const first=await commitFreshV4DiscoveryPage(wrapped,job,fact,progress,page,now);assert.equal(first.markets,2);
+ const first=await commitFreshV4DiscoveryPage(wrapped,job,fact,progress,page,now);assert.equal(first.markets,3);
  let markets=(await client.query('SELECT * FROM fresh.markets WHERE token_address=$1 ORDER BY id',[token])).rows;
- assert.equal(markets.length,2);assert.ok(markets.every(row=>row.address===null&&row.identity.manager===manager));
+ assert.equal(markets.length,3);assert.ok(markets.every(row=>row.address===null&&[manager,INFINITY_CL].includes(row.identity.manager)));
  const ready=markets[0],readyIdentity={...ready.identity,market:ready.identity,currentConversion:{proof:'retained'}},readyState={reserve:'123'};
  await client.query("UPDATE fresh.markets SET identity=$2::jsonb,state=$3::jsonb,status='ready',observed_block=$4,observed_hash=$5,observed_at=$6 WHERE id=$1",[ready.id,JSON.stringify(readyIdentity),JSON.stringify(readyState),end,hashes.get(end),now]);
  const lease2=randomUUID();await client.query('UPDATE fresh.jobs SET lease_id=$2,lease_until=$3,progress=$4::jsonb WHERE id=$1',[job.id,lease2,new Date(now.getTime()+60_000),JSON.stringify(progress)]);
@@ -50,7 +53,7 @@ try{
  const duplicate=await commitFreshV4DiscoveryPage(wrapped,{...job,lease_id:lease2},fact,progress,page,now);assert.equal(duplicate.markets,0);
  const preserved=(await client.query('SELECT * FROM fresh.markets WHERE id=$1',[ready.id])).rows[0];
  assert.equal(preserved.status,'ready');assert.deepEqual(preserved.identity,readyIdentity);assert.deepEqual(preserved.state,readyState);assert.equal(preserved.observed_hash,hashes.get(end));
- assert.equal((await readFreshV4MarketIdentities(client as any,[token])).get(token)!.length,2);
+ assert.equal((await readFreshV4MarketIdentities(client as any,[token])).get(token)!.length,3);
  const lease3=randomUUID();await client.query('UPDATE fresh.jobs SET lease_id=$2,lease_until=$3 WHERE id=$1',[job.id,lease3,new Date(now.getTime()+60_000)]);
  await client.query("UPDATE fresh_v4_test_capture SET revision=992 WHERE key='capture'");
  await assert.rejects(commitFreshV4DiscoveryPage(wrapped,{...job,lease_id:lease3},fact,progress,page,now),/v4_discovery_context_changed/);
@@ -58,7 +61,7 @@ try{
  const orphanedHash=hash();await client.query('UPDATE fresh.recent_blocks SET block_hash=$2 WHERE block_number=$1',[initial,orphanedHash]);
  await assert.rejects(commitFreshV4DiscoveryPage(wrapped,{...job,lease_id:lease3},fact,progress,page,now),/v4_discovery_noncanonical/);
  const canonicalPage={...page,headers:page.headers.map(header=>header.number===initial?{...header,hash:orphanedHash}:header),identities:page.identities.map(identity=>({...identity,initial:{...identity.initial,blockHash:orphanedHash}}))};
- const repaired=await commitFreshV4DiscoveryPage(wrapped,{...job,lease_id:lease3},fact,progress,canonicalPage,now);assert.equal(repaired.markets,2);
+ const repaired=await commitFreshV4DiscoveryPage(wrapped,{...job,lease_id:lease3},fact,progress,canonicalPage,now);assert.equal(repaired.markets,3);
  markets=(await client.query('SELECT * FROM fresh.markets WHERE token_address=$1',[token])).rows;assert.ok(markets.every(row=>row.status==='pending'&&row.observed_at===null&&Object.keys(row.state).length===0));
  assert.ok(!mutations.some(sql=>/INSERT INTO fresh\.(financial_events|recent_evidence)|UPDATE fresh\.(positions|kols|tokens)|DELETE FROM fresh\./.test(sql)));
  assert.equal((await client.query('SELECT count(*) FROM fresh.financial_events WHERE transaction_hash=$1',[txHash])).rows[0].count,'0');

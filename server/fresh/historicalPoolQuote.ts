@@ -32,7 +32,9 @@ export async function recoverFreshHistoricalPoolNativeQuote(options:{rpc:Rpc;quo
  // Active quote pools can emit more than the work limit in 4,096 blocks.
  // Start with the smallest complete window; expand only when it contains no
  // preceding observation. Never discard malformed, excessive or orphan logs.
- const windows=[64,256,1024,4096].map(size=>Math.max(0,target.number-size+1));
+ // Quiet quote pools can keep the same genuine reserves for more than a day.
+ // One final single-pair window still keeps the existing full-result log cap.
+ const windows=[64,256,1024,4096,262144].map(size=>Math.max(0,target.number-size+1));
  let fromBlock=prior?.fromBlock??windows[0];
  const codeBlock=prior?.code?.block??anchor;
  if(!block(codeBlock)||codeBlock.number<target.number||codeBlock.number>anchor.number||Date.parse(codeBlock.timestamp)<Date.parse(target.timestamp)

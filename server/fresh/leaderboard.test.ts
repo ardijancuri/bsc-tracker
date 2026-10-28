@@ -31,6 +31,17 @@ describe('stored UTC-day leaderboard', () => {
   it('does not turn a missing stored timestamp into the response time', () => {
     expect(freshStoredKolDailyMetrics({ ...row, metrics_updated_at: null }, day).updatedAt).toBeNull();
   });
+  it('keeps old projected totals unranked during the explicit policy handoff',()=>{
+    expect(freshStoredKolRollingMetrics({...rollingRow,accounting_policy_ready:false},Date.parse('2026-10-24T00:30:00Z'))).toMatchObject({complete:false,realizedProfitUsd:null,knownRealizedProfitUsd:'0',reasons:['accounting_policy_pending']});
+  });
+  it('uses an explicit database-proven rolling-only isolation while retaining unrelated strict gates',()=>{
+    const at=Date.parse('2026-10-24T00:30:00Z'),r={...rollingRow,decode_gap_from_block:'100',rolling_decode_gap_pending:false};
+    expect(freshStoredKolRollingMetrics(r,at)).toMatchObject({complete:true,realizedProfitUsd:'30.5'});
+    expect(freshStoredKolDailyMetrics(r,day)).toMatchObject({complete:false,reasons:['wallet_decode_gap']});
+    for(const patch of[{rolling_unknown_count:1},{rolling_realized_q:null},{decoding_pending:true},{token_discovery_pending:true},{rolling_next_expiry_at:'2026-10-24T00:29:00Z'}])expect(freshStoredKolRollingMetrics({...r,...patch},at).complete).toBe(false);
+    expect(freshStoredKolRollingMetrics({...r,rolling_decode_gap_pending:true},at).complete).toBe(false);
+    expect(freshStoredKolRollingMetrics({...r,rolling_decode_gap_pending:undefined},at).complete).toBe(false);
+  });
   it('does not show yesterday totals as today before the worker rollover', () => {
     expect(freshStoredKolDailyMetrics({ ...row, utc_date: '2026-10-23' }, day)).toMatchObject({
       complete: true, realizedProfitUsd: '0', knownRealizedProfitUsd: '0', tradeCount: 0, valuedSellCount: 0 });
@@ -43,6 +54,10 @@ describe('stored UTC-day leaderboard', () => {
   it('retains exact decimal ordering beyond JavaScript float precision', () => {
     expect(rankFreshStoredLeaderboard([ranked('a', '9007199254740992.0000000000000000001'),
       ranked('b', '9007199254740992.0000000000000000002')]).map(item => item.address)).toEqual(['b', 'a']);
+  });
+  it('does not award a trading rank for inventory transfers alone',()=>{
+    const transfer={...ranked('transfer','0',true,0),accounting:{complete:true,valuedSellCount:0,valuedTransferOutCount:2,valuedFeeCount:0}};
+    expect(rankFreshStoredLeaderboard([transfer,ranked('sale','-1')]).map(r=>[r.address,r.rank])).toEqual([['sale',1],['transfer',null]]);
   });
   it('uses a stable trade-count/address tie break without inventing partial ranks', () => {
     expect(rankFreshStoredLeaderboard([ranked('z', '3', true, 2), ranked('b', '3', true, 3),

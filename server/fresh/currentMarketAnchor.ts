@@ -3,18 +3,21 @@ import type{Pool}from'pg';
 import{FRESH_EVIDENCE_TTL_MS,freshAddress,freshHash}from'./capture.js';
 import{freshStockwaveMetadataFromFact}from'./factoryLaunch.js';
 import{validFreshStockwaveMarketIdentity,type FreshStockwaveMarketIdentity}from'./stockwaveMarket.js';
+import{validFreshInfinityClMarketIdentity,type FreshInfinityClMarketIdentity}from'./infinityClMarket.js';
 import type{FreshPriceBlock}from'./pricing.js';
 const canonical=(value:unknown):string=>value===null||typeof value!=='object'?JSON.stringify(value)??'null':Array.isArray(value)?`[${value.map(canonical).join(',')}]`
  :`{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical((value as Record<string,unknown>)[key])}`).join(',')}}`;
 export const freshMarketLaunchDigest=(value:unknown)=>createHash('sha256').update(canonical(value)).digest('hex');
 interface MarketInitializationAnchor{version:1;kind:'capture_committed_initialization';tokenAddress:string;poolId:string;initialNumber:number;initialHash:string;initialOccurredAt:string;
  launchDigest:string;boundary:{number:number;hash:string};captureRevision:string;confirmedThrough:{number:number;hash:string;occurredAt:string}}
-export type FreshAnchoredMarketIdentity=FreshStockwaveMarketIdentity&{canonicalInitialization:MarketInitializationAnchor};
+export type FreshSupportedMarketIdentity=FreshStockwaveMarketIdentity|FreshInfinityClMarketIdentity;
+export const validFreshSupportedMarketIdentity=(value:unknown):value is FreshSupportedMarketIdentity=>validFreshStockwaveMarketIdentity(value)||validFreshInfinityClMarketIdentity(value);
+export type FreshAnchoredMarketIdentity=FreshSupportedMarketIdentity&{canonicalInitialization:MarketInitializationAnchor};
 /** Called only after capture-locked canonical header/creation checks. The
  * marker is a compact identity anchor, never a quote or historical state read. */
-export function anchorFreshMarketInitialization(identity:FreshStockwaveMarketIdentity,fact:unknown,context:{boundary:{number:number;hash:string};captureRevision:string;initialOccurredAt:string;confirmedThrough:{number:number;hash:string;occurredAt:string}}):FreshAnchoredMarketIdentity{
+export function anchorFreshMarketInitialization<T extends FreshSupportedMarketIdentity>(identity:T,fact:unknown,context:{boundary:{number:number;hash:string};captureRevision:string;initialOccurredAt:string;confirmedThrough:{number:number;hash:string;occurredAt:string}}):T&{canonicalInitialization:MarketInitializationAnchor}{
  const launch=fact as Record<string,unknown>;
- if(!validFreshStockwaveMarketIdentity(identity)||!launch||launch.token_address!==identity.tokenAddress||launch.status!=='eligible'||!Number.isSafeInteger(Number(launch.block_number))||Number(launch.block_number)>identity.initial.blockNumber
+ if(!validFreshSupportedMarketIdentity(identity)||!launch||launch.token_address!==identity.tokenAddress||launch.status!=='eligible'||!Number.isSafeInteger(Number(launch.block_number))||Number(launch.block_number)>identity.initial.blockNumber
   ||!Number.isSafeInteger(context.boundary.number)||context.boundary.number<0||!freshHash(context.boundary.hash)
   ||identity.initial.blockNumber<=context.boundary.number||!Number.isSafeInteger(context.confirmedThrough.number)||context.confirmedThrough.number<identity.initial.blockNumber||!freshHash(context.confirmedThrough.hash)
   ||context.confirmedThrough.number===identity.initial.blockNumber&&context.confirmedThrough.hash!==identity.initial.blockHash
@@ -46,7 +49,7 @@ export function createFreshCurrentMarketCanonicalHash(database:Pick<Pool,'query'
       FROM fresh.checkpoints c JOIN fresh.recent_blocks b ON b.block_number=c.block_number AND b.block_hash=c.block_hash
       JOIN fresh.checkpoints h ON h.key='health:capture' WHERE c.key='capture'`),
     database.query("SELECT to_jsonb(lf) AS fact FROM fresh.launch_facts lf WHERE token_address=$1 AND status='eligible'",[token]),
-    database.query("SELECT identity FROM fresh.markets WHERE token_address=$1 AND protocol='uniswap_v4' ORDER BY id LIMIT 8",[token])
+    database.query("SELECT identity FROM fresh.markets WHERE token_address=$1 AND protocol IN('uniswap_v4','infinity_cl') ORDER BY id LIMIT 8",[token])
    ]).then(([capture,fact,markets])=>({capture:capture.rows[0],fact:fact.rows[0]?.fact,markets:markets.rows}));
    const{capture,fact,markets}=await sources;
    const boundary=capture?.value,capTime=Date.parse(capture?.occurred_at),healthTime=Date.parse(capture?.health_at);
@@ -63,7 +66,7 @@ export function createFreshCurrentMarketCanonicalHash(database:Pick<Pool,'query'
    for(const row of markets){
     if(freshMarketIdentityInvalid(row.identity))continue;
     const identity=row.identity?.market??row.identity,marker=identity?.canonicalInitialization as MarketInitializationAnchor|undefined;
-    if(!validFreshStockwaveMarketIdentity(identity)||identity.tokenAddress!==token||identity.initial.blockNumber!==number||!marker||marker.version!==1||marker.kind!=='capture_committed_initialization'
+    if(!validFreshSupportedMarketIdentity(identity)||identity.tokenAddress!==token||identity.initial.blockNumber!==number||!marker||marker.version!==1||marker.kind!=='capture_committed_initialization'
      ||marker.tokenAddress!==token||marker.poolId!==identity.poolId||marker.initialNumber!==number||marker.initialHash!==identity.initial.blockHash
      ||marker.launchDigest!==freshMarketLaunchDigest(fact)||marker.boundary?.number!==Number(boundary.startBlock)||marker.boundary.hash!==boundary.startHash
      ||!/^\d+$/.test(marker.captureRevision)||BigInt(marker.captureRevision)>BigInt(capture.revision)||!Number.isFinite(Date.parse(marker.initialOccurredAt))

@@ -4,6 +4,7 @@ import {createFreshImportedMetadataRecovery,freshImportedMetadataMatchesState,ty
 import {createFreshStateEvidenceRpc} from './stateEvidence.js';
 import type {FreshCapturedReceipt} from './capture.js';
 import type {FreshTokenMetadata} from './pricing.js';
+import{recoverFreshPinnedClonePrecision}from'./pinnedCloneMetadataRecovery.js';
 const stable=(v:unknown):string=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 const sha=(v:unknown)=>createHash('sha256').update(stable(v)).digest('hex');
 const certificates=new WeakMap<FreshTokenMetadata,{token:string;target:FreshTokenMetadata['block'];decimals:number;proofSha256:string}>();
@@ -14,6 +15,12 @@ export function certifyFreshPassiveConstantPrecision(value:FreshTokenMetadata,in
  const recovered=recoverFreshConstantClonePrecision(input);
  if(!recovered||stable(recovered.proof)!==stable(proof)||value.address!==input.tokenAddress||value.decimals!==recovered.decimals
   ||stable(value.block)!==stable(input.target))return false;
+ certificates.set(value,{token:value.address,target:{...value.block},decimals:value.decimals,proofSha256:sha(proof)});return true;
+}
+/** The separately pinned direct-clone verifier has the same ephemeral
+ * certificate boundary; a serialized proof or caller decimal is insufficient. */
+export function certifyFreshPassivePinnedClonePrecision(value:FreshTokenMetadata,input:Parameters<typeof recoverFreshPinnedClonePrecision>[0],proof:unknown):boolean{
+ const recovered=recoverFreshPinnedClonePrecision(input);if(!recovered||stable(recovered.proof)!==stable(proof)||value.address!==input.tokenAddress||value.decimals!==recovered.decimals||stable(value.block)!==stable(input.target))return false;
  certificates.set(value,{token:value.address,target:{...value.block},decimals:value.decimals,proofSha256:sha(proof)});return true;
 }
 /** Imported observations still load the existing pinned artifact, verify its

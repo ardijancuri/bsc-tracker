@@ -9,6 +9,7 @@ import type { ReplayAccountingEvent, ReplayAccountingFinal, ReplayAccountingSnap
 import { prepareGmgnReplayHistory } from './tradeReplayHistory';
 import { prepareNodeReplay } from './nodeReplay';
 import type { NodeAccountingSnapshotIdentity } from '../shared/nodeAccounting';
+import{validNodeCostEstimate}from'../shared/nodeCostEstimate';
 
 export interface ReplayTrade {
   id: string;
@@ -126,6 +127,10 @@ export function replayAccountingTotal(snapshot: AccountingNumbers | null | undef
 
 export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now()) {
   const accounting = data.replayAccounting, final = accounting?.final;
+  const estimate=validNodeCostEstimate(data.accountingSnapshot);
+  if(accounting?.version===2&&accounting.status==='estimated'&&accounting.coverage.estimatedFinal&&estimate&&final&&final.reportedRoi===null
+    &&final.reportedProfitUsd===Number(estimate.totalProfitUsd)&&final.cumulativeRealizedProfitUsd===Number(estimate.realizedProfitUsd)
+    &&replayAccountingIsFresh(data,now)&&replayInventoryIsFresh(data,now))return final;
   if (accounting?.version === 2 && data.accountingSnapshot?.complete && final && accounting.coverage.exactFinal
     && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)) return final;
   if (data.requestContext?.kind === 'journal' && accounting?.coverage.journalFinal && final

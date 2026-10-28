@@ -55,12 +55,15 @@ export interface Token {
 }
 
 export interface LeaderboardRow extends Kol {
-  /** Complete rolling-24-hour realized P&L only. Incomplete/inactive rows are unranked. */
+  /** Server rank uses the exact result or an explicitly authorized estimate. */
   rank?: number | null;
   period?: '24h';
   windowStart?: string | null;
   windowEnd?: string | null;
   accounting?: import('../shared/nodeLeaderboard').NodeLeaderboardSnapshot | null;
+  estimatedRealizedProfitUsd?: string | null;
+  pnlQuality?: 'exact' | 'estimated' | 'unavailable';
+  rankingProfitUsd?: string | null;
   knownRealizedProfitUsd?: string | null;
   realizedProfitUsd: string | null;
   unrealizedProfitUsd: string | null;

@@ -3,6 +3,7 @@ import type { Rpc } from '../rpc.js';
 import roster from '../roster.json' with {type:'json'};
 import avatars from '../x-avatars.json' with {type:'json'};
 import { freshConfirmedPriceBlock } from './pricing.js';
+import{FRESH_REALIZED_POLICY,FRESH_REALIZED_POLICY_KEY}from'./realizedPolicy.js';
 
 /** Establish a boundary once. This command never resets a populated database. */
 export async function initializeFreshTracking(db:Pool,rpc:Rpc) {
@@ -14,6 +15,7 @@ export async function initializeFreshTracking(db:Pool,rpc:Rpc) {
     if(current.rowCount){await client.query('ROLLBACK');return{created:false,...current.rows[0]};}
     if((await client.query(`SELECT 1 FROM fresh.financial_events LIMIT 1`)).rowCount)throw new Error('cannot_initialize_nonempty_financial_database');
     const value={startBlock:confirmed.number,startHash:confirmed.hash,startTime:confirmed.timestamp,confirmations:6};
+    await client.query('INSERT INTO fresh.checkpoints(key,value)VALUES($1,$2::jsonb)',[FRESH_REALIZED_POLICY_KEY,JSON.stringify({version:1,policy:FRESH_REALIZED_POLICY,state:'complete',origin:'empty_database_initialization',initializedAt:confirmed.timestamp})]);
     for(const key of ['start','capture','decode'])await client.query(`INSERT INTO fresh.checkpoints(key,block_number,block_hash,value) VALUES($1,$2,$3,$4::jsonb)`,[key,confirmed.number,confirmed.hash,JSON.stringify(value)]);
     // A boundary header allows a reorg at the very first captured block to find its parent.
     const block=await rpc<{parentHash:string}>('eth_getBlockByHash',[confirmed.hash,false]);

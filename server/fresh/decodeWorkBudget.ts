@@ -9,6 +9,10 @@ export function createFreshDecodeWorkBudget(options:{maxMs?:number;now?:()=>numb
   };
 }
 
+/** Worker-local fairness only. Three fresh-first passes alternate with one
+ * due-repair-first pass; no clock, queue dates or financial state changes. */
+export function createFreshDecodeServiceCycle(){let pass=0;return()=>{pass=(pass+1)%4;return{repairFirst:pass===0};};}
+
 /** Selection's pending-first group priority is retained. Coalesce all selected
  * members of a block so the budget cannot split its existing atomic commit. */
 export function groupFreshDecodeRows<Row extends{block_number:string|number;block_hash:string}>(rows:readonly Row[]):Row[][]{

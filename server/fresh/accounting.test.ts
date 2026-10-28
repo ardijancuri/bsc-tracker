@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyFreshEvent, freshDecimal, freshQuantity, freshRationalSum, FreshRational, freshUtcDay, summarizeFreshPosition, validateFreshFinancialEvent } from './accounting.js';
+import { applyFreshEvent, freshDecimal, freshQuantity, freshRationalSum, FreshRational, freshUtcDay, summarizeFreshPosition, validateFreshFinancialEvent,freshReprojectRealizedResult,freshReprojectPositionUnknownCost,hydrateFreshKnownLotCosts } from './accounting.js';
 import type { FreshFinancialEvent, FreshLot, FreshPosition, FreshScope } from '../../shared/freshAccounting.js';
 const wallet = `0x${'a'.repeat(40)}`, other = `0x${'b'.repeat(40)}`, token = `0x${'c'.repeat(40)}`;
 const scope: FreshScope = { id: 'kol:test', kind: 'kol', walletAddresses: [wallet], accountId: null, startsAt: '2026-10-21T00:00:00Z', startsBlock: '10', revision: '1' };
@@ -17,6 +17,62 @@ function book(selected = scope) {
     position=out.position;lots=out.lots;if(e.feeKey)fees.add(e.feeKey);return out; }, get position(){return position!;},get lots(){return lots;} };
 }
 describe('fresh incremental FIFO', () => {
+  it('retains known acquisition principal when only its fee is unknown, and known acquisition fees when principal is unknown',()=>{
+    for(const[amountUsd,feeUsd,proceeds,expected]of[['100',null,'150','48'],[null,'2','100','97']]as const){const b=book();b.apply(event({quantity:'10',amountUsd,feeUsd}));expect(b.lots[0].costQ).toBeNull();const sold=b.apply(event({kind:'sell',quantity:'10',amountUsd:proceeds,feeUsd:amountUsd===null?'1':'2'}));expect(sold.result).toMatchObject({realizedQ:null,knownRealizedQ:'0',estimatedRealizedQ:expected});expect(b.position.realizedQ).toBeNull();}
+  });
+  it('prorates known components through partial sales and resets them when the book closes and reopens',()=>{
+    const b=book();b.apply(event({quantity:'3',amountUsd:'100',feeUsd:null}));
+    const a=b.apply(event({kind:'sell',quantity:'1',amountUsd:'50',feeUsd:'1'}));expect(a.result.estimatedRealizedQ).toBe('47/3');expect(b.lots[0]).toMatchObject({costQ:null,knownCostQ:'200/3'});
+    expect(b.apply(event({kind:'sell',quantity:'2',amountUsd:'100',feeUsd:'2'})).result.estimatedRealizedQ).toBe('94/3');expect(b.lots).toEqual([]);
+    b.apply(event({quantity:'1',amountUsd:'5',feeUsd:'0'}));const reopened=b.apply(event({kind:'sell',quantity:'1',amountUsd:'8',feeUsd:'1'}));expect(reopened.result.realizedQ).toBe('2');expect(reopened.result.estimatedRealizedQ).toBeUndefined();
+  });
+  it('carries original known components between private member wallets without inventing transfer income',()=>{
+    const combined:FreshScope={...scope,id:'combined',kind:'portfolio_combined',walletAddresses:[wallet,other],accountId:'owner'},b=book(combined);
+    b.apply(event({quantity:'3',amountUsd:'9',feeUsd:null}));const out=event({kind:'transfer_out',quantity:'2',amountUsd:'200',feeUsd:'0',counterparty:other,transferKey:'internal'});b.apply(out,true);
+    b.apply(event({...out,id:'incoming',executionKey:'incoming',kind:'transfer_in',walletAddress:other,counterparty:wallet,feeKey:null}),true);
+    expect(b.lots.find(l=>l.walletAddress===other)).toMatchObject({costQ:null,knownCostQ:'6'});
+    const sold=b.apply(event({kind:'sell',walletAddress:other,quantity:'2',amountUsd:'10',feeUsd:'1'}));expect(sold.result.estimatedRealizedQ).toBe('3');expect(sold.result.realizedQ).toBeNull();
+  });
+  it('recovers partial known components after a restart using only the original source and charged scope fee',()=>{
+    const b=book(),buy=event({quantity:'3',amountUsd:'9',feeUsd:null});b.apply(buy);b.apply(event({kind:'sell',quantity:'1',amountUsd:'5',feeUsd:'0'}));
+    const original={id:buy.id,execution_key:buy.executionKey,wallet_address:buy.walletAddress,token_address:buy.tokenAddress,kind:buy.kind,quantity:buy.quantity,amount_usd:buy.amountUsd,fee_usd:buy.feeUsd,fee_key:buy.feeKey,counterparty:buy.counterparty,transfer_key:buy.transferKey,block_number:buy.blockNumber,block_hash:buy.blockHash,transaction_hash:buy.transactionHash,transaction_index:buy.transactionIndex,execution_index:buy.executionIndex,log_index:buy.logIndex,occurred_at:buy.occurredAt,canonical:true,charged_scope_id:scope.id,charged_token_address:token,charged_fee_q:null};
+    const persisted=b.lots.map(({knownCostQ,...l})=>l),loaded=hydrateFreshKnownLotCosts(persisted,[original]);expect(loaded[0]).toMatchObject({costQ:null,knownCostQ:'6'});
+    expect(applyFreshEvent(scope,event({kind:'sell',quantity:'2',amountUsd:'10',feeUsd:'1'}),{position:b.position,lots:loaded}).result.estimatedRealizedQ).toBe('3');
+    for(const source of[[],[{...original,canonical:false}],[{...original,charged_scope_id:'foreign'}],[{...original,quantity:'1'}]]){const bad=hydrateFreshKnownLotCosts(persisted,source);expect(bad[0].knownCostQ).toBeNull();expect(applyFreshEvent(scope,event({kind:'sell',quantity:'2',amountUsd:'10',feeUsd:'1'}),{position:b.position,lots:bad}).result.estimatedRealizedQ).toBeNull();}
+  });
+  it('uses the actual deduplicated acquisition fee rather than its repeated source fee',()=>{
+    const b=book(),key='batch-fee';b.apply(event({kind:'fee',quantity:'0',amountUsd:null,feeUsd:'2',feeKey:key,feeAttribution:{status:'eligible',tokenAddress:token,nativeFeeWei:'2'}}));
+    b.apply(event({quantity:'1',amountUsd:null,feeUsd:'2',feeKey:key}));expect(b.lots[0].knownCostQ).toBe('0');
+    expect(b.apply(event({kind:'sell',quantity:'1',amountUsd:'10',feeUsd:'1'})).result.estimatedRealizedQ).toBe('9');
+  });
+  it('estimates only an incomplete sale from confirmed proceeds and each known partial FIFO cost',()=>{
+    const b=book();b.apply(event({quantity:'3',amountUsd:'9',feeUsd:'3'}));b.apply(event({kind:'transfer_in',quantity:'2',amountUsd:null,feeUsd:'0',counterparty:other}));
+    const mixed=b.apply(event({kind:'sell',quantity:'4',amountUsd:'40',feeUsd:'2'}));
+    expect(mixed.result).toMatchObject({realizedQ:null,knownRealizedQ:'0',estimatedRealizedQ:'26',capitalQ:'2',feeQ:'2'});
+    expect(b.lots).toHaveLength(1);expect(b.lots[0]).toMatchObject({quantityQ:'1',costQ:null});expect(b.position.realizedQ).toBeNull();
+    const next=b.apply(event({kind:'sell',quantity:'1',amountUsd:'5',feeUsd:'1'}));expect(next.result.estimatedRealizedQ).toBe('4');expect(next.result.realizedQ).toBeNull();
+  });
+  it('keeps fully verified results without an estimated copy and splits known costs exactly',()=>{
+    const b=book();b.apply(event({quantity:'3',amountUsd:'1',feeUsd:'0'}));
+    const known=b.apply(event({kind:'sell',quantity:'1',amountUsd:'1',feeUsd:'0'}));expect(known.result.realizedQ).toBe('2/3');expect(known.result.estimatedRealizedQ).toBeUndefined();
+    b.apply(event({kind:'transfer_in',quantity:'1',amountUsd:null,feeUsd:'0',counterparty:other}));
+    const mixed=b.apply(event({kind:'sell',quantity:'3',amountUsd:'2',feeUsd:'0'}));expect(mixed.result.estimatedRealizedQ).toBe('4/3');expect(mixed.result.realizedQ).toBeNull();
+  });
+  it('omits an unvalued disposal as a whole, retaining only its known charged fee',()=>{
+    const b=book();b.apply(event({quantity:'10',amountUsd:'100',feeUsd:'1'}));
+    const missing=b.apply(event({kind:'sell',quantity:'5',amountUsd:null,feeUsd:'2'}));
+    expect(missing.result).toMatchObject({realizedQ:null,knownRealizedQ:'0',estimatedRealizedQ:'-2'});expect(b.lots[0].costQ).toBe('101/2');
+  });
+  it('omits an unknown current fee without making exact fees or basis known',()=>{
+    const b=book();b.apply(event({quantity:'10',amountUsd:'100',feeUsd:'0'}));
+    const missing=b.apply(event({kind:'sell',quantity:'5',amountUsd:'60',feeUsd:null}));expect(missing.result).toMatchObject({realizedQ:null,feeQ:null,estimatedRealizedQ:'10'});expect(b.position.unknownFee).toBe(true);
+    const unknown=b.apply(event({kind:'sell',quantity:'5',amountUsd:null,feeUsd:null}));expect(unknown.result.estimatedRealizedQ).toBe('0');
+  });
+  it('never realizes a transfer mark and charges a repeated fee only once',()=>{
+    const b=book();b.apply(event({quantity:'10',amountUsd:'100',feeUsd:'0'}));const fee='same-disposal';
+    const out=b.apply(event({kind:'transfer_out',quantity:'3',amountUsd:'500',feeUsd:'2',feeKey:fee,counterparty:other}));expect(out.result.realizedQ).toBe('-2');expect(out.result.estimatedRealizedQ).toBeUndefined();
+    const sale=b.apply(event({kind:'sell',quantity:'8',amountUsd:'100',feeUsd:'2',feeKey:fee}));expect(sale.result).toMatchObject({realizedQ:null,feeQ:'0',estimatedRealizedQ:'30'});
+  });
   it('preserves rational lot costs exactly through repeated partial sales', () => {
     const b=book();b.apply(event({quantity:'3',amountUsd:'1',feeUsd:'0'}));
     const first=b.apply(event({kind:'sell',quantity:'1',amountUsd:'1',feeUsd:'0'}));
@@ -54,11 +110,20 @@ describe('fresh incremental FIFO', () => {
     b.apply(event({walletAddress:other,kind:'transfer_in',quantity:'4',amountUsd:null,feeUsd:'0',counterparty:wallet,transferKey:'pair'}),true);
     expect(b.position.realizedQ).toBe('-2');expect(b.position.capitalQ).toBe('101');expect(b.position.feesQ).toBe('3');
   });
-  it('values external incoming and outgoing transfers with the agreed receipt policy', () => {
+  it('preserves external transfer marks as history without realizing an outgoing mark', () => {
     const b=book();b.apply(event({kind:'transfer_in',amountUsd:'60'}));
     const out=b.apply(event({kind:'transfer_out',amountUsd:'90',feeUsd:'2'}));
-    expect(out.result.realizedQ).toBe('27');expect(b.position.incomingQ).toBe('60');expect(b.position.outgoingQ).toBe('90');
+    expect(out.result.realizedQ).toBe('-2');expect(out.result.capitalQ).toBe('0');expect(b.position.incomingQ).toBe('60');expect(b.position.outgoingQ).toBe('90');expect(summarizeFreshPosition(b.position,b.lots,null)).toMatchObject({realizedProfitUsd:'-2',estimatedProfitUsd:'-2',transferOutIncomeUsd:'90'});
   });
+  it('realizes only the FIFO sale after a partial external transfer, independently of its optional mark',()=>{
+    const runs=[null,'900'].map(mark=>{const b=book();b.apply(event());const outEvent=event({kind:'transfer_out',quantity:'4',amountUsd:mark,feeUsd:'2'}),saved=structuredClone(outEvent),out=b.apply(outEvent);expect(outEvent).toEqual(saved);expect(out.result).toMatchObject({realizedQ:'-2',knownRealizedQ:'-2',capitalQ:'0',feeQ:'2',tradeCount:0});expect(b.lots[0].costQ).toBe('303/5');expect(b.position.unknownCost).toBe(false);const sale=b.apply(event({kind:'sell',quantity:'3',amountUsd:'60',feeUsd:'1'}));expect(sale.result.realizedQ).toBe('287/10');expect(sale.result.capitalQ).toBe('313/10');expect(b.position.realizedQ).toBe('267/10');const view=summarizeFreshPosition(b.position,b.lots,'20');expect(view).toMatchObject({remainingCostUsd:'30.3',realizedProfitUsd:'26.7',estimatedProfitUsd:'56.4',status:'complete'});return{b,view};});
+    expect(runs[0].b.lots.map(l=>[l.quantityQ,l.costQ,l.feeKnown])).toEqual(runs[1].b.lots.map(l=>[l.quantityQ,l.costQ,l.feeKnown]));expect(runs[0].view.transferOutIncomeUsd).toBeNull();expect(runs[1].view.transferOutIncomeUsd).toBe('900');expect(runs[0].view.estimatedProfitUsd).toBe(runs[1].view.estimatedProfitUsd);
+  });
+  it('does not let an unknown outgoing mark poison a later fully costed closed sale',()=>{const b=book();b.apply(event());b.apply(event({kind:'transfer_out',quantity:'4',amountUsd:null,feeUsd:'2'}));const sold=b.apply(event({kind:'sell',quantity:'6',amountUsd:'120',feeUsd:'1'}));expect(sold.result.realizedQ).toBe('292/5');expect(summarizeFreshPosition(b.position,b.lots,null)).toMatchObject({quantity:'0',remainingCostUsd:'0',realizedProfitUsd:'56.4',estimatedProfitUsd:'56.4',transferOutIncomeUsd:null,status:'complete'});});
+  it('keeps unknown incoming basis null for actual sales but releases it when that inventory is transferred away',()=>{const unknown=book();unknown.apply(event({kind:'transfer_in',quantity:'2',amountUsd:null,feeUsd:'0'}));expect(unknown.lots[0].costQ).toBeNull();unknown.apply(event({kind:'sell',quantity:'2',amountUsd:'30',feeUsd:'1'}));expect(summarizeFreshPosition(unknown.position,unknown.lots,null)).toMatchObject({remainingCostUsd:'0',realizedProfitUsd:null,estimatedProfitUsd:null,status:'unknown_costs'});const b=book();b.apply(event({kind:'transfer_in',quantity:'2',amountUsd:null,feeUsd:'0'}));b.apply(event({quantity:'2',amountUsd:'20',feeUsd:'0'}));b.apply(event({kind:'transfer_out',quantity:'2',amountUsd:null,feeUsd:'0'}));expect(b.position.unknownCost).toBe(false);expect(b.lots[0].costQ).toBe('20');const sold=b.apply(event({kind:'sell',quantity:'2',amountUsd:'30',feeUsd:'1'}));expect(sold.result.realizedQ).toBe('9');expect(summarizeFreshPosition(b.position,b.lots,null)).toMatchObject({realizedProfitUsd:'9',estimatedProfitUsd:'9',capitalUsd:null,roi:null,incomingTransferCostUsd:null});});
+  it('charges a shared transfer operation fee once and preserves unknown fee requirements',()=>{const b=book();b.apply(event({quantity:'3',amountUsd:'3',feeUsd:'0'}));const first=b.apply(event({kind:'transfer_out',quantity:'1',amountUsd:null,feeUsd:'1',feeKey:'outgoing-op'})),second=b.apply(event({kind:'transfer_out',quantity:'1',amountUsd:null,feeUsd:'1',feeKey:'outgoing-op'}));expect(first.result.realizedQ).toBe('-1');expect(second.result).toMatchObject({realizedQ:'0',feeQ:'0',feeKey:null,capitalQ:'0'});expect(b.position.realizedQ).toBe('-1');const unknown=book();unknown.apply(event({quantity:'1',amountUsd:'1',feeUsd:'0'}));const r=unknown.apply(event({kind:'transfer_out',quantity:'1',amountUsd:null,feeUsd:null}));expect(r.result.realizedQ).toBeNull();expect(unknown.position.unknownFee).toBe(true);});
+  it('reprojects compact stored results without reinterpreting inventory, facts or charged fees',()=>{const old={realizedQ:'97',knownRealizedQ:'97',capitalQ:'103',feeQ:'2'},saved=structuredClone(old);expect(freshReprojectRealizedResult('transfer_out',old)).toEqual({realizedQ:'-2',knownRealizedQ:'-2',capitalQ:'0',feeQ:'2'});expect(old).toEqual(saved);expect(freshReprojectRealizedResult('transfer_out',{...old,realizedQ:null,knownRealizedQ:'0',feeQ:'0'})).toEqual({realizedQ:'0',knownRealizedQ:'0',capitalQ:'0',feeQ:'0'});expect(freshReprojectRealizedResult('transfer_out',{...old,feeQ:null})).toEqual({realizedQ:null,knownRealizedQ:'0',capitalQ:'0',feeQ:null});for(const kind of['buy','sell','transfer_in','fee']as const)expect(freshReprojectRealizedResult(kind,old)).toEqual(old);});
+  it('projects cost uncertainty from remaining inventory and actual sales only',()=>{expect(freshReprojectPositionUnknownCost([],[{kind:'transfer_out',realizedQ:null}])).toBe(false);expect(freshReprojectPositionUnknownCost([{costQ:'0',feeKnown:true}],[{kind:'sell',realizedQ:'20'}])).toBe(false);expect(freshReprojectPositionUnknownCost([{costQ:null,feeKnown:true}],[])).toBe(true);expect(freshReprojectPositionUnknownCost([{costQ:'1',feeKnown:false}],[])).toBe(true);expect(freshReprojectPositionUnknownCost([],[{kind:'sell',realizedQ:null}])).toBe(true);});
   it('never invents zero costs for missing opening lots or unknown fees', () => {
     const b=book();const sold=b.apply(event({kind:'sell',amountUsd:'120'}));
     expect(sold.result.realizedQ).toBeNull();expect(summarizeFreshPosition(b.position,b.lots,null).status).toBe('unknown_costs');

@@ -6,7 +6,7 @@ export function freshDiscoveryArchiveRequestAllowed(method:string,params:unknown
  if(!Array.isArray(params))return false;
  if(method==='eth_chainId')return params.length===0;
  if(method==='eth_getBlockByNumber')return params.length===2&&block(params[0])&&typeof params[1]==='boolean';
- if(method==='eth_getCode')return params.length===2&&address(params[0])&&block(params[1]);
+ if(method==='eth_getCode'){const at=params[1]as any;return params.length===2&&address(params[0])&&(block(at)||at&&typeof at==='object'&&!Array.isArray(at)&&Object.keys(at).sort().join(',')==='blockHash,requireCanonical'&&hash(at.blockHash)&&at.requireCanonical===true);}
  if(method==='eth_getTransactionReceipt')return params.length===1&&hash(params[0]);
  if(method==='eth_getLogs'&&params.length===1){const p=params[0]as any;return p&&Object.keys(p).sort().join(',')==='address,fromBlock,toBlock,topics'&&address(p.address)&&block(p.fromBlock)&&p.toBlock===p.fromBlock&&Array.isArray(p.topics)&&p.topics.length===2&&p.topics[0]===transferTopic&&p.topics[1]==='0x'+'0'.repeat(64);}
  return false;
@@ -20,7 +20,7 @@ export function createFreshDiscoveryArchiveRpc(endpoint:string|undefined,options
  const bounded=(v:number|undefined,d:number,min:number,max:number)=>typeof v==='number'&&Number.isFinite(v)?Math.min(max,Math.max(min,Math.floor(v))):d;
  const timeout=bounded(options.timeoutMs,4000,5,8000),cap=bounded(options.maxRequestsPerMinute,256,1,512),spacing=bounded(options.minIntervalMs,25,0,1000),maxBytes=bounded(options.maxResponseBytes,4*1024*1024,128,8*1024*1024);
  let id=0,active=false,cooldown=0,lastStart=0;const starts:number[]=[];
- const error=(message:string,category:'transport'|'rate_limit'|'invalid_response'|'rpc_error'|'state_unavailable')=>new RpcRequestError(message,category);
+ const error=(message:string,category:'transport'|'rate_limit'|'invalid_response'|'rpc_error'|'state_unavailable',code?:unknown)=>new RpcRequestError(message,category,{code});
  return async<T>(method:string,params:unknown[]):Promise<T>=>{
   if(!freshDiscoveryArchiveRequestAllowed(method,params))throw error('discovery_archive_request_forbidden','rpc_error');
   if(options.signal?.aborted)throw error('discovery_archive_canceled','transport');
@@ -39,7 +39,15 @@ export function createFreshDiscoveryArchiveRpc(endpoint:string|undefined,options
    try{while(true){const next=await reader.read();if(next.done)break;bytes+=next.value.length;if(bytes>maxBytes){await reader.cancel();throw error('discovery_archive_response_too_large','invalid_response');}pieces.push(next.value);}}catch(failure){if(failure instanceof RpcRequestError)throw failure;throw error('discovery_archive_response_unavailable','transport');}
    let body:any;try{body=JSON.parse(Buffer.concat(pieces).toString());}catch{throw error('discovery_archive_response_invalid','invalid_response');}
    if(body?.jsonrpc!=='2.0'||body.id!==requestId)throw error('discovery_archive_identity_invalid','invalid_response');
-   if(body.error){const raw=String(body.error.message??''),category=/rate.?limit|quota|too many/i.test(raw)?'rate_limit':/historical|missing trie|not supported|header not found|state.*unavailable/i.test(raw)?'state_unavailable':'rpc_error';if(category==='rate_limit')cooldown=Date.now()+60_000;throw error('discovery_archive_rpc_unavailable',category);}
+   if(body.error){const raw=String(body.error.message??''),category=/rate.?limit|quota|too many|(?:credit|capacity|compute unit).*(?:exceed|exhaust|limit)/i.test(raw)?'rate_limit':/historical|missing trie|not supported|header not found|state.*unavailable/i.test(raw)?'state_unavailable':'rpc_error';if(category==='rate_limit')cooldown=Date.now()+60_000;
+    const canonicalFailure=/non.?canonical|not canonical|\bmismatch\b|(?:hash|header|block).*?(?:not found|unknown)/i.test(raw),hashCode=method==='eth_getCode'&&params[1]&&typeof params[1]==='object',unsupported=category!=='rate_limit'&&!canonicalFailure&&hashCode&&/cannot unmarshal.*object|unsupported.*(?:selector|blockhash|eip.?1898)|(?:selector|blockhash|eip.?1898).*not supported/i.test(raw);
+    // This provider can serve the same canonical historical state numerically
+    // while its hash-selector backend lacks that state. Preserve only this
+    // diagnosed shape; missing/noncanonical headers and generic errors cannot
+    // authorize a numeric retry. The reader still brackets the numeric code
+    // with both archive headers and an owned-node canonical header.
+    const hashStateUnavailable=hashCode&&category==='state_unavailable'&&body.error.code===-32000&&!canonicalFailure&&/\bhistorical state(?:\s+(?:0x)?[a-f0-9]{64})?\s+(?:is\s+)?(?:not available|unavailable)\b|\bmissing trie node\b/i.test(raw);
+    throw error(unsupported?'discovery_archive_hash_selector_unsupported':hashStateUnavailable?'discovery_archive_hash_state_unavailable':'discovery_archive_rpc_unavailable',category,body.error.code);}
    if(body.result==null)throw error('discovery_archive_result_unavailable','state_unavailable');return body.result as T;
   }finally{active=false;}
  };

@@ -4,6 +4,10 @@ import { freshTraceMatchesTransaction, validateFreshTrace } from './trace.js';
 import {freshTrackedEventSql,freshScopeEventSql,freshScopeWalletMonitoringSql} from './tracking.js';
 import {kolProfileTokenSql} from '../kolProfileToken.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
+import{freshKnownProtocolTokenBirthSql}from'./tokenBirth.js';
+import{FRESH_TRANSFER_VALUE_WARNINGS}from'./deferredTransferValuation.js';
+import{freshRealizedPolicyReadySql}from'./realizedPolicy.js';
+import{transferTopic}from'../swap.js';
 
 export interface FreshPositionDependencies { version: 1; addresses: string[]; proofHash: string }
 const callTypes = new Set(['CALL', 'STATICCALL', 'DELEGATECALL', 'CALLCODE', 'CREATE', 'CREATE2', 'SELFDESTRUCT']);
@@ -29,7 +33,16 @@ export function freshPositionDependencies(entry: FreshCapturedReceipt): FreshPos
       if (!callTypes.has(call.type) || !call.to) throw Error('position_dependency_trace_opaque');
       add(call.from); add(call.to); call.calls?.forEach(visit);
     };
-    visit(trace); entry.receipt.logs.forEach(log => add(log.address));
+    visit(trace); entry.receipt.logs.forEach(log => {
+      add(log.address);
+      // A passive ERC-20 beneficiary need not execute code. Keep the exact
+      // canonical Transfer participants alongside the existing call/emitter
+      // index; they do not approve a price, cost, event or balance. ERC-721,
+      // malformed and non-address topics cannot supply these participants.
+      if(log.topics.length!==3||log.topics[0]!==transferTopic||!/^0x[0-9a-f]{64}$/.test(log.data)
+        ||!log.topics.slice(1).every(topic=>/^0x0{24}[0-9a-f]{40}$/.test(topic)))return;
+      add('0x'+log.topics[1].slice(-40));add('0x'+log.topics[2].slice(-40));
+    });
     add(entry.transaction.from); add(entry.transaction.to); add(entry.receipt.contractAddress);
     if (addresses.size > 512) return null;
     return { version: 1, addresses: [...addresses].sort(), proofHash: createHash('sha256')
@@ -54,10 +67,12 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
   JOIN fresh.checkpoints token_start ON token_start.key='start'
   JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
   JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash
-  WHERE token_birth.status='eligible' AND token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
+  WHERE token_birth.status='eligible'
    AND token_birth.block_number>token_start.block_number
    AND token_start.value->>'startBlock'=token_start.block_number::text AND token_start.value->>'startHash'=token_start.block_hash
-   AND token_birth.launched_at=born.occurred_at AND ${proof}->'version'='1'::jsonb AND ${proof}->>'kind'='canonical_token_birth_v1'
+   AND token_birth.launched_at=born.occurred_at
+   AND(${freshKnownProtocolTokenBirthSql()} OR(token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
+   AND ${proof}->'version'='1'::jsonb AND ${proof}->>'kind'='canonical_token_birth_v1'
    AND ${proof}->>'source' IN('node','explicit_archive') AND ${proof}->>'codeBefore'='0x'
    AND ${proof}->'start'=jsonb_build_object('number',token_start.block_number,'hash',token_start.block_hash)
    AND ${proof}->'birth'=jsonb_build_object('number',born.block_number,'hash',born.block_hash,'parentHash',born.parent_hash,
@@ -76,7 +91,7 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
     AND CASE WHEN jsonb_typeof(${proof}->'creationFrame'->'path')='array' THEN
      jsonb_array_length(${proof}->'creationFrame'->'path') BETWEEN 1 AND 64 AND NOT EXISTS(
       SELECT 1 FROM jsonb_array_elements(${proof}->'creationFrame'->'path') step
-       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))) ->> ${t})::bigint,false)
+       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))))) ->> ${t})::bigint,false)
    AND NOT EXISTS(SELECT 1 FROM fresh.financial_events explicit_token WHERE explicit_token.canonical
     AND explicit_token.token_address=${t} AND explicit_token.transaction_hash=${e}.tx_hash AND explicit_token.block_hash=${e}.block_hash))`;
 }
@@ -84,13 +99,56 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
  * identity predicate there; a per-token birth proof cannot waive that gate. */
 export const freshPositionReceiptRawRelevantSql=(e:string,token:string)=>
  `(${freshPositionReceiptOpaqueSql(e)} OR ${token}=ANY(${e}.position_dependency_addresses))`;
-export const freshPositionReceiptRelevantSql = (e: string, token: string) =>
-  `(COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token)}))`;
+export const freshPositionReceiptRelevantSql = (e: string, token: string, scope?:string) =>
+  `((COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token)}))${scope?` AND NOT ${freshReceiptOptionalTransferPriceSql(e,scope)}`:''})`;
 
 const pendingAlias=(value:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_alias_invalid');return value;};
 const pendingTokenExpression=(value:string)=>{if(!/^(?:[a-z_][a-z0-9_]*\.){1,2}[a-z_][a-z0-9_]*$|^\$[1-9][0-9]*$/i.test(value))throw Error('pending_trade_sql_token_invalid');return value;};
 const pendingCapture="(SELECT block_number FROM fresh.checkpoints WHERE key='capture')";
 const pendingBlockExpression=(value:string)=>{if(value!==pendingCapture&&!/^\$[1-9][0-9]*$|^[0-9]+$|^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_block_invalid');return value;};
+
+/** Price-only repair remains a real repair. Under sales/FIFO/fees accounting it
+ * cannot change a book whose own canonical facts and charged fees are already
+ * fully applied. Never borrow another wallet's result from a shared receipt.
+ * Unknown incoming lot basis remains unknown; any actual unvalued buy/sell or
+ * unpromoted swap still fails this gate. An opaque execution cannot use it. */
+export function freshReceiptOptionalTransferPriceSql(receipt:string,scope:string){
+ const e=pendingAlias(receipt),s=pendingAlias(scope),f='price_fact',r='price_result',t='price_token',w='price_wallet';
+ const own=`${f}.canonical AND ${f}.block_number=${e}.block_number AND ${f}.block_hash=${e}.block_hash AND ${f}.transaction_hash=${e}.tx_hash
+  AND ${f}.wallet_address=ANY(${s}.wallet_addresses) AND ${freshScopeEventSql(f,s)}
+  AND (${s}.account_id IS NULL OR EXISTS(SELECT 1 FROM public.journal_wallets price_member
+   WHERE price_member.user_id::text=${s}.account_id AND price_member.wallet_address=${f}.wallet_address
+    AND ${f}.block_number>=coalesce(price_member.registration_block,${s}.starts_block) AND ${f}.occurred_at>=price_member.activity_from))`;
+ return`COALESCE((${freshRealizedPolicyReadySql()} AND ${e}.decoder_status='repair'
+  AND ${e}.last_error IN(${FRESH_TRANSFER_VALUE_WARNINGS.map(value=>`'${value}'`).join(',')})
+  AND NOT ${freshPositionReceiptOpaqueSql(e)} AND cardinality(${e}.position_dependency_addresses)<=512
+  AND ${s}.active AND ${e}.wallet_addresses&&${s}.wallet_addresses
+  AND ((${s}.kind='kol' AND ${s}.account_id IS NULL AND cardinality(${s}.wallet_addresses)=1 AND ${s}.id='kol:'||${s}.wallet_addresses[1]
+    AND EXISTS(SELECT 1 FROM fresh.kols price_kol WHERE price_kol.wallet_address=${s}.wallet_addresses[1] AND price_kol.is_tracked))
+   OR (${s}.kind IN('portfolio_wallet','portfolio_combined') AND ${s}.account_id IS NOT NULL))
+  AND EXISTS(SELECT 1 FROM fresh.recent_blocks price_block WHERE price_block.block_number=${e}.block_number AND price_block.block_hash=${e}.block_hash
+   AND EXISTS(SELECT 1 FROM fresh.financial_events ${f} WHERE ${own})
+   AND NOT EXISTS(SELECT 1 FROM fresh.financial_events ${f}
+    LEFT JOIN fresh.scope_event_results ${r} ON ${r}.scope_id=${s}.id AND ${r}.event_id=${f}.id
+    LEFT JOIN fresh.tokens ${t} ON ${t}.address=${f}.token_address
+    LEFT JOIN fresh.wallets ${w} ON ${w}.address=${f}.wallet_address
+    WHERE ${own} AND (${f}.occurred_at<>price_block.occurred_at OR ${r}.event_id IS NULL
+     OR ${r}.token_address IS DISTINCT FROM ${f}.token_address OR ${r}.occurred_at<>${f}.occurred_at
+     OR ${r}.fee_q IS NULL OR ${r}.realized_q IS NULL OR ${f}.fee_usd IS NULL
+     OR ${f}.kind NOT IN('buy','sell','transfer_in','transfer_out','fee')
+     OR (${f}.kind IN('buy','sell') AND ${f}.amount_usd IS NULL)
+     OR ${f}.quantity!~'^(0|[1-9][0-9]*)(\\.[0-9]+)?$'
+     OR ${w}.address IS NULL OR NOT ${w}.active OR NOT ${freshScopeWalletMonitoringSql(f,s,w)}
+     OR (${w}.monitoring_to_block IS NOT NULL AND ${f}.block_number>${w}.monitoring_to_block)
+     OR NOT COALESCE(${f}.wallet_address=ANY(${e}.position_dependency_addresses),false)
+     OR (${f}.token_address IS NULL AND ${f}.kind<>'fee')
+     OR (${f}.token_address IS NOT NULL AND NOT COALESCE((${t}.decimals BETWEEN 0 AND 255
+      AND ${freshTrackedEventSql(f,t)} AND ${kolProfileTokenSql(t)}
+      AND ${f}.token_address=ANY(${e}.position_dependency_addresses)),false)))))
+  AND NOT EXISTS(SELECT 1 FROM fresh.pending_trades price_pending
+   WHERE price_pending.block_number=${e}.block_number AND price_pending.block_hash=${e}.block_hash AND price_pending.transaction_hash=${e}.tx_hash
+    AND ${freshPendingTradeInScopeSql('price_pending',s)})),false)`;
+}
 
 /** Compact canonical swap observations outlive the temporary receipt buffer.
  * They cannot approve accounting until their exact execution is normalized.

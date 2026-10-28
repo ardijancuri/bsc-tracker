@@ -23,8 +23,10 @@ describe('permanent pending swap accounting safety',()=>{
  it('requires a replay cutoff and rechecks admission plus permanent pending facts at that cutoff',async()=>{
   const query=vi.fn(async(_sql:string,_values?:unknown[])=>({rows:[]})),service=createFreshServices({query}as unknown as Pool);
   expect(await service.validateRevision({cutoffBlock:null}as any)).toBe(false);expect(query).not.toHaveBeenCalled();
-  expect(await service.validateRevision({cutoffBlock:'100',scopeId:'scope',token:'token'}as any)).toBe(false);
-  expect(query.mock.calls[0]).toEqual([expect.stringContaining('pending.block_number<=$3'),['scope','token','100']]);
+  const cutoffHash='0x'+'a'.repeat(64);
+  expect(await service.validateRevision({cutoffBlock:'100',cutoffHash,scopeId:'scope',token:'token'}as any)).toBe(false);
+  expect(query.mock.calls[0]).toEqual([expect.stringContaining('pending.block_number<=$3'),['scope','token','100',cutoffHash]]);
+  expect(query.mock.calls[0][0]).toContain('b.block_number=$3 AND b.block_hash=$4');
   expect(query.mock.calls[0][0]).toContain('fresh.tokens t');expect(query.mock.calls[0][0]).toContain('token_admission:');
  });
 });

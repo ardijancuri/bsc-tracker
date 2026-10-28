@@ -1,22 +1,29 @@
 import { createHash, randomUUID } from 'node:crypto';
+import{AbiCoder,keccak256}from'ethers';
 import type { Pool, PoolClient } from 'pg';
 import { blockHex, type Rpc } from '../rpc.js';
 import { FRESH_CONFIRMATIONS, freshAddress, freshHash, freshInteger, validateFreshBlock, validateFreshReceipt, type FreshBlock, type FreshLog, type FreshReceipt } from './capture.js';
 import { authenticateFreshStockwavePoolInitialization, FRESH_UNISWAP_V4_BSC_MANAGER as manager, FRESH_UNISWAP_V4_INITIALIZE_TOPIC as topic,
   stockwavePoolManagerInterface, validFreshStockwaveMarketIdentity, type FreshStockwaveMarketIdentity } from './stockwaveMarket.js';
 import{anchorFreshMarketInitialization,freshMarketIdentityInvalid}from'./currentMarketAnchor.js';
+import{validFreshSupportedMarketIdentity,type FreshSupportedMarketIdentity}from'./currentMarketAnchor.js';
+import{authenticateFreshInfinityClInitialization,FRESH_INFINITY_CL_INITIALIZE_TOPIC,freshInfinityClInterface}from'./infinityClMarket.js';
+import{INFINITY_CL}from'../nodeMarketProtocols.js';
+import{WBNB}from'../launchpad.js';
 
 export const FRESH_V4_DISCOVERY_MAX_BLOCKS = 4_096;
 export const FRESH_V4_DISCOVERY_MAX_RECEIPTS = 16;
-export interface FreshV4DiscoveryProgress { version: 1; launchDigest: string; captureRevision: string; throughBlock: number; throughHash: string | null; rangeSize: number }
+export interface FreshV4DiscoveryProgress { version: 1; marketProtocolsVersion?:2;launchDigest: string; captureRevision: string; throughBlock: number; throughHash: string | null; rangeSize: number }
 interface Header { number: number; hash: string; parentHash: string; timestamp: string }
-export interface FreshV4DiscoveryPage { fromBlock: number; toBlock: number; identities: FreshStockwaveMarketIdentity[]; headers: Header[]; receipts: number }
+interface UnsupportedPool{manager:string;poolId:string;blockNumber:number;blockHash:string;reason:'infinity_cl_pool_key_unsupported'}
+export interface FreshV4DiscoveryPage { fromBlock: number; toBlock: number; identities: FreshSupportedMarketIdentity[]; headers: Header[]; receipts: number;unsupportedPools?:UnsupportedPool[] }
 const canonical=(value:unknown):string=>value===null||typeof value!=='object'?JSON.stringify(value)??'null':Array.isArray(value)?`[${value.map(canonical).join(',')}]`
   :`{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical((value as Record<string,unknown>)[key])}`).join(',')}}`;
 const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 const position = (log: FreshLog) => `${log.blockHash}:${log.transactionHash}:${log.logIndex}`;
 const body = (log: FreshLog) => JSON.stringify([log.address.toLowerCase(), log.topics.map(value => value.toLowerCase()), log.data.toLowerCase()]);
-const marketId = (identity: FreshStockwaveMarketIdentity) => `uniswap_v4:${manager}:${identity.poolId}`;
+const protocol=(identity:FreshSupportedMarketIdentity)=>identity.manager===INFINITY_CL?'infinity_cl':'uniswap_v4';
+const marketId = (identity: FreshSupportedMarketIdentity) => `${protocol(identity)}:${identity.manager}:${identity.poolId}`;
 const number = (value: string) => { const parsed = Number(freshInteger(value)); if (!Number.isSafeInteger(parsed)) throw Error('v4_discovery_number_invalid'); return parsed; };
 const anchor = (value: unknown, expected: number): Header => {
   const block = value as FreshBlock;
@@ -36,8 +43,8 @@ async function boundedMap<T, R>(values: T[], run: (value: T) => Promise<R>) {
 export function freshV4DiscoveryProgress(fact:Record<string,unknown>,capture:{block_number:string|number;revision:string|number},saved:unknown,canonicalThroughHash:string|null):FreshV4DiscoveryProgress{
   const creation=Number(fact.block_number),prior=saved as Partial<FreshV4DiscoveryProgress>|undefined;
   if(!Number.isSafeInteger(creation)||creation<0||!Number.isSafeInteger(Number(capture.block_number))||creation>Number(capture.block_number))throw Error('v4_discovery_creation_invalid');
-  const reset:FreshV4DiscoveryProgress={version:1,launchDigest:digest(fact),captureRevision:String(capture.revision),throughBlock:creation-1,throughHash:null,rangeSize:FRESH_V4_DISCOVERY_MAX_BLOCKS};
-  if(!prior||prior.version!==1||prior.launchDigest!==reset.launchDigest||prior.captureRevision!==reset.captureRevision||!Number.isSafeInteger(prior.throughBlock)
+  const reset:FreshV4DiscoveryProgress={version:1,marketProtocolsVersion:2,launchDigest:digest(fact),captureRevision:String(capture.revision),throughBlock:creation-1,throughHash:null,rangeSize:FRESH_V4_DISCOVERY_MAX_BLOCKS};
+  if(!prior||prior.version!==1||prior.marketProtocolsVersion!==2||prior.launchDigest!==reset.launchDigest||prior.captureRevision!==reset.captureRevision||!Number.isSafeInteger(prior.throughBlock)
     ||Number(prior.throughBlock)<creation-1||Number(prior.throughBlock)>Number(capture.block_number))return reset;
   if(Number(prior.throughBlock)>=creation&&(!freshHash(prior.throughHash)||canonicalThroughHash!==prior.throughHash))return reset;
   if(Number(prior.throughBlock)===creation-1&&prior.throughHash!==null)return reset;
@@ -45,24 +52,26 @@ export function freshV4DiscoveryProgress(fact:Record<string,unknown>,capture:{bl
     rangeSize:Number.isInteger(prior.rangeSize)&&Number(prior.rangeSize)>=1&&Number(prior.rangeSize)<=FRESH_V4_DISCOVERY_MAX_BLOCKS?Number(prior.rangeSize):FRESH_V4_DISCOVERY_MAX_BLOCKS};
 }
 
-/** Exactly two indexed-token Initialize queries per bounded page. Matching
+/** Two indexed-token Initialize queries per official manager and bounded page. Matching
  * market receipts/headers are authenticated in full, then discarded; only
  * compact pool identities survive. This never establishes token launch. */
 export async function collectFreshV4DiscoveryPage(options: { rpc: Rpc; token: string; fromBlock: number; toBlock: number; canonicalHash(number: number): Promise<string | null>; signal?: AbortSignal }): Promise<FreshV4DiscoveryPage> {
   const token = freshAddress(options.token), { fromBlock, toBlock, rpc } = options;
   if (!token || !Number.isSafeInteger(fromBlock) || !Number.isSafeInteger(toBlock) || fromBlock < 0 || toBlock < fromBlock || toBlock - fromBlock >= FRESH_V4_DISCOVERY_MAX_BLOCKS) throw Error('v4_discovery_range_invalid');
   const tokenTopic = `0x${token.slice(2).padStart(64, '0')}`;
-  const requests = [[topic, null, tokenTopic], [topic, null, null, tokenTopic]];
-  const responses = await boundedMap(requests, async topics => {
+  const requests = [{manager,topic},{manager:INFINITY_CL,topic:FRESH_INFINITY_CL_INITIALIZE_TOPIC}].flatMap(venue=>[
+    {...venue,topics:[venue.topic,null,tokenTopic]},{...venue,topics:[venue.topic,null,null,tokenTopic]}]);
+  const responses = await boundedMap(requests, async request => {
+    const topics=request.topics;
     if (options.signal?.aborted) throw Error('v4_discovery_aborted');
-    const logs = await rpc<FreshLog[]>('eth_getLogs', [{ address: manager, fromBlock: blockHex(fromBlock), toBlock: blockHex(toBlock), topics }]);
+    const logs = await rpc<FreshLog[]>('eth_getLogs', [{ address: request.manager, fromBlock: blockHex(fromBlock), toBlock: blockHex(toBlock), topics }]);
     if (!Array.isArray(logs)) throw Error('v4_discovery_logs_invalid');
-    if (logs.some(log=>log?.topics?.[topics[2] ? 2 : 3]!==tokenTopic)) throw Error('v4_discovery_filter_mismatch');
+    if (logs.some(log=>log?.address?.toLowerCase()!==request.manager||log.topics[0]!==request.topic||log?.topics?.[topics[2] ? 2 : 3]!==tokenTopic)) throw Error('v4_discovery_filter_mismatch');
     if (logs.length > 64) throw Error('v4_discovery_log_limit'); return logs;
   });
   const logs = new Map<string, FreshLog>();
   for (const log of responses.flat()) {
-    if (!log || log.removed || log.address.toLowerCase() !== manager || log.topics?.length !== 4 || log.topics[0] !== topic
+    if (!log || log.removed || !((log.address.toLowerCase()===manager&&log.topics[0]===topic)||(log.address.toLowerCase()===INFINITY_CL&&log.topics[0]===FRESH_INFINITY_CL_INITIALIZE_TOPIC))|| log.topics?.length !== 4
       || !freshHash(log.blockHash) || !freshHash(log.transactionHash) || log.topics.some(value => !freshHash(value)) || !/^0x[\da-f]{320}$/i.test(log.data)
       || number(log.blockNumber) < fromBlock || number(log.blockNumber) > toBlock || ![log.topics[2], log.topics[3]].includes(tokenTopic)) throw Error('v4_discovery_log_invalid');
     number(log.logIndex); number(log.transactionIndex);
@@ -82,21 +91,30 @@ export async function collectFreshV4DiscoveryPage(options: { rpc: Rpc; token: st
     if (!tx || tx.hash !== txHash) throw Error('v4_discovery_transaction_invalid');
     const receipt = await rpc<FreshReceipt>('eth_getTransactionReceipt', [txHash]); validateFreshReceipt(receipt, tx, block); return [txHash, receipt] as const;
   })).map(value => value));
-  const identities = new Map<string, FreshStockwaveMarketIdentity>();
+  const identities = new Map<string, FreshSupportedMarketIdentity>(),unsupportedPools:UnsupportedPool[]=[];
   for (const log of logs.values()) {
     const receipt = receipts.get(log.transactionHash)!, matching = receipt.logs.filter(candidate => candidate.logIndex === log.logIndex);
     if (matching.length !== 1 || body(matching[0]) !== body(log)) throw Error('v4_discovery_receipt_log_mismatch');
-    const parsed = stockwavePoolManagerInterface.parseLog(log); if (!parsed || parsed.name !== 'Initialize') throw Error('v4_discovery_initialize_invalid');
+    const infinity=log.address.toLowerCase()===INFINITY_CL,parsed = (infinity?freshInfinityClInterface:stockwavePoolManagerInterface).parseLog(log); if (!parsed || parsed.name !== 'Initialize') throw Error('v4_discovery_initialize_invalid');
     const pair = String(parsed.args.currency0).toLowerCase() === token ? String(parsed.args.currency1).toLowerCase() : String(parsed.args.currency0).toLowerCase();
-    const identity = authenticateFreshStockwavePoolInitialization(receipt, token, log.topics[1], pair, Number(parsed.args.tick));
-    if (!identity) throw Error('v4_discovery_pool_unverified');
-    const prior = identities.get(identity.poolId); if (prior && digest(prior) !== digest(identity)) throw Error('v4_discovery_pool_conflict'); identities.set(identity.poolId, identity);
+    const identity = infinity?authenticateFreshInfinityClInitialization(receipt,token,log.topics[1],pair==='0x'+'0'.repeat(40)?WBNB:pair,Number(parsed.args.tick)):authenticateFreshStockwavePoolInitialization(receipt, token, log.topics[1], pair, Number(parsed.args.tick));
+    if (!identity){
+      if(!infinity)throw Error('v4_discovery_pool_unverified');
+      // An authentic unsupported key is a diagnostic, not a failed page or
+      // an approved price. Continue to later supported native pools instead
+      // of permanently stopping the shared cursor at this Initialize.
+      const encoded=freshInfinityClInterface.encodeEventLog(parsed.fragment,parsed.args),a=String(parsed.args.currency0).toLowerCase(),b=String(parsed.args.currency1).toLowerCase();
+      const key=AbiCoder.defaultAbiCoder().encode(['address','address','address','address','uint24','bytes32'],[a,b,String(parsed.args.hooks).toLowerCase(),INFINITY_CL,parsed.args.fee,parsed.args.parameters]);
+      if(encoded.data!==log.data||encoded.topics.some((t,i)=>t!==log.topics[i])||BigInt(a)>=BigInt(b)||![a,b].includes(token)||keccak256(key)!==log.topics[1])throw Error('v4_discovery_pool_unverified');
+      unsupportedPools.push({manager:INFINITY_CL,poolId:log.topics[1],blockNumber:number(log.blockNumber),blockHash:log.blockHash,reason:'infinity_cl_pool_key_unsupported'});continue;
+    }
+    const key=marketId(identity),prior = identities.get(key); if (prior && digest(prior) !== digest(identity)) throw Error('v4_discovery_pool_conflict'); identities.set(key, identity);
   }
   const headers = [...blocks.values()].map(block => anchor(block, number(block.number)));
   const end = blocks.has(toBlock) ? anchor(blocks.get(toBlock), toBlock) : anchor(await rpc('eth_getBlockByNumber', [blockHex(toBlock), false]), toBlock);
   if (await options.canonicalHash(toBlock) !== end.hash) throw Error('v4_discovery_noncanonical');
   if (!headers.some(header => header.number === toBlock)) headers.push(end);
-  return { fromBlock, toBlock, identities: [...identities.values()], headers, receipts: receipts.size };
+  return { fromBlock, toBlock, identities: [...identities.values()], headers, receipts: receipts.size,unsupportedPools };
 }
 
 /** A bounded current-identity read only; chart/page requests never scan logs. */
@@ -104,11 +122,11 @@ export async function readFreshV4MarketIdentities(database: Pick<Pool, 'query'>,
   const addresses = [...new Set(tokens.map(token => freshAddress(token)).filter((token): token is string => Boolean(token)))].slice(0, 64);
   const rows = addresses.length ? (await database.query(`SELECT token_address,identity FROM (SELECT token_address,identity,
     row_number() OVER(PARTITION BY token_address ORDER BY CASE WHEN status='ready' THEN 0 ELSE 1 END,observed_at DESC NULLS LAST,id) AS rank
-    FROM fresh.markets WHERE token_address=ANY($1::text[]) AND protocol='uniswap_v4') m WHERE rank<=8`, [addresses])).rows : [];
-  const result = new Map<string, FreshStockwaveMarketIdentity[]>();
+    FROM fresh.markets WHERE token_address=ANY($1::text[]) AND protocol IN('uniswap_v4','infinity_cl')) m WHERE rank<=8`, [addresses])).rows : [];
+  const result = new Map<string, FreshSupportedMarketIdentity[]>();
   for (const row of rows) {
     const identity=row.identity?.market??row.identity;
-    if(!freshMarketIdentityInvalid(row.identity)&&validFreshStockwaveMarketIdentity(identity) && identity.tokenAddress === row.token_address){
+    if(!freshMarketIdentityInvalid(row.identity)&&validFreshSupportedMarketIdentity(identity) && identity.tokenAddress === row.token_address){
       const list = result.get(row.token_address) ?? []; if (list.length < 8) list.push(identity); result.set(row.token_address, list);
     }
   }
@@ -134,7 +152,7 @@ export async function commitFreshV4DiscoveryPage(client: PoolClient, job: { id: 
   const last = page.headers.find(header => header.number === page.toBlock);if(!last)throw Error('v4_discovery_progress_invalid');
   let added = 0;
   for (const identity of page.identities) {
-    if (!validFreshStockwaveMarketIdentity(identity) || identity.tokenAddress !== job.reference || identity.initial.blockNumber < page.fromBlock || identity.initial.blockNumber > page.toBlock
+    if (!validFreshSupportedMarketIdentity(identity) || identity.tokenAddress !== job.reference || identity.initial.blockNumber < page.fromBlock || identity.initial.blockNumber > page.toBlock
       || canonical.get(identity.initial.blockNumber) !== identity.initial.blockHash) throw Error('v4_discovery_identity_invalid');
     const marked=anchorFreshMarketInitialization(identity,fact,{boundary:{number:Number(capture.value?.startBlock),hash:capture.value?.startHash},captureRevision:String(capture.revision),
       initialOccurredAt:new Date(canonicalRows.find(row=>Number(row.block_number)===identity.initial.blockNumber)!.occurred_at).toISOString(),
@@ -142,7 +160,7 @@ export async function commitFreshV4DiscoveryPage(client: PoolClient, job: { id: 
     const priorRow = (await client.query('SELECT token_address,protocol,address,identity FROM fresh.markets WHERE id=$1 FOR UPDATE', [marketId(identity)])).rows[0];
     const prior=priorRow?.identity?.market??priorRow?.identity;
     if(priorRow){
-      if(priorRow.token_address!==identity.tokenAddress||priorRow.protocol!=='uniswap_v4'||!validFreshStockwaveMarketIdentity(prior))throw Error('v4_discovery_existing_identity_invalid');
+      if(priorRow.token_address!==identity.tokenAddress||priorRow.protocol!==protocol(identity)||!validFreshSupportedMarketIdentity(prior))throw Error('v4_discovery_existing_identity_invalid');
       const core=(value:unknown)=>{const{canonicalInitialization:_anchor,canonicalIdentityInvalid:_invalid,...fields}=value as Record<string,unknown>;return fields;};
       if(digest(core(prior))===digest(core(identity))&&!freshMarketIdentityInvalid(priorRow.identity)){
         // Pricing stores current conversion identity around the original market
@@ -158,21 +176,24 @@ export async function commitFreshV4DiscoveryPage(client: PoolClient, job: { id: 
       if (!original || original.block_hash === prior.initial.blockHash&&!(freshMarketIdentityInvalid(priorRow.identity)&&digest(core(prior))===digest(core(identity)))) throw Error('v4_discovery_existing_identity_conflict');
     }
     const saved = await client.query(`INSERT INTO fresh.markets(id,token_address,address,protocol,quote_address,identity,status)
-      VALUES($1,$2,NULL,'uniswap_v4',$3,$4::jsonb,'pending') ON CONFLICT(id) DO UPDATE SET address=NULL,quote_address=EXCLUDED.quote_address,identity=EXCLUDED.identity,
+      VALUES($1,$2,NULL,$5,$3,$4::jsonb,'pending') ON CONFLICT(id) DO UPDATE SET address=NULL,quote_address=EXCLUDED.quote_address,identity=EXCLUDED.identity,
       state=CASE WHEN fresh.markets.identity IS DISTINCT FROM EXCLUDED.identity THEN '{}'::jsonb ELSE fresh.markets.state END,
       status=CASE WHEN fresh.markets.identity IS DISTINCT FROM EXCLUDED.identity THEN 'pending' ELSE fresh.markets.status END,
       observed_block=CASE WHEN fresh.markets.identity IS DISTINCT FROM EXCLUDED.identity THEN NULL ELSE fresh.markets.observed_block END,
       observed_hash=CASE WHEN fresh.markets.identity IS DISTINCT FROM EXCLUDED.identity THEN NULL ELSE fresh.markets.observed_hash END,
       observed_at=CASE WHEN fresh.markets.identity IS DISTINCT FROM EXCLUDED.identity THEN NULL ELSE fresh.markets.observed_at END
-      WHERE fresh.markets.token_address=EXCLUDED.token_address AND fresh.markets.protocol='uniswap_v4'
+      WHERE fresh.markets.token_address=EXCLUDED.token_address AND fresh.markets.protocol=EXCLUDED.protocol
       AND (fresh.markets.address,fresh.markets.quote_address,fresh.markets.identity) IS DISTINCT FROM (NULL,EXCLUDED.quote_address,EXCLUDED.identity)`,
-    [marketId(identity), identity.tokenAddress, identity.quoteAddress, JSON.stringify(marked)]); added += saved.rowCount ?? 0;
+    [marketId(identity), identity.tokenAddress, identity.quoteAddress, JSON.stringify(marked),protocol(identity)]); added += saved.rowCount ?? 0;
   }
-  const updated = { ...progress, throughBlock: page.toBlock, throughHash: last.hash, rangeSize: FRESH_V4_DISCOVERY_MAX_BLOCKS };
-  await client.query(`UPDATE fresh.jobs SET progress=$3::jsonb,state='pending',lease_id=NULL,lease_until=NULL,last_error=NULL,
+  const unsupported=page.unsupportedPools??[];
+  if(unsupported.length>64||unsupported.some(p=>p.manager!==INFINITY_CL||!freshHash(p.poolId)||p.reason!=='infinity_cl_pool_key_unsupported'||p.blockNumber<page.fromBlock||p.blockNumber>page.toBlock||canonical.get(p.blockNumber)!==p.blockHash))throw Error('v4_discovery_unsupported_context_invalid');
+  const updated = { ...progress, throughBlock: page.toBlock, throughHash: last.hash, rangeSize: FRESH_V4_DISCOVERY_MAX_BLOCKS,
+    unsupportedMarkets:unsupported.slice(-8) };
+  await client.query(`UPDATE fresh.jobs SET progress=$3::jsonb,state='pending',lease_id=NULL,lease_until=NULL,last_error=$6,
     due_at=$4::timestamptz+CASE WHEN $5::boolean THEN interval '60 seconds' ELSE interval '0 seconds' END,updated_at=clock_timestamp()
-    WHERE id=$1 AND lease_id=$2`, [job.id, job.lease_id, JSON.stringify(updated), now, page.toBlock === Number(capture.block_number)]);
-  return { blocks: page.toBlock - page.fromBlock + 1, markets: added, receipts: page.receipts };
+    WHERE id=$1 AND lease_id=$2`, [job.id, job.lease_id, JSON.stringify(updated), now, page.toBlock === Number(capture.block_number),unsupported.length?'infinity_cl_pool_key_unsupported':null]);
+  return { blocks: page.toBlock - page.fromBlock + 1, markets: added, receipts: page.receipts,unsupportedMarkets:unsupported.length };
 }
 
 /** One leased background page; capture/urgent state always has priority. Jobs

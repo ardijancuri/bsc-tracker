@@ -6,7 +6,10 @@ export class RpcRequestError extends Error {
   readonly category: RpcErrorCategory;
   readonly code: number | null;
   declare readonly httpStatus?: number;
-  constructor(message: string, category: RpcErrorCategory, options: {code?: unknown; httpStatus?: unknown} = {}) {
+  /** A valid matching JSON-RPC envelope explicitly returned null. This never
+   * marks malformed, missing, foreign-ID or failed transport responses. */
+  declare readonly nullResult?: true;
+  constructor(message: string, category: RpcErrorCategory, options: {code?: unknown; httpStatus?: unknown; nullResult?: unknown} = {}) {
     super(message);
     this.name = 'RpcRequestError';
     this.category = category;
@@ -14,6 +17,7 @@ export class RpcRequestError extends Error {
       && options.code >= -2147483648 && options.code <= 2147483647 ? options.code : null;
     if (typeof options.httpStatus === 'number' && Number.isInteger(options.httpStatus)
       && options.httpStatus >= 100 && options.httpStatus <= 599) this.httpStatus = options.httpStatus;
+    if (options.nullResult === true) this.nullResult = true;
   }
 }
 function providerFailure(message: string, value: unknown): RpcRequestError {
@@ -49,7 +53,7 @@ export const chainRpc: Rpc = async <T>(method: string, params: unknown[]): Promi
   const body = value as Record<string, unknown>;
   if (body.jsonrpc !== '2.0' || body.id !== id) throw new RpcRequestError(`RPC ${method} unavailable`, 'invalid_response');
   if (body.error != null) throw providerFailure(`RPC ${method} unavailable`, body.error);
-  if (body.result == null) throw new RpcRequestError(`RPC ${method} unavailable`, 'invalid_response');
+  if (body.result == null) throw new RpcRequestError(`RPC ${method} unavailable`, 'invalid_response', {nullResult:body.result===null});
   return body.result as T;
 };
 /** Batches are an optional transport optimization. Injected single-call RPCs
@@ -87,7 +91,7 @@ chainRpc.batch=async requests=>{
         :rows.length!==1?new RpcRequestError('RPC batch duplicate response','invalid_response')
           :rows[0].jsonrpc!=='2.0'?new RpcRequestError('RPC batch element unavailable','invalid_response')
             :rows[0].error!=null?providerFailure('RPC batch element unavailable',rows[0].error)
-              :rows[0].result==null?new RpcRequestError('RPC batch element unavailable','invalid_response'):null;
+              :rows[0].result==null?new RpcRequestError('RPC batch element unavailable','invalid_response',{nullResult:rows[0].result===null}):null;
       return reason?{status:'rejected' as const,reason}:{status:'fulfilled' as const,value:rows![0].result};
     });
   }catch(error){

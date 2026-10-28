@@ -7,6 +7,7 @@ import { fourInterface, FOUR_MANAGERS, pairInterface, PCS_V2_FACTORY } from '../
 import { collectFreshPage, commitFreshPage, decodeFreshEvidence, decodeFreshLaunch, encodeFreshEvidence, FRESH_EVIDENCE_TTL_MS, runFreshCapture, validateFreshReceipt, type FreshBlock, type FreshCapturedReceipt, type FreshLog } from './capture.js';
 import { FRESH_NONLEDGER_TEMPLATES } from './tokenAuthenticity.js';
 import * as stockwave from './factoryLaunch.js';
+import * as tokenBirth from './tokenBirth.js';
 import { FRESH_UNISWAP_V4_BSC_MANAGER, freshStockwavePoolId, stockwavePoolManagerInterface } from './stockwaveMarket.js';
 
 const hash = (digit: string) => `0x${digit.repeat(64)}`, address = (digit: string) => `0x${digit.repeat(40)}`, word = (value: string) => `0x${value.slice(2).padStart(64, '0')}`;
@@ -109,6 +110,26 @@ describe('lean confirmed capture', () => {
     const rpc = rpcFixture(), page = await collectFreshPage({ rpc, checkpoint, wallets: [{ address: wallet, fromBlock: 101 }], now: new Date('2026-10-21T18:00:00Z') });
     expect(page.blocks).toHaveLength(1); expect(page.receipts).toHaveLength(1); expect(page.receipts[0].wallets).toEqual([wallet]);
     expect((rpc as any).mock.calls.every(([method]: string[]) => method.startsWith('eth_'))).toBe(true);
+  });
+  it('adds birth proof only from an already-fetched canonical creation context without extra RPC',async()=>{
+    const f=fixture(),created=getCreateAddress({from:wallet,nonce:1}).toLowerCase();
+    f.block.transactions[0]={...f.entry.transaction,to:null,input:'0x60006000',nonce:'0x1'};f.entry.transaction=f.block.transactions[0];
+    f.entry.receipt={...f.entry.receipt,contractAddress:created,logs:[]};
+    const rpc=vi.fn(async(method:string)=>{if(method==='eth_blockNumber')return'0x6b';if(method==='eth_getBlockByNumber')return f.block;if(method==='eth_getLogs')return[];if(method==='eth_getTransactionReceipt')return f.entry.receipt;throw Error('unexpected_rpc');})as Rpc;
+    const enrich=vi.spyOn(tokenBirth,'enrichFreshKnownTokenBirth');
+    const page=await collectFreshPage({rpc,checkpoint:{...checkpoint,startHash:checkpoint.blockHash},wallets:[{address:wallet,fromBlock:101}]});
+    expect(page.receipts).toHaveLength(1);expect(page.launches[0].proof.tokenBirth).toMatchObject({kind:'authenticated_protocol_token_birth_v1',tokenAddress:created});
+    expect(enrich).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({tokenAddress:created}),{transaction:f.entry.transaction,receipt:f.entry.receipt,block:f.block},{number:100,hash:checkpoint.blockHash});
+    expect((rpc as any).mock.calls.filter(([m]:string[])=>m==='eth_getTransactionReceipt')).toHaveLength(1);
+    expect((rpc as any).mock.calls.some(([m]:string[])=>m==='eth_call'||m==='eth_getCode'||m==='debug_traceTransaction')).toBe(false);
+  });
+  it('retains raw capture and original launch facts when optional birth certification fails',async()=>{
+    const f=fixture(),created=getCreateAddress({from:wallet,nonce:1}).toLowerCase();
+    f.block.transactions[0]={...f.entry.transaction,to:null,input:'0x60006000',nonce:'0x1'};f.entry.transaction=f.block.transactions[0];f.entry.receipt={...f.entry.receipt,contractAddress:created,logs:[]};
+    const rpc=vi.fn(async(method:string)=>method==='eth_blockNumber'?'0x6b':method==='eth_getBlockByNumber'?f.block:method==='eth_getTransactionReceipt'?f.entry.receipt:[])as Rpc;
+    vi.spyOn(tokenBirth,'enrichFreshKnownTokenBirth').mockImplementation(()=>{throw Error('optional_birth_unavailable');});
+    const page=await collectFreshPage({rpc,checkpoint:{...checkpoint,startHash:checkpoint.blockHash},wallets:[{address:wallet,fromBlock:101}]});
+    expect(page.receipts[0].receipt).toEqual(f.entry.receipt);expect(page.launches[0]).toMatchObject({tokenAddress:created,proof:{creator:wallet,creation:'top_level'},status:'eligible'});expect(page.launches[0].proof.tokenBirth).toBeUndefined();
   });
   it('waits for the sixth confirmation', async () => {
     const rpc = rpcFixture(); expect((await collectFreshPage({ rpc, checkpoint, head: 106, wallets: [] })).blocks).toHaveLength(0);

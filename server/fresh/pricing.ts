@@ -7,6 +7,7 @@ import { MarketDecimal, ratioPrice, sqrtPrice } from '../nodeMarketMath.js';
 import { freshAddress, freshHash, freshInteger } from './capture.js';
 import { freshStockwaveMetadataFromFact } from './factoryLaunch.js';
 import { readFreshStockwaveMarket, validFreshStockwaveMarketIdentity } from './stockwaveMarket.js';
+import {readFreshInfinityClMarket,validFreshInfinityClMarketIdentity}from'./infinityClMarket.js';
 import { FRESH_STOCK_QUOTE_TOKEN } from './stockQuote.js';
 import {readFreshStockCurrentRawQuote} from './stockCurrentQuote.js';
 import {readFreshFlapRawQuote} from './flapQuoteRecovery.js';
@@ -205,6 +206,16 @@ async function registeredV4Price(token:FreshTokenMetadata,options:FreshPriceOpti
     state:{sqrtPriceX96:market.sqrtPriceX96,liquidity:market.liquidityRaw,rawQuoteNumerator:raw.numerator,rawQuoteDenominator:raw.denominator,
       ...(converted?converted.state:{})}};
 }
+async function registeredInfinityClPrice(token:FreshTokenMetadata,options:FreshPriceOptions,value:unknown):Promise<QuoteCandidate|null>{
+ if(!validFreshInfinityClMarketIdentity(value)||value.tokenAddress!==token.address||!options.canonicalHash
+  ||value.initial.blockNumber>options.block.number||await options.canonicalHash(value.initial.blockNumber)!==value.initial.blockHash)return null;
+ const market=await readFreshInfinityClMarket({rpc:options.rpc,identity:value,tokenDecimals:token.decimals,block:options.block}),raw=market.rawQuoteRatio,virtual=market.virtualQuoteLiquidityRaw;
+ const decimals=Number((await freshCall(options,WBNB,tokenAbi,'decimals'))[0]);if(decimals!==18)return null;
+ const priceRatio=new MarketDecimal(BigInt(raw.numerator)*10n**BigInt(token.decimals),BigInt(raw.denominator)*10n**18n),liquidity=new MarketDecimal(BigInt(virtual.numerator),BigInt(virtual.denominator)*10n**18n);
+ if(priceRatio.n<=0n||liquidity.n<=0n)return null;
+ return{quote:WBNB,marketQuote:WBNB,decimals:18,priceQuote:priceRatio.text(),priceRatio,liquidity,address:value.manager,protocol:'infinity_cl',id:`infinity_cl:${value.manager}:${value.poolId}`,observedAt:options.block.timestamp,
+  identity:{manager:value.manager,poolId:value.poolId,poolKey:value.poolKey,market:value},state:{sqrtPriceX96:market.sqrtPriceX96,liquidity:market.liquidityRaw,rawQuoteNumerator:raw.numerator,rawQuoteDenominator:raw.denominator}};
+}
 async function discoverPool(token: FreshTokenMetadata, quote: string, options: FreshPriceOptions): Promise<{candidates:QuoteCandidate[];complete:boolean}> {
   const quoteDecimals = Number((await freshCall(options, quote, tokenAbi, 'decimals'))[0]);
   if (!Number.isInteger(quoteDecimals) || quoteDecimals < 0 || quoteDecimals > 36) throw new Error('quote_precision_invalid');
@@ -312,7 +323,7 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   if(token.supplyRaw===null)throw new Error('token_supply_unavailable');
   const launch:LaunchObservation = { proof: null }, [controller, stockwave,registeredV4] = await Promise.all([
     launchPrice(token, options, launch), stockwavePrice(token, options).catch(() => null),
-    Promise.allSettled((options.marketIdentities??[]).slice(0,8).map(identity=>registeredV4Price(token,options,identity))),
+    Promise.allSettled((options.marketIdentities??[]).slice(0,8).map(identity=>validFreshInfinityClMarketIdentity(identity)?registeredInfinityClPrice(token,options,identity):registeredV4Price(token,options,identity))),
   ]);
   let routed:QuoteCandidate|null=null;
   if(!controller&&!launch.emptyQuote&&launch.proof?.platform==='flap'&&launch.proof.stage==='bonding'){
@@ -374,7 +385,7 @@ export async function persistFreshQuote(database: Pick<Pool, 'query'>, quote: Fr
   await database.query(`INSERT INTO fresh.markets(id,token_address,address,protocol,quote_address,identity,state,observed_block,observed_hash,observed_at,status)
     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,'ready') ON CONFLICT(id) DO UPDATE SET state=EXCLUDED.state,identity=EXCLUDED.identity,
     observed_block=EXCLUDED.observed_block,observed_hash=EXCLUDED.observed_hash,observed_at=EXCLUDED.observed_at,status='ready'
-    WHERE fresh.markets.observed_block IS NULL OR fresh.markets.observed_block<=EXCLUDED.observed_block`, [quote.market.id, quote.tokenAddress, quote.market.protocol==='uniswap_v4'?null:quote.market.address, quote.market.protocol,
+    WHERE fresh.markets.observed_block IS NULL OR fresh.markets.observed_block<=EXCLUDED.observed_block`, [quote.market.id, quote.tokenAddress, ['uniswap_v4','infinity_cl'].includes(quote.market.protocol)?null:quote.market.address, quote.market.protocol,
     quote.market.quoteAddress, JSON.stringify(quote.market.identity), JSON.stringify(quote.market.state), quote.blockNumber, quote.blockHash, quote.observedAt]);
 }
 
@@ -427,6 +438,16 @@ export async function commitFreshCurrentQuote(database:Pool,quote:FreshQuote,opt
    }
    if(!validFreshStockwaveMarketIdentity(identity)||identity.tokenAddress!==quote.tokenAddress||identity.manager!==proposed.manager||identity.poolId!==proposed.poolId
     ||freshMarketLaunchDigest(identity.poolKey)!==freshMarketLaunchDigest(proposed.poolKey)||identity.initial.blockNumber>quote.blockNumber)throw Error('current_quote_market_changed');
+   const canonical=createFreshCurrentMarketCanonicalHash(client,{token:quote.tokenAddress,block:quote.metadata.block});
+   if(await canonical(identity.initial.blockNumber)!==identity.initial.blockHash)throw Error('current_quote_market_noncanonical');
+  }
+  if(quote.market.protocol==='infinity_cl'){
+   if(admission.kind!=='new_launch')throw Error('current_quote_market_admission_unsupported');
+   const stored=(await client.query('SELECT token_address,protocol,identity FROM fresh.markets WHERE id=$1 FOR SHARE',[quote.market.id])).rows[0],proposed=quote.market.identity,identity=proposed.market,previous=stored?.identity?.market??stored?.identity;
+   if(freshMarketIdentityInvalid(proposed)||freshMarketIdentityInvalid(stored?.identity)||!stored||stored.token_address!==quote.tokenAddress||stored.protocol!=='infinity_cl'
+    ||!validFreshInfinityClMarketIdentity(previous)||!validFreshInfinityClMarketIdentity(identity)||freshMarketLaunchDigest(previous)!==freshMarketLaunchDigest(identity)
+    ||identity.tokenAddress!==quote.tokenAddress||identity.manager!==proposed.manager||identity.poolId!==proposed.poolId||freshMarketLaunchDigest(identity.poolKey)!==freshMarketLaunchDigest(proposed.poolKey)
+    ||identity.initial.blockNumber>quote.blockNumber)throw Error('current_quote_market_changed');
    const canonical=createFreshCurrentMarketCanonicalHash(client,{token:quote.tokenAddress,block:quote.metadata.block});
    if(await canonical(identity.initial.blockNumber)!==identity.initial.blockHash)throw Error('current_quote_market_noncanonical');
   }

@@ -16,6 +16,14 @@ function setup(privateScope = false) {
 }
 
 describe('fresh server-approved GMGN replay contract', () => {
+  it('accepts only an explicitly estimated signed cost-fallback snapshot through the full share request',async()=>{
+    const{ready,expiresAt,now}=setup(),a=ready.activity,raw=a.replayAccounting!,h=raw.history!,proof=h.balanceProof,id=a.accountingSnapshot!,final=raw.final!;
+    raw.events=h.events.map(e=>({...e,blockNumber:e.blockNumber!}));a.inventory={version:1,events:h.events.map(e=>({...e,blockNumber:e.blockNumber!})),coverage:{complete:true,reconciled:true,fromBlock:'100',toBlock:proof.blockNumber,blockHash:proof.blockHash,checkedAt:proof.checkedAt,balance:proof.balance}};delete raw.history;
+    id.complete=false;id.reasons=['unknown_costs'];id.estimate={version:1,policy:'omit_unknown_costs_v1',basis:'recorded_facts',snapshotId:id.snapshotId,historyFingerprint:id.historyFingerprint,asOf:id.asOf,reasons:['unknown_costs'],realizedProfitUsd:final.cumulativeRealizedProfitUsd!,totalProfitUsd:final.reportedProfitUsd,knownCapitalUsd:final.feeInclusiveCostUsd!,knownRemainingCostUsd:final.remainingCostBasisUsd!,missingCostCount:null,missingFeeCount:null,missingProceedsCount:null};raw.status='estimated';raw.coverage.exactFinal=false;raw.coverage.estimatedFinal=true;final.reportedRoi=null;
+    vi.useFakeTimers();vi.setSystemTime(now);const fetcher=vi.fn().mockResolvedValueOnce(Response.json(ready)).mockResolvedValueOnce(Response.json({valid:true,expiresAt}));vi.stubGlobal('fetch',fetcher);
+    const data=prepareTradeReplayData(a,null,undefined,now)!,result=await replayMarketData(data,new AbortController().signal);
+    expect(result.preparationStatus).toBe('ready');expect(result.data.accountingSnapshot!.complete).toBe(false);expect(result.data.replayAccounting!.coverage.exactFinal).toBe(false);expect(result.data.replayAccounting!.final!.reportedRoi).toBeNull();expect(result.accountingNotice).toContain('missing costs excluded');expect(validReplayAccountingFinal(result.data,now)).not.toBeNull();
+  });
   it('accepts GMGN candles only with server-approved manifest and binds the frozen financial object', async () => {
     const { data, ready, expiresAt, now } = setup(); vi.useFakeTimers(); vi.setSystemTime(now);
     const fetcher = vi.fn().mockResolvedValueOnce(Response.json(ready)).mockResolvedValueOnce(Response.json({ valid: true, expiresAt }));

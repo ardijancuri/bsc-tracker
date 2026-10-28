@@ -9,7 +9,7 @@ import { imageMime, publicImageIp } from '../tokenImage.js';
 
 const maxImageBytes=10*1024*1024,maxPageBytes=512*1024,maxPixels=16_000_000;
 type Transport=(url:string,options:{signal:AbortSignal})=>Promise<Response>;
-export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page' }
+export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page'|'genius_contract_page' }
 export class FreshArtworkError extends Error { constructor(readonly reason:string){super(reason);} }
 const fail=(reason:string):never=>{throw new FreshArtworkError(reason);};
 
@@ -43,6 +43,22 @@ export function freshFlapArtworkFromHtml(html:string,address:string):string|null
   }
   for(const record of records)walk(record,0);
   return candidates.size===1?[...candidates][0]:null;
+}
+
+/** Canonical exact-contract page plus one real social-image tag. Escaped JSON
+ * descriptions, token tickers and the site's default artwork are not identity. */
+export function freshGeniusArtworkFromHtml(html:string,address:string):string|null{
+  if(Buffer.byteLength(html)>maxPageBytes)return null;
+  const attrs=(tag:string)=>Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*["']([^"']*)["']/g)].map(m=>[m[1].toLowerCase(),m[2].replaceAll('&amp;','&')]));
+  const canonical=[...html.matchAll(/<link\b[^>]*>/gi)].map(m=>attrs(m[0])).filter(a=>a.rel==='canonical').map(a=>a.href);
+  if(canonical.length!==1)return null;
+  try{const page=new URL(canonical[0]);if(page.origin!=='https://genius.fun'||page.pathname.toLowerCase()!=='/token/'+address||page.search||page.hash)return null;}catch{return null;}
+  const images=new Set<string>();
+  for(const m of html.matchAll(/<meta\b[^>]*>/gi)){const a=attrs(m[0]);if(a.property!=='og:image'||!a.content)continue;
+    try{const image=new URL(a.content);if(image.origin!=='https://genius.fun'||image.pathname!=='/api/image'||image.username||image.password)continue;
+      const src=image.searchParams.get('src');if(!src)continue;const normalized=normalizeLogoUrl(src);if(normalized&&freshArtworkUrl(normalized))images.add(normalized);
+    }catch{/* Untrusted metadata cannot select an image. */}
+  }return images.size===1?[...images][0]:null;
 }
 
 /** The URL is untrusted even when it came from the correct launchpad page. */
@@ -101,16 +117,17 @@ export async function normalizeFreshArtwork(data:Buffer):Promise<Buffer|null>{
 }
 /** Only artwork is read from the exact-contract launchpad page. Its prices,
  * names, supplies and other financial/identity fields are never consumed. */
-export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport}={}):Promise<FreshArtwork>{
+export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:'flap'|'genius'}={}):Promise<FreshArtwork>{
   if(!/^0x[0-9a-f]{40}$/.test(address))return fail('artwork_address_invalid');
   const timeout=AbortSignal.timeout(15_000),signal=options.signal?AbortSignal.any([timeout,options.signal]):timeout;
   const agent=options.transport?null:publicAgent();
   const transport:Transport=options.transport??(async(url,{signal})=>await undiciFetch(url,{signal,redirect:'manual',dispatcher:agent!,headers:{accept:'text/html,image/webp,image/png,image/jpeg'}}) as unknown as Response);
-  try {const html=(await request(`https://flap.sh/bnb/${address}`,maxPageBytes,signal,transport)).toString('utf8');
-    const image=freshFlapArtworkFromHtml(html,address);if(!image)return fail('artwork_not_published');
+  const genius=options.provider==='genius';
+  try {const html=(await request(genius?`https://genius.fun/token/${address}`:`https://flap.sh/bnb/${address}`,maxPageBytes,signal,transport)).toString('utf8');
+    const image=genius?freshGeniusArtworkFromHtml(html,address):freshFlapArtworkFromHtml(html,address);if(!image)return fail('artwork_not_published');
     const url=freshArtworkUrl(image);if(!url)return fail('artwork_url_rejected');
     const data=await normalizeFreshArtwork(await request(url,maxImageBytes,signal,transport));
-    if(!data)return fail('artwork_image_rejected');return{data,mime:'image/webp',url,source:'flap_contract_page'};
+    if(!data)return fail('artwork_image_rejected');return{data,mime:'image/webp',url,source:genius?'genius_contract_page':'flap_contract_page'};
   }catch(error){if(error instanceof FreshArtworkError)throw error;return fail(signal.aborted?'artwork_deadline':'artwork_unavailable');}
   finally{await agent?.close();}
 }
@@ -120,9 +137,8 @@ const publicTraded=`EXISTS(SELECT 1 FROM fresh.financial_events e JOIN fresh.kol
 /** Optional, separate worker stage. One small job per token; no financial loop
  * waits for artwork, and private-only wallet addresses never leave the server. */
 export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit?:number;loader?:typeof loadFreshArtwork}={}){
-  const selected=(await db.query(`SELECT t.address FROM fresh.tokens t LEFT JOIN fresh.jobs j ON j.kind='token_artwork' AND j.reference=t.address
+  const selected=(await db.query(`SELECT t.address,lf.protocol FROM fresh.tokens t JOIN fresh.launch_facts lf ON lf.token_address=t.address AND lf.status='eligible' LEFT JOIN fresh.jobs j ON j.kind='token_artwork' AND j.reference=t.address
     WHERE t.launch_status='eligible' AND t.logo_data IS NULL AND ${publicTraded}
-      AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.protocol='flap' AND lf.status='eligible')
       AND (j.id IS NULL OR (j.state='pending' AND j.due_at<=clock_timestamp()) OR (j.state='leased' AND j.lease_until<clock_timestamp()))
     ORDER BY t.last_trade_at DESC NULLS LAST,t.address LIMIT $1`,[Math.min(2,Math.max(1,options.limit??1))])).rows;
   let ready=0,failed=0;
@@ -132,9 +148,9 @@ export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit
       ON CONFLICT(kind,reference) DO UPDATE SET state='leased',lease_id=EXCLUDED.lease_id,lease_until=EXCLUDED.lease_until,attempts=fresh.jobs.attempts+1,updated_at=clock_timestamp()
       WHERE (fresh.jobs.state='pending' AND fresh.jobs.due_at<=clock_timestamp()) OR (fresh.jobs.state='leased' AND fresh.jobs.lease_until<clock_timestamp()) RETURNING id`,[row.address,lease]);
     if(!owned.rowCount)continue;
-    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal});
+    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal,provider:row.protocol==='flap'?'flap':'genius'});
       const saved=await db.query(`WITH saved AS (UPDATE fresh.tokens t SET logo_data=$2,logo_mime=$3,logo_url=$4 WHERE t.address=$1 AND t.logo_data IS NULL AND t.launch_status='eligible'
-        AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.protocol='flap' AND lf.status='eligible')
+        AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.status='eligible')
         AND ${publicTraded} AND EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='token_artwork' AND j.reference=$1 AND j.lease_id=$5 AND j.lease_until>clock_timestamp()) RETURNING t.address
         ), removed AS (DELETE FROM fresh.jobs WHERE kind='token_artwork' AND reference=$1 AND lease_id=$5 RETURNING id)
         SELECT (SELECT count(*)::int FROM saved) AS saved`,[row.address,artwork.data,artwork.mime,artwork.url,lease]);

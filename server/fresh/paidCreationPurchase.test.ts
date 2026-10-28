@@ -1,0 +1,27 @@
+import{readFileSync}from'node:fs';import{gunzipSync}from'node:zlib';import{describe,it,expect}from'vitest';import{freshPaidCreationPurchase,freshPaidCreationPurchaseCandidate}from'./paidCreationPurchase.js';import{certifyFreshCompleteCallTrace}from'./passiveIncoming.js';import type{FreshCapturedReceipt}from'./capture.js';
+const fixture=()=>JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/paid-creation-purchase.json.gz',import.meta.url))).toString())as{entry:FreshCapturedReceipt;wallet:string;token:string;quantityRaw:string};
+const proof=(f:ReturnType<typeof fixture>)=>freshPaidCreationPurchase(f.entry,f.wallet,f.token,BigInt(f.quantityRaw)),word=(n:bigint|string)=>typeof n==='bigint'?n.toString(16).padStart(64,'0'):n.slice(2).padStart(64,'0'),replace=(s:string,i:number,n:bigint|string)=>s.slice(0,2+i*64)+word(n)+s.slice(2+(i+1)*64);
+const recertify=(f:ReturnType<typeof fixture>)=>{f.entry.completeTraceProof=certifyFreshCompleteCallTrace(f.entry,f.entry.trace,{method:'debug_traceTransaction',params:[f.entry.transaction.hash,{tracer:'callTracer',tracerConfig:{onlyTopCall:false,withLog:false}}]},'operator_archive');};
+describe('authenticated creation-and-native-purchase protocol',()=>{
+ it('proves the actual creator purchase, keeping launch expense and embedded buy fee separate',()=>{const f=fixture(),before=JSON.stringify(f.entry);expect(proof(f)).toMatchObject({protocol:'three_xd_paid_creation_v1',nativeAmountWei:'302000000000000000',creationFeeWei:'2000000000000000',buyInputWei:'300000000000000000',embeddedFeeWei:'6000000000000000',transferLogIndex:343,buyLogIndex:344,quantityRaw:f.quantityRaw});expect(JSON.stringify(f.entry)).toBe(before);});
+ it('recognition is source/protocol based rather than a transaction-hash exception',()=>{const f=fixture(),h='0x'+'b'.repeat(64);f.entry.transaction.hash=h;f.entry.receipt.transactionHash=h;for(const l of f.entry.receipt.logs)l.transactionHash=h;recertify(f);expect(proof(f)?.transactionHash).toBe(h);});
+ it('retains a narrow non-authorizing trace candidate before original call-tree evidence exists',()=>{const f=fixture();delete f.entry.trace;delete f.entry.completeTraceProof;expect(freshPaidCreationPurchaseCandidate(f.entry)).toBe(true);expect(proof(f)).toBeNull();f.entry.receipt.logs[9].address=f.wallet;expect(freshPaidCreationPurchaseCandidate(f.entry)).toBe(false);});
+ const reject=(name:string,change:(f:ReturnType<typeof fixture>)=>void,certify=true)=>it(name,()=>{const f=fixture();change(f);if(certify)recertify(f);expect(proof(f)).toBeNull();});
+ reject('rejects absent original complete-trace authentication',f=>{delete f.entry.completeTraceProof;},false);
+ reject('rejects another outer contract or smart account',f=>{f.entry.transaction.type='0x4';},false);
+ reject('rejects a wrong signed purchase input despite unchanged trace payment',f=>{const i='0x'+String(f.entry.transaction.input).slice(10);f.entry.transaction.input='0x87ce0f83'+replace(i,3,1n).slice(2);f.entry.trace!.input=String(f.entry.transaction.input);});
+ reject('rejects a different wallet recipient in the purchase call',f=>{const c=f.entry.trace!.calls![3];c.input='0x59a87bc1'+replace('0x'+c.input!.slice(10),2,'0x'+'1'.repeat(40)).slice(2);});
+ reject('rejects a creation fee different from the actual fee lookup',f=>{f.entry.trace!.calls![1].output='0x'+word(1n);});
+ reject('rejects an extra native refund or an unaccounted sibling call',f=>{f.entry.trace!.calls!.push({type:'CALL',from:f.entry.transaction.to!,to:f.wallet,value:'0x1',input:'0x',output:'0x'});});
+ reject('rejects an extra zero-value call capable of moving wallet assets',f=>{f.entry.trace!.calls![3].calls!.push({type:'CALL',from:f.entry.transaction.to!,to:f.wallet,value:'0x0',input:'0xa9059cbb',output:'0x'});});
+ reject('rejects an alternate pool constructor version',f=>{const c=f.entry.trace!.calls![2].calls![6].calls![0];c.input='0x00'+c.input!.slice(4);});
+ reject('rejects an alternate token constructor version',f=>{const c=f.entry.trace!.calls![2].calls![6].calls![1];c.input='0x00'+c.input!.slice(4);});
+ reject('rejects a modified pool runtime outside its exact immutable owner slots',f=>{const c=f.entry.trace!.calls![2].calls![6].calls![0];c.output='0x00'+c.output!.slice(4);});
+ reject('rejects a modified token runtime outside its exact owner/pool slots',f=>{const c=f.entry.trace!.calls![2].calls![6].calls![1];c.output='0x00'+c.output!.slice(4);});
+ reject('rejects a wrong constructor owner rather than masking arbitrary data',f=>{const c=f.entry.trace!.calls![2].calls![6].calls![0],head='0x'+c.input!.slice(2+17043*2);c.input=c.input!.slice(0,2+17043*2)+replace(head,1,'0x'+'1'.repeat(40)).slice(2);});
+ reject('rejects mint supply inconsistent with the authenticated constructor',f=>{f.entry.receipt.logs[1].data='0x'+word(1n);});
+ reject('rejects a delivered token amount different from the claimed purchase',f=>{f.entry.receipt.logs[7].data='0x'+word(1n);});
+ reject('rejects an unexplained embedded fee greater than the full pool input',f=>{f.entry.receipt.logs[8].data=replace(f.entry.receipt.logs[8].data,2,301000000000000000n);});
+ reject('rejects a stated pool refund instead of ignoring it',f=>{f.entry.receipt.logs[8].data=replace(f.entry.receipt.logs[8].data,3,1n);});
+ reject('rejects an extra wallet token movement in the canonical receipt',f=>{f.entry.receipt.logs.push({...f.entry.receipt.logs[7],logIndex:'0xffff'});});
+});

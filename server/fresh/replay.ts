@@ -3,6 +3,7 @@ import type { KolTokenActivity } from '../../shared/kolTokenTrades.js';
 import type { ReplayPreparation, ReplayPreparationReason } from '../../shared/replayPreparation.js';
 import type { ReplayMarketChart } from '../../shared/replayChart.js';
 import { FreshChartError, type FreshCharts } from './charts.js';
+import{validNodeCostEstimate}from'../../shared/nodeCostEstimate.js';
 
 const LEASE_MS = 15 * 60_000;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -14,6 +15,7 @@ export interface FreshReplayManifest {
   correctionEpoch: string; membershipRevision: string | null; scopeId: string;
   valuationAt: string; from: string; to: string; issuedAt: number; expiresAt: number;
   historyPermissionDigest?:string;
+  accountingQuality?:'estimated';estimatePolicy?:'omit_unknown_costs_v1';
 }
 export type FreshReplayPreparation = ReplayPreparation & { manifest?: string; expiresAt?: string };
 export function createFreshReplay({ charts, secret, validateRevision, now = Date.now, maxBytes = 32 * 1024 * 1024, maxEntries = 64, ownerDeadlineMs = 65_000 }:
@@ -66,6 +68,9 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
   }
   async function build(activity: FreshReplayActivity, scope: string, signal: AbortSignal): Promise<FreshReplayPreparation> {
     const result = base(activity), identity = activity.accountingSnapshot, accounting = activity.replayAccounting;
+    const estimate=validNodeCostEstimate(identity),estimated=!!estimate&&accounting?.status==='estimated'&&accounting.coverage.estimatedFinal===true
+      &&accounting.final?.reportedProfitUsd===estimate.totalProfitUsd&&accounting.final?.cumulativeRealizedProfitUsd===estimate.realizedProfitUsd
+      &&accounting.final?.feeInclusiveCostUsd===estimate.knownCapitalUsd&&accounting.final?.reportedRoi===null;
     const fail = (reason: ReplayPreparationReason, pending: boolean, retryAfterMs = 2000): FreshReplayPreparation => ({ ...result,
       status: pending ? 'pending' : 'unavailable', reason, ...(pending ? { retryAfterMs } : {}) });
     const reasons = [...(identity?.reasons ?? []), accounting?.coverage.reason ?? ''];
@@ -83,7 +88,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
       result.stages.accounting = 'ready'; result.stages.valuation = 'pending'; return fail('stale_quote', true);
     }
     if (!identity || !accounting || accounting.status === 'pending') return fail('accounting_pending', true);
-    if (!identity.complete || !accounting.coverage.transactionsComplete || !accounting.coverage.balanceMatched || !accounting.final) {
+    if ((!identity.complete&&!estimated) || !accounting.coverage.transactionsComplete || !accounting.coverage.balanceMatched || !accounting.final) {
       const unknown = reasons.some(reason => /cost|fee|opening/.test(reason));
       const pending = !unknown;
       result.stages.accounting = pending ? 'pending' : 'unavailable';
@@ -132,6 +137,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
       snapshotId: identity.snapshotId, windowId: result.window.id, historyFingerprint: identity.historyFingerprint,
       cutoffBlock: accounting.inventoryBlockNumber ?? identity.coveredThroughBlock, cutoffHash: accounting.inventoryBlockHash ?? identity.valuationHash,
       valuationAt: accounting.final.timestamp, from: result.window.from, to: result.window.to, issuedAt, expiresAt: issuedAt + LEASE_MS };
+    if(estimated)Object.assign(claims,{accountingQuality:'estimated',estimatePolicy:'omit_unknown_costs_v1'});
     const revisionValid = await validateRevision(claims);
     // An expired owner may finish a slow database check later. It can never
     // issue a lease or overwrite the next owner's immutable ready object.
@@ -229,6 +235,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
       try { claims = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')) as FreshReplayManifest; }
       catch { return { valid: false, reason: 'invalid_manifest' }; }
       if (claims.version !== 1 || claims.audience !== 'kollens-replay-fresh-v1' || claims.scope !== scope
+        || (claims.accountingQuality!==undefined||claims.estimatePolicy!==undefined)&&(claims.accountingQuality!=='estimated'||claims.estimatePolicy!=='omit_unknown_costs_v1')
         || !/^0x[0-9a-f]{40}$/.test(claims.wallet) || !/^0x[0-9a-f]{40}$/.test(claims.token)
         || !Number.isSafeInteger(claims.issuedAt) || !Number.isSafeInteger(claims.expiresAt)
         || claims.issuedAt > now() + 1000 || claims.expiresAt - claims.issuedAt > LEASE_MS || claims.expiresAt <= claims.issuedAt) return { valid: false, reason: 'invalid_manifest' };

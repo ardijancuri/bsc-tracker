@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { nodeReplayFixture } from './nodeReplay.fixture';
 import { prepareNodeReplay } from './nodeReplay';
-import { applyReplayMarketChart, prepareTradeReplayData, validReplayAccountingFinal } from './tradeReplayData';
+import { applyReplayMarketChart, prepareTradeReplayData, validReplayAccountingFinal,replayAccountingTotal } from './tradeReplayData';
 import ReplayCanvas from './tradeReplayCanvas';
 
 function fixture(privateScope = false) {
@@ -16,6 +16,28 @@ function fixture(privateScope = false) {
   return value;
 }
 describe('fresh compact node replay browser adapter', () => {
+  it('keeps a cost-excluded ending explicitly estimated, including the video label and absent ROI',async()=>{
+    const{activity,now,chartPoints}=fixture(),id=activity.accountingSnapshot!,raw=activity.replayAccounting!,final=raw.final!;
+    id.complete=false;id.reasons=['unknown_costs'];id.estimate={version:1,policy:'omit_unknown_costs_v1',basis:'recorded_facts',snapshotId:id.snapshotId,historyFingerprint:id.historyFingerprint,asOf:id.asOf,reasons:['unknown_costs'],realizedProfitUsd:final.cumulativeRealizedProfitUsd!,totalProfitUsd:final.reportedProfitUsd,knownCapitalUsd:final.feeInclusiveCostUsd!,knownRemainingCostUsd:final.remainingCostBasisUsd!,missingCostCount:null,missingFeeCount:null,missingProceedsCount:null};
+    raw.status='estimated';raw.coverage.exactFinal=false;raw.coverage.estimatedFinal=true;final.reportedRoi=null;
+    const result=prepareNodeReplay(activity,now);expect(result?.accounting.status).toBe('estimated');expect(result?.accounting.final?.reportedRoi).toBeNull();
+    const data=prepareTradeReplayData(activity,null,undefined,now)!;expect(data.replayAccounting?.coverage.estimatedFinal).toBe(true);
+    const prepared=applyReplayMarketChart(data,{address:activity.token.address,period:'replay',source:'node',resolution:'1m',points:chartPoints.map(p=>({timestamp:p.timestamp,priceUsd:String(p.priceUsd)})),candles:[],marketCapSupply:'10000',pending:false,stale:false,updatedAt:activity.generatedAt,currentQuote:{timestamp:activity.generatedAt,priceUsd:'4'}},now);
+    const context=new Proxy({},{get:(_t,k)=>k==='measureText'?(t:string)=>({width:t.length*12}):k==='createLinearGradient'?()=>({addColorStop(){}}):()=>{}}),renderer=new ReplayCanvas({getContext:()=>context}as unknown as HTMLCanvasElement);await renderer.setData(prepared);expect(renderer.snapshot(1).totalPnl).toBe(Number(final.reportedProfitUsd));expect(renderer.snapshot(1).totalRoi).toBeNull();
+    const altered=structuredClone(activity);altered.accountingSnapshot!.estimate!.snapshotId='c'.repeat(64);expect(prepareNodeReplay(altered,now)).toBeUndefined();
+  });
+  it.each([null,'999'])('keeps transfer-neutral FIFO trading profit independent of optional outgoing mark %s',mark=>{
+    const{activity,now}=fixture(),raw=activity.replayAccounting!,inventory=activity.inventory!,ending=raw.events.at(-1)!;
+    Object.assign(ending,{cumulativeRealizedProfitUsd:'37.1',transferOutIncomeUsd:mark,feeInclusiveCostUsd:'101'});
+    Object.assign(inventory.events.at(-1)!,ending);
+    Object.assign(raw.final!,{cumulativeRealizedProfitUsd:'37.1',transferOutIncomeUsd:mark,feeInclusiveCostUsd:'101',reportedProfitUsd:'156.7',reportedRoi:String(156.7/101)});
+    const data=prepareTradeReplayData(activity,null,undefined,now)!;
+    expect(data.replayAccounting?.events.at(-1)).toMatchObject({cumulativeRealizedProfitUsd:37.1,transferOutIncomeUsd:mark===null?null:999});
+    expect(replayAccountingTotal(data.replayAccounting!.events.at(-1),4,true)).toBeCloseTo(156.7);
+    expect(validReplayAccountingFinal(data,now)?.reportedProfitUsd).toBe(156.7);
+    data.replayAccounting!.events.at(-1)!.remainingCostBasisUsd=null;
+    expect(replayAccountingTotal(data.replayAccounting!.events.at(-1),4,true)).toBeNull();
+  });
   it('accepts reconciled mixed history while requiring the frozen financial sources to agree', () => {
     const {activity,now}=fixture();activity.accountingSnapshot!.source='mixed';activity.replayAccounting!.source='mixed';
     expect(prepareNodeReplay(activity,now)?.accounting.source).toBe('mixed');
