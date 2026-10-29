@@ -4,6 +4,8 @@ import{freshPendingGangTrade,persistFreshPendingTrades,removeFreshResolvedPendin
 import{freshAcquisitionCostKey}from'./acquisitionCost.js';
 import{freshSignedSelfCallSettlement}from'./signedSelfCallSettlement.js';
 import { createHash } from 'node:crypto';
+import{completeFreshDecodeRepair}from'./capture.js';
+import{invalidateFreshPositionGapEpoch}from'./positionGapJournal.js';
 import{freshPassiveIncomingOnly,validFreshCompleteCallTrace}from'./passiveIncoming.js';
 import{certifyFreshPassiveImportedPrecision}from'./passivePrecision.js';
 import{createFreshDecodeWorkBudget,groupFreshDecodeRows}from'./decodeWorkBudget.js';
@@ -911,7 +913,7 @@ export async function finishFreshDecodedReceipt(database:Pick<Pool,'query'>,opti
   await database.query(`UPDATE fresh.recent_evidence SET decoder_status=$3,decoder_version=$4,last_error=$5,payload=COALESCE($6,payload),position_dependency_addresses=$7,position_dependency_proof=$8 WHERE tx_hash=$1 AND block_hash=$2`,
     [row.tx_hash,row.block_hash,waiting?'repair':'done',FRESH_DECODER_VERSION,decoded.reasons.join(',')||null,freshDecodedEvidencePayload(entry,state,decoded.trace,recovery,diagnostics,decoded.directTransferIntents),dependencies?.addresses??null,dependencies?.proofHash??null]);
   if(waiting)await queueFreshDecodeRepair(database,row,now,decoded.reasons);
-  else await database.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1",[`${row.tx_hash}:${row.block_hash}`]);
+  else await completeFreshDecodeRepair(database,`${row.tx_hash}:${row.block_hash}`);
   return{waiting,valuationOnly};
 }
 /** Called with the receipt row locked. A concurrent authenticated repair must
@@ -1146,6 +1148,7 @@ export async function rollbackFreshToAncestor(client: PoolClient, ancestor: { bl
     AND CASE WHEN jsonb_typeof(COALESCE(identity->'market'->'initial'->'blockNumber',identity->'initial'->'blockNumber'))='number'
       THEN (COALESCE(identity->'market'->'initial'->>'blockNumber',identity->'initial'->>'blockNumber'))::numeric>$1 ELSE false END`,[ancestor.blockNumber]);
   await client.query('DELETE FROM fresh.recent_blocks WHERE block_number>$1', [ancestor.blockNumber]);
+  await invalidateFreshPositionGapEpoch(client,ancestor.blockNumber);
   await client.query('UPDATE fresh.wallets SET decode_gap_from_block=NULL,decode_gap_reason=NULL WHERE decode_gap_from_block>$1', [ancestor.blockNumber]);
   await client.query("UPDATE fresh.checkpoints SET block_number=$1,block_hash=$2,revision=revision+1,updated_at=clock_timestamp() WHERE key IN('capture','decode')", [ancestor.blockNumber, ancestor.blockHash]);
   return { scopes: scopes.length, wallets: new Set(wallets).size };

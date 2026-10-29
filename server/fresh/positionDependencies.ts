@@ -59,26 +59,43 @@ export const freshPositionReceiptOpaqueSql = (e: string) =>
 /** A genuine code-creation proof can bound a token's existence, unlike a pool
  * launch timestamp. Same-block receipts and contradictory positive token
  * evidence remain relevant. The receipt/repair itself is never changed. */
-export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string){
- const e=pendingAlias(receipt),t=pendingTokenExpression(token),proof='token_birth.proof';
- // No receipt/token outer reference belongs in this subselect: PostgreSQL
- // evaluates the validated birth map once as an InitPlan, not per receipt.
- return`(COALESCE(${e}.block_number<((SELECT jsonb_object_agg(token_birth.token_address,token_birth.block_number) FROM fresh.launch_facts token_birth
+export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durableCertificate?:boolean}={}){
+ const t=pendingTokenExpression(token),proof='token_birth.proof';
+ const parentIdentity=options.durableCertificate?`jsonb_build_object('number',token_birth.block_number-1,'hash',born.parent_hash,
+  'parentHash',COALESCE(current_parent.parent_hash,${proof}->'parent'->>'parentHash'),
+  'timestamp',COALESCE(to_char(current_parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),${proof}->'parent'->>'timestamp'))`:
+  `jsonb_build_object('number',parent.block_number,'hash',parent.block_hash,'parentHash',parent.parent_hash,
+    'timestamp',to_char(parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`;
+ // Receipt scans share one birth map. Current-position queries validate only
+ // the selected indexed creation certificate, avoiding an all-history scan.
+ const rows=`SELECT ${options.durableCertificate?'token_birth.block_number':'jsonb_object_agg(token_birth.token_address,token_birth.block_number)'} FROM fresh.launch_facts token_birth
   JOIN fresh.checkpoints token_start ON token_start.key='start'
-  JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
-  JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash
+  ${options.durableCertificate?`JOIN fresh.checkpoints birth_capture ON birth_capture.key='capture' AND birth_capture.block_number>=token_birth.block_number
+  CROSS JOIN LATERAL(SELECT token_birth.block_number,token_birth.block_hash,token_birth.launched_at AS occurred_at,
+   COALESCE(token_birth.proof->'tokenBirth'->'birth'->>'parentHash',token_birth.proof->'birth'->>'parentHash') AS parent_hash)born
+  LEFT JOIN fresh.recent_blocks current_birth ON current_birth.block_number=token_birth.block_number
+  LEFT JOIN fresh.recent_blocks current_parent ON current_parent.block_number=token_birth.block_number-1
+  LEFT JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash`:
+  `JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
+  JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash`}
   WHERE token_birth.status='eligible'
+   ${options.durableCertificate?`AND token_birth.token_address=${t}`:''}
    AND token_birth.block_number>token_start.block_number
    AND token_start.value->>'startBlock'=token_start.block_number::text AND token_start.value->>'startHash'=token_start.block_hash
    AND token_birth.launched_at=born.occurred_at
+   ${options.durableCertificate?`AND born.parent_hash~'^0x[0-9a-f]{64}$'
+   AND birth_capture.value->>'startBlock'=token_start.block_number::text AND birth_capture.value->>'startHash'=token_start.block_hash
+   AND (current_parent.block_number IS NULL OR current_parent.block_hash=born.parent_hash)
+   AND (current_birth.block_number IS NULL OR(current_birth.block_hash=born.block_hash AND current_birth.parent_hash=born.parent_hash AND current_birth.occurred_at=born.occurred_at))`:''}
    AND(${freshKnownProtocolTokenBirthSql()} OR(token_birth.protocol='evm_creation' AND token_birth.log_index IS NULL
    AND ${proof}->'version'='1'::jsonb AND ${proof}->>'kind'='canonical_token_birth_v1'
    AND ${proof}->>'source' IN('node','explicit_archive') AND ${proof}->>'codeBefore'='0x'
    AND ${proof}->'start'=jsonb_build_object('number',token_start.block_number,'hash',token_start.block_hash)
    AND ${proof}->'birth'=jsonb_build_object('number',born.block_number,'hash',born.block_hash,'parentHash',born.parent_hash,
     'timestamp',to_char(born.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
-   AND ${proof}->'parent'=jsonb_build_object('number',parent.block_number,'hash',parent.block_hash,'parentHash',parent.parent_hash,
-    'timestamp',to_char(parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+   AND ${proof}->'parent'=${parentIdentity}
+   ${options.durableCertificate?`AND ${proof}->'parent'->>'parentHash'~'^0x[0-9a-f]{64}$'
+   AND ${proof}->'parent'->>'timestamp'~'^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$'`:''}
    AND ${proof}->'creationTransactionKnown'='true'::jsonb AND ${proof}->>'witnessTransactionHash'=token_birth.tx_hash
    AND token_birth.tx_hash~'^0x[0-9a-f]{64}$' AND ${proof}->>'creator'~'^0x[0-9a-f]{40}$'
    AND ${proof}->>'originalContextSha256'~'^[0-9a-f]{64}$' AND ${proof}->>'runtimeSha256'~'^[0-9a-f]{64}$'
@@ -91,7 +108,12 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
     AND CASE WHEN jsonb_typeof(${proof}->'creationFrame'->'path')='array' THEN
      jsonb_array_length(${proof}->'creationFrame'->'path') BETWEEN 1 AND 64 AND NOT EXISTS(
       SELECT 1 FROM jsonb_array_elements(${proof}->'creationFrame'->'path') step
-       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))))) ->> ${t})::bigint,false)
+       WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))))`;
+ return options.durableCertificate?`(${rows})`:`((${rows}) ->> ${t})::bigint`;
+}
+export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string){
+ const e=pendingAlias(receipt),t=pendingTokenExpression(token);
+ return`(COALESCE(${e}.block_number<${freshAuthenticatedTokenBirthBlockSql(t)},false)
    AND NOT EXISTS(SELECT 1 FROM fresh.financial_events explicit_token WHERE explicit_token.canonical
     AND explicit_token.token_address=${t} AND explicit_token.transaction_hash=${e}.tx_hash AND explicit_token.block_hash=${e}.block_hash))`;
 }

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import{ensureFreshPositionGapEpoch}from'./positionGapJournal.js';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import type { Pool, PoolClient } from 'pg';
 import { blockHex, rpcBatch, type Rpc, type RpcBatchRequest } from '../rpc.js';
@@ -270,6 +271,15 @@ export async function runFreshCapture(database: Pool, rpc: Rpc, options: { limit
 
 /** Bounded expiry. Only the two exact audited synthetic-method identity
  * headers are retained; raw receipts and ordinary headers still expire. */
+export async function completeFreshDecodeRepair(database:Pick<Pool,'query'>,reference:string){
+  // Keep only the preexisting compact expiry identity when recovered evidence
+  // finishes. Removing its earliest reference would make an old finite gap
+  // unbounded again. Ordinary completed jobs are still removed, with no new
+  // per-poll records or financial history copies.
+  await database.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1 AND NOT(progress ? 'expiredEvidence')",[reference]);
+  await database.query(`UPDATE fresh.jobs SET state='done',lease_id=NULL,lease_until=NULL,last_error=NULL,updated_at=clock_timestamp()
+    WHERE kind='decode_receipt' AND reference=$1 AND progress ? 'expiredEvidence' AND state IS DISTINCT FROM 'done'`,[reference]);
+}
 export async function expireFreshEvidence(database: Pool, now = new Date(), limit = 1_000) {
   const client = await database.connect();
   try {
@@ -281,6 +291,7 @@ export async function expireFreshEvidence(database: Pool, now = new Date(), limi
 /** Caller owns the transaction. Exported for controlled-time integration tests
  * that roll their fixture writes back without touching active collection. */
 export async function expireFreshEvidenceInTransaction(client: PoolClient, now = new Date(), limit = 1_000) {
+    await ensureFreshPositionGapEpoch(client);
     const rows = (await client.query(`SELECT tx_hash,block_hash,block_number,transaction_index,wallet_addresses,decoder_status,last_error,
       position_dependency_addresses,position_dependency_proof,expires_at,
       CASE WHEN decoder_status<>'done' THEN encode(sha256(payload),'hex') ELSE NULL END AS unresolved_payload_sha256
@@ -305,14 +316,14 @@ export async function expireFreshEvidenceInTransaction(client: PoolClient, now =
           ON CONFLICT(kind,reference) DO UPDATE SET state='unavailable',progress=fresh.jobs.progress||EXCLUDED.progress,
             last_error=EXCLUDED.last_error,lease_id=NULL,lease_until=NULL,updated_at=clock_timestamp()`,
           [`decode:${reference}`,reference,JSON.stringify({expiredEvidence:manifest}),now]);
-      } else await client.query("DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1", [reference]);
+      } else await completeFreshDecodeRepair(client,reference);
       await client.query('DELETE FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2', [row.tx_hash, row.block_hash]);
     }
     const pinnedSyntheticHeaders=FRESH_ADDITIONAL_SYNTHETIC_BATCH_AUDITS.map(a=>`(b.block_number=${a.creationBlock} AND b.block_hash='${a.creationHash}')`).join(' OR ');
     const blocks = await client.query(`DELETE FROM fresh.recent_blocks WHERE block_number IN
       (SELECT b.block_number FROM fresh.recent_blocks b WHERE b.captured_at<=$1 AND NOT(${pinnedSyntheticHeaders}) AND NOT ${freshRealizedGapPinnedHeadersSql('b')} AND NOT EXISTS(SELECT 1 FROM fresh.recent_evidence e WHERE e.block_hash=b.block_hash)
         ORDER BY b.block_number LIMIT $2)`, [new Date(now.getTime() - FRESH_EVIDENCE_TTL_MS), Math.min(5_000, Math.max(1, limit))]);
-    return { evidence: rows.length, blocks: blocks.rowCount ?? 0, expiredUndecoded: rows.filter(row => row.decoder_status !== 'done').length,realizedGapExpiryGuardVersion:1 as const };
+    return { evidence: rows.length, blocks: blocks.rowCount ?? 0, expiredUndecoded: rows.filter(row => row.decoder_status !== 'done').length,realizedGapExpiryGuardVersion:1 as const,positionGapJournalVersion:1 as const };
 }
 
 export async function findFreshCommonAncestor(database: Pick<Pool, 'query'>, rpc: Rpc, checkpoint: FreshCaptureCheckpoint, maximum = 512): Promise<{ blockNumber: number; blockHash: string } | null> {

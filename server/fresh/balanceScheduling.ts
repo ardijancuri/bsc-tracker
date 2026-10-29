@@ -1,6 +1,8 @@
 import { freshPositionReceiptRelevantSql,freshPendingTradeScopeSql } from './positionDependencies.js';
 import{freshScopeTokenBoundarySql}from'./tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
+import{freshPositionWalletGapSql}from'./positionGapCoverage.js';
+export{freshPositionWalletGapSql}from'./positionGapCoverage.js';
 
 /** Receipt eligibility follows the same scope and per-wallet membership
  * boundaries as accounting. Missing headers conservatively remain pending. */
@@ -17,10 +19,6 @@ const decodingPending=(block:string)=>`(EXISTS(SELECT 1 FROM fresh.recent_eviden
    OR s.account_id IS NOT NULL AND j.wallet_address IS NOT NULL
     AND e.block_number>=greatest(s.starts_block,coalesce(j.registration_block,s.starts_block))
     AND(h.occurred_at IS NULL OR h.occurred_at>=greatest(s.starts_at,j.activity_from))))) OR ${freshPendingTradeScopeSql('s','p.token_address',block)})`;
-// The wallet retains only the earliest missing block, not a bounded gap end.
-// A marker before this book cannot prove that later missing blocks do not
-// overlap it; preserve the explicit gap until independently repaired.
-export const freshPositionWalletGapSql=(block:string)=>`EXISTS(SELECT 1 FROM fresh.wallets w WHERE w.address=ANY(s.wallet_addresses) AND w.decode_gap_from_block<=${block})`;
 const registrationPending=`(${membershipMissing} OR EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='registration_capture'
  AND j.reference=ANY(s.wallet_addresses) AND j.state NOT IN('done','cancelled')))`;
 
@@ -40,7 +38,7 @@ export const freshBalanceWorkSql=`WITH candidates AS(SELECT p.scope_id,p.token_a
 /** Recheck the identical membership/history gates after asynchronous RPC. */
 export const freshBalanceCommitSql=`UPDATE fresh.positions SET balance_quantity=$3,balance_block=$4,balance_hash=$5,balance_checked_at=$6,balance_status=$7
  WHERE scope_id=$1 AND token_address=$2 AND revision=$8 AND EXISTS(SELECT 1 FROM fresh.accounting_scopes s WHERE s.id=$1 AND s.active AND s.revision=$9
- AND NOT ${freshPositionWalletGapSql('$4')} AND NOT ${registrationPending} AND NOT ${decodingPending('$4').replaceAll('p.token_address','fresh.positions.token_address')}
+ AND NOT ${freshPositionWalletGapSql('$4','fresh.positions.token_address')} AND NOT ${registrationPending} AND NOT ${decodingPending('$4').replaceAll('p.token_address','fresh.positions.token_address')}
  AND $4<=${freshScopeTokenCaptureSql('s','$2')})
  AND(EXISTS(SELECT 1 FROM fresh.recent_blocks b WHERE b.block_number=$4 AND b.block_hash=$5)
   OR EXISTS(SELECT 1 FROM fresh.checkpoints c WHERE c.key='capture' AND c.block_number=$4 AND c.block_hash=$5))`;

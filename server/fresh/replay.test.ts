@@ -37,9 +37,9 @@ describe('fresh frozen replay preparation', () => {
     expect(ready.status).toBe('ready');expect(claims.historyPermissionDigest).toBe(digest);expect(await service.authorizedSaved(ready.snapshotId!)).not.toBeNull();
     active='d'.repeat(64);expect(await service.validate(ready.manifest!)).toMatchObject({valid:false,reason:'accounting_changed'});expect(await service.authorizedSaved(ready.snapshotId!)).toBeNull();
   });
-  it('stops retrying when historical precision is missing while retaining the recorded trades', async () => {
+  it.each(['historical_precision_unavailable','historical_settlement_unavailable','wallet_decode_gap'])('stops retrying for %s while retaining the recorded trades', async reason => {
     const value=activity(),replayChart=vi.fn(async()=>chart(value));
-    value.accountingSnapshot!.complete=false;value.accountingSnapshot!.reasons=['historical_precision_unavailable'];
+    value.accountingSnapshot!.complete=false;value.accountingSnapshot!.reasons=[reason];
     const service=createFreshReplay({charts:{replayChart},secret,validateRevision:async()=>true,now:()=>frozen});
     const result=await service.prepare(value);
     expect(result).toMatchObject({status:'unavailable',reason:'historical_evidence_unavailable',stages:{accounting:'unavailable'}});

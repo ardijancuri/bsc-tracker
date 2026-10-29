@@ -148,7 +148,7 @@ describe('fresh exact execution normalization', () => {
     expect(retained.transaction).toEqual(entry.transaction);expect(retained.receipt).toEqual(entry.receipt);
     expect(retained.decodeDiagnostics).toEqual({version:1,valuationReasons:['incoming_transfer_cost_unknown'],firstFailure});
     expect(decoded.events[0].amountUsd).toBeNull();
-    expect(calls.filter(call=>call.sql.startsWith('DELETE'))).toEqual([{sql:"DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1",params:[`${row.tx_hash}:${row.block_hash}`]}]);
+    expect(calls.filter(call=>call.sql.startsWith('DELETE'))).toEqual([{sql:"DELETE FROM fresh.jobs WHERE kind='decode_receipt' AND reference=$1 AND NOT(progress ? 'expiredEvidence')",params:[`${row.tx_hash}:${row.block_hash}`]}]);
     expect(calls.some(call=>call.sql.startsWith('INSERT INTO fresh.jobs'))).toBe(false);
     // A later pass keeps the same original diagnostic even after the job is gone.
     database.query.mockImplementation(async(sql:string)=>sql.startsWith('WITH candidates')?{rows:[{has_trade:false}]}:{rows:[],rowCount:1});

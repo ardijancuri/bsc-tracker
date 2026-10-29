@@ -58,7 +58,7 @@ function fixture(options: { blocks?: number; normalizationFailure?: boolean; rep
     if (sql.startsWith('SELECT id FROM fresh.accounting_scopes') || sql.startsWith('SELECT progress FROM fresh.jobs')) return { rows: [] };
     if (sql.startsWith('SELECT min(block_number)')) return { rows: [{ first_pending: null }] };
     if (sql.startsWith('SELECT block_number FROM fresh.checkpoints')) return { rows: [{ block_number: 200 }] };
-    if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql) || /^(UPDATE fresh\.recent_evidence|DELETE FROM fresh\.jobs|INSERT INTO fresh\.(jobs|checkpoints))/.test(sql)) return { rows: [], rowCount: 1 };
+    if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql) || /^(UPDATE fresh\.(recent_evidence|jobs)|DELETE FROM fresh\.jobs|INSERT INTO fresh\.(jobs|checkpoints))/.test(sql)) return { rows: [], rowCount: 1 };
     throw Error('unexpected_test_query');
   });
   const client = { query, release: vi.fn() }, database = { query, connect: vi.fn(async () => client) } as unknown as Pool;

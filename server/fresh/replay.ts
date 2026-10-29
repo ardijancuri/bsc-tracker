@@ -74,7 +74,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     const fail = (reason: ReplayPreparationReason, pending: boolean, retryAfterMs = 2000): FreshReplayPreparation => ({ ...result,
       status: pending ? 'pending' : 'unavailable', reason, ...(pending ? { retryAfterMs } : {}) });
     const reasons = [...(identity?.reasons ?? []), accounting?.coverage.reason ?? ''];
-    if (reasons.includes('historical_precision_unavailable') || reasons.includes('historical_settlement_unavailable')) {
+    if (reasons.includes('historical_precision_unavailable') || reasons.includes('historical_settlement_unavailable') || reasons.includes('wallet_decode_gap')) {
       result.stages.accounting = 'unavailable'; return fail('historical_evidence_unavailable', false);
     }
     if (reasons.some(reason => /mismatch|unreconciled|contradict|negative_balance/.test(reason))) {
