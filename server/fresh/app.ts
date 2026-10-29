@@ -18,8 +18,6 @@ import { FreshChartError,freshChartIntervals,freshChartPeriods,freshChartFrom,ty
 import {freshPublicPosition} from './publicPositions.js';
 import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
-import {registerChampionshipRoutes} from '../championshipApi.js';
-import {createChampionshipService} from '../championship.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
 import {freshPositionWalletGapSql} from './balanceScheduling.js';
@@ -49,9 +47,6 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     webhook:alerts.webhook,botLoginStart:login.handleStart});
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
-  // The existing external competition board has its own bounded in-memory
-  // cache. It neither writes financial response copies nor drives KOL P&L.
-  registerChampionshipRoutes(app,createChampionshipService());
   app.setErrorHandler((error,request,reply)=>{app.log.warn({event:'fresh_request_failed',method:request.method},'Request unavailable');
     if(!reply.sent)reply.code(503).header('Cache-Control','no-store').header('Retry-After','3').send({error:'Data is temporarily unavailable. Try again shortly.'});});
   app.get('/api/health',async()=>{await db.query('SELECT 1');return{ok:true,service:'kollens-fresh',state:await reads.state()};});

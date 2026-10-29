@@ -1,6 +1,5 @@
 // Product copy only. Token symbols, wallet names, addresses and protocol names stay unchanged.
 import { creatorJournalChinese } from './creatorJournalChinese';
-import { championshipChinese } from './championshipChinese';
 export const chinese: Record<string, string> = {
   '{matched} accounted movements · {pending} pending': '{matched} 笔已核算变动 · {pending} 笔待核对',
   'Estimated': '估算',
@@ -41,7 +40,6 @@ export const chinese: Record<string, string> = {
   'Rankings sort today’s realized profit in UTC from highest to lowest, using recorded FIFO purchase costs, fees and transfers. Tracking starts at the new token boundary. Unknown costs remain labeled.': '排名按 UTC 今日已实现盈亏从高到低排列，使用已记录的 FIFO 买入成本、费用和转账。仅跟踪起始区块之后发行的代币，未知成本会明确标注。',
   'Telegram login is not connected to this app. The bot still uses the live site.': 'Telegram 登录尚未连接到此应用。机器人仍在使用线上网站。',
   ...creatorJournalChinese,
-  ...championshipChinese,
   'Log in to Kollens': '登录 Kollens',
   'Signing you in…': '正在登录…',
   'You’ll be logged in to Kollens in this browser.': '你将在此浏览器中登录 Kollens。',
