@@ -123,7 +123,6 @@ export const chinese: Record<string, string> = {
   'Observed price': '成交参考价', 'Market cap': '市值', '24h volume': '24 小时成交额', 'MC —': '市值 —', 'MC {value}': '市值 {value}',
   'KOL CONVICTION': 'KOL 动向', 'Meme coin tracker': 'Meme 代币追踪', 'Live feed reconnecting': '正在重新连接',
   'Watching live trades': '跟踪实时交易', 'Low caps': '低市值', 'Under $100K': '低于 10 万美元',
-  'Awaiting valuation': '等待估值', 'Recorded trades · market cap unavailable': '已记录交易 · 市值暂不可用',
   '$100K+': '10 万美元以上', '$100K to $1M': '10 万至 100 万美元', '$1M+': '100 万美元以上', '$1M and above': '100 万美元及以上',
   'THE PERFORMANCE BOARD': '收益表现', 'KOL Leaderboard': 'KOL 排行榜',
   'Profit realized in the last 24 hours, using historical purchase costs, fees and transfers.': '过去 24 小时的已实现收益，计入历史买入成本、费用和转账。',

@@ -134,7 +134,7 @@ main { min-height: 0; flex: 1; }
 .token-card-main { display: block; }
 .token-card-main:focus-visible, .token-trade-kol:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
 .token-card-top .identity { flex: 1; min-width: 0; }
-.token-column .token-card-top, .unpriced-grid .token-card-top { padding-right: 32px; }
+.token-column .token-card-top { padding-right: 32px; }
 .token-card-cap { color: #aeb8bc; flex: none; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .copy-wallet:focus-visible { outline: 2px solid var(--yellow); outline-offset: 3px; }
 .token-card-top > svg { display: none; }
@@ -166,8 +166,8 @@ main { min-height: 0; flex: 1; }
 .token-trade-side.sell, .token-trade-value.sell { color: var(--red); }
 .token-card-trade time { color: #8e9a9f; text-align: right; white-space: nowrap; }
 .token-card-foot { border: 0; padding: 0; gap: 9px; font-size: 11px; white-space: nowrap; }
-.unpriced-section { margin-top: 31px; }
-.unpriced-grid { gap: 18px; }
+
+
 .column-empty { border: 0; background: #181c1f; font-size: 12px; }
 
 .leaderboard-table { display: flex; flex-direction: column; gap: 6px; }
@@ -275,7 +275,7 @@ main { min-height: 0; flex: 1; }
 }
 
 @media (max-width: 900px) {
-  .token-columns, .unpriced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .token-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .token-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page { padding-left: 22px; padding-right: 22px; }
   .trades-table .trade-row { min-width: 0; }
@@ -334,7 +334,7 @@ main { min-height: 0; flex: 1; }
   .trades-follow > div { flex: 1; min-width: 0; }
   .trades-follow h2 { font-size: 18px; }
   .trades-follow a { flex-shrink: 0; padding: 0 10px; }
-  .token-columns, .unpriced-grid { grid-template-columns: 1fr; }
+  .token-columns { grid-template-columns: 1fr; }
   .token-list { grid-template-columns: 1fr; gap: 8px; }
   .column-heading p { display: block; }
   .metric { padding: 14px 12px !important; }

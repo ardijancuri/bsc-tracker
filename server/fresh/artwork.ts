@@ -9,8 +9,8 @@ import { imageMime, publicImageIp } from '../tokenImage.js';
 
 const maxImageBytes=10*1024*1024,maxPageBytes=512*1024,maxPixels=16_000_000;
 type Transport=(url:string,options:{signal:AbortSignal})=>Promise<Response>;
-export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page'|'genius_contract_page'|'fourmeme_token_record' }
-export type FreshArtworkProvider='flap'|'genius'|'fourmeme'|'auto';
+export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page'|'genius_contract_page'|'fourmeme_token_record'|'pancakeswap_market_record' }
+export type FreshArtworkProvider='flap'|'genius'|'fourmeme'|'auto'|'pancakeswap';
 export class FreshArtworkError extends Error { constructor(readonly reason:string){super(reason);} }
 const fail=(reason:string):never=>{throw new FreshArtworkError(reason);};
 
@@ -75,6 +75,24 @@ export function freshFourMemeArtworkFromJson(text:string,address:string):string|
   }catch{return null;}
 }
 
+/** Artwork enrichment only. Exact BSC/base-token identity is mandatory; quote
+ * token icons, banners, names and all financial fields are ignored. Conflicting
+ * images remain unavailable instead of selecting an arbitrary market's icon. */
+export function freshPancakeArtworkFromJson(text:string,address:string):string|null{
+  if(Buffer.byteLength(text)>maxPageBytes||!/^0x[0-9a-f]{40}$/.test(address))return null;
+  try{
+    const pairs=JSON.parse(text)?.pairs;if(!Array.isArray(pairs)||pairs.length>500)return null;
+    const images=new Set<string>();
+    for(const pair of pairs){
+      if(pair?.chainId!=='bsc'||pair?.dexId!=='pancakeswap'||typeof pair.baseToken?.address!=='string'
+        ||pair.baseToken.address.toLowerCase()!==address||!/^0x[0-9a-f]{40}$/i.test(pair.pairAddress??''))continue;
+      if(typeof pair.info?.imageUrl!=='string')continue;
+      const image=normalizeLogoUrl(pair.info.imageUrl);if(image&&freshArtworkUrl(image))images.add(image);
+    }
+    return images.size===1?[...images][0]:null;
+  }catch{return null;}
+}
+
 /** The URL is untrusted even when it came from the correct launchpad page. */
 export function freshArtworkUrl(value:string):string|null {
   try {const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&!isIP(url.hostname)&&!url.hostname.startsWith('[')&&url.hostname.includes('.')&&url.href.length<=4096?url.href:null;}catch{return null;}
@@ -131,8 +149,16 @@ export async function normalizeFreshArtwork(data:Buffer):Promise<Buffer|null>{
 }
 /** Only artwork is read from the exact-contract launchpad page. Its prices,
  * names, supplies and other financial/identity fields are never consumed. */
-export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:FreshArtworkProvider}={}):Promise<FreshArtwork>{
+export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:FreshArtworkProvider;marketFallback?:boolean}={}):Promise<FreshArtwork>{
   if(!/^0x[0-9a-f]{40}$/.test(address))return fail('artwork_address_invalid');
+  if(options.marketFallback&&options.provider!=='pancakeswap'){
+    // Reserve time for market artwork even if a launchpad or IPFS source stalls.
+    // The entire operation remains below the existing 30-second job lease.
+    const total=AbortSignal.timeout(20_000),signal=options.signal?AbortSignal.any([total,options.signal]):total;
+    try{return await loadFreshArtwork(address,{...options,marketFallback:false,signal:AbortSignal.any([signal,AbortSignal.timeout(12_000)])});}
+    catch{if(signal.aborted)return fail('artwork_deadline');}
+    return loadFreshArtwork(address,{signal,transport:options.transport,provider:'pancakeswap'});
+  }
   const timeout=AbortSignal.timeout(15_000),signal=options.signal?AbortSignal.any([timeout,options.signal]):timeout;
   const agent=options.transport?null:publicAgent();
   const transport:Transport=options.transport??(async(url,{signal})=>await undiciFetch(url,{signal,redirect:'manual',dispatcher:agent!,headers:{accept:'application/json,text/html,image/webp,image/png,image/jpeg'}}) as unknown as Response);
@@ -140,10 +166,10 @@ export async function loadFreshArtwork(address:string,options:{signal?:AbortSign
   try {let image:string|null=null,source:FreshArtwork['source']='flap_contract_page';
     for(const provider of providers){
       try{
-        const page=provider==='fourmeme'?`https://four.meme/meme-api/v1/private/token/get/v2?address=${address}`:provider==='genius'?`https://genius.fun/token/${address}`:`https://flap.sh/bnb/${address}`;
+        const page=provider==='pancakeswap'?`https://api.dexscreener.com/latest/dex/tokens/${address}`:provider==='fourmeme'?`https://four.meme/meme-api/v1/private/token/get/v2?address=${address}`:provider==='genius'?`https://genius.fun/token/${address}`:`https://flap.sh/bnb/${address}`;
         const text=(await request(page,maxPageBytes,signal,transport)).toString('utf8');
-        image=provider==='fourmeme'?freshFourMemeArtworkFromJson(text,address):provider==='genius'?freshGeniusArtworkFromHtml(text,address):freshFlapArtworkFromHtml(text,address);
-        if(image){source=provider==='fourmeme'?'fourmeme_token_record':provider==='genius'?'genius_contract_page':'flap_contract_page';break;}
+        image=provider==='pancakeswap'?freshPancakeArtworkFromJson(text,address):provider==='fourmeme'?freshFourMemeArtworkFromJson(text,address):provider==='genius'?freshGeniusArtworkFromHtml(text,address):freshFlapArtworkFromHtml(text,address);
+        if(image){source=provider==='pancakeswap'?'pancakeswap_market_record':provider==='fourmeme'?'fourmeme_token_record':provider==='genius'?'genius_contract_page':'flap_contract_page';break;}
       }catch(error){if(providers.length===1||signal.aborted)throw error;}
     }
     if(!image)return fail('artwork_not_published');
@@ -178,7 +204,7 @@ export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit
       ON CONFLICT(kind,reference) DO UPDATE SET state='leased',lease_id=EXCLUDED.lease_id,lease_until=EXCLUDED.lease_until,attempts=fresh.jobs.attempts+1,updated_at=clock_timestamp()
       WHERE (fresh.jobs.state='pending' AND fresh.jobs.due_at<=clock_timestamp()) OR (fresh.jobs.state='leased' AND fresh.jobs.lease_until<clock_timestamp()) RETURNING id`,[row.address,lease]);
     if(!owned.rowCount)continue;
-    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal,provider:row.protocol==='flap'?'flap':row.protocol==='fourmeme'?'fourmeme':'auto'});
+    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal,provider:row.protocol==='flap'?'flap':row.protocol==='fourmeme'?'fourmeme':'auto',marketFallback:true});
       const saved=await db.query(`WITH saved AS (UPDATE fresh.tokens t SET logo_data=$2,logo_mime=$3,logo_url=$4 WHERE t.address=$1 AND t.logo_data IS NULL AND t.launch_status='eligible'
         AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.status='eligible')
         AND ${publicTraded} AND EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='token_artwork' AND j.reference=$1 AND j.lease_id=$5 AND j.lease_until>clock_timestamp()) RETURNING t.address

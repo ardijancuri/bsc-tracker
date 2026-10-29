@@ -59,7 +59,7 @@ describe('launch protocol routing for optional cached artwork',()=>{
     const query=vi.fn().mockResolvedValueOnce({rows:[{address:token,protocol}],rowCount:1}).mockResolvedValue({rows:[{saved:1}],rowCount:1});
     const loader=vi.fn(async()=>({data:await png(),mime:'image/webp' as const,url:image,source:'fourmeme_token_record' as const}));
     expect(await runFreshArtwork({query}as unknown as Pool,{loader})).toEqual({ready:1,failed:0});
-    expect(loader).toHaveBeenCalledWith(token,{signal:undefined,provider});
+    expect(loader).toHaveBeenCalledWith(token,{signal:undefined,provider,marketFallback:true});
     const writes=query.mock.calls.slice(1).map(([sql])=>String(sql)).join('\n');
     expect(writes).not.toMatch(/UPDATE fresh\.(?:financial_events|positions|kols|launch_facts)|INSERT INTO fresh\.(?:financial_events|positions|kols|launch_facts)/);
   });

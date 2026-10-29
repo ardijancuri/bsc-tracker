@@ -255,7 +255,6 @@ function TokensPage() {
       { key: 'mid', title: t("$100K+"), range: t("$100K to $1M") },
       { key: 'high', title: t("$1M+"), range: t("$1M and above") },
     ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{t(column.title)}</h2><p>{t(column.range)}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div></section>)}</div>
-    {groups.unpriced.length > 0 && <section className="unpriced-section" aria-labelledby="unpriced-tokens-title"><div className="column-heading"><div><h2 id="unpriced-tokens-title">{t("Awaiting valuation")}</h2><p>{t("Recorded trades · market cap unavailable")}</p></div></div><div className="unpriced-grid">{groups.unpriced.map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div></section>}
   </div>;
 }
 
