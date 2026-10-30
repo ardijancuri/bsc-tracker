@@ -18,6 +18,8 @@ import{readFreshPositionEstimates,freshPositionEstimateValues}from'./positionEst
 import type{NodeCostEstimate}from'../../shared/nodeCostEstimate.js';
 import type{Rpc}from'../rpc.js';
 import{verifyFreshEstimatedMovement}from'./estimatedMovement.js';
+import{freshLeaderboardPendingReceiptsSql}from'./leaderboardQuery.js';
+import{freshLeaderboardCacheBoundsSql,type FreshLeaderboardReadCache,type FreshLeaderboardReadVersion}from'./leaderboardCache.js';
 
 const iso = (v: unknown) => v == null ? null : new Date(v as string).toISOString();
 const fingerprint = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -58,14 +60,14 @@ export function tradeIdentity(r: Record<string, any>): KolTokenTrade {
 }
 
 /** Read paths touch current rows and bounded pages. Financial history is replayed only for an explicitly requested export. */
-export function createFreshReads(db: Pool, now = Date.now, transactional=false,options:{estimateRpc?:Rpc}={}) {
+export function createFreshReads(db: Pool, now = Date.now, transactional=false,options:{estimateRpc?:Rpc;leaderboardCache?:FreshLeaderboardReadCache;leaderboardVersion?:Omit<FreshLeaderboardReadVersion,'at'>}={}) {
   async function hydrateReadScope(scope:any){const typed=await hydrateFreshScopeTokenHistory(db,typedScope(scope));return{...scope,tokenHistoryStarts:typed.tokenHistoryStarts};}
   async function boundary() { return (await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'`)).rows[0] ?? null; }
   async function state() { const rows = (await db.query(`SELECT key,block_number::text,block_hash,updated_at,value FROM fresh.checkpoints WHERE key IN('start','capture','decode','quote','utc_day','health:token_discovery')`)).rows;
     return Object.fromEntries(rows.map(row=>[row.key,row])); }
   async function leaderboard() {
     const at=now(),states=await state(),day=freshUtcDay(at),windowStart=new Date(at-86_400_000).toISOString(),windowEnd=new Date(at).toISOString();
-    const result=await db.query(`SELECT k.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS realized_estimate_policy_ready,
+    const sql=`WITH ${freshLeaderboardPendingReceiptsSql} SELECT k.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS realized_estimate_policy_ready,
       EXISTS(SELECT 1 FROM fresh.checkpoints estimate_capture JOIN fresh.recent_blocks estimate_header
         ON estimate_header.block_number=estimate_capture.block_number AND estimate_header.block_hash=estimate_capture.block_hash WHERE estimate_capture.key='capture') AS estimate_capture_canonical,
       k.today_utc::text AS utc_date,p.address,p.display_name,p.avatar_url,p.twitter,p.creator_claimed,p.creator_bio,
@@ -75,11 +77,16 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
       EXISTS(SELECT 1 FROM fresh.financial_events imported JOIN fresh.accounting_scopes imported_scope ON imported_scope.id='kol:'||k.wallet_address AND imported_scope.active
         WHERE imported.wallet_address=k.wallet_address AND imported.canonical AND imported.provenance IS NOT NULL
         AND ${freshScopeEventSql('imported','imported_scope')}) AS imported_provenance,
-      ${freshRollingLeaderboardPendingSql()} AS decoding_pending,
-      ${freshPublicTokenDiscoveryPendingSql()} AS token_discovery_pending,
+      ${freshRollingLeaderboardPendingSql(true)} AS decoding_pending,
+      ${freshPublicTokenDiscoveryPendingSql(true)} AS token_discovery_pending,
       p.creator_website_url,p.creator_x_url,p.creator_telegram_url,p.creator_updated_at
-      FROM fresh.kols k JOIN fresh.wallets w ON w.address=k.wallet_address JOIN published_kols p ON p.address=k.wallet_address WHERE k.is_tracked`,[windowStart,windowEnd]);
-    const items=result.rows.map(r=>{
+      FROM fresh.kols k JOIN fresh.wallets w ON w.address=k.wallet_address JOIN published_kols p ON p.address=k.wallet_address WHERE k.is_tracked`;
+    const values=[windowStart,windowEnd],version=options.leaderboardVersion;
+    const rows=options.leaderboardCache&&version?await options.leaderboardCache.read({...version,at},async()=>{
+      const result=await db.query(sql,values),bounds=(await db.query(freshLeaderboardCacheBoundsSql,[...values,new Date(version.databaseAt).toISOString()])).rows[0];
+      return{value:result.rows,windowUntil:new Date(bounds.window_until).getTime(),databaseUntil:new Date(bounds.database_until).getTime()};
+    }):(await db.query(sql,values)).rows;
+    const items=rows.map(r=>{
       const stored=freshStoredKolRollingMetrics(r,at),{current,realizedProfitUsd:realized,knownRealizedProfitUsd:known}=stored;
       const valuedSell=stored.valuedSellCount,excludedSell=stored.excludedSellCount,
         valuedTransfer=stored.valuedTransferCount,excludedTransfer=stored.excludedTransferCount,
@@ -108,6 +115,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
     });
     return {items:rankFreshStoredLeaderboard(items),windowStart,windowEnd,period:'24h' as const,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingPolicy:'kollens_fifo_v1',realizedPolicy:FRESH_REALIZED_POLICY};
   }
+  async function kol(wallet:string){const{items,...frame}=await leaderboard();return{...frame,kol:items.find(row=>row.address===wallet)??null};}
   async function positionRows(scopeId:string,tokens?:string[]) {
     const rows=await db.query(`SELECT p.*,t.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS estimate_policy_ready,p.token_address AS address,p.revision AS position_revision,last.block_number AS last_event_block,${freshScopeTokenCaptureSql('s','p.token_address')} AS effective_capture_block,
         EXISTS(SELECT 1 FROM fresh.financial_events imported WHERE imported.token_address=p.token_address AND imported.wallet_address=ANY(s.wallet_addresses)
@@ -117,7 +125,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
         EXISTS(SELECT 1 FROM fresh.pending_trades precision WHERE precision.token_address=p.token_address
           AND ${freshPendingTradeInScopeSql('precision','s')}) AS pending_precision,
         (EXISTS(SELECT 1 FROM fresh.recent_evidence e LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.decoder_status<>'done'
-          AND ${freshPositionReceiptRelevantSql('e','p.token_address','s')}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending
+          AND ${freshPositionReceiptRelevantSql('e','p.token_address','s',true)}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending
         FROM fresh.positions p JOIN fresh.tokens t ON t.address=p.token_address JOIN fresh.accounting_scopes s ON s.id=p.scope_id
         LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id WHERE p.scope_id=$1 AND ${freshTrackedTokenSql('t')}
         AND (t.launch_status<>'preexisting' OR s.kind<>'kol' OR (${freshPublicTokenSql('t')})) ${tokens?'AND p.token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
@@ -292,12 +300,15 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
     }
     return result;
   }
-  const service={boundary,state,leaderboard,positionRows,summaries,trades,activity};
+  const service={boundary,state,leaderboard,kol,positionRows,summaries,trades,activity};
   if(transactional)return service;
   const wrapped={...service};
-  for(const key of ['leaderboard','positionRows','summaries','trades','activity'] as const){
+  for(const key of ['leaderboard','kol','positionRows','summaries','trades','activity'] as const){
     (wrapped as unknown as Record<string,(...values:unknown[])=>Promise<unknown>>)[key]=async(...args:unknown[])=>{const client=await db.connect();try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const inner:typeof service=createFreshReads(client as unknown as Pool,now,true,options);const value=await (inner[key] as (...values:unknown[])=>Promise<unknown>)(...args);await client.query('COMMIT');return value;
+      const databaseObservedAt=performance.now();
+      const stamp=options.leaderboardCache&&(key==='leaderboard'||key==='kol')?(await client.query('SELECT pg_current_snapshot()::text AS version,clock_timestamp() AS database_at')).rows[0]:null;
+      const leaderboardVersion=stamp?{key:stamp.version,databaseAt:new Date(stamp.database_at).getTime(),databaseObservedAt}:undefined;
+      const inner:typeof service=createFreshReads(client as unknown as Pool,now,true,{...options,leaderboardVersion});const value=await (inner[key] as (...values:unknown[])=>Promise<unknown>)(...args);await client.query('COMMIT');return value;
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}};
   }
   return wrapped;

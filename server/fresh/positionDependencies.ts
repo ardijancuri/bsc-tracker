@@ -59,8 +59,8 @@ export const freshPositionReceiptOpaqueSql = (e: string) =>
 /** A genuine code-creation proof can bound a token's existence, unlike a pool
  * launch timestamp. Same-block receipts and contradictory positive token
  * evidence remain relevant. The receipt/repair itself is never changed. */
-export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durableCertificate?:boolean}={}){
- const t=pendingTokenExpression(token),proof='token_birth.proof';
+export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durableCertificate?:boolean;selectedToken?:boolean}={}){
+ const t=pendingTokenExpression(token),proof='token_birth.proof',selected=options.durableCertificate||options.selectedToken;
  const parentIdentity=options.durableCertificate?`jsonb_build_object('number',token_birth.block_number-1,'hash',born.parent_hash,
   'parentHash',COALESCE(current_parent.parent_hash,${proof}->'parent'->>'parentHash'),
   'timestamp',COALESCE(to_char(current_parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),${proof}->'parent'->>'timestamp'))`:
@@ -68,7 +68,7 @@ export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durab
     'timestamp',to_char(parent.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`;
  // Receipt scans share one birth map. Current-position queries validate only
  // the selected indexed creation certificate, avoiding an all-history scan.
- const rows=`SELECT ${options.durableCertificate?'token_birth.block_number':'jsonb_object_agg(token_birth.token_address,token_birth.block_number)'} FROM fresh.launch_facts token_birth
+ const rows=`SELECT ${selected?'token_birth.block_number':'jsonb_object_agg(token_birth.token_address,token_birth.block_number)'} FROM fresh.launch_facts token_birth
   JOIN fresh.checkpoints token_start ON token_start.key='start'
   ${options.durableCertificate?`JOIN fresh.checkpoints birth_capture ON birth_capture.key='capture' AND birth_capture.block_number>=token_birth.block_number
   CROSS JOIN LATERAL(SELECT token_birth.block_number,token_birth.block_hash,token_birth.launched_at AS occurred_at,
@@ -79,7 +79,7 @@ export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durab
   `JOIN fresh.recent_blocks born ON born.block_number=token_birth.block_number AND born.block_hash=token_birth.block_hash
   JOIN fresh.recent_blocks parent ON parent.block_number=token_birth.block_number-1 AND parent.block_hash=born.parent_hash`}
   WHERE token_birth.status='eligible'
-   ${options.durableCertificate?`AND token_birth.token_address=${t}`:''}
+   ${selected?`AND token_birth.token_address=${t}`:''}
    AND token_birth.block_number>token_start.block_number
    AND token_start.value->>'startBlock'=token_start.block_number::text AND token_start.value->>'startHash'=token_start.block_hash
    AND token_birth.launched_at=born.occurred_at
@@ -109,11 +109,11 @@ export function freshAuthenticatedTokenBirthBlockSql(token:string,options:{durab
      jsonb_array_length(${proof}->'creationFrame'->'path') BETWEEN 1 AND 64 AND NOT EXISTS(
       SELECT 1 FROM jsonb_array_elements(${proof}->'creationFrame'->'path') step
        WHERE jsonb_typeof(step)<>'number' OR step#>>'{}'!~'^(0|[1-9][0-9]{0,8})$') ELSE false END))))`;
- return options.durableCertificate?`(${rows})`:`((${rows}) ->> ${t})::bigint`;
+ return selected?`(${rows})`:`((${rows}) ->> ${t})::bigint`;
 }
-export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string){
+export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:string,selectedToken=false){
  const e=pendingAlias(receipt),t=pendingTokenExpression(token);
- return`(COALESCE(${e}.block_number<${freshAuthenticatedTokenBirthBlockSql(t)},false)
+ return`(COALESCE(${e}.block_number<${freshAuthenticatedTokenBirthBlockSql(t,{selectedToken})},false)
    AND NOT EXISTS(SELECT 1 FROM fresh.financial_events explicit_token WHERE explicit_token.canonical
     AND explicit_token.token_address=${t} AND explicit_token.transaction_hash=${e}.tx_hash AND explicit_token.block_hash=${e}.block_hash))`;
 }
@@ -121,8 +121,8 @@ export function freshPositionReceiptPredatesTokenBirthSql(receipt:string,token:s
  * identity predicate there; a per-token birth proof cannot waive that gate. */
 export const freshPositionReceiptRawRelevantSql=(e:string,token:string)=>
  `(${freshPositionReceiptOpaqueSql(e)} OR ${token}=ANY(${e}.position_dependency_addresses))`;
-export const freshPositionReceiptRelevantSql = (e: string, token: string, scope?:string) =>
-  `((COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token)}))${scope?` AND NOT ${freshReceiptOptionalTransferPriceSql(e,scope)}`:''})`;
+export const freshPositionReceiptRelevantSql = (e: string, token: string, scope?:string,selectedToken=false) =>
+  `((COALESCE(${token}=ANY(${e}.position_dependency_addresses),false) OR(${freshPositionReceiptOpaqueSql(e)} AND NOT ${freshPositionReceiptPredatesTokenBirthSql(e,token,selectedToken)}))${scope?` AND NOT ${freshReceiptOptionalTransferPriceSql(e,scope)}`:''})`;
 
 const pendingAlias=(value:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(value))throw Error('pending_trade_sql_alias_invalid');return value;};
 const pendingTokenExpression=(value:string)=>{if(!/^(?:[a-z_][a-z0-9_]*\.){1,2}[a-z_][a-z0-9_]*$|^\$[1-9][0-9]*$/i.test(value))throw Error('pending_trade_sql_token_invalid');return value;};

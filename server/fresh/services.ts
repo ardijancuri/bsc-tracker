@@ -11,9 +11,11 @@ import {freshTrackedTokenSql,readFreshGangHistoryAdmission,GANG_TOKEN_ADDRESS}fr
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import{chainRpc}from'../rpc.js';
 import{freshPositionWalletGapSql}from'./positionGapCoverage.js';
+import{createFreshLeaderboardReadCache}from'./leaderboardCache.js';
 
 export function createFreshServices(db:Pool) {
-  const reads=createFreshReads(db,Date.now,false,{estimateRpc:chainRpc});
+  const leaderboardCache=createFreshLeaderboardReadCache();
+  const reads=createFreshReads(db,Date.now,false,{estimateRpc:chainRpc,leaderboardCache});
   const cache=new ChartDiskCache(path.resolve(process.env.GMGN_CHART_CACHE_DIR??'.cache/fresh/charts'));
   const request=createGmgnRequester({query:(sql,values)=>db.query(sql,values),stateTable:'fresh.checkpoints'});
   const charts=createFreshCharts({cache,request});

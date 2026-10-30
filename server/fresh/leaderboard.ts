@@ -7,13 +7,14 @@ const publicOptionalTransferPriceSql=()=>`EXISTS(SELECT 1 FROM fresh.accounting_
  WHERE price_scope.id='kol:'||w.address AND ${freshReceiptOptionalTransferPriceSql('e','price_scope')})`;
 
 /** A public pending badge cannot expose earlier private-only wallet activity. */
-export function freshPublicTokenDiscoveryPendingSql() {
-  return `EXISTS(SELECT 1 FROM fresh.recent_evidence discovery_receipt
-    JOIN fresh.recent_blocks discovery_block ON discovery_block.block_number=discovery_receipt.block_number AND discovery_block.block_hash=discovery_receipt.block_hash
+export function freshPublicTokenDiscoveryPendingSql(shared=false) {
+  return `EXISTS(SELECT 1 FROM ${shared?'board_pending_receipts':'fresh.recent_evidence'} discovery_receipt
+    ${shared?'CROSS JOIN LATERAL(SELECT discovery_receipt.canonical_block_number AS block_number,discovery_receipt.occurred_at)discovery_block':
+      'JOIN fresh.recent_blocks discovery_block ON discovery_block.block_number=discovery_receipt.block_number AND discovery_block.block_hash=discovery_receipt.block_hash'}
     JOIN fresh.accounting_scopes discovery_scope ON discovery_scope.id='kol:'||k.wallet_address
       AND discovery_scope.kind='kol' AND discovery_scope.account_id IS NULL AND discovery_scope.active
       AND discovery_scope.wallet_addresses=ARRAY[k.wallet_address]::text[]
-    WHERE k.is_tracked AND w.active AND discovery_receipt.wallet_addresses@>ARRAY[k.wallet_address]::text[]
+    WHERE ${shared?'discovery_block.block_number IS NOT NULL AND ':''}k.is_tracked AND w.active AND discovery_receipt.wallet_addresses@>ARRAY[k.wallet_address]::text[]
       AND discovery_receipt.decoder_status<>'done' AND discovery_receipt.last_error LIKE '%token_discovery_pending%'
       AND discovery_receipt.block_number>=discovery_scope.starts_block AND discovery_block.occurred_at>=discovery_scope.starts_at
       AND discovery_receipt.block_number>=w.monitoring_from_block
@@ -48,15 +49,16 @@ export function freshDailyLeaderboardPendingSql() {
  * the same canonical birth predicate as position readiness; missing/same-block
  * births or any explicit earlier token fact remain relevant. Known current
  * native fee-only results do not inherit inventory cost from older receipts. */
-export function freshRollingLeaderboardPendingSql() {
-  return `(EXISTS(SELECT 1 FROM fresh.recent_evidence e
-    LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash
+export function freshRollingLeaderboardPendingSql(shared=false) {
+  return `(EXISTS(SELECT 1 FROM ${shared?'board_pending_receipts':'fresh.recent_evidence'} e
+    ${shared?'CROSS JOIN LATERAL(SELECT e.canonical_block_number AS block_number,e.occurred_at)h':
+      'LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash'}
     WHERE e.wallet_addresses@>ARRAY[w.address]::text[] AND e.decoder_status<>'done' AND NOT ${publicOptionalTransferPriceSql()} AND (
       h.block_number IS NULL OR h.occurred_at > $1::timestamptz AND h.occurred_at <= $2::timestamptz
       OR h.occurred_at <= $1::timestamptz AND (
         EXISTS(SELECT 1 FROM fresh.scope_event_results active
           WHERE active.scope_id='kol:'||w.address AND active.occurred_at > $1::timestamptz AND active.occurred_at <= $2::timestamptz
-          AND active.token_address IS NOT NULL AND ${freshPositionReceiptRelevantSql('e','active.token_address')})
+          AND active.token_address IS NOT NULL AND ${freshPositionReceiptRelevantSql('e','active.token_address',undefined,shared)})
       )
     )) OR EXISTS(SELECT 1 FROM fresh.accounting_scopes pending_scope JOIN fresh.pending_trades pending ON pending.wallet_address=w.address
      WHERE pending_scope.id='kol:'||w.address AND ${freshPendingTradeInScopeSql('pending','pending_scope')} AND(

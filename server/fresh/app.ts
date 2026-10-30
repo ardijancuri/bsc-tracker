@@ -83,9 +83,9 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   app.get<{Params:{address:string};Querystring:{cursor?:string}}>('/api/kols/:address/tokens',req=>tokens(address(req.params.address)??'invalid',6,Math.max(0,Number(req.query.cursor)||0)));
   app.get<{Params:{address:string}}>('/api/kols/:address',async(req,reply)=>{
     const key=address(req.params.address);if(!key)return reply.code(400).send({error:'Invalid wallet'});
-    const [board,page]=await Promise.all([reads.leaderboard(),tokens(key,6)]);
-    const trades=await reads.trades({wallet:key,limit:10,window:'24h',windowStart:board.windowStart,windowEnd:board.windowEnd});
-    const kol=board.items.find(k=>k.address===key);return{kol:kol??null,stats:kol??null,trades:trades.items,tradesNextCursor:trades.nextCursor,
+    const frame=reads.kol(key),pageRead=tokens(key,6),tradeRead=frame.then(board=>reads.trades({wallet:key,limit:10,window:'24h',windowStart:board.windowStart,windowEnd:board.windowEnd}));
+    const[board,page,trades]=await Promise.all([frame,pageRead,tradeRead]);
+    const kol=board.kol;return{kol:kol??null,stats:kol??null,trades:trades.items,tradesNextCursor:trades.nextCursor,
       tradeCount24h:kol?.tradeCount24h??0,buyCount24h:kol?.buyCount24h??0,sellCount24h:kol?.sellCount24h??0,tokens:page.items,tokensNextCursor:page.nextCursor,
       period:board.period,windowStart:board.windowStart,windowEnd:board.windowEnd,utcDay:board.utcDay,trackingBoundary:board.trackingBoundary};
   });
