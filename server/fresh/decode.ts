@@ -47,7 +47,7 @@ import{freshAdmissionHistoricalEventIds,rollbackFreshAdmissionRechecks}from'./ad
 import{freshPaidCreationPurchase,freshPaidCreationPurchaseCandidate}from'./paidCreationPurchase.js';
 import{certifyFreshPaidCreationEvent,planFreshPaidCreationKindCorrections,retireFreshPaidCreationInterpretations}from'./paidCreationCorrection.js';
 import{FRESH_UNISWAP_V4_BSC_MANAGER,stockwavePoolManagerInterface}from'./stockwaveMarket.js';
-import{freshV4SplitNativeBuy}from'./v4SplitNativeBuy.js';
+import{freshMixedV4Settlement}from'./mixedV4Settlement.js';
 
 export const FRESH_DECODER_VERSION = 3;
 const q = FreshRational.parse, units = (raw: bigint, decimals: number) => new FreshRational(raw, 10n ** BigInt(decimals)).decimal(255);
@@ -332,7 +332,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     for (const target of targets) {
       const controller = controllerTrade(execution, target.token);
       if (controller.length > 1) { reasons.add('multiple_actions_require_execution_decoder'); continue; }
-      const v4Swap=freshLinkedV4Swap(execution,target.logs,target.raw)||(execution.kind==='transaction'&&targets.length===1&&freshV4SplitNativeBuy(entry,execution.wallet,target.token,target.raw));
+      const v4Swap=freshLinkedV4Swap(execution,target.logs,target.raw)||(execution.kind==='transaction'&&targets.length===1&&freshMixedV4Settlement(entry,execution.wallet,target.token,target.raw));
       // A rejected manager settlement is not an ordinary wallet transfer. Its
       // original gas/receipt and existing facts remain intact for repair; do
       // not invent a transfer cost or move FIFO lots for an unsupported route.
