@@ -61,7 +61,12 @@
         "BSC_TRACE_IPC": "/run/bsc/geth.ipc",
         "FRESH_DISCOVERY_ARCHIVE_RPC_URL": "${FRESH_DISCOVERY_ARCHIVE_RPC_URL:-}",
         "TELEGRAM_CLIENT_ID": "${TELEGRAM_CLIENT_ID:-}", "TELEGRAM_BOT_TOKEN": "",
-        "FRESH_TELEGRAM_ACTIVE": "false"
+        "FRESH_TELEGRAM_ACTIVE": "false",
+        "X_TOKEN_POSTS_MODE": "${X_TOKEN_POSTS_MODE:-disabled}",
+        "X_CLIENT_ID": "${X_CLIENT_ID:-}",
+        "X_CLIENT_SECRET": "${X_CLIENT_SECRET:-}",
+        "X_TOKEN_POST_ENCRYPTION_KEY": "${X_TOKEN_POST_ENCRYPTION_KEY:-}",
+        "X_REDIRECT_URI": "${X_REDIRECT_URI:-http://127.0.0.1:4387/callback}"
       },
       "volumes": [{"type": "bind", "source": "${BSC_TRACE_HOST_IPC:-/var/lib/bsc/geth.ipc}", "target": "/run/bsc/geth.ipc", "read_only": true, "bind": {"create_host_path": false}}],
       "depends_on": {"fresh-db": {"condition": "service_healthy"}, "app": {"condition": "service_healthy"}},

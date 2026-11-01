@@ -12,6 +12,7 @@ import{createFreshDecodeWorkBudget,groupFreshDecodeRows}from'./decodeWorkBudget.
 import {invalidateFreshNotificationActivation} from './notificationActivation.js';
 import { AbiCoder,Interface } from 'ethers';
 import type { Pool, PoolClient } from 'pg';
+import {rollbackXTokenPostsIfPresent} from '../xTokenPostSchema.js';
 import { transferTopic, hasRecognizedSwap, nativeSellProceeds } from '../swap.js';
 import { beforeExecutionTopic, userOperationTopic } from '../smartAccountTrades.js';
 import { FOUR_MANAGERS, FLAP_PORTAL, WBNB } from '../launchpad.js';
@@ -1117,6 +1118,7 @@ export async function rollbackFreshToAncestor(client: PoolClient, ancestor: { bl
   if (!checkpoint || ancestor.blockNumber < Number(checkpoint.value?.startBlock) || !freshHash(ancestor.blockHash)) throw new Error('reorg_outside_tracking_boundary');
   const known = (await client.query('SELECT 1 FROM fresh.recent_blocks WHERE block_number=$1 AND block_hash=$2', [ancestor.blockNumber, ancestor.blockHash])).rowCount;
   if (!known && (Number(checkpoint.value?.startBlock) !== ancestor.blockNumber || checkpoint.value?.startHash !== ancestor.blockHash)) throw new Error('reorg_beyond_repair_buffer');
+  await rollbackXTokenPostsIfPresent(client,ancestor.blockNumber+1);
   await invalidateFreshNotificationActivation(client,ancestor.blockNumber,now);
   const pendingScopes=(await client.query(`SELECT DISTINCT s.id FROM fresh.accounting_scopes s JOIN fresh.pending_trades pending ON pending.wallet_address=ANY(s.wallet_addresses)
     WHERE pending.block_number>$1 AND ${freshPendingTradeInScopeSql('pending','s')}`,[ancestor.blockNumber])).rows.map(row=>row.id);

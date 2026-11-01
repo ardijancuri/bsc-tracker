@@ -7,8 +7,8 @@
     "brand:export": "node scripts/export-app-brand.mjs",
     "dev": "vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/index.ts",
-    "dev:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/worker.ts",
-    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts server/freshGangHistoryImport.ts server/freshWpcRecovery.ts server/freshPnlEvidenceRepair.ts server/freshRealizedPolicyReproject.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "dev:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --env-file-if-exists=.env.x.local --import tsx --watch server/worker.ts",
+    "build": "npm run brand:export && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts server/freshGangHistoryImport.ts server/freshWpcRecovery.ts server/freshPnlEvidenceRepair.ts server/freshRealizedPolicyReproject.ts server/xTokenPostCli.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "import:charts": "node --env-file-if-exists=.env --import tsx server/importSavedTokenCharts.ts",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",
@@ -32,7 +32,9 @@
     "test:fresh:portfolio": "node --env-file=.env --import tsx server/fresh/portfolio.integration.ts",
     "test:fresh:integration": "node scripts/fresh/test-integrations.mjs",
     "fresh:trial": "node --env-file=.env --import tsx server/freshTrial.ts",
-    "fresh:trial:review": "node --env-file=.env --import tsx server/freshTrialReview.ts"
+    "fresh:trial:review": "node --env-file=.env --import tsx server/freshTrialReview.ts",
+    "x-posts": "node --env-file-if-exists=.env --env-file-if-exists=.env.x.local --import tsx server/xTokenPostCli.ts",
+    "test:integration:x-posts": "node --env-file-if-exists=.env --env-file-if-exists=.env.x.local --import tsx server/xTokenPosts.integration.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
@@ -40,6 +42,7 @@
     "@fontsource/manrope": "^5.2.0",
     "ethers": "^6.17.0",
     "fastify": "^5.12.5",
+    "fontkit": "^2.0.4",
     "ipaddr.js": "^2.5.0",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.468.0",
@@ -50,15 +53,18 @@
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0",
     "sharp": "^0.35.4",
+    "twitter-text": "^3.1.0",
     "undici": "^7.30.0",
     "ws": "^8.18.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/fontkit": "^2.0.8",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/twitter-text": "^3.1.10",
     "@types/ws": "^8.5.0",
     "@vitejs/plugin-react": "^6.1.1",
     "esbuild": "^0.28.2",
