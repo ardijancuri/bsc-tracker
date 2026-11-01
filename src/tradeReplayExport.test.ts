@@ -41,7 +41,7 @@ beforeEach(() => {
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function browserRecorder(supported: string) {
+function browserRecorder(supported: string, duration = .02) {
   vi.stubGlobal('VideoEncoder', undefined); vi.stubGlobal('VideoFrame', undefined);
   vi.useFakeTimers(); vi.setSystemTime(0);
   const stopTrack = vi.fn();
@@ -63,7 +63,7 @@ function browserRecorder(supported: string) {
   vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id));
   vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
   const render = vi.fn();
-  const player = { canvas: new Canvas(), getDuration: () => .02, render } as unknown as ReplayCanvas;
+  const player = { canvas: new Canvas(), getDuration: () => duration, render } as unknown as ReplayCanvas;
   return { player, stopTrack, render };
 }
 
@@ -76,6 +76,23 @@ function indexedPlayer(duration = 15.5) {
 }
 
 describe('indexed replay video encoding', () => {
+  it('keeps the compatibility recorder running through a 25-second adaptive replay',async()=>{
+    const {player,render,stopTrack}=browserRecorder('video/webm;codecs=vp8',25);
+    const recording=recordTradeReplay(player,'Long holding',new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(24000);
+    expect(render.mock.calls.at(-1)![0]).toBeLessThan(1);expect(stopTrack).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1500);
+    const file=await recording;expect(file.type).toBe('video/webm');
+    expect(render).toHaveBeenLastCalledWith(1);expect(stopTrack).toHaveBeenCalledOnce();
+  });
+  it.each([8,14,25])('encodes the full adaptive %s-second duration, including the identical final state',async duration=>{
+    const {player,render}=indexedPlayer(duration);
+    await recordTradeReplay(player,'Adaptive trade',new AbortController().signal);
+    const frames=duration*30;
+    expect(indexed.add).toHaveBeenCalledTimes(frames);
+    expect(indexed.add.mock.calls[frames-1].slice(0,2)).toEqual([(frames-1)/30,1/30]);
+    expect(render).toHaveBeenLastCalledWith(1);
+  });
   it('exports token replay frames with a token filename through the shared encoder', async () => {
     const { player, render } = indexedPlayer(1);
     const file = await recordTradeReplay(player, 'TOKEN-24h', new AbortController().signal, undefined, 'token');

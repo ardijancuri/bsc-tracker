@@ -46,7 +46,7 @@ async function replay(payload = data()) {
 }
 
 function progressAt(renderer: ReplayCanvas, seconds: number) {
-  let low = 0, high = .94;
+  let low = 0, high = renderer.chartProgress(1);
   for (let index = 0; index < 60; index += 1) {
     const middle = (low + high) / 2;
     if (renderer.timeAt(middle) < start + seconds * 1000) low = middle; else high = middle;
@@ -98,7 +98,7 @@ describe('transfer-aware replay frames', () => {
     const renderer = await replay(payload);
     const lastSale = renderer.snapshot(renderer.eventProgress(1));
     expect(lastSale.holdings).toBe(60); expect(lastSale.status).toBe('Open');
-    expect(renderer.snapshot(.9).holdings).toBe(60);
+    expect(renderer.snapshot(progressAt(renderer,180)-1e-6).holdings).toBe(60);
     const final = renderer.snapshot(1);
     expect(final.time).toBe(at(180)); expect(final.holdings).toBe(0); expect(final.remainingCostBasis).toBe(0);
     expect(final.unrealizedPnl).toBe(0); expect(final.totalPnl).toBe(40); expect(final.status).toBe('Closed');

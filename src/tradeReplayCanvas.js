@@ -11,10 +11,10 @@
 import { BRAND_ICON_PATHS, BRAND_WORDMARK_PATHS } from './tradeReplayBrandPaths';
 import { replayAccountingTotal, replayEndTimestamp, replayIsOpen } from './tradeReplayData';
 import { selectReplaySellHighlights } from './tradeReplayHighlights';
+import { tradeReplayDuration, REPLAY_ENDING_HOLD_SECONDS, REPLAY_CURRENT_HOLD_SECONDS } from './tradeReplayTiming';
 
 const WIDTH = 1080;
 const HEIGHT = 1350;
-const DURATION = 15.5;
 const MINUTE = 60_000;
 const PLAYHEAD_FRACTION = 0.74;
 const MARKER_RADIUS = 20;
@@ -330,8 +330,9 @@ export class ReplayCanvas {
     this.timelineStart = 0;
     this.timelineEnd = 0;
     this.tradeEnd = 0;
+    this.duration = tradeReplayDuration(0, 0);
     this.eventPhase = 1;
-    this.currentEndPhase = 0.94;
+    this.currentEndPhase = 1 - REPLAY_CURRENT_HOLD_SECONDS / this.duration;
     this.currentQuote = null;
     this.hasTail = false;
     this.inventoryEvents = [];
@@ -458,6 +459,11 @@ export class ReplayCanvas {
     if (modern) this.hasTail = Boolean(this.currentQuote) || this.timelineEnd > this.tradeEnd;
     if (!this.trades.length && this.timelineEnd <= this.timelineStart) this.timelineEnd = this.timelineStart + MINUTE;
 
+    const pacedCount = modern && movementTimes.length ? new Set(movementTimes).size : this.trades.length;
+    this.duration = tradeReplayDuration(this.timelineStart, this.timelineEnd, pacedCount);
+    this.currentEndPhase = 1 - REPLAY_CURRENT_HOLD_SECONDS / this.duration;
+    const closedEndPhase = 1 - REPLAY_ENDING_HOLD_SECONDS / this.duration;
+
     // Trade recaps need enough screen time for consecutive fills even when the
     // chain timestamps differ by seconds. Actual timestamps remain the x-axis
     // and price lookup; these progress knots only set presentation pacing.
@@ -469,7 +475,7 @@ export class ReplayCanvas {
       const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd);
       const totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
       const tailPhase = clamp(0.26 * Math.sqrt(tailMs / totalMs), 0.04, 0.26);
-      this.eventPhase = this.hasTail ? this.currentEndPhase - tailPhase : 0.84;
+      this.eventPhase = this.hasTail ? this.currentEndPhase - tailPhase : closedEndPhase;
       const gaps = this.trades.slice(1).map((trade, i) => Math.max(0, trade.ts - this.trades[i].ts));
       const minimumGap = Math.min(0.04, this.eventPhase / gaps.length * 0.82);
       const weighted = gaps.map((gap) => Math.log1p(gap / 1000) + 0.5);
@@ -489,7 +495,7 @@ export class ReplayCanvas {
       // appear together, without inventing an order inside that second.
       const times = [...new Set(movementTimes)].sort((a, b) => a - b);
       const tailMs = Math.max(0, this.timelineEnd - this.tradeEnd), totalMs = Math.max(1, this.timelineEnd - this.timelineStart);
-      this.eventPhase = times.length > 1 ? this.hasTail ? this.currentEndPhase - clamp(.26 * Math.sqrt(tailMs / totalMs), .04, .26) : .84 : 0;
+      this.eventPhase = times.length > 1 ? this.hasTail ? this.currentEndPhase - clamp(.26 * Math.sqrt(tailMs / totalMs), .04, .26) : closedEndPhase : 0;
       const weights = times.slice(1).map((time, i) => Math.log1p((time - times[i]) / 1000) + .5), total = weights.reduce((sum, weight) => sum + weight, 0);
       let q = 0; this.pacingEvents = times.map((ts, index) => {
         if (index) q += this.eventPhase * weights[index - 1] / total;
@@ -541,7 +547,13 @@ export class ReplayCanvas {
     // Same-second ledger groups share one anchor; they are not zero-width views.
     const eventGaps = this.eventProgresses.slice(1).map((q, i) => q - this.eventProgresses[i]).filter(gap => gap > 1e-9);
     const minEventGap = eventGaps.length ? Math.min(...eventGaps) : 1;
-    this.storyWindow = clamp(minEventGap * (814 - 42) / (MARKER_RADIUS * 2 + 10), MIN_STORY_WINDOW, 0.5);
+    // Shorter clips need a slightly wider view rather than a faster, jerky
+    // pan. Bound horizontal movement at the exporter's 30fps without changing
+    // marker size, execution times or the underlying price curve.
+    const frameCount = Math.max(2, Math.round(this.duration * 30));
+    const smoothPanWindow = (814 - 42) / (5.2 * (frameCount - 1));
+    this.storyWindow = Math.max(smoothPanWindow,
+      clamp(minEventGap * (814 - 42) / (MARKER_RADIUS * 2 + 10), MIN_STORY_WINDOW, 0.5));
     this.markerRadius = MARKER_RADIUS;
 
     const story = this.plotPoints
@@ -594,7 +606,7 @@ export class ReplayCanvas {
   }
 
   getDuration() {
-    return DURATION;
+    return this.duration;
   }
 
   chartProgress(progress) {
@@ -640,7 +652,7 @@ export class ReplayCanvas {
     const camera = { min: viewport.yMin, max: viewport.yMax };
     const y = this.markerCenterY(marker.cap, camera);
     const anchorY = y;
-    const elapsed = Math.max(0, (clamp(finite(progress), 0, 1) - marker.q) * DURATION);
+    const elapsed = Math.max(0, (clamp(finite(progress), 0, 1) - marker.q) * this.duration);
     const entrance = smoothstep(elapsed / 0.19);
     return { index, ts: marker.ts, q: marker.q, x, y, anchorY, marketValue: marker.cap,
       executionValue: this.capMode ? this.trades[index].marketCapUsd : this.trades[index].priceUsd,
@@ -691,11 +703,11 @@ export class ReplayCanvas {
     // are precomputed so seeking and export produce identical frames.
     const samples = 1025;
     const step = 1 / (samples - 1);
-    const riseRate = 1 - Math.exp(-DURATION * step / 0.105);
-    const fallRate = 1 - Math.exp(-step / 0.055);
-    const floorRiseRate = 1 - Math.exp(-DURATION * step / 0.65);
-    const floorFallRate = 1 - Math.exp(-DURATION * step / 0.14);
-    const maxLogFall = 0.6 * DURATION * step;
+    const riseRate = 1 - Math.exp(-this.duration * step / 0.105);
+    const fallRate = 1 - Math.exp(-this.duration * step / 0.85);
+    const floorRiseRate = 1 - Math.exp(-this.duration * step / 0.65);
+    const floorFallRate = 1 - Math.exp(-this.duration * step / 0.14);
+    const maxLogFall = 0.6 * this.duration * step;
     this.cameraValues = new Array(samples);
     let logCeiling = 0;
     let floor = 0;
@@ -1170,11 +1182,11 @@ export class ReplayCanvas {
 
   drawSellTransition(ctx, progress) {
     const highlight = this.sellHighlights.findLast(event => {
-      const elapsed = (progress - this.eventProgress(event.tradeIndex)) * DURATION;
+      const elapsed = (progress - this.eventProgress(event.tradeIndex)) * this.duration;
       return elapsed >= 0 && elapsed < 1.55;
     });
     if (!highlight) return;
-    const elapsed = (progress - this.eventProgress(highlight.tradeIndex)) * DURATION;
+    const elapsed = (progress - this.eventProgress(highlight.tradeIndex)) * this.duration;
     const entrance = smoothstep(elapsed / 0.16);
     const opacity = entrance * (1 - smoothstep((elapsed - 1.1) / 0.45));
     if (opacity < 1e-6) return;
@@ -1318,8 +1330,8 @@ export class ReplayCanvas {
 
     const activeIndex = state.currentEventIndex;
     const active = this.trades[activeIndex];
-    if (active && (!this.hasTail || progress < this.eventPhase + 0.04)) {
-      const elapsed = Math.max(0, (progress - this.eventProgress(activeIndex)) * DURATION);
+    if (active && (!this.hasTail || progress < this.eventPhase + 0.62 / this.duration)) {
+      const elapsed = Math.max(0, (progress - this.eventProgress(activeIndex)) * this.duration);
       if (activeIndex > 0 && elapsed < 0.09) {
         const previousRect = this.tooltipRects[activeIndex - 1];
         const clearance = visibleMarkers.reduce((closest, marker) => {
@@ -1389,7 +1401,7 @@ export class ReplayCanvas {
       const trade = this.trades[marker.index];
       const x = xAtProgress(q);
       const y = this.markerCenterY(marker.cap, cameraRange);
-      const entrance = smoothstep((progress - q) * DURATION / 0.19);
+      const entrance = smoothstep((progress - q) * this.duration / 0.19);
       const alpha = 0.2 + 0.8 * entrance;
       const scale = 0.82 + 0.18 * entrance;
       // The circle is centered on its genuine execution point, without stems.
