@@ -87,10 +87,12 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
         return recorded;
       },
       onReady: () => { player.current = renderer; renderer!.render(0); paintPreview(renderer!); setReady(true); },
-      onProgress: value => { progress.current = value; setSeek(value); setExportProgress(value); paintPreview(renderer!); },
-      onFile: exported => { renderer!.render(1); paintPreview(renderer!); progress.current = 1; setSeek(1); setFile(exported); },
+      // The encoder owns an offscreen canvas. Preparing a downloadable file
+      // must not play through the visible preview before the user presses Play.
+      onProgress: value => setExportProgress(value),
+      onFile: exported => { renderer!.render(0); paintPreview(renderer!); progress.current = 0; setSeek(0); setFile(exported); },
       onError: problem => {
-        if (renderer) { renderer.render(1); paintPreview(renderer); progress.current = 1; setSeek(1); }
+        if (renderer) { renderer.render(0); paintPreview(renderer); progress.current = 0; setSeek(0); }
         setError(problem instanceof Error ? t(problem.message) : t('Video export failed.'));
         const retryable = !(problem instanceof Error && 'retryable' in problem && problem.retryable === false);
         setCanRetry(retryable); setRetryAt(0); setRetrySeconds(0);
@@ -163,8 +165,12 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     const renderer = player.current;
     if (!renderer || !canvas.current) return Promise.reject(new Error('The replay image could not be prepared.'));
     setPlaying(false); cancelAnimationFrame(frame.current);
-    progress.current = 1; setSeek(1); renderer.render(1); paintPreview(renderer);
-    return replayImage(canvas.current);
+    const selected = progress.current;
+    renderer.render(1);
+    return replayImage(renderer.canvas).finally(() => {
+      if (player.current !== renderer) return;
+      renderer.render(selected); paintPreview(renderer);
+    });
   }
 
   async function saveImage() {

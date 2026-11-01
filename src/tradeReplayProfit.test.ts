@@ -327,7 +327,8 @@ describe('trade replay profit colors and position labels', () => {
     expect(first.pnl).toBeNull(); expect(second.pnl).toBeNull();
     expect(second.totalPnl).toBeGreaterThan(first.totalPnl!);
     expect(second.totalPnl).toBeCloseTo(second.realizedPnl! + second.holdings! * second.currentPrice - second.remainingCostBasis!, 10);
-    expect(renderer.viewportAt(late).startQ).toBeGreaterThan(renderer.viewportAt(early).startQ);
+    expect(renderer.viewportAt(late).endQ-renderer.viewportAt(late).startQ)
+      .toBeGreaterThan(renderer.viewportAt(early).endQ-renderer.viewportAt(early).startQ);
     renderer.render(late);
     expect(drawing.strokes.find(stroke => stroke.width === 8)?.color).toBe('#16c784');
     expect(drawing.gradients.find(gradient => gradient.coordinates.join(',') === '0,272,0,651')?.stops[0]).toEqual([0, 'rgba(22,199,132,0.18)']);

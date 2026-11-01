@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import ReplayCanvas from './tradeReplayCanvas';
 import type { TradeReplayData } from './tradeReplayData';
-import { selectReplaySellHighlights } from './tradeReplayHighlights';
 
 const start = Date.parse('2026-10-11T10:00:00Z');
 const at = (seconds: number) => new Date(start + seconds * 1000).toISOString();
@@ -29,6 +28,7 @@ interface Marker {
   q: number;
 }
 interface MotionMethods {
+  traceLine(context: CanvasRenderingContext2D, points: {x:number;y:number}[], revealedX?: number): void;
   storyWindow: number;
   markerRadius: number;
   storyVertices: { ts: number; q: number; priceUsd: number; marketCapUsd: number }[];
@@ -39,6 +39,7 @@ interface MotionMethods {
   valueAtTime(timestamp: number): { priceUsd: number; marketCapUsd: number };
   valueAtStory(progress: number): { priceUsd: number; marketCapUsd: number };
   cameraAt(progress: number): { min: number; max: number };
+  chartTimeAt(coordinate:number): number;
   markerPosition(index: number, progress: number): Marker | null;
   visibleLine(progress: number, viewport?: Viewport): { ts: number; q: number; cap: number; x: number; y: number }[];
 }
@@ -124,6 +125,20 @@ function atomicPosition(): TradeReplayData {
   return payload;
 }
 
+function clusteredLongPosition(): TradeReplayData {
+  const payload = atomicPosition(), opening = [0,361,501,726,881,964,1108,1223];
+  const times = payload.trades.map((_,i)=>i<opening.length ? opening[i] : (i-7)/32*9*86400);
+  times[20]=times[19];
+  payload.trades=payload.trades.map((trade,i)=>({...trade,timestamp:at(times[i])}));
+  payload.inventory!.events=payload.inventory!.events.map((event,i)=>({...event,timestamp:at(times[i])}));
+  payload.replayAccounting!.events=payload.replayAccounting!.events.map((event,i)=>({...event,timestamp:at(times[i])}));
+  payload.generatedAt=payload.position.checkedAt=at(times.at(-1)!);
+  payload.replayAccounting!.checkedAt=payload.inventory!.coverage.checkedAt=payload.generatedAt;
+  payload.replayAccounting!.final!.timestamp=payload.generatedAt;
+  payload.chart.points=payload.trades.map(trade=>({timestamp:trade.timestamp,priceUsd:100,marketCapUsd:100000}));
+  return payload;
+}
+
 interface PaintedArc {
   x: number;
   y: number;
@@ -134,12 +149,13 @@ interface PaintedArc {
   alpha: number;
 }
 
-function canvasStub(drawn?: { value: string; x: number; y: number; alpha: number }[], painted?: PaintedArc[],
+function canvasStub(drawn?: { value: string; x: number; y: number; alpha: number; color?:string; font?:string }[], painted?: PaintedArc[],
   filled?: { x: number; y: number; width: number; height: number }[]): HTMLCanvasElement {
   let currentArc: Omit<PaintedArc, 'color' | 'alpha'> | null = null;
   const context = new Proxy({}, {
     get: (target, key) => key === 'measureText' ? (value: string) => ({ width: value.length * 20 })
-      : key === 'fillText' ? (value: string, x: number, y: number) => drawn?.push({ value, x, y, alpha: (target as { globalAlpha?: number }).globalAlpha ?? 1 })
+      : key === 'fillText' ? (value: string, x: number, y: number) => drawn?.push({ value, x, y, alpha: (target as { globalAlpha?: number }).globalAlpha ?? 1,
+        color:(target as {fillStyle?:string}).fillStyle,font:(target as {font?:string}).font })
       : key === 'fillRect' ? (x: number, y: number, width: number, height: number) => filled?.push({ x, y, width, height })
       : key === 'beginPath' ? () => { currentArc = null; }
       : key === 'arc' ? (x: number, y: number, radius: number, startAngle: number, endAngle: number) => { currentArc = { x, y, radius, startAngle, endAngle }; }
@@ -157,9 +173,244 @@ async function replay(payload = data()) {
   return { renderer, motion: renderer as ReplayCanvas & MotionMethods };
 }
 
-const activeX = 42 + 772 * .74;
+const activeX = 42 + 772 * .96;
 
 describe('handoff replay canvas geometry', () => {
+  it('separates dense opening vertices with a fixed camera and eases into the next long gap', async () => {
+    const payload=clusteredLongPosition(),original=structuredClone(payload),{renderer,motion}=await replay(payload);
+    expect(motion.storyWindow).toBe(.32);expect(renderer.getDuration()).toBe(25);
+    const openingEnd=renderer.eventProgress(7),view=motion.viewportAt(openingEnd);
+    const markers=payload.trades.slice(0,8).map((_,i)=>motion.markerPosition(i,openingEnd)!);
+    for(let i=1;i<markers.length;i++){
+      const spacing=markers[i].x-markers[i-1].x;
+      expect(spacing).toBeGreaterThan(10);expect(spacing).toBeLessThan(20);
+      const seconds=(renderer.eventProgress(i)-renderer.eventProgress(i-1))*renderer.getDuration();
+      if(i===1)expect(seconds).toBeCloseTo(.9,8);
+      else {expect(seconds).toBeGreaterThan(.18);expect(seconds).toBeLessThan(.23);}
+      // Pacing changes neither the actual timeline nor execution price.
+      expect(markers[i].ts).toBe(Date.parse(payload.trades[i].timestamp));
+      expect(markers[i].y).toBeCloseTo(651-(100000-view.yMin)/(view.yMax-view.yMin)*379,8);
+    }
+    let previousX=motion.markerPosition(0,0)!.x;
+    for(let frame=1;frame<750;frame++){
+      const p=frame/749,x=motion.markerPosition(0,p)!.x;
+      expect(previousX-x).toBeGreaterThanOrEqual(-1e-8);
+      expect(previousX-x).toBeLessThan(8);previousX=x;
+      expect(motion.visibleLine(p).at(-1)!.x).toBeCloseTo(activeX,8);
+      expect(motion.chartTimeAt(renderer.chartCoordinate(p))).toBeCloseTo(motion.timeAt(p),0);
+    }
+    // No horizontal velocity kink where the opening meets the long gap.
+    for(let i=1;i<9;i++){
+      const q=renderer.eventProgress(i),h=1e-6;
+      const left=(renderer.chartCoordinate(q)-renderer.chartCoordinate(q-h))/h;
+      const right=(renderer.chartCoordinate(q+h)-renderer.chartCoordinate(q))/h;
+      expect(Math.abs(right-left)).toBeLessThan(.001);
+    }
+    for(let i=0;i<payload.trades.length;i++)expect(motion.timeAt(renderer.eventProgress(i))).toBe(Date.parse(payload.trades[i].timestamp));
+    expect(renderer.eventProgress(19)).toBe(renderer.eventProgress(20));
+    expect(renderer.snapshot(renderer.eventProgress(19)).currentEventIndex).toBe(20);
+    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({totalPnl:0,totalRoi:0,time:payload.generatedAt}));
+    const ending=renderer.snapshot(1);for(const seek of [0,.3,1,.1])renderer.render(seek);
+    expect(renderer.snapshot(1)).toEqual(ending);expect(payload).toEqual(original);
+    const regular=atomicPosition();await renderer.setData(regular);expect(motion.storyWindow).toBe(.32);
+    expect(renderer.chartCoordinate(.5)).toBeCloseTo((motion.timeAt(.5)-start)/(Date.parse(regular.generatedAt)-start)*motion.chartProgress(1),10);
+  });
+
+  it('does not stroke future steep prices through the opening pixel clip', async () => {
+    const { motion } = await replay(), commands: {kind:string;args:number[]}[] = [];
+    const context = new Proxy({}, { get: (_,key) => (...args:number[]) => commands.push({kind:String(key),args}) }) as CanvasRenderingContext2D;
+    const points = [{x:10,y:30},{x:11,y:-900},{x:20,y:40}];
+    motion.traceLine(context,points,10);
+    expect(commands.map(c=>c.kind)).toEqual(['beginPath','moveTo']);
+    commands.length=0;motion.traceLine(context,points,10.5);
+    const curves=commands.filter(c=>c.kind==='bezierCurveTo');
+    expect(curves).toHaveLength(1); expect(curves[0].args[4]).toBeCloseTo(10.5,10);
+    // Original endpoint tangent -930, with a zero tangent at the trough.
+    expect(curves[0].args[5]).toBeCloseTo(-551.25,10);
+    expect(curves[0].args.every(Number.isFinite)).toBe(true);
+  });
+
+  it('opens at the first buy while retaining earlier transfers and sales in accounting', async () => {
+    const payload = atomicPosition(), events = payload.inventory!.events.map((event,index) => ({
+      ...event, ...payload.replayAccounting!.events[index] }));
+    const prefix: typeof events = [
+      { ...events[0], id: 'opening-transfer', tradeId: undefined, kind: 'transfer_in', timestamp: at(-120),
+        tokenAmount: 1, remainingTokenAmount: 1, remainingCostBasisUsd: 5, investedUsd: 0,
+        soldUsd: 0, cumulativeRealizedProfitUsd: 0, feeInclusiveCostUsd: 5 },
+      { ...events[1], id: 'opening-sale', tradeId: 'earlier-sale', kind: 'sell', timestamp: at(-60),
+        tokenAmount: 1, remainingTokenAmount: 0, remainingCostBasisUsd: 0, investedUsd: 0,
+        soldUsd: 7, cumulativeRealizedProfitUsd: 2, feeInclusiveCostUsd: 5 },
+    ];
+    const preserved = events.map(event => ({ ...event, soldUsd: Number(event.soldUsd) + 7,
+      cumulativeRealizedProfitUsd: 2, feeInclusiveCostUsd: Number(event.feeInclusiveCostUsd) + 5 }));
+    payload.trades.unshift({ ...payload.trades[1], id: 'earlier-sale', timestamp: at(-60),
+      amountUsd: 7, priceUsd: 7, marketCapUsd: 7000 });
+    const complete = [...prefix, ...preserved];
+    payload.inventory!.events = complete;
+    payload.replayAccounting!.events = complete;
+    payload.replayAccounting!.final = { ...payload.replayAccounting!.final,
+      ...preserved.at(-1)!, reportedProfitUsd: 2, reportedRoi: 2 / Number(preserved.at(-1)!.feeInclusiveCostUsd), priceUsd: null };
+    const original = structuredClone(payload), { renderer, motion } = await replay(payload);
+    expect(motion.timeAt(0)).toBe(start);
+    expect(renderer.snapshot(0)).toEqual(expect.objectContaining({ time: at(0), currentEventIndex: 1 }));
+    expect(renderer.eventProgress(0)).toBe(-1); expect(renderer.markerPosition(0, 0)).toBeNull();
+    expect(renderer.eventProgress(1)).toBe(0); expect(renderer.markerPosition(1, 0)?.visible).toBe(true);
+    expect(motion.storyVertices.every(point => point.ts >= start)).toBe(true);
+    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ totalPnl: 2,
+      totalRoi: 2 / Number(preserved.at(-1)!.feeInclusiveCostUsd), proceeds: 2007 }));
+    expect(payload).toEqual(original);
+  });
+
+  it.each([false, true])('reveals a modern=%s opening gradually before the next fill without changing its ending', async modern => {
+    const { renderer, motion } = await replay(modern ? atomicPosition() : data());
+    const duration = renderer.getDuration(), next = renderer.eventProgress(1);
+    expect(next * duration).toBeGreaterThanOrEqual(.9 - 1e-9);
+    const firstTime = motion.timeAt(0), end = renderer.snapshot(1);
+    const firstStep = motion.timeAt(.05 / duration) - firstTime;
+    const laterStep = motion.timeAt(.25 / duration) - motion.timeAt(.2 / duration);
+    expect(firstStep).toBeGreaterThanOrEqual(0); expect(firstStep).toBeLessThan(laterStep);
+    for (const progress of [0, .05 / duration, .2 / duration, .6 / duration, next, .5, 1]) {
+      const time = motion.timeAt(progress);
+      if (progress <= motion.chartProgress(1)) expect(motion.progressAtTime(time)).toBeCloseTo(progress, 6);
+    }
+    expect(renderer.tradeAmountAt(0, .24 / duration)?.text).toBe(modern ? '+$100' : '+$2');
+    expect(motion.markerPosition(1, .5 / duration)?.visible).toBe(false);
+    for (const seek of [1, 0, .8, .1, 1]) renderer.render(seek);
+    expect(renderer.snapshot(1)).toEqual(end);
+    expect((1 - motion.chartProgress(1)) * duration).toBeCloseTo(2, 8);
+  });
+
+  it('keeps the first available execution when the recorded history contains only sales', async () => {
+    const payload = data(); payload.trades = payload.trades.filter(trade => trade.side === 'sell');
+    const original = structuredClone(payload), { renderer, motion } = await replay(payload);
+    expect(motion.timeAt(0)).toBe(Date.parse(payload.trades[0].timestamp));
+    expect(renderer.eventProgress(0)).toBe(0);
+    expect(renderer.tradeAmountAt(0, .24 / renderer.getDuration())?.text).toBe('−$30');
+    expect(payload).toEqual(original);
+  });
+
+  it('expands history smoothly, keeps the revealed tip fixed and never pans backward', async () => {
+    const {renderer,motion}=await replay(longPosition());
+    let previousWidth=renderer.windowAt(0), previousX=motion.markerPosition(0,0)!.x;
+    for(let frame=1;frame<=630;frame++){
+      const progress=frame/630,view=motion.viewportAt(progress),width=view.endQ-view.startQ;
+      expect(width).toBeGreaterThanOrEqual(previousWidth-1e-9);
+      expect(Math.abs(width-previousWidth)).toBeLessThan(.012);
+      expect(motion.visibleLine(progress).at(-1)!.x).toBeCloseTo(activeX,8);
+      const x=motion.markerPosition(0,progress)!.x;expect(x).toBeLessThanOrEqual(previousX+1e-9);
+      previousWidth=width;previousX=x;
+    }
+    expect(renderer.windowAt(1)).toBeGreaterThan(renderer.windowAt(0));
+  });
+
+  it('keeps real clock labels separated as the history window expands',async()=>{
+    const drawn:{value:string;x:number;y:number;alpha:number}[]=[],renderer=new ReplayCanvas(canvasStub(drawn));
+    await renderer.setData(longPosition());
+    for(const q of [0,.1,.4,.7,1]){
+      drawn.length=0;renderer.render(q);
+      const labels=drawn.filter(label=>label.y===698).sort((a,b)=>a.x-b.x);
+      for(let i=1;i<labels.length;i++)expect(labels[i].x-labels[i-1].x)
+        .toBeGreaterThanOrEqual((labels[i].value.length+labels[i-1].value.length)*10+21);
+    }
+  });
+
+  it('matches the reference amount timing, centered placement and side signs',async()=>{
+    const {renderer}=await replay(),event=renderer.eventProgress(1),seconds=renderer.getDuration();
+    expect(renderer.tradeAmountAt(1,event-1e-6)).toBeNull();
+    const entering=renderer.tradeAmountAt(1,event+.10/seconds)!;
+    const held=renderer.tradeAmountAt(1,event+.24/seconds)!;
+    const fading=renderer.tradeAmountAt(1,event+.38/seconds)!;
+    expect(entering.text).toBe('+$20');expect(entering.alpha).toBeCloseTo(.5,10);
+    expect(held.alpha).toBe(1);expect(fading.alpha).toBeCloseTo(.5,10);
+    expect(held.scale).toBe(1);expect(entering.scale).toBe(1);
+    expect(entering.x).toBeCloseTo(renderer.markerPosition(1,event+.10/seconds)!.x,10);
+    expect(held.y-renderer.markerPosition(1,event+.24/seconds)!.y)
+      .toBeLessThan(entering.y-renderer.markerPosition(1,event+.10/seconds)!.y);
+    expect(renderer.tradeAmountAt(1,event+.421/seconds)).toBeNull();
+    const sale=renderer.eventProgress(2)+.24/seconds;
+    expect(renderer.tradeAmountAt(2,sale)?.text).toBe('−$30');
+    const expected=renderer.tradeAmountAt(1,event+.24/seconds);
+    for(const q of [1,0,.75,.2])renderer.render(q);
+    expect(renderer.tradeAmountAt(1,event+.24/seconds)).toEqual(expected);
+    const payload=data();payload.trades[1].amountUsd=null;await renderer.setData(payload);
+    expect(renderer.tradeAmountAt(1,renderer.eventProgress(1)+.2/seconds)).toBeNull();
+  });
+
+  it('keeps a line even when an older caller supplies OHLC data',async()=>{
+    const payload=data(),filled:{x:number;y:number;width:number;height:number}[]=[];
+    Object.assign(payload.chart,{candles:[{time:start/1000,open:2,high:90,low:.1,close:3,volume:100}]});
+    const original=structuredClone(payload),renderer=new ReplayCanvas(canvasStub(undefined,undefined,filled));
+    await renderer.setData(payload);filled.length=0;renderer.render(.5);
+    expect(filled.some(rect=>rect.width<50&&rect.height>2)).toBe(false);
+    expect(renderer.visibleLine(.5).length).toBeGreaterThan(1);
+    expect(payload).toEqual(original);
+  });
+
+  it('renders the colored prefix separately from the constant-size white amount',async()=>{
+    const drawn:{value:string;x:number;y:number;alpha:number;color?:string;font?:string}[]=[];
+    const renderer=new ReplayCanvas(canvasStub(drawn));await renderer.setData(data());
+    for(const [index,prefix,color,value]of [[1,'+','#16c784','$20'],[2,'−','#f6465d','$30']]as const){
+      drawn.length=0;renderer.render(renderer.eventProgress(index)+.24/renderer.getDuration());
+      const sign=drawn.find(label=>label.value===prefix)!,amount=drawn.find(label=>label.value===value)!;
+      expect(sign.color).toBe(color);expect(amount.color).toBe('#f8f6ee');
+      expect(sign.font).toContain('50px');expect(amount.font).toBe(sign.font);
+      expect(amount.y).toBe(sign.y);expect(amount.x).toBeGreaterThan(sign.x);
+    }
+  });
+
+  it.each([[1040,'+$1.04K'],[123500,'+$123.5K'],[249,'+$249'],[.4,'+$0.40']]as const)
+  ('formats the reference amount %s as %s without changing the stored amount',async(amount,shown)=>{
+    const payload=data();payload.trades[1].amountUsd=amount;
+    const {renderer}=await replay(payload);
+    expect(renderer.tradeAmountAt(1,renderer.eventProgress(1)+.24/renderer.getDuration())?.text).toBe(shown);
+    expect(payload.trades[1].amountUsd).toBe(amount);
+  });
+
+  it('pans first and then pins the original history to the left as in both references',async()=>{
+    const {renderer}=await replay(longPosition());
+    expect(renderer.windowAt(.1)).toBe(renderer.windowAt(0));
+    expect(renderer.markerPosition(0,.15)!.x).toBeLessThan(renderer.markerPosition(0,.05)!.x);
+    for(const q of [.4,.6,.8,1]){
+      expect(renderer.markerPosition(0,q)!.x).toBeCloseTo(42+772*.015,8);
+      expect(renderer.markerPosition(0,q)!.visible).toBe(true);
+      const tip=renderer.visibleLine(q).at(-1)!;expect(tip.x).toBeCloseTo(activeX,8);
+    }
+  });
+
+  it('retains the revealed price range when prices pull back',async()=>{
+    const {renderer,motion}=await replay();let low=Infinity,high=0;
+    for(let frame=0;frame<=300;frame++){
+      const view=motion.viewportAt(frame/300);
+      expect(view.yMin).toBeLessThanOrEqual(low+1e-8);expect(view.yMax).toBeGreaterThanOrEqual(high-1e-8);
+      low=view.yMin;high=view.yMax;
+    }
+    expect(renderer.snapshot(1).time).toBe(at(300));
+  });
+
+  it('uses real chronological distance on modern charts while leaving event pacing and accounting separate',async()=>{
+    const payload=atomicPosition(),{renderer}=await replay(payload),p=.8;
+    const first=renderer.markerPosition(0,p)!,middle=renderer.markerPosition(10,p)!,last=renderer.markerPosition(30,p)!;
+    expect((middle.x-first.x)/(middle.ts-first.ts)).toBeCloseTo((last.x-first.x)/(last.ts-first.ts),10);
+    const tip=renderer.visibleLine(p).at(-1)!;
+    expect(tip.x).toBeCloseTo(activeX,8);expect(tip.cap).toBe(renderer.snapshot(p).currentCap);
+    const final=renderer.snapshot(1);for(const q of [1,0,.6,.2,1])renderer.render(q);
+    expect(renderer.snapshot(1)).toEqual(final);
+  });
+
+  it('gives dense modern executions a bounded reading interval without changing real times',async()=>{
+    const payload=atomicPosition();payload.position={...payload.position,status:'open',tokenBalance:1};
+    payload.currentQuote={timestamp:at(86400),priceUsd:100,marketCapUsd:100000};
+    const {renderer,motion}=await replay(payload),end=motion.chartProgress(1);
+    let previous=-1;
+    for(const group of [...new Set(payload.inventory!.events.map(event=>Date.parse(event.timestamp)))]){
+      const index=payload.trades.findIndex(trade=>Date.parse(trade.timestamp)===group),q=renderer.eventProgress(index);
+      expect(q).toBeGreaterThan(previous);expect(motion.timeAt(q)).toBe(group);previous=q;
+    }
+    expect(renderer.eventProgress(19)).toBe(renderer.eventProgress(20));
+    expect(motion.timeAt(end)).toBe(start+86400000);
+    expect(end-renderer.eventProgress(payload.trades.length-1)).toBeGreaterThan(end*.45);
+  });
+
   it('gives short, hour-long and week-long trades different durations with a fixed closing hold',async()=>{
     const samples:[number[],number][]=[[[0,10],8],[[0,1200,1200,3600],14],[[0,86400,86400,604800],25]];
     for(const [times,seconds]of samples){
@@ -176,7 +427,8 @@ describe('handoff replay canvas geometry', () => {
       for(let frame=1;frame<frames;frame++){
         const x=motion.markerPosition(0,frame/(frames-1))!.x;
         expect(previous-x).toBeGreaterThanOrEqual(-1e-9);
-        expect(previous-x).toBeLessThanOrEqual(5.3);previous=x;
+        // The opening eases from rest with a maximum speed of 4/3.
+        expect(previous-x).toBeLessThanOrEqual(4/3*772/.32/(frames-1)+1e-6);previous=x;
       }
       const ending=renderer.snapshot(1);renderer.render(.5);renderer.render(0);renderer.render(1);
       expect(renderer.snapshot(1)).toEqual(ending);expect(payload).toEqual(original);
@@ -218,7 +470,7 @@ describe('handoff replay canvas geometry', () => {
     for (let index = 0; index < 4; index += 1) {
       const marker = motion.markerPosition(index, progress)!;
       expect(motion.timeAt(renderer.eventProgress(index))).toBe(Date.parse(data().trades[index].timestamp));
-      expect(marker.x).toBeCloseTo(42 + (marker.q - motion.viewportAt(progress).startQ) / motion.storyWindow * 772, 10);
+      expect(marker.x).toBeCloseTo(42 + (marker.q - motion.viewportAt(progress).startQ) / (motion.viewportAt(progress).endQ - motion.viewportAt(progress).startQ) * 772, 10);
     }
   });
 
@@ -257,7 +509,7 @@ describe('handoff replay canvas geometry', () => {
     for (let frame = 1; frame < frames; frame += 1) {
       const current = motion.markerPosition(0, frame / (frames - 1))!.x;
       expect(previous - current).toBeGreaterThanOrEqual(-1e-9);
-      expect(previous - current).toBeLessThanOrEqual(5.3);
+      expect(previous - current).toBeLessThanOrEqual(4/3*772/.32/(frames-1)+1e-6);
       previous = current;
     }
     const final = renderer.snapshot(1);
@@ -279,7 +531,7 @@ describe('handoff replay canvas geometry', () => {
       for (let index = 0; index < markers.length; index += 1) {
         const marker = markers[index], viewport = motion.viewportAt(progress);
         expect(marker.ts).toBe(Date.parse(payload.trades[marker.index].timestamp));
-        expect(marker.x).toBeCloseTo(42 + (marker.q - viewport.startQ) / motion.storyWindow * 772, 10);
+        expect(marker.x).toBeCloseTo(42 + (marker.q - viewport.startQ) / (motion.viewportAt(progress).endQ - motion.viewportAt(progress).startQ) * 772, 10);
         const fillY = 651 - (marker.executionValue! - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379;
         expect(marker.y).toBeCloseTo(fillY, 10);
         expect(marker.anchorY).toBeCloseTo(fillY, 10);
@@ -346,7 +598,8 @@ describe('handoff replay canvas geometry', () => {
     expect(motion.timeAt(1)).toBe(start + 3600000);
     expect(renderer.snapshot(1).currentPrice).toBe(9.5);
     expect(renderer.snapshot(1).currentCap).toBe(9500);
-    expect(motion.viewportAt(.85).startQ).toBeGreaterThan(motion.viewportAt(lastFill).startQ);
+    expect(motion.viewportAt(.85).endQ-motion.viewportAt(.85).startQ).toBeGreaterThan(motion.viewportAt(lastFill).endQ-motion.viewportAt(lastFill).startQ);
+    expect(motion.markerPosition(0,.85)?.visible).toBe(true);
     expect(motion.viewportAt(1)).toEqual(motion.viewportAt(motion.chartProgress(1)));
     expect(renderer.snapshot(1).currentEventIndex).toBe(2);
     expect(motion.storyVertices.some(point => point.ts === start + 300000)).toBe(true);
@@ -394,58 +647,18 @@ describe('handoff replay canvas geometry', () => {
     }
   });
 
-  it('shows a take-profit transition only after a large sale with known profit without changing accounting', async () => {
-    const payload = longPosition(), original = structuredClone(payload);
-    const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    const sale = renderer.eventProgress(2), emphasized = sale + .2 / renderer.getDuration();
-    drawn.length = 0; renderer.render(sale - 1e-7);
-    expect(renderer.snapshot(sale - 1e-7).currentEventIndex).toBe(1);
-    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
-    drawn.length = 0; renderer.render(emphasized);
-    const badge = drawn.find(label => label.value.startsWith('TAKE PROFIT'));
-    expect(badge).toBeDefined(); expect(badge!.alpha).toBeGreaterThan(0);
-    expect(drawn.some(label => label.value.startsWith('BIG SELL'))).toBe(false);
-    const expected = { badge, snapshot: renderer.snapshot(emphasized) };
-    for (const seek of [1, 0, .9, sale - 1e-7, emphasized]) renderer.render(seek);
-    drawn.length = 0; renderer.render(emphasized);
-    expect({ badge: drawn.find(label => label.value.startsWith('TAKE PROFIT')),
-      snapshot: renderer.snapshot(emphasized) }).toEqual(expected);
-    drawn.length = 0; renderer.render(1);
-    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
-    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.currentQuote!.timestamp,
-      currentPrice: 1430, totalPnl: 131700, totalRoi: 131700 / 5800, realizedPnl: 65440 }));
-    expect(renderer.getDuration()).toBe(21);
-    expect(payload).toEqual(original);
-  });
-
-  it('labels a large sale with unknown profit Big sell without inventing take-profit accounting', async () => {
+  it.each([true, false])('has no big-sell treatment with known profit=%s', async known => {
     const payload = longPosition();
-    for (const trade of payload.trades) delete trade.cumulativeRealizedProfitUsd;
-    payload.realizedAccounting = { available: false };
-    const original = structuredClone(payload);
-    const drawn: { value: string; x: number; y: number; alpha: number }[] = [];
-    const renderer = new ReplayCanvas(canvasStub(drawn)); await renderer.setData(payload);
-    const sale = renderer.eventProgress(2), emphasized = sale + .2 / renderer.getDuration();
-    drawn.length = 0; renderer.render(sale - 1e-7);
-    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
-    drawn.length = 0; renderer.render(emphasized);
-    const badge = drawn.find(label => label.value.startsWith('BIG SELL'));
-    expect(badge).toBeDefined(); expect(badge!.alpha).toBeGreaterThan(0);
-    expect(drawn.some(label => label.value.startsWith('TAKE PROFIT'))).toBe(false);
-    expect(renderer.snapshot(emphasized).realizedPnl).toBeNull();
-    expect(renderer.snapshot(emphasized).totalPnl).toBeNull();
-    const expected = { badge, snapshot: renderer.snapshot(emphasized) };
-    for (const seek of [1, .01, .8, 0, emphasized]) renderer.render(seek);
-    drawn.length = 0; renderer.render(emphasized);
-    expect({ badge: drawn.find(label => label.value.startsWith('BIG SELL')),
-      snapshot: renderer.snapshot(emphasized) }).toEqual(expected);
-    drawn.length = 0; renderer.render(1);
-    expect(drawn.some(label => /^(TAKE PROFIT|BIG SELL)/.test(label.value))).toBe(false);
-    expect(renderer.snapshot(1)).toEqual(expect.objectContaining({ time: payload.currentQuote!.timestamp,
-      currentPrice: 1430, realizedPnl: null, totalPnl: null, totalRoi: null }));
-    expect(renderer.getDuration()).toBe(21);
-    expect(payload).toEqual(original);
+    if (!known) { for (const trade of payload.trades) delete trade.cumulativeRealizedProfitUsd;payload.realizedAccounting = { available: false }; }
+    const original = structuredClone(payload), drawn: {value:string;x:number;y:number;alpha:number}[] = [];
+    const renderer = new ReplayCanvas(canvasStub(drawn));await renderer.setData(payload);
+    const sale = renderer.eventProgress(2), after = sale + .2 / renderer.getDuration();
+    const ending = renderer.snapshot(1);drawn.length=0;renderer.render(after);
+    expect(drawn.some(label=>/TAKE PROFIT|BIG SELL/.test(label.value))).toBe(false);
+    expect(renderer.tradeAmountAt(2, after)?.text).toBe('−$24K');
+    for (const seek of [1,0,.8,after])renderer.render(seek);
+    expect(renderer.snapshot(1)).toEqual(ending);expect(payload).toEqual(original);
+    if (!known)expect(ending.totalPnl).toBeNull();
   });
 
   it('keeps the regular chart scale around a large sale with its line, markers and price guide aligned', async () => {
@@ -455,7 +668,7 @@ describe('handoff replay canvas geometry', () => {
     const motion = renderer as ReplayCanvas & MotionMethods;
     const sale = renderer.eventProgress(2), progress = sale + .7 / renderer.getDuration();
     const viewport = motion.viewportAt(progress), span = viewport.endQ - viewport.startQ;
-    expect(span).toBeCloseTo(motion.storyWindow, 10);
+    expect(span).toBeCloseTo(renderer.windowAt(progress), 10);
     const state = renderer.snapshot(progress), baseCamera = motion.cameraAt(motion.chartProgress(progress));
     expect(viewport.yMin).toBe(baseCamera.min);
     expect(viewport.yMax).toBe(baseCamera.max);
@@ -497,7 +710,7 @@ describe('handoff replay canvas geometry', () => {
     for (let frame = 0; frame < frameCount; frame += 1) {
       const progress = frame / (frameCount - 1), viewport = motion.viewportAt(progress);
       const base = motion.cameraAt(motion.chartProgress(progress));
-      expect(viewport.endQ - viewport.startQ).toBeCloseTo(motion.storyWindow, 10);
+      expect(viewport.endQ - viewport.startQ).toBeCloseTo(renderer.windowAt(progress), 10);
       expect(viewport.yMin).toBe(base.min); expect(viewport.yMax).toBe(base.max);
     }
     for (let index = 0; index < payload.trades.length; index += 1) {
@@ -525,8 +738,6 @@ describe('handoff replay canvas geometry', () => {
     const small = structuredClone(source), large = structuredClone(source);
     for (const payload of [small, large]) for (const trade of payload.trades) if (trade.side === 'sell') trade.amountUsd = 10;
     large.trades[saleIndex].amountUsd = 10_000_000;
-    expect(selectReplaySellHighlights(small.trades)).toEqual([]);
-    expect(selectReplaySellHighlights(large.trades).map(highlight => highlight.tradeIndex)).toEqual([saleIndex]);
     const before = await replay(small), after = await replay(large);
     expect(after.renderer.getDuration()).toBe(modern ? 15 : 21);
     for (let index = 0; index < source.trades.length; index += 1) {
@@ -609,7 +820,7 @@ describe('handoff replay canvas geometry', () => {
       const viewport = motion.viewportAt(progress);
       expect(viewport.time).toBe(motion.timeAt(chartProgress));
       const tip = motion.visibleLine(progress, viewport).at(-1)!;
-      expect(tip.q).toBe(chartProgress); expect(tip.cap).toBe(snapshot.currentCap);
+      expect(tip.q).toBe(renderer.chartCoordinate(progress)); expect(tip.cap).toBe(snapshot.currentCap);
       expect(tip.x).toBeCloseTo(activeX, 10);
       expect(tip.y).toBeCloseTo(651 - (snapshot.currentCap - viewport.yMin) / (viewport.yMax - viewport.yMin) * 379, 10);
       expect(motion.visibleLine(progress, viewport).every(point => point.q <= chartProgress)).toBe(true);

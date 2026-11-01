@@ -23,10 +23,13 @@ export class ReplayCanvas {
   getDuration(): number;
   eventProgress(index: number): number;
   chartProgress(progress: number): number;
+  chartCoordinate(progress: number): number;
   timeAt(progress: number): number;
   valueAtTime(time: number): { priceUsd: number; marketCapUsd: number };
   valueAtStory(progress: number): { priceUsd: number; marketCapUsd: number };
   viewportAt(progress: number): ReplayViewport;
+  windowAt(progress: number): number;
+  tradeAmountAt(index: number, progress: number): { text: string; sign: string; value: string; x: number; y: number; alpha: number; scale: number } | null;
   markerPosition(index: number, progress: number): ReplayMarkerPosition | null;
   visibleLine(progress: number, viewport?: ReplayViewport): { ts: number; q: number; cap: number; x: number; y: number }[];
   snapshot(progress: number): ReplaySnapshot;
