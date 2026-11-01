@@ -77,7 +77,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   let captureHealth:FreshRecoveryCaptureHealth|undefined;
   const urgentEvidence=createFreshUrgentEvidenceCapture(db,rpc),recoveryBatch=createFreshRecoveryBatch(db,rpc,{captureHealth:()=>captureHealth});
   const urgentTrace=trace?createFreshUrgentTraceCapture(db,rpc,localSsh?createFreshSshTrace({maxQueued:0}):createFreshIpcTrace({maxQueued:0})):undefined;
-  const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000});
+  const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000,creationTraces:true});
   const nextDecodeService=createFreshDecodeServiceCycle();
   let lastQuoteAt=0;
   // One capture owner. API requests never start scanners or accounting workers.

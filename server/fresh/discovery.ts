@@ -6,7 +6,7 @@ import {transferTopic} from '../swap.js';
 import {freshAddress,freshHash,freshInteger,validateFreshReceipt,decodeFreshEvidence,type FreshBlock,type FreshCapturedReceipt,type FreshLaunchFact} from './capture.js';
 import {readFreshTokenAdmission} from './tracking.js';
 import {validateFreshTrace} from './trace.js';
-import {validFreshCompleteCallTrace} from './passiveIncoming.js';
+import {validFreshCompleteCallTrace,certifyFreshCompleteCallTrace} from './passiveIncoming.js';
 import {classifyFreshCreationToken} from './tokenAuthenticity.js';
 import{queueFreshAdmissionRecheck,freshAdmissionTransferWallets}from'./admissionRecheck.js';
 
@@ -20,8 +20,13 @@ export interface FreshDiscoveryHeader{number:number;hash:string;parentHash:strin
 export interface FreshDiscoveryBoundary{number:number;hash:string;timestamp:string}
 const header=(b:FreshBlock):FreshDiscoveryHeader=>({number:number(b.number),hash:b.hash,parentHash:b.parentHash,timestamp:new Date(number(b.timestamp)*1000).toISOString()});
 function trustedDiscoveryBoundary(value:unknown,start:{number:number;hash:string}):FreshDiscoveryBoundary|undefined{
- const b=value as FreshDiscoveryBoundary;return b&&b.number===start.number&&b.hash===start.hash&&Number.isSafeInteger(b.number)&&b.number>=0&&freshHash(b.hash)===b.hash
-  &&typeof b.timestamp==='string'&&Number.isFinite(Date.parse(b.timestamp))&&new Date(b.timestamp).toISOString()===b.timestamp?b:undefined;
+ const b=value as FreshDiscoveryBoundary;
+ // The production cutover checkpoint stores whole-second UTC timestamps;
+ // RPC-derived headers use millisecond ISO. Compare the same instant without
+ // rejecting the immutable checkpoint merely because .000 was omitted.
+ const time=b&&typeof b.timestamp==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(b.timestamp)&&Number.isFinite(Date.parse(b.timestamp))?new Date(b.timestamp).toISOString():null;
+ return b&&b.number===start.number&&b.hash===start.hash&&Number.isSafeInteger(b.number)&&b.number>=0&&freshHash(b.hash)===b.hash
+  &&time&&time.slice(0,19)===b.timestamp.slice(0,19)?{number:b.number,hash:b.hash,timestamp:time}:undefined;
 }
 const isTrustedDiscoveryBoundary=(b:FreshDiscoveryHeader,trusted:FreshDiscoveryBoundary|undefined)=>!!trusted&&b.number===trusted.number&&b.hash===trusted.hash&&b.timestamp===trusted.timestamp;
 async function discoveryNodeHeader(node:Rpc,n:number,expected?:FreshDiscoveryHeader,trustedBoundary?:FreshDiscoveryBoundary):Promise<FreshBlock|null>{
@@ -154,9 +159,11 @@ export async function queueFreshTokenDiscovery(client:PoolClient,input:FreshDisc
  const old=(await client.query("SELECT progress FROM fresh.jobs WHERE kind='token_discovery' AND reference=$1 FOR UPDATE",[token])).rows[0];
  if(old&&(old.progress?.startBlock!==progress.startBlock||old.progress?.startHash!==progress.startHash))throw Error('token_discovery_boundary_changed');
  await client.query(`INSERT INTO fresh.jobs(id,kind,reference,priority,progress,due_at,last_error)VALUES('token_discovery:'||$1,'token_discovery',$1,80,$2::jsonb,$3,'token_creation_unverified')
-  ON CONFLICT(kind,reference)DO UPDATE SET progress=fresh.jobs.progress||jsonb_build_object('lastSeen',EXCLUDED.progress->'lastSeen','wallets',EXCLUDED.progress->'wallets'),state='pending',updated_at=clock_timestamp()
+  ON CONFLICT(kind,reference)DO UPDATE SET progress=CASE WHEN COALESCE((fresh.jobs.progress#>>'{lastSeen,blockNumber}')::bigint,0)<=($2::jsonb#>>'{lastSeen,blockNumber}')::bigint
+   THEN fresh.jobs.progress||jsonb_build_object('lastSeen',EXCLUDED.progress->'lastSeen','wallets',EXCLUDED.progress->'wallets') ELSE fresh.jobs.progress END,state='pending',updated_at=clock_timestamp()
   WHERE COALESCE((fresh.jobs.progress#>>'{lastSeen,blockNumber}')::bigint,0)<($2::jsonb#>>'{lastSeen,blockNumber}')::bigint
-   OR fresh.jobs.progress#>>'{lastSeen,blockHash}' IS DISTINCT FROM $2::jsonb#>>'{lastSeen,blockHash}' OR fresh.jobs.state<>'pending'`,[token,JSON.stringify(progress),now]);
+   OR ((fresh.jobs.progress#>>'{lastSeen,blockNumber}')::bigint=($2::jsonb#>>'{lastSeen,blockNumber}')::bigint
+    AND fresh.jobs.progress#>>'{lastSeen,blockHash}' IS DISTINCT FROM $2::jsonb#>>'{lastSeen,blockHash}') OR fresh.jobs.state<>'pending'`,[token,JSON.stringify(progress),now]);
 }
 
 /** Bounded code/header observations, not financial responses. A resumed search
@@ -263,7 +270,7 @@ export async function readFreshTokenDiscoveryHealth(db:Pick<Pool,'query'>){const
  * access exists only when the caller explicitly supplies an RPC. Every state
  * read is bracketed by its exact canonical header; no current code is relabeled
  * historical. The bounded search never runs from an ordinary page request. */
-export function createFreshTokenDiscoveryResolver(rpc:Rpc,options:{archiveRpc?:Rpc;boundaryFirst?:boolean;recentNodeFirst?:boolean;mintHints?:boolean;mintHintBlocks?:number;trustedBoundary?:FreshDiscoveryBoundary;maxCalls?:number;maxMs?:number}={}):FreshTokenDiscoveryResolver{
+export function createFreshTokenDiscoveryResolver(rpc:Rpc,options:{archiveRpc?:Rpc;boundaryFirst?:boolean;recentNodeFirst?:boolean;mintHints?:boolean;mintHintBlocks?:number;trustedBoundary?:FreshDiscoveryBoundary;maxCalls?:number;maxMs?:number;creationTraces?:boolean}={}):FreshTokenDiscoveryResolver{
  return async context=>{
   // A provider cooldown must not consume the node's tiny historical window.
   // The recent attempt is independent of optional archive/search progress.
@@ -328,10 +335,22 @@ export function createFreshTokenDiscoveryResolver(rpc:Rpc,options:{archiveRpc?:R
    }catch(error){if(context.signal?.aborted||error instanceof RpcRequestError&&error.category!=='state_unavailable'||['token_discovery_budget','token_discovery_context_changed','token_discovery_search_reorg','token_discovery_archive_reorg','token_discovery_archive_header_mismatch'].includes((error as Error)?.message))throw error;}
   }
   const upper=await observe(context.observed.number);if(!upper||upper.code==='0x'||upper.block.hash!==context.observed.hash)return null;
-  let low=Math.max(context.start.number,context.observed.number-16),lower=await observe(low);
-  if(!lower)return null;if(lower.code!=='0x'){if(low!==context.start.number){if(!options.archiveRpc)return null;low=context.start.number;lower=await observe(low);if(!lower)return null;}
-   if(lower.code!=='0x')return{version:1,kind:'canonical_pre_boundary_code_v1',chainId:56,tokenAddress:context.tokenAddress,start:context.start,block:lower.block,code:lower.code,source:lower.source};}
-  let high=context.observed.number;while(high-low>1){const mid=low+Math.floor((high-low)/2),value=await observe(mid);if(!value)return null;if(value.code==='0x')low=mid;else{if(value.code!==upper.code)throw Error('token_discovery_runtime_changed');high=mid;}}
+  // Search outward from the observed trade instead of jumping halfway back
+  // to an old, pruned app boundary. Exact saved observations resume the
+  // bracket and binary search; canonical checks stay strict on every use.
+  const positive=[...observations].filter(([,v])=>v.code!=='0x').map(([n])=>n);
+  let high=Math.min(context.observed.number,...positive);
+  const cachedHigh=await observe(high);if(!cachedHigh||cachedHigh.code!==upper.code)throw Error('token_discovery_runtime_changed');
+  const empty=[...observations].filter(([n,v])=>n>context.start.number&&n<high&&v.code==='0x').map(([n])=>n);
+  let low=empty.length?Math.max(...empty):Math.max(context.start.number,context.observed.number-Math.max(16,(context.observed.number-high)*2)),lower=await observe(low);
+  while(lower&&lower.code!=='0x'){
+   if(lower.code!==upper.code)throw Error('token_discovery_runtime_changed');
+   if(low===context.start.number)return{version:1,kind:'canonical_pre_boundary_code_v1',chainId:56,tokenAddress:context.tokenAddress,start:context.start,block:lower.block,code:lower.code,source:lower.source};
+   if(!options.archiveRpc)return null;
+   high=low;low=Math.max(context.start.number,context.observed.number-Math.max(16,(context.observed.number-low)*2));lower=await observe(low);
+  }
+  if(!lower)return null;
+  while(high-low>1){const mid=low+Math.floor((high-low)/2),value=await observe(mid);if(!value)return null;if(value.code==='0x')low=mid;else{if(value.code!==upper.code)throw Error('token_discovery_runtime_changed');high=mid;}}
   const parent=await observe(low),birth=await observe(high);if(!parent||!birth||parent.code!=='0x'||birth.code!==upper.code||high<=context.start.number)return null;
   const source=birth.source==='explicit_archive'||parent.source==='explicit_archive'?'explicit_archive':'node',read=source==='node'?rpc:options.archiveRpc!;
   const full=await invoke<FreshBlock>(read,'eth_getBlockByNumber',['0x'+high.toString(16),true]);if(!full||full.hash!==birth.block.hash||full.parentHash!==parent.block.hash)return null;
@@ -341,6 +360,23 @@ export function createFreshTokenDiscoveryResolver(rpc:Rpc,options:{archiveRpc?:R
   for(const hash of candidates){const tx=full.transactions.find(t=>typeof t==='object'&&t.hash===hash);if(!tx)continue;const receipt=await invoke<any>(read,'eth_getTransactionReceipt',[hash]);validateFreshReceipt(receipt,tx,full);if(receipt.status!=='0x1')continue;
    const entry:FreshCapturedReceipt={transaction:tx,receipt,wallets:[],observedAt:new Date().toISOString()};const proof:FreshTokenCreationProof={version:1,kind:'canonical_token_birth_v1',chainId:56,tokenAddress:context.tokenAddress,start:context.start,block:full,parent:parent.block,entry,parentCode:'0x',code:birth.code,mode:tx.to===null&&receipt.contractAddress===context.tokenAddress?'top_level_creation':'exact_state_birth',source};
    const checked=await validateFreshTokenCreationProof(proof,context.start,async n=>{const b=await invoke<FreshBlock>(read,'eth_getBlockByNumber',['0x'+n.toString(16),false]);return b?header(b):null;},async(token,b)=>{const saved=observations.get(b.number);return token===context.tokenAddress&&saved?.block.hash===b.hash?saved.code:null;});if(checked)return proof;
+  }
+  if(options.creationTraces&&options.archiveRpc){
+   // A token constructor may mint nothing, so there need not be a token log
+   // at birth. Trace at most two canonical top-level creation transactions.
+   // Address derivation is a priority hint only; the complete CREATE frame,
+   // exact returned runtime and adjacent code proof remain mandatory.
+   const constructors=full.transactions.filter(tx=>typeof tx==='object'&&tx.to===null).slice(0,16),hint=(tx:typeof constructors[number])=>{
+    try{const creator=getCreateAddress({from:tx.from,nonce:freshInteger(tx.nonce)});for(let nonce=1;nonce<=16;nonce++)if(getCreateAddress({from:creator,nonce}).toLowerCase()===context.tokenAddress)return 0;}catch{/* A malformed transaction is not a hint. */}return 1;};
+   for(const tx of constructors.sort((a,b)=>hint(a)-hint(b)).slice(0,2)){
+    const receipt=await invoke<any>(read,'eth_getTransactionReceipt',[tx.hash]);validateFreshReceipt(receipt,tx,full);if(receipt.status!=='0x1')continue;
+    if(!archiveChecked){if(await invoke<string>(options.archiveRpc,'eth_chainId',[])!=='0x38')throw Error('token_discovery_archive_chain');archiveChecked=true;}
+    const request={method:'debug_traceTransaction',params:[tx.hash,{tracer:'callTracer',tracerConfig:{onlyTopCall:false,withLog:false}}]},trace=validateFreshTrace(await invoke(options.archiveRpc,request.method,request.params));
+    const entry:FreshCapturedReceipt={transaction:tx,receipt,wallets:[],observedAt:new Date().toISOString(),trace};
+    entry.completeTraceProof=certifyFreshCompleteCallTrace(entry,trace,request,'operator_archive');
+    const proof:FreshTokenCreationProof={version:1,kind:'canonical_token_birth_v1',chainId:56,tokenAddress:context.tokenAddress,start:context.start,block:full,parent:parent.block,entry,parentCode:'0x',code:birth.code,mode:'internal_creation',source:'explicit_archive'};
+    const checked=await validateFreshTokenCreationProof(proof,context.start,canonicalObservedHeader,async(token,b)=>{const saved=observations.get(b.number);return token===context.tokenAddress&&saved?.block.hash===b.hash?saved.code:null;});if(checked)return proof;
+   }
   }
   return null;
  };
@@ -377,7 +413,7 @@ export async function runFreshTokenDiscovery(db:Pool,rpc:Rpc,options:{reference?
     if(changed.rowCount===1){job.progress=next;return;}
    }
    throw Error('token_discovery_context_changed');};
-  const resolver=options.resolve??createFreshTokenDiscoveryResolver(rpc,{archiveRpc:archive,boundaryFirst:!!archive,recentNodeFirst:true,trustedBoundary,maxMs:archive?20_000:10_000,maxCalls:archive?144:96}),proof=await resolver({tokenAddress:job.reference,start:startContext,observed,signal:options.signal,search:job.progress.discoverySearch,saveSearch});
+  const resolver=options.resolve??createFreshTokenDiscoveryResolver(rpc,{archiveRpc:archive,boundaryFirst:!!archive,recentNodeFirst:true,trustedBoundary,maxMs:archive?20_000:10_000,maxCalls:archive?144:96,creationTraces:!!archive}),proof=await resolver({tokenAddress:job.reference,start:startContext,observed,signal:options.signal,search:job.progress.discoverySearch,saveSearch});
   if(!proof)throw Error('token_creation_proof_unavailable');
   if(proof.tokenAddress!==job.reference||number(proof.block.number)>observed.number)throw Error('token_discovery_proof_context');
   const proofBoundary=proof.kind==='canonical_pre_boundary_code_v1'?header(proof.block):header(proof.parent),canonicalHeader=async(n:number)=>{const b=await discoveryNodeHeader(rpc,n,proofBoundary,trustedBoundary);return b?header(b):n===startContext.number&&isTrustedDiscoveryBoundary(proofBoundary,trustedBoundary)?proofBoundary:null;};

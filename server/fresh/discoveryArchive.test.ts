@@ -4,6 +4,15 @@ const token='0x'+'a'.repeat(40),hash='0x'+'b'.repeat(64),endpoint='https://archi
 afterEach(()=>{vi.unstubAllGlobals();vi.useRealTimers();});
 const reply=(result:unknown)=>vi.fn(async(_url:unknown,options:any)=>new Response(JSON.stringify({jsonrpc:'2.0',id:JSON.parse(options.body).id,result}),{status:200}));
 describe('explicit discovery-only archive configuration',()=>{
+ it('opts into only complete callTracer creation requests and shares the normal transport limits',async()=>{
+  const fetch=reply({type:'CREATE'});vi.stubGlobal('fetch',fetch);
+  const params=[hash,{tracer:'callTracer',tracerConfig:{onlyTopCall:false,withLog:false}}];
+  await expect(createFreshDiscoveryArchiveRpc(endpoint,{minIntervalMs:0})!('debug_traceTransaction',params)).rejects.toThrow('request_forbidden');expect(fetch).not.toHaveBeenCalled();
+  const rpc=createFreshDiscoveryArchiveRpc(endpoint,{minIntervalMs:0,creationTraces:true})!;
+  await rpc('debug_traceTransaction',params);expect(fetch).toHaveBeenCalledOnce();
+  for(const options of[{tracer:'prestateTracer',tracerConfig:{onlyTopCall:false,withLog:false}},{tracer:'callTracer',tracerConfig:{onlyTopCall:true,withLog:false}},{tracer:'callTracer',tracerConfig:{onlyTopCall:false,withLog:true}}])await expect(rpc('debug_traceTransaction',[hash,options])).rejects.toThrow('request_forbidden');
+  await expect(rpc('trace_block',['0x64'])).rejects.toThrow('request_forbidden');expect(fetch).toHaveBeenCalledOnce();
+ });
  it('makes no external adapter or request when unconfigured',()=>{const fetch=reply('0x38');vi.stubGlobal('fetch',fetch);expect(createFreshDiscoveryArchiveRpc(undefined)).toBeUndefined();expect(createFreshDiscoveryArchiveRpc('   ')).toBeUndefined();expect(fetch).not.toHaveBeenCalled();});
  it.each(['file:///secret','ftp://archive.invalid','#invalid'])('rejects invalid endpoint without echoing credentials: %s',value=>expect(()=>createFreshDiscoveryArchiveRpc(value)).toThrow('configuration_invalid'));
  it('allows only exact historical code, header, receipt and single-block mint evidence',async()=>{const fetch=reply('0x38');vi.stubGlobal('fetch',fetch);const rpc=createFreshDiscoveryArchiveRpc(endpoint,{minIntervalMs:0})!;await rpc('eth_chainId',[]);expect(fetch).toHaveBeenCalledOnce();

@@ -11,10 +11,17 @@ export function freshDiscoveryArchiveRequestAllowed(method:string,params:unknown
  if(method==='eth_getLogs'&&params.length===1){const p=params[0]as any;return p&&Object.keys(p).sort().join(',')==='address,fromBlock,toBlock,topics'&&address(p.address)&&block(p.fromBlock)&&p.toBlock===p.fromBlock&&Array.isArray(p.topics)&&p.topics.length===2&&p.topics[0]===transferTopic&&p.topics[1]==='0x'+'0'.repeat(64);}
  return false;
 }
+function creationTraceRequestAllowed(method:string,params:unknown[]){
+ const p=params[1]as any,c=p?.tracerConfig;
+ return method==='debug_traceTransaction'&&params.length===2&&hash(params[0])&&p&&Object.keys(p).sort().join(',')==='tracer,tracerConfig'
+  &&p.tracer==='callTracer'&&c&&Object.keys(c).sort().join(',')==='onlyTopCall,withLog'&&c.onlyTopCall===false&&c.withLog===false;
+}
 /** Explicit server-only archive transport for birth evidence. Unconfigured
  * means no adapter and no external request. It cannot call financial methods,
- * traces, current state, wallet history or any chain-writing method. */
-export function createFreshDiscoveryArchiveRpc(endpoint:string|undefined,options:{signal?:AbortSignal;timeoutMs?:number;maxRequestsPerMinute?:number;minIntervalMs?:number;maxResponseBytes?:number}={}):Rpc|undefined{
+ * current state, wallet history or any chain-writing method. The worker may
+ * opt into complete constructor traces after public/canonical birth checks;
+ * they share this same bounded queue, byte limits and cooldown. */
+export function createFreshDiscoveryArchiveRpc(endpoint:string|undefined,options:{signal?:AbortSignal;timeoutMs?:number;maxRequestsPerMinute?:number;minIntervalMs?:number;maxResponseBytes?:number;creationTraces?:boolean}={}):Rpc|undefined{
  if(!endpoint?.trim())return undefined;
  let url:URL;try{url=new URL(endpoint);if(!['https:','http:'].includes(url.protocol)||url.hash)throw Error();}catch{throw Error('discovery_archive_configuration_invalid');}
  const bounded=(v:number|undefined,d:number,min:number,max:number)=>typeof v==='number'&&Number.isFinite(v)?Math.min(max,Math.max(min,Math.floor(v))):d;
@@ -22,7 +29,7 @@ export function createFreshDiscoveryArchiveRpc(endpoint:string|undefined,options
  let id=0,active=false,cooldown=0,lastStart=0;const starts:number[]=[];
  const error=(message:string,category:'transport'|'rate_limit'|'invalid_response'|'rpc_error'|'state_unavailable',code?:unknown)=>new RpcRequestError(message,category,{code});
  return async<T>(method:string,params:unknown[]):Promise<T>=>{
-  if(!freshDiscoveryArchiveRequestAllowed(method,params))throw error('discovery_archive_request_forbidden','rpc_error');
+  if(!freshDiscoveryArchiveRequestAllowed(method,params)&&!(options.creationTraces&&creationTraceRequestAllowed(method,params)))throw error('discovery_archive_request_forbidden','rpc_error');
   if(options.signal?.aborted)throw error('discovery_archive_canceled','transport');
   const at=Date.now();while(starts.length&&starts[0]<=at-60_000)starts.shift();
   if(at<cooldown||starts.length>=cap)throw error('discovery_archive_cooldown','rate_limit');if(active)throw error('discovery_archive_busy','rate_limit');

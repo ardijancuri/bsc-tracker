@@ -122,6 +122,8 @@ describe('immutable initialized boundary after owned-node header expiry',()=>{
   const archive:Rpc=async<T>(method:string,args:unknown[])=>{wires.push({method,args});if(method==='eth_chainId')return'0x38'as T;if(method==='eth_getBlockByNumber'){const n=Number(BigInt(String(args[0])));return(n===110?p.block:block(n))as T;}if(method==='eth_getCode')return(existing||Number(BigInt(typeof args[1]==='string'?args[1] as string:(args[1]as any).blockHash))>=110?runtime:'0x')as T;throw Error('unexpected_archive');};
   return{p,boundary,own,archive,wires,context:{tokenAddress:token,start,observed:h(112)},conflict:()=>conflict=true};
  }
+ it('accepts the whole-second UTC checkpoint format used by the production cutover',async()=>{const f=setup(true),boundary={...f.boundary,timestamp:f.boundary.timestamp.replace('.000Z','Z')};
+  const proof=await createFreshTokenDiscoveryResolver(f.own,{archiveRpc:f.archive,boundaryFirst:true,trustedBoundary:boundary})(f.context);expect(proof?.kind).toBe('canonical_pre_boundary_code_v1');});
  it('proves existing-at-boundary code only through exact known hash/time archive bookends when the node returns no header',async()=>{const f=setup(true),proof=await createFreshTokenDiscoveryResolver(f.own,{archiveRpc:f.archive,boundaryFirst:true,trustedBoundary:f.boundary})(f.context);
   expect(proof?.kind).toBe('canonical_pre_boundary_code_v1');expect(proof?.block.hash).toBe(start.hash);expect(f.wires.map(w=>w.method)).toEqual(['eth_chainId','eth_getBlockByNumber','eth_getBlockByNumber','eth_getCode','eth_getBlockByNumber']);});
  it('still certifies the actual adjacent new-token birth when the initialized boundary header has expired',async()=>{const f=setup(),proof=await createFreshTokenDiscoveryResolver(f.own,{archiveRpc:f.archive,boundaryFirst:true,trustedBoundary:f.boundary})(f.context);expect(proof?.kind).toBe('canonical_token_birth_v1');expect(Number(BigInt(proof!.block.number))).toBe(110);expect(proof&&'parentCode'in proof&&proof.parentCode).toBe('0x');});
@@ -159,6 +161,15 @@ describe('durable bounded discovery continuation',()=>{
   const archive:Rpc=async<T>(method:string,args:unknown[])=>{if(++requests>limit)throw Object.assign(Error('cooldown'),{category:'rate_limit'});if(method==='eth_chainId')return'0x38'as T;if(method==='eth_getBlockByNumber'){const n=Number(BigInt(String(args[0])));return(n===birth?b:block(n))as T;}if(method==='eth_getCode'){const n=Number(BigInt(typeof args[1]==='string'?args[1] as string:(args[1]as any).blockHash));codeReads.set(n,(codeReads.get(n)??0)+1);return(n<birth?'0x':runtime)as T;}if(method==='eth_getLogs')return p.entry.receipt.logs as T;if(method==='eth_getTransactionReceipt')return p.entry.receipt as T;throw Error('unexpected_archive');};
   return{own,archive,p,context:{tokenAddress:token,start,observed:h(observed)},codeReads,reset:(cap=20)=>{requests=0;limit=cap;},reorg:(n:number)=>reorg=n,get requests(){return requests;}};
  }
+ it('finds a recent birth without querying pruned midpoints back to the app boundary',async()=>{
+  const f=setup(999970,1000000),reads:number[]=[],own:Rpc=async<T>(m:string,a:unknown[])=>{
+   if(m==='eth_getBlockByNumber'){const n=Number(BigInt(String(a[0])));reads.push(n);if(n<999900&&n!==start.number)throw new RpcRequestError('RPC eth_getBlockByNumber unavailable','invalid_response',{nullResult:true});}
+   return f.own<T>(m,a);
+  };
+  f.reset(100);const proof=await createFreshTokenDiscoveryResolver(own,{archiveRpc:f.archive,boundaryFirst:true,mintHints:false})(f.context);
+  expect(proof?.kind).toBe('canonical_token_birth_v1');expect(proof&&Number(BigInt(proof.block.number))).toBe(999970);
+  expect(reads.every(n=>n===start.number||n>=999900)).toBe(true);
+ });
  it('finishes a distant search across20-wire cooldowns without rereading successful midpoint code',async()=>{
   const f=setup();let search:unknown,proof:Awaited<ReturnType<ReturnType<typeof createFreshTokenDiscoveryResolver>>>;const sizes:number[]=[];
   for(let pass=0;pass<12&&!proof!;pass++){f.reset();try{proof=await createFreshTokenDiscoveryResolver(f.own,{archiveRpc:f.archive,boundaryFirst:true})({...f.context,search,saveSearch:async value=>{search=JSON.parse(JSON.stringify(value));sizes.push(Buffer.byteLength(JSON.stringify(value)));}});}catch(error){expect(String((error as Error).message)).toBe('cooldown');}}

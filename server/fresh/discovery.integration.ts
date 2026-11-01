@@ -6,7 +6,7 @@ import{encodeFreshEvidence,type FreshBlock,type FreshCapturedReceipt}from'./capt
 import{Interface}from'ethers';
 import{RpcRequestError}from'../rpc.js';
 import{createHash}from'node:crypto';
-const url=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].includes(url.hostname)||url.port!=='5436'||!/^\/kollens_(?:tempo_wpc|pnl_repair)_\d{8}_?\d{6}$/.test(url.pathname))throw Error('discovery_fixture_owned_local_clone_only');
+const url=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].includes(url.hostname)||!(url.port==='5436'&&/^\/kollens_(?:tempo_wpc|pnl_repair)_\d{8}_?\d{6}$/.test(url.pathname)||url.port==='5439'&&url.pathname==='/kollens_replay_gap_20261029'))throw Error('discovery_fixture_owned_local_clone_only');
 const pool=new Pool({connectionString:url.href,max:1}),client=await pool.connect(),checks:string[]=[],rewrite=(s:string)=>s.replaceAll('fresh.','pg_temp.');
 let sequence=0;const db={query:(s:string,args?:unknown[])=>client.query(rewrite(s),args),async connect(){const name='discovery_sp_'+(++sequence);return{query:(s:string,args?:unknown[])=>s==='BEGIN'?client.query('SAVEPOINT '+name):s==='COMMIT'?client.query('RELEASE SAVEPOINT '+name):s==='ROLLBACK'?client.query('ROLLBACK TO SAVEPOINT '+name):client.query(rewrite(s),args),release(){}};}}as unknown as Pool;
 const c={query:db.query.bind(db)}as PoolClient,hash=(n:number)=>'0x'+n.toString(16).padStart(64,'0'),addr=(n:number)=>'0x'+n.toString(16).padStart(40,'0'),word=(n:bigint)=>'0x'+n.toString(16).padStart(64,'0');
@@ -92,6 +92,13 @@ try{await client.query('BEGIN');await client.query("SET LOCAL statement_timeout=
    const saved=(await c.query("SELECT progress FROM fresh.jobs WHERE kind='token_discovery' AND reference=$1",[token])).rows[0].progress;assert.equal(saved.lastSeen.blockNumber,n);assert.equal(saved.firstSeen.blockNumber,112);assert.equal(saved.discoverySearch.observed.number,112);
   }
   await queueFreshTokenDiscovery(c,{tokenAddress:token,entry:later.get(116)!,block:priceHeader(116)},now);
+  await queueFreshTokenDiscovery(c,reference,now);
+  const afterOldRetry=(await c.query("SELECT progress FROM fresh.jobs WHERE kind='token_discovery' AND reference=$1",[token])).rows[0].progress;
+  assert.equal(afterOldRetry.lastSeen.blockNumber,116);assert.deepEqual(afterOldRetry.wallets,[secondWallet]);
+  await c.query("UPDATE fresh.jobs SET state='cancelled' WHERE kind='token_discovery' AND reference=$1",[token]);
+  await queueFreshTokenDiscovery(c,reference,now);
+  const reactivated=(await c.query("SELECT state,progress FROM fresh.jobs WHERE kind='token_discovery' AND reference=$1",[token])).rows[0];
+  assert.equal(reactivated.state,'pending');assert.equal(reactivated.progress.lastSeen.blockNumber,116);assert.deepEqual(reactivated.progress.wallets,[secondWallet]);
   return{version:1,kind:'canonical_pre_boundary_code_v1',chainId:56,tokenAddress:token,start,block:header(100),code,source:'node'};
  }});assert.equal(saves,3);assert.equal(racedOld.resolved,1);
  const racedDone=(await c.query("SELECT state,progress FROM fresh.jobs WHERE kind='token_discovery' AND reference=$1",[token])).rows[0];assert.equal(racedDone.state,'done');assert.equal(racedDone.progress.firstSeen.blockNumber,112);assert.equal(racedDone.progress.lastSeen.blockNumber,116);assert.deepEqual(racedDone.progress.wallets,[secondWallet]);assert.equal(racedDone.progress.discoverySearch,undefined);assert.equal(racedDone.progress.stage,'before_boundary_verified');
