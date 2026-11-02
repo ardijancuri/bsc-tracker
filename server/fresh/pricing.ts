@@ -7,7 +7,7 @@ import { MarketDecimal, ratioPrice, sqrtPrice } from '../nodeMarketMath.js';
 import { freshAddress, freshHash, freshInteger } from './capture.js';
 import { freshStockwaveMetadataFromFact } from './factoryLaunch.js';
 import { readFreshStockwaveMarket, validFreshStockwaveMarketIdentity } from './stockwaveMarket.js';
-import {readFreshInfinityClMarket,validFreshInfinityClMarketIdentity}from'./infinityClMarket.js';
+import {readFreshInfinityClMarket,validFreshInfinityClMarketIdentity,validFreshCurrentInfinityClMarketIdentity}from'./infinityClMarket.js';
 import { FRESH_STOCK_QUOTE_TOKEN } from './stockQuote.js';
 import {readFreshStockCurrentRawQuote} from './stockCurrentQuote.js';
 import {readFreshFlapRawQuote} from './flapQuoteRecovery.js';
@@ -207,7 +207,7 @@ async function registeredV4Price(token:FreshTokenMetadata,options:FreshPriceOpti
       ...(converted?converted.state:{})}};
 }
 async function registeredInfinityClPrice(token:FreshTokenMetadata,options:FreshPriceOptions,value:unknown):Promise<QuoteCandidate|null>{
- if(!validFreshInfinityClMarketIdentity(value)||value.tokenAddress!==token.address||!options.canonicalHash
+ if(!validFreshCurrentInfinityClMarketIdentity(value)||freshHistoricalValuation(options)&&!validFreshInfinityClMarketIdentity(value)||value.tokenAddress!==token.address||!options.canonicalHash
   ||value.initial.blockNumber>options.block.number||await options.canonicalHash(value.initial.blockNumber)!==value.initial.blockHash)return null;
  const market=await readFreshInfinityClMarket({rpc:options.rpc,identity:value,tokenDecimals:token.decimals,block:options.block}),raw=market.rawQuoteRatio,virtual=market.virtualQuoteLiquidityRaw;
  const decimals=Number((await freshCall(options,WBNB,tokenAbi,'decimals'))[0]);if(decimals!==18)return null;
@@ -323,7 +323,7 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   if(token.supplyRaw===null)throw new Error('token_supply_unavailable');
   const launch:LaunchObservation = { proof: null }, [controller, stockwave,registeredV4] = await Promise.all([
     launchPrice(token, options, launch), stockwavePrice(token, options).catch(() => null),
-    Promise.allSettled((options.marketIdentities??[]).slice(0,8).map(identity=>validFreshInfinityClMarketIdentity(identity)?registeredInfinityClPrice(token,options,identity):registeredV4Price(token,options,identity))),
+    Promise.allSettled((options.marketIdentities??[]).slice(0,8).map(identity=>validFreshCurrentInfinityClMarketIdentity(identity)?registeredInfinityClPrice(token,options,identity):registeredV4Price(token,options,identity))),
   ]);
   let routed:QuoteCandidate|null=null;
   if(!controller&&!launch.emptyQuote&&launch.proof?.platform==='flap'&&launch.proof.stage==='bonding'){
@@ -445,7 +445,7 @@ export async function commitFreshCurrentQuote(database:Pool,quote:FreshQuote,opt
    if(admission.kind!=='new_launch')throw Error('current_quote_market_admission_unsupported');
    const stored=(await client.query('SELECT token_address,protocol,identity FROM fresh.markets WHERE id=$1 FOR SHARE',[quote.market.id])).rows[0],proposed=quote.market.identity,identity=proposed.market,previous=stored?.identity?.market??stored?.identity;
    if(freshMarketIdentityInvalid(proposed)||freshMarketIdentityInvalid(stored?.identity)||!stored||stored.token_address!==quote.tokenAddress||stored.protocol!=='infinity_cl'
-    ||!validFreshInfinityClMarketIdentity(previous)||!validFreshInfinityClMarketIdentity(identity)||freshMarketLaunchDigest(previous)!==freshMarketLaunchDigest(identity)
+    ||!validFreshCurrentInfinityClMarketIdentity(previous)||!validFreshCurrentInfinityClMarketIdentity(identity)||freshMarketLaunchDigest(previous)!==freshMarketLaunchDigest(identity)
     ||identity.tokenAddress!==quote.tokenAddress||identity.manager!==proposed.manager||identity.poolId!==proposed.poolId||freshMarketLaunchDigest(identity.poolKey)!==freshMarketLaunchDigest(proposed.poolKey)
     ||identity.initial.blockNumber>quote.blockNumber)throw Error('current_quote_market_changed');
    const canonical=createFreshCurrentMarketCanonicalHash(client,{token:quote.tokenAddress,block:quote.metadata.block});

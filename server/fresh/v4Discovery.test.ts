@@ -27,6 +27,23 @@ function fixture(){
  return{logs,block,receipt,rpc,canonicalHash};
 }
 describe('bounded background Uniswap v4 market discovery',()=>{
+ it('rewinds previously skipped unsupported keys once after enabling current hook prices',()=>{
+  const fact={block_number:100},capture={block_number:300,revision:1},initial=freshV4DiscoveryProgress(fact,capture,{},null);
+  const old={...initial,currentHookPricingVersion:undefined,throughBlock:200,throughHash:hash(200),unsupportedMarkets:[{manager:INFINITY_CL}]};
+  expect(freshV4DiscoveryProgress(fact,capture,old,hash(200)).throughBlock).toBe(99);
+  expect(freshV4DiscoveryProgress(fact,capture,{...old,currentHookPricingVersion:1},hash(200)).throughBlock).toBe(200);
+  expect(freshV4DiscoveryProgress(fact,capture,{...old,unsupportedMarkets:[]},hash(200)).throughBlock).toBe(200);
+ });
+ it('authenticates hooked native Infinity initialization for current pricing while keeping historical registry reads strict',async()=>{
+  const f=fixture(),native='0x'+'0'.repeat(40),key={currency0:native,currency1:token,hooks:address(9),poolManager:INFINITY_CL,fee:2500,parameters:'0x'+((60n<<16n)|3265n).toString(16).padStart(64,'0')},poolId=freshInfinityClPoolId(key,{allowHooks:true});
+  const log={address:INFINITY_CL,...freshInfinityClInterface.encodeEventLog('Initialize',[poolId,key.currency0,key.currency1,key.hooks,key.fee,key.parameters,Q96,0]),blockHash:f.block.hash,blockNumber:f.block.number,transactionHash:f.receipt.transactionHash,transactionIndex:'0x0',logIndex:'0x2'};
+  f.logs.push(log);const rpc:Rpc=async<T>(method:string,params:unknown[]):Promise<T>=>{if(method==='eth_getLogs'){const req=params[0]as any;return f.logs.filter(l=>l.address===req.address&&l.topics[req.topics[2]?2:3]===req.topics[req.topics[2]?2:3])as T;}return f.rpc<T>(method,params);};
+  const page=await collectFreshV4DiscoveryPage({...f,rpc,token,fromBlock:100,toBlock:200}),hooked=page.identities.find(m=>m.poolId===poolId)!;
+  expect(hooked).toBeDefined();expect(page.unsupportedPools).toEqual([]);
+  const query=vi.fn(async()=>({rows:[{token_address:token,identity:hooked}]}));
+  expect((await readFreshV4MarketIdentities({query}as any,[token])).has(token)).toBe(false);
+  expect((await readFreshV4MarketIdentities({query}as any,[token],{current:true})).get(token)).toEqual([hooked]);
+ });
  it('discovers a supported native Infinity pool while retaining a bounded diagnostic for another authentic unsupported key',async()=>{
   const f=fixture(),native='0x'+'0'.repeat(40),parameters='0x'+(1n<<16n).toString(16).padStart(64,'0'),key={currency0:native,currency1:token,hooks:native,poolManager:INFINITY_CL,fee:100,parameters},unsupported={...key,currency0:token,currency1:quote},unsupportedId=keccak256(AbiCoder.defaultAbiCoder().encode(['address','address','address','address','uint24','bytes32'],Object.values(unsupported)));
   const extra=[{id:unsupportedId,key:unsupported},{id:freshInfinityClPoolId(key),key}].map((p,index)=>({address:INFINITY_CL,...freshInfinityClInterface.encodeEventLog('Initialize',[p.id,p.key.currency0,p.key.currency1,p.key.hooks,p.key.fee,p.key.parameters,Q96,0]),blockHash:f.block.hash,blockNumber:f.block.number,transactionHash:f.receipt.transactionHash,transactionIndex:'0x0',logIndex:'0x'+(index+2).toString(16)}));

@@ -113,7 +113,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
       const selected=(await db.query(freshQuoteWorkSql,[now])).rows;
       if(!selected.length&&Date.now()-lastQuoteAt<30_000)return{ready:0,failed:0};
       lastQuoteAt=Date.now();
-      const marketIdentities=await readFreshV4MarketIdentities(db,selected.map(row=>row.address));
+      const marketIdentities=await readFreshV4MarketIdentities(db,selected.map(row=>row.address),{current:true});
       const priorQuotes=await readFreshQuoteRefreshStates(db,selected.map(row=>row.address));
       let ready=0,failed=0;const unavailableReasons:Record<string,number>={};
       // Bounded concurrency, no price response is copied into every holder's position.

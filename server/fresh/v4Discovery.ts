@@ -6,14 +6,14 @@ import { FRESH_CONFIRMATIONS, freshAddress, freshHash, freshInteger, validateFre
 import { authenticateFreshStockwavePoolInitialization, FRESH_UNISWAP_V4_BSC_MANAGER as manager, FRESH_UNISWAP_V4_INITIALIZE_TOPIC as topic,
   stockwavePoolManagerInterface, validFreshStockwaveMarketIdentity, type FreshStockwaveMarketIdentity } from './stockwaveMarket.js';
 import{anchorFreshMarketInitialization,freshMarketIdentityInvalid}from'./currentMarketAnchor.js';
-import{validFreshSupportedMarketIdentity,type FreshSupportedMarketIdentity}from'./currentMarketAnchor.js';
+import{validFreshSupportedMarketIdentity,validFreshCurrentSupportedMarketIdentity,type FreshSupportedMarketIdentity}from'./currentMarketAnchor.js';
 import{authenticateFreshInfinityClInitialization,FRESH_INFINITY_CL_INITIALIZE_TOPIC,freshInfinityClInterface}from'./infinityClMarket.js';
 import{INFINITY_CL}from'../nodeMarketProtocols.js';
 import{WBNB}from'../launchpad.js';
 
 export const FRESH_V4_DISCOVERY_MAX_BLOCKS = 4_096;
 export const FRESH_V4_DISCOVERY_MAX_RECEIPTS = 16;
-export interface FreshV4DiscoveryProgress { version: 1; marketProtocolsVersion?:2;launchDigest: string; captureRevision: string; throughBlock: number; throughHash: string | null; rangeSize: number }
+export interface FreshV4DiscoveryProgress { version: 1; marketProtocolsVersion?:2;currentHookPricingVersion?:1;launchDigest: string; captureRevision: string; throughBlock: number; throughHash: string | null; rangeSize: number }
 interface Header { number: number; hash: string; parentHash: string; timestamp: string }
 interface UnsupportedPool{manager:string;poolId:string;blockNumber:number;blockHash:string;reason:'infinity_cl_pool_key_unsupported'}
 export interface FreshV4DiscoveryPage { fromBlock: number; toBlock: number; identities: FreshSupportedMarketIdentity[]; headers: Header[]; receipts: number;unsupportedPools?:UnsupportedPool[] }
@@ -43,9 +43,12 @@ async function boundedMap<T, R>(values: T[], run: (value: T) => Promise<R>) {
 export function freshV4DiscoveryProgress(fact:Record<string,unknown>,capture:{block_number:string|number;revision:string|number},saved:unknown,canonicalThroughHash:string|null):FreshV4DiscoveryProgress{
   const creation=Number(fact.block_number),prior=saved as Partial<FreshV4DiscoveryProgress>|undefined;
   if(!Number.isSafeInteger(creation)||creation<0||!Number.isSafeInteger(Number(capture.block_number))||creation>Number(capture.block_number))throw Error('v4_discovery_creation_invalid');
-  const reset:FreshV4DiscoveryProgress={version:1,marketProtocolsVersion:2,launchDigest:digest(fact),captureRevision:String(capture.revision),throughBlock:creation-1,throughHash:null,rangeSize:FRESH_V4_DISCOVERY_MAX_BLOCKS};
+  const reset:FreshV4DiscoveryProgress={version:1,marketProtocolsVersion:2,currentHookPricingVersion:1,launchDigest:digest(fact),captureRevision:String(capture.revision),throughBlock:creation-1,throughHash:null,rangeSize:FRESH_V4_DISCOVERY_MAX_BLOCKS};
   if(!prior||prior.version!==1||prior.marketProtocolsVersion!==2||prior.launchDigest!==reset.launchDigest||prior.captureRevision!==reset.captureRevision||!Number.isSafeInteger(prior.throughBlock)
     ||Number(prior.throughBlock)<creation-1||Number(prior.throughBlock)>Number(capture.block_number))return reset;
+  // Revisit keys skipped by the previous hook-free current-price reader once.
+  // Unaffected jobs retain their cursor; ongoing diagnostics never reset twice.
+  if(prior.currentHookPricingVersion!==1&&Array.isArray((prior as Record<string,unknown>).unsupportedMarkets)&&((prior as Record<string,unknown>).unsupportedMarkets as unknown[]).length)return reset;
   if(Number(prior.throughBlock)>=creation&&(!freshHash(prior.throughHash)||canonicalThroughHash!==prior.throughHash))return reset;
   if(Number(prior.throughBlock)===creation-1&&prior.throughHash!==null)return reset;
   return{...reset,throughBlock:Number(prior.throughBlock),throughHash:prior.throughHash??null,
@@ -97,7 +100,7 @@ export async function collectFreshV4DiscoveryPage(options: { rpc: Rpc; token: st
     if (matching.length !== 1 || body(matching[0]) !== body(log)) throw Error('v4_discovery_receipt_log_mismatch');
     const infinity=log.address.toLowerCase()===INFINITY_CL,parsed = (infinity?freshInfinityClInterface:stockwavePoolManagerInterface).parseLog(log); if (!parsed || parsed.name !== 'Initialize') throw Error('v4_discovery_initialize_invalid');
     const pair = String(parsed.args.currency0).toLowerCase() === token ? String(parsed.args.currency1).toLowerCase() : String(parsed.args.currency0).toLowerCase();
-    const identity = infinity?authenticateFreshInfinityClInitialization(receipt,token,log.topics[1],pair==='0x'+'0'.repeat(40)?WBNB:pair,Number(parsed.args.tick)):authenticateFreshStockwavePoolInitialization(receipt, token, log.topics[1], pair, Number(parsed.args.tick));
+    const identity = infinity?authenticateFreshInfinityClInitialization(receipt,token,log.topics[1],pair==='0x'+'0'.repeat(40)?WBNB:pair,Number(parsed.args.tick),{allowHooks:true}):authenticateFreshStockwavePoolInitialization(receipt, token, log.topics[1], pair, Number(parsed.args.tick));
     if (!identity){
       if(!infinity)throw Error('v4_discovery_pool_unverified');
       // An authentic unsupported key is a diagnostic, not a failed page or
@@ -118,7 +121,7 @@ export async function collectFreshV4DiscoveryPage(options: { rpc: Rpc; token: st
 }
 
 /** A bounded current-identity read only; chart/page requests never scan logs. */
-export async function readFreshV4MarketIdentities(database: Pick<Pool, 'query'>, tokens: string[]) {
+export async function readFreshV4MarketIdentities(database: Pick<Pool, 'query'>, tokens: string[], { current = false } = {}) {
   const addresses = [...new Set(tokens.map(token => freshAddress(token)).filter((token): token is string => Boolean(token)))].slice(0, 64);
   const rows = addresses.length ? (await database.query(`SELECT token_address,identity FROM (SELECT token_address,identity,
     row_number() OVER(PARTITION BY token_address ORDER BY CASE WHEN status='ready' THEN 0 ELSE 1 END,observed_at DESC NULLS LAST,id) AS rank
@@ -126,7 +129,7 @@ export async function readFreshV4MarketIdentities(database: Pick<Pool, 'query'>,
   const result = new Map<string, FreshSupportedMarketIdentity[]>();
   for (const row of rows) {
     const identity=row.identity?.market??row.identity;
-    if(!freshMarketIdentityInvalid(row.identity)&&validFreshSupportedMarketIdentity(identity) && identity.tokenAddress === row.token_address){
+    if(!freshMarketIdentityInvalid(row.identity)&&(current?validFreshCurrentSupportedMarketIdentity(identity):validFreshSupportedMarketIdentity(identity)) && identity.tokenAddress === row.token_address){
       const list = result.get(row.token_address) ?? []; if (list.length < 8) list.push(identity); result.set(row.token_address, list);
     }
   }
@@ -152,7 +155,7 @@ export async function commitFreshV4DiscoveryPage(client: PoolClient, job: { id: 
   const last = page.headers.find(header => header.number === page.toBlock);if(!last)throw Error('v4_discovery_progress_invalid');
   let added = 0;
   for (const identity of page.identities) {
-    if (!validFreshSupportedMarketIdentity(identity) || identity.tokenAddress !== job.reference || identity.initial.blockNumber < page.fromBlock || identity.initial.blockNumber > page.toBlock
+    if (!validFreshCurrentSupportedMarketIdentity(identity) || identity.tokenAddress !== job.reference || identity.initial.blockNumber < page.fromBlock || identity.initial.blockNumber > page.toBlock
       || canonical.get(identity.initial.blockNumber) !== identity.initial.blockHash) throw Error('v4_discovery_identity_invalid');
     const marked=anchorFreshMarketInitialization(identity,fact,{boundary:{number:Number(capture.value?.startBlock),hash:capture.value?.startHash},captureRevision:String(capture.revision),
       initialOccurredAt:new Date(canonicalRows.find(row=>Number(row.block_number)===identity.initial.blockNumber)!.occurred_at).toISOString(),
@@ -160,7 +163,7 @@ export async function commitFreshV4DiscoveryPage(client: PoolClient, job: { id: 
     const priorRow = (await client.query('SELECT token_address,protocol,address,identity FROM fresh.markets WHERE id=$1 FOR UPDATE', [marketId(identity)])).rows[0];
     const prior=priorRow?.identity?.market??priorRow?.identity;
     if(priorRow){
-      if(priorRow.token_address!==identity.tokenAddress||priorRow.protocol!==protocol(identity)||!validFreshSupportedMarketIdentity(prior))throw Error('v4_discovery_existing_identity_invalid');
+      if(priorRow.token_address!==identity.tokenAddress||priorRow.protocol!==protocol(identity)||!validFreshCurrentSupportedMarketIdentity(prior))throw Error('v4_discovery_existing_identity_invalid');
       const core=(value:unknown)=>{const{canonicalInitialization:_anchor,canonicalIdentityInvalid:_invalid,...fields}=value as Record<string,unknown>;return fields;};
       if(digest(core(prior))===digest(core(identity))&&!freshMarketIdentityInvalid(priorRow.identity)){
         // Pricing stores current conversion identity around the original market

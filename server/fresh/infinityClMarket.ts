@@ -40,28 +40,33 @@ export interface FreshInfinityClMarketIdentity {
   initial: { sqrtPriceX96: string; tick: number; blockNumber: number; blockHash: string; transactionHash: string; logIndex: number };
 }
 
-/** This bounded version supports hook-free, static-fee native BNB pools only.
+/** Historical identity checks stay hook-free. Current spot valuation may opt
+ * into static-fee hooked native pools; the complete key still binds the ID.
  * A pool's address/name or a Swap alone cannot establish its currency key. */
-export function freshInfinityClPoolId(key: FreshInfinityClPoolKey) {
-  if (!key || key.currency0 !== zero || !address(key.currency1) || key.currency1 === zero || !address(key.hooks) || key.hooks !== zero
+export function freshInfinityClPoolId(key: FreshInfinityClPoolKey, { allowHooks = false } = {}) {
+  if (!key || key.currency0 !== zero || !address(key.currency1) || key.currency1 === zero || !address(key.hooks) || (!allowHooks && key.hooks !== zero)
     || key.poolManager !== INFINITY_CL || !Number.isInteger(key.fee) || key.fee < 0 || key.fee > 1_000_000 || !hash(key.parameters)) throw Error('infinity_cl_pool_key_unsupported');
   const parameters = BigInt(key.parameters), spacing = Number(parameters >> 16n & 0xffffffn);
-  if (parameters & 65535n || parameters >> 40n || spacing < 1 || spacing > 32767) throw Error('infinity_cl_pool_key_unsupported');
+  if (((!allowHooks || key.hooks === zero) && (parameters & 65535n) !== 0n) || parameters >> 40n || spacing < 1 || spacing > 32767) throw Error('infinity_cl_pool_key_unsupported');
   return keccak256(AbiCoder.defaultAbiCoder().encode(['address', 'address', 'address', 'address', 'uint24', 'bytes32'],
     [key.currency0, key.currency1, key.hooks, key.poolManager, key.fee, key.parameters]));
 }
-export function validFreshInfinityClMarketIdentity(value: unknown): value is FreshInfinityClMarketIdentity {
+function validInfinityClIdentity(value: unknown, allowHooks: boolean): value is FreshInfinityClMarketIdentity {
   try {
     const m = value as FreshInfinityClMarketIdentity, i = m?.initial;
     return !!m && m.version === 1 && m.protocol === 'infinity_cl' && m.manager === INFINITY_CL && hash(m.poolId)
       && address(m.tokenAddress) && m.tokenAddress !== WBNB && m.tokenAddress === m.poolKey.currency1 && m.quoteAddress === WBNB
-      && freshInfinityClPoolId(m.poolKey) === m.poolId && !!i && /^\d{1,49}$/.test(i.sqrtPriceX96) && validSqrt(BigInt(i.sqrtPriceX96))
+      && freshInfinityClPoolId(m.poolKey, { allowHooks }) === m.poolId && !!i && /^\d{1,49}$/.test(i.sqrtPriceX96) && validSqrt(BigInt(i.sqrtPriceX96))
       && validTick(i.tick) && Number.isSafeInteger(i.blockNumber) && i.blockNumber >= 0 && hash(i.blockHash) && hash(i.transactionHash)
       && Number.isSafeInteger(i.logIndex) && i.logIndex >= 0;
   } catch { return false; }
 }
+export const validFreshInfinityClMarketIdentity = (value: unknown): value is FreshInfinityClMarketIdentity => validInfinityClIdentity(value, false);
+/** Current pool spot marks may read a hooked pool's authenticated manager state.
+ * This grants no hook execution or historical settlement/transfer valuation. */
+export const validFreshCurrentInfinityClMarketIdentity = (value: unknown): value is FreshInfinityClMarketIdentity => validInfinityClIdentity(value, true);
 
-export function authenticateFreshInfinityClInitialization(receipt: FreshReceipt, tokenAddress: string, expectedPoolId: string, expectedQuote = WBNB, expectedTick?: number): FreshInfinityClMarketIdentity | null {
+export function authenticateFreshInfinityClInitialization(receipt: FreshReceipt, tokenAddress: string, expectedPoolId: string, expectedQuote = WBNB, expectedTick?: number, { allowHooks = false } = {}): FreshInfinityClMarketIdentity | null {
   try {
     const token = tokenAddress.toLowerCase(), poolId = expectedPoolId.toLowerCase();
     if (!address(token) || !hash(poolId) || expectedQuote !== WBNB || receipt.status !== '0x1' || !hash(receipt.blockHash) || !hash(receipt.transactionHash)
@@ -78,7 +83,7 @@ export function authenticateFreshInfinityClInitialization(receipt: FreshReceipt,
     const poolKey: FreshInfinityClPoolKey = { currency0: String(p.args.currency0).toLowerCase(), currency1: String(p.args.currency1).toLowerCase(), hooks: String(p.args.hooks).toLowerCase(), poolManager: INFINITY_CL, fee: Number(p.args.fee), parameters: String(p.args.parameters) };
     const m: FreshInfinityClMarketIdentity = { version: 1, protocol: 'infinity_cl', manager: INFINITY_CL, poolId, poolKey, tokenAddress: token, quoteAddress: WBNB,
       initial: { sqrtPriceX96: String(p.args.sqrtPriceX96), tick: Number(p.args.tick), blockNumber: Number(BigInt(l.blockNumber)), blockHash: l.blockHash, transactionHash: l.transactionHash, logIndex: Number(BigInt(l.logIndex)) } };
-    return validFreshInfinityClMarketIdentity(m) ? m : null;
+    return validInfinityClIdentity(m, allowHooks) ? m : null;
   } catch { return null; }
 }
 
@@ -86,16 +91,17 @@ export function freshInfinityClRawQuoteRatio(identity: FreshInfinityClMarketIden
   if (!validFreshInfinityClMarketIdentity(identity) || !validSqrt(sqrt)) throw Error('infinity_cl_market_price_invalid');
   return { numerator: String(Q192), denominator: String(sqrt * sqrt) };
 }
-function observation(m: FreshInfinityClMarketIdentity, sqrt: bigint, liquidity: bigint, tokenDecimals: number) {
+function observation(m: FreshInfinityClMarketIdentity, sqrt: bigint, liquidity: bigint, tokenDecimals: number, allowHooks = false) {
   if (!precision(tokenDecimals) || !validSqrt(sqrt) || liquidity <= 0n || liquidity >= 1n << 128n) throw Error('infinity_cl_market_state_invalid');
-  const raw = freshInfinityClRawQuoteRatio(m, sqrt), virtual = new MarketDecimal(liquidity * Q96, sqrt), price = new MarketDecimal(BigInt(raw.numerator) * 10n ** BigInt(tokenDecimals), BigInt(raw.denominator) * 10n ** 18n);
+  if (!validInfinityClIdentity(m, allowHooks)) throw Error('infinity_cl_market_identity_invalid');
+  const raw = { numerator: String(Q192), denominator: String(sqrt * sqrt) }, virtual = new MarketDecimal(liquidity * Q96, sqrt), price = new MarketDecimal(BigInt(raw.numerator) * 10n ** BigInt(tokenDecimals), BigInt(raw.denominator) * 10n ** 18n);
   return { rawQuoteRatio: raw, virtualQuoteLiquidityRaw: { numerator: String(virtual.n), denominator: String(virtual.d) },
     priceQuote: price.text(), priceNative: price.text(), quoteLiquidityNative: virtual.div(new MarketDecimal(10n ** 18n)).text(),
     virtualQuoteLiquidity: virtual.div(new MarketDecimal(10n ** 18n)).text(), sqrtPriceX96: String(sqrt), liquidityRaw: String(liquidity) };
 }
 export async function readFreshInfinityClMarket(options: { rpc: Rpc; identity: FreshInfinityClMarketIdentity; tokenDecimals: number; block: FreshPriceBlock }) {
   const { identity: m, block } = options;
-  if (!validFreshInfinityClMarketIdentity(m) || !validBlock(block) || block.number < m.initial.blockNumber || !precision(options.tokenDecimals)) throw Error('infinity_cl_market_identity_invalid');
+  if (!validFreshCurrentInfinityClMarketIdentity(m) || !validBlock(block) || block.number < m.initial.blockNumber || !precision(options.tokenDecimals)) throw Error('infinity_cl_market_identity_invalid');
   const call = async (method: string) => {
     const data = freshInfinityClInterface.encodeFunctionData(method, [m.poolId]), raw = await options.rpc<string>('eth_call', [{ to: m.manager, data }, { blockHash: block.hash, requireCanonical: true }]);
     if (typeof raw !== 'string' || !/^0x[\da-f]+$/.test(raw) || raw.length > 2 + 192 * 2) throw Error('infinity_cl_market_state_invalid');
@@ -105,8 +111,8 @@ export async function readFreshInfinityClMarket(options: { rpc: Rpc; identity: F
   };
   const [key, slot, liquidity] = await Promise.all([call('poolIdToPoolKey'), call('getSlot0'), call('getLiquidity')]);
   const actual: FreshInfinityClPoolKey = { currency0: String(key[0]).toLowerCase(), currency1: String(key[1]).toLowerCase(), hooks: String(key[2]).toLowerCase(), poolManager: String(key[3]).toLowerCase(), fee: Number(key[4]), parameters: String(key[5]) };
-  if (!same(actual, m.poolKey) || freshInfinityClPoolId(actual) !== m.poolId || !validTick(Number(slot.tick))) throw Error('infinity_cl_market_key_changed');
-  return { protocol: 'infinity_cl' as const, identity: m, ...observation(m, BigInt(slot.sqrtPriceX96), BigInt(liquidity.liquidity), options.tokenDecimals),
+  if (!same(actual, m.poolKey) || freshInfinityClPoolId(actual, { allowHooks: true }) !== m.poolId || !validTick(Number(slot.tick))) throw Error('infinity_cl_market_key_changed');
+  return { protocol: 'infinity_cl' as const, identity: m, ...observation(m, BigInt(slot.sqrtPriceX96), BigInt(liquidity.liquidity), options.tokenDecimals, true),
     tick: Number(slot.tick), protocolFee: Number(slot.protocolFee), lpFee: Number(slot.lpFee), quoteAddress: WBNB, tokenIs0: false, observedBlock: { ...block } };
 }
 
