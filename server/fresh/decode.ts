@@ -1,5 +1,5 @@
 import{isFreshSettlementQuote,freshSettlementQuoteSymbol}from'./settlementQuote.js';
-import{GANG_TOKEN_ADDRESS,readFreshTokenAdmission,freshScopeEventSql}from'./tracking.js';
+import{GANG_TOKEN_ADDRESS,readFreshTokenAdmission,freshScopeEventSql,freshExplicitExistingToken}from'./tracking.js';
 import{freshPendingGangTrade,persistFreshPendingTrades,removeFreshResolvedPendingTrades,type FreshPendingTrade}from'./pendingTrades.js';
 import{freshAcquisitionCostKey}from'./acquisitionCost.js';
 import{freshSignedSelfCallSettlement}from'./signedSelfCallSettlement.js';
@@ -575,8 +575,8 @@ async function persistMetadata(client: PoolClient, tokens: FreshTokenMetadata[])
   for (const token of tokens) {
     // An explicit existing-token permission never rewrites its launch age.
     // Recheck it under the financial transaction before retaining metadata.
-    const admission=token.address===GANG_TOKEN_ADDRESS?await readFreshTokenAdmission(client,token.address,{blockNumber:token.block.number,lock:true}):null;
-    if(token.address===GANG_TOKEN_ADDRESS&&!admission)throw Error('decode_token_admission_changed');
+    const admission=freshExplicitExistingToken(token.address)?await readFreshTokenAdmission(client,token.address,{blockNumber:token.block.number,lock:true}):null;
+    if(freshExplicitExistingToken(token.address)&&!admission)throw Error('decode_token_admission_changed');
     const launchStatus=admission?.launchStatus??'eligible';
     await client.query(`INSERT INTO fresh.tokens(address,name,symbol,decimals,total_supply_raw,launch_status,metadata_updated_at)
     VALUES($1,$2,$3,$4,$5,$7,$6) ON CONFLICT(address) DO UPDATE SET name=COALESCE(EXCLUDED.name,fresh.tokens.name),symbol=COALESCE(EXCLUDED.symbol,fresh.tokens.symbol),

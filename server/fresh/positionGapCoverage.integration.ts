@@ -40,6 +40,26 @@ export async function runFreshPositionGapCoverageIntegration(){
   assert.equal(await blocked(token,130,'kol:'+other),true);checks.push('another public or private wallet is not covered by the first wallet journal');
   await negative('same-block expiry cannot infer within-block creation order',()=>expired(120));
   await negative('a later missing receipt still blocks',()=>expired(121));
+  await c.query('SAVEPOINT dependencies');
+  const scopedProof={dependencyAddresses:[wallet,other],dependencyProof:'b'.repeat(64)};
+  await expired(121,wallet,scopedProof);assert.equal(await blocked(),false);checks.push('authenticated compact full-trace dependencies isolate an unrelated expired receipt during token trading');
+  await c.query('SAVEPOINT preexisting');
+  await query("UPDATE fresh.jobs SET progress=jsonb_set(jsonb_set(progress,'{expiredEvidence,dependencyAddresses}',$1),'{expiredEvidence,dependencyProof}',$2)",[JSON.stringify([wallet,other]),JSON.stringify('b'.repeat(64))]);
+  await query('DELETE FROM fresh.launch_facts');assert.equal(await blocked(),false);checks.push('a complete journal of exclusively unrelated full-trace receipts also isolates preexisting tokens without a birth certificate');
+  await query("UPDATE fresh.jobs SET progress=jsonb_set(progress,'{expiredEvidence,dependencyAddresses}',$1) WHERE progress->'expiredEvidence'->>'blockNumber'='105'",[JSON.stringify([wallet,token])]);assert.equal(await blocked(),true);checks.push('one relevant missing receipt still blocks preexisting tokens');
+  await c.query('ROLLBACK TO SAVEPOINT preexisting');
+  for(const patch of [
+   {dependencyAddresses:[wallet,token]},
+   {dependencyProof:null},{dependencyProof:'invalid'},{dependencyProof:123},{dependencyAddresses:[]},
+   {dependencyAddresses:[other]},{dependencyAddresses:[wallet,null]},
+   {dependencyAddresses:[wallet,42]},{dependencyAddresses:[wallet,other,other]},
+   {dependencyAddresses:{wallet}},{dependencyAddresses:[wallet,...Array.from({length:512},(_,i)=>address(1000+i))]},
+  ]){await c.query('SAVEPOINT malformed_dependencies');await query("UPDATE fresh.jobs SET progress=jsonb_set(progress,'{expiredEvidence}',(progress->'expiredEvidence')||$1::jsonb) WHERE progress->'expiredEvidence'->>'blockNumber'='121'",[patch]);assert.equal(await blocked(),true,JSON.stringify(patch));await c.query('ROLLBACK TO SAVEPOINT malformed_dependencies');}
+  checks.push('token-touching opaque malformed incomplete oversized and duplicate dependency indices cannot approve coverage');
+  await c.query('SAVEPOINT contradictory_dependency');
+  await query("INSERT INTO fresh.financial_events(id,execution_key,wallet_address,token_address,kind,quantity,amount_usd,block_number,block_hash,transaction_hash,transaction_index,execution_index,occurred_at)VALUES('dependency-contradiction','dependency-contradiction',$1,$2,'buy','1','1',121,$3,$4,0,0,$5)",[wallet,token,hash(121),hash(10121),iso(121)]);assert.equal(await blocked(),true);await c.query('ROLLBACK TO SAVEPOINT contradictory_dependency');checks.push('canonical token facts override a contradictory unrelated dependency index');
+  await query("UPDATE fresh.jobs SET progress=jsonb_set(progress,'{expiredEvidence,payloadSha256}','null'::jsonb) WHERE progress->'expiredEvidence'->>'blockNumber'='121'");assert.equal(await blocked(),true);checks.push('dependency metadata cannot bypass invalid original receipt identity');
+  await c.query('ROLLBACK TO SAVEPOINT dependencies');
   await c.query('SAVEPOINT future');await expired(131);assert.equal(await blocked(),false);assert.equal(await blocked(token,132),true);await c.query('ROLLBACK TO SAVEPOINT future');checks.push('a frozen cutoff ignores later gaps without ignoring gaps inside its window');
   await negative('missing earliest receipt cannot establish journal completeness',()=>query('DELETE FROM fresh.jobs WHERE reference=$1',[hash(10105)+':'+hash(105)]));
   await negative('no expiry journal remains unbounded',()=>query('DELETE FROM fresh.jobs'));

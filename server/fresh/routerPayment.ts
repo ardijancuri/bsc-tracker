@@ -3,6 +3,7 @@ import{freshGangBinanceNativeBuyCost}from'./gangBinancePayment.js';
 import{freshPoolNativePair}from'./currentPoolQuote.js';
 import{freshThreeHopNativeBuyCost}from'./threeHopNativePayment.js';
 import{freshRefundedControllerNativeBuyCost}from'./refundedControllerPayment.js';
+import{freshTwoHopNativeBuyCost}from'./twoHopNativePayment.js';
 
 // The same authenticated Flap/GMGN Swap receipt used by nativeSellProceeds.
 // A native exact-input purchase must match the signed transaction value, the
@@ -154,6 +155,7 @@ export function freshNativeBuyCost(tx:FreshTransaction,wallet:string,token:strin
   if(!router||!routers.has(router)&&router!==wrapperRouter||tx.from.toLowerCase()!==wallet||receivedRaw<=0n||!/^0x[\da-f]+$/i.test(tx.value)||BigInt(tx.value)<=0n)return null;
   if(router===wrapperRouter)return wrappedPcsBuyCost(tx,wallet,token,receivedRaw,logs);
   const multi=freshThreeHopNativeBuyCost(tx,wallet,token,receivedRaw,logs);if(multi!==null)return multi;
+  const two=freshTwoHopNativeBuyCost(tx,wallet,token,receivedRaw,logs);if(two!==null)return two;
   const refunded=freshRefundedControllerNativeBuyCost(tx,wallet,token,receivedRaw,logs);if(refunded!==null)return refunded;
   const swaps=logs.filter(l=>l.address.toLowerCase()===router&&l.topics[0]?.toLowerCase()===topic);
   if(swaps.length!==1)return null;

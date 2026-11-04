@@ -4,6 +4,9 @@ import type {Pool} from 'pg';
 /** Explicit user-approved exception. This permission is not evidence of a new
  * deployment, a purchase cost, token precision or a historical market price. */
 export const GANG_TOKEN_ADDRESS='0x0c6302401aa5325c2e36f170f52c00b1d220b405';
+export const SAFU_TOKEN_ADDRESS='0xdd806e436dda5588bf54061c11590c77ddc87777';
+const existingReason=(token:unknown)=>token===GANG_TOKEN_ADDRESS?'user_approved_gang_only':token===SAFU_TOKEN_ADDRESS?'user_approved_safu_only':null;
+export const freshExplicitExistingToken=(token:string)=>existingReason(token)!==null;
 export const FRESH_GANG_HISTORY_FROM_BLOCK=128977030,FRESH_GANG_CREATION_HASH='0x5f21700cb2dd516df53c00b30dff0e0fa15d80ac3097f020591cd4b4a599ed46',FRESH_GANG_CREATION_TIME='2026-10-21T17:20:53.000Z';
 export const FRESH_GANG_HISTORY_ADMISSION_KEY='token_history_admission:'+GANG_TOKEN_ADDRESS;
 export const freshTokenAdmissionKey=(address:string)=>'token_admission:'+address.toLowerCase();
@@ -13,8 +16,8 @@ export interface FreshGangHistoryPermission{version:1;kind:'explicit_token_histo
  startBlock:number;startHash:string;startTime:string;historyFromBlock:typeof FRESH_GANG_HISTORY_FROM_BLOCK;historyFromHash:typeof FRESH_GANG_CREATION_HASH;
  historyFromTime:typeof FRESH_GANG_CREATION_TIME;sourceDatasetSha256:string;approvedAt:string;policy:'gmgn_gang_only_history_v1'}
 export interface FreshExistingTokenPermission {
- version:1;kind:'explicit_existing';chainId:56;tokenAddress:typeof GANG_TOKEN_ADDRESS;active:true;
- startBlock:number;startHash:string;startTime:string;fromBlock:number;approvedAt:string;reason:'user_approved_gang_only';
+ version:1;kind:'explicit_existing';chainId:56;tokenAddress:typeof GANG_TOKEN_ADDRESS|typeof SAFU_TOKEN_ADDRESS;active:true;
+ startBlock:number;startHash:string;startTime:string;fromBlock:number;approvedAt:string;reason:'user_approved_gang_only'|'user_approved_safu_only';
 }
 export type FreshTokenAdmission=
  |{kind:'new_launch';fact:Record<string,any>;fromBlock:number;launchStatus:'eligible'}
@@ -25,9 +28,9 @@ const iso=(value:unknown)=>typeof value==='string'&&/^(?!0000)\d{4}-\d{2}-\d{2}T
 const fields=['version','kind','chainId','tokenAddress','active','startBlock','startHash','startTime','fromBlock','approvedAt','reason'];
 export function validFreshExistingTokenPermission(value:unknown,start:FreshTrackingStart):value is FreshExistingTokenPermission {
  if(!value||typeof value!=='object'||Array.isArray(value))return false;
- const p=value as Record<string,unknown>,n=Number(start.block_number);
+ const p=value as Record<string,unknown>,n=Number(start.block_number),reason=existingReason(p.tokenAddress);
  return Object.keys(p).length===fields.length&&fields.every(k=>Object.hasOwn(p,k))
-  &&p.version===1&&p.kind==='explicit_existing'&&p.chainId===56&&p.tokenAddress===GANG_TOKEN_ADDRESS&&p.active===true&&p.reason==='user_approved_gang_only'
+  &&p.version===1&&p.kind==='explicit_existing'&&p.chainId===56&&reason!==null&&p.active===true&&p.reason===reason
   &&Number.isSafeInteger(n)&&n>0&&n<Number.MAX_SAFE_INTEGER&&Number.isSafeInteger(p.startBlock)&&p.startBlock===n
   &&typeof start.block_hash==='string'&&hash.test(start.block_hash)&&p.startHash===start.block_hash
   &&start.value?.startBlock===n&&start.value.startHash===start.block_hash&&iso(start.value.startTime)&&p.startTime===start.value.startTime
@@ -51,7 +54,7 @@ export async function readFreshGangHistoryAdmission(db:Pick<Pool,'query'>,option
  const lock=options.lock?' FOR SHARE':'',start=(await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'${lock}`)).rows[0] as FreshTrackingStart|undefined;
  if(!start)return null;const rows=(await db.query(`SELECT key,value FROM fresh.checkpoints WHERE key=ANY($1::text[]) ORDER BY key${lock}`,[[freshTokenAdmissionKey(GANG_TOKEN_ADDRESS),FRESH_GANG_HISTORY_ADMISSION_KEY]])).rows;
  const permission=rows.find(r=>r.key===freshTokenAdmissionKey(GANG_TOKEN_ADDRESS))?.value,history=rows.find(r=>r.key===FRESH_GANG_HISTORY_ADMISSION_KEY)?.value;
- if(!validFreshExistingTokenPermission(permission,start)||!validFreshGangHistoryPermission(history,start))return null;
+ if(!validFreshExistingTokenPermission(permission,start)||permission.tokenAddress!==GANG_TOKEN_ADDRESS||!validFreshGangHistoryPermission(history,start))return null;
  if((await db.query(`SELECT 1 FROM fresh.launch_facts WHERE token_address=$1 AND status='excluded_non_token'${lock}`,[GANG_TOKEN_ADDRESS])).rows.length)return null;
  return{permission:history,digest:freshGangHistoryPermissionDigest(history)};
 }
@@ -64,10 +67,10 @@ export async function readFreshTokenAdmission(db:Pick<Pool,'query'>,token:string
  if(fact?.status==='excluded_non_token')return null;
  if(fact?.status==='eligible'&&Number.isSafeInteger(Number(fact.block_number))&&Number(fact.block_number)>n
   &&(options.blockNumber===undefined||Number(fact.block_number)<=options.blockNumber))return{kind:'new_launch',fact,fromBlock:n+1,launchStatus:'eligible'};
- if(token!==GANG_TOKEN_ADDRESS)return null;
+ if(!freshExplicitExistingToken(token))return null;
  const p=(await db.query(`SELECT value FROM fresh.checkpoints WHERE key=$1${lock}`,[freshTokenAdmissionKey(token)])).rows[0]?.value;
- if(!validFreshExistingTokenPermission(p,start))return null;
- const historical=(await db.query(`SELECT value FROM fresh.checkpoints WHERE key=$1${lock}`,[FRESH_GANG_HISTORY_ADMISSION_KEY])).rows[0]?.value,history=validFreshGangHistoryPermission(historical,start)?historical:undefined;
+ if(!validFreshExistingTokenPermission(p,start)||p.tokenAddress!==token)return null;
+ const historical=token===GANG_TOKEN_ADDRESS?(await db.query(`SELECT value FROM fresh.checkpoints WHERE key=$1${lock}`,[FRESH_GANG_HISTORY_ADMISSION_KEY])).rows[0]?.value:undefined,history=validFreshGangHistoryPermission(historical,start)?historical:undefined;
  const fromBlock=history?.historyFromBlock??p.fromBlock;if(options.blockNumber!==undefined&&options.blockNumber<fromBlock)return null;
  return{kind:'preexisting',permission:p,...(history?{history}:{}),admissionDigest:history?createHash('sha256').update(freshTokenAdmissionDigest(p)+freshGangHistoryPermissionDigest(history)).digest('hex'):freshTokenAdmissionDigest(p),fromBlock,launchStatus:'preexisting'};
 }
@@ -79,9 +82,9 @@ const sqlIso=(x:string)=>`(${x} ~ '^(?!0000)\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\
  * unchanged collection boundary and no authenticated non-token exclusion. */
 export function freshExistingTokenAdmissionSql(addressExpression:string){
  const x=expression(addressExpression);
- return`(${x}='${GANG_TOKEN_ADDRESS}' AND EXISTS(SELECT 1 FROM fresh.checkpoints admitted JOIN fresh.checkpoints tracking_start ON tracking_start.key='start'
+ return`(${x} IN('${GANG_TOKEN_ADDRESS}','${SAFU_TOKEN_ADDRESS}') AND EXISTS(SELECT 1 FROM fresh.checkpoints admitted JOIN fresh.checkpoints tracking_start ON tracking_start.key='start'
  WHERE admitted.key='token_admission:'||${x} AND jsonb_typeof(admitted.value)='object'
- AND admitted.value @> jsonb_build_object('version',1,'kind','explicit_existing','chainId',56,'tokenAddress','${GANG_TOKEN_ADDRESS}','active',true,'reason','user_approved_gang_only',
+ AND admitted.value @> jsonb_build_object('version',1,'kind','explicit_existing','chainId',56,'tokenAddress',${x},'active',true,'reason',CASE WHEN ${x}='${GANG_TOKEN_ADDRESS}' THEN 'user_approved_gang_only' ELSE 'user_approved_safu_only' END,
  'startBlock',tracking_start.block_number,'startHash',tracking_start.block_hash,'startTime',tracking_start.value->>'startTime','fromBlock',tracking_start.block_number+1)
  AND tracking_start.value @> jsonb_build_object('startBlock',tracking_start.block_number,'startHash',tracking_start.block_hash)
  AND tracking_start.block_number>0 AND tracking_start.block_number<9007199254740991 AND tracking_start.block_hash ~ '^0x[0-9a-f]{64}$'

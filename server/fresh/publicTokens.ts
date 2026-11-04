@@ -1,5 +1,5 @@
 import {kolProfileTokenSql} from '../kolProfileToken.js';
-import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeWalletMonitoringSql} from './tracking.js';
+import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeWalletMonitoringSql,SAFU_TOKEN_ADDRESS} from './tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 /** A public identity alone cannot publish private or pre-membership activity. */
 export function freshPublicTradeScopeSql(eventAlias='e'){
@@ -17,10 +17,10 @@ export function freshPublicTradeScopeSql(eventAlias='e'){
 }
 /** Public discovery requires a genuine public buy/sell. Retained transfer
  * accounting, a private position, or a new pool cannot publish a token. */
-export function freshPublicTokenSql(alias='t'){
+export function freshPublicTokenSql(alias='t',options:{requestedIdentity?:boolean}={}){
   if(!/^[a-z_][a-z0-9_]*$/i.test(alias))throw new Error('Invalid SQL alias');
-  return `${freshTrackedTokenSql(alias)} AND ${kolProfileTokenSql(alias)} AND EXISTS(
+  return `${freshTrackedTokenSql(alias)} AND ${kolProfileTokenSql(alias)} AND (EXISTS(
     SELECT 1 FROM fresh.visible_trades visible_event
     WHERE visible_event.token_address=${alias}.address AND ${freshPublicTradeScopeSql('visible_event')}
-    AND ${freshTrackedEventSql('visible_event',alias)})`;
+    AND ${freshTrackedEventSql('visible_event',alias)})${options.requestedIdentity?` OR (${alias}.address='${SAFU_TOKEN_ADDRESS}' AND ${alias}.launch_status='preexisting')`:''})`;
 }

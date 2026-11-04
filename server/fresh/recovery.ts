@@ -44,6 +44,7 @@ import {recoverFreshSignedBatchPurchase,type FreshSignedBatchPurchaseValue} from
 import type {FreshCallTrace} from './trace.js';
 import{freshVerifiedAirdropClaimCandidate,recoverFreshVerifiedAirdropBasis}from'./verifiedAirdropClaim.js';
 import{recoverFreshRetainedPoolNativeQuote,type FreshRetainedPoolNativeQuote}from'./retainedPoolQuote.js';
+import{loadFreshPreexistingClonePrecision}from'./preexistingClonePrecision.js';
 
 export interface FreshDirectFlapPurchaseEvidence {
  version:1;kind:'historical_direct_flap_purchase';payment:FreshDirectFlapPurchase;
@@ -138,6 +139,8 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    }catch{/* Only exact saved state can satisfy this path. */}
   }
   const fromImport=await importedMetadata(token);if(fromImport)return fromImport;
+  const preexisting=await loadFreshPreexistingClonePrecision(db,rpc,batch,token,entry,target,anchor,canonicalHash).catch(()=>null);
+  if(preexisting){metadataValues.set(token,preexisting.value);evidence.metadata[token]=preexisting.proof;return preexisting.value;}
   // The two narrow production verifiers are loaded only after an actual
   // historical-state failure. Unknown code never inherits a guessed precision.
   const fact=(await db.query('SELECT * FROM fresh.launch_facts WHERE token_address=$1',[token])).rows[0];

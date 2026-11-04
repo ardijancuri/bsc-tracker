@@ -63,7 +63,9 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   app.get('/api/leaderboard',()=>reads.leaderboard());
   app.get<{Querystring:{limit?:string;cursor?:string;kol?:string;token?:string;window?:string}}>('/api/trades',async req=>reads.trades({limit:num(req.query.limit),cursor:req.query.cursor,
     wallet:req.query.kol?address(req.query.kol)??'invalid':undefined,token:req.query.token?address(req.query.token)??'invalid':undefined,today:req.query.window==='today',window:req.query.window==='24h'?'24h':undefined}));
-  const publicToken=freshPublicTokenSql();
+  // Explicitly requested identity pages do not imply a public trade or holding.
+  // Directory, KOL accounting and public feeds keep their genuine-trade gate.
+  const publicToken=freshPublicTokenSql('t',{requestedIdentity:true});
   async function visibleTokenCounters(token:string){return(await db.query(`SELECT count(DISTINCT e.wallet_address)::int AS today_kol_count,
     count(*) FILTER(WHERE e.kind='buy')::int AS today_buy_count,count(*) FILTER(WHERE e.kind='sell')::int AS today_sell_count,
     COALESCE(sum(e.amount_usd::numeric),0)::text AS today_volume_q FROM fresh.visible_trades e JOIN fresh.tokens t ON t.address=e.token_address

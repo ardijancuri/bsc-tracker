@@ -1,8 +1,14 @@
 import{describe,it,expect}from'vitest';
 import{freshPublicTokenSql}from'./publicTokens.js';
-import{freshTrackedTokenSql,freshTrackedEventSql,GANG_TOKEN_ADDRESS}from'./tracking.js';
+import{freshTrackedTokenSql,freshTrackedEventSql,GANG_TOKEN_ADDRESS,SAFU_TOKEN_ADDRESS}from'./tracking.js';
 
 describe('public token admission remains tied to public trading',()=>{
+ it('permits only the explicitly requested SAFU identity without removing directory or feed trade requirements',()=>{
+  const exception=`OR (token.address='${SAFU_TOKEN_ADDRESS}' AND token.launch_status='preexisting')`;
+  expect(freshPublicTokenSql('token',{requestedIdentity:true})).toContain(exception);
+  expect(freshPublicTokenSql('token')).not.toContain(exception);
+  expect(freshPublicTokenSql('token',{requestedIdentity:true})).toContain(freshTrackedTokenSql('token'));
+ });
  it('combines the shared narrow token permission with a genuine confirmed public buy/sell',()=>{
   const sql=freshPublicTokenSql('token');
   expect(sql).toContain(freshTrackedTokenSql('token'));

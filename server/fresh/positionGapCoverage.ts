@@ -13,6 +13,7 @@ const expiredGapBounds=`(WITH refs AS(
   AND j.progress->'expiredEvidence'->>'kind'='expired_receipt_reference_v1'
   AND j.progress->'expiredEvidence'->>'transactionHash'~'^0x[0-9a-f]{64}$'
   AND j.progress->'expiredEvidence'->>'blockHash'~'^0x[0-9a-f]{64}$'
+  AND jsonb_typeof(j.progress->'expiredEvidence'->'payloadSha256')='string'
   AND j.progress->'expiredEvidence'->>'payloadSha256'~'^[0-9a-f]{64}$'
   AND jsonb_typeof(j.progress->'expiredEvidence'->'blockNumber')='number' AND n.block_number IS NOT NULL
   AND jsonb_typeof(j.progress->'expiredEvidence'->'transactionIndex')='number'
@@ -20,7 +21,19 @@ const expiredGapBounds=`(WITH refs AS(
   AND j.progress->'expiredEvidence'->>'expiresAt'~'^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$'
   AND j.progress->'expiredEvidence'->>'expiredAt'~'^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$'
   AND j.progress->'expiredEvidence'->>'expiresAt'<=j.progress->'expiredEvidence'->>'expiredAt'
-  AND member.wallet~'^0x[0-9a-f]{40}$',false) AS valid
+  AND member.wallet~'^0x[0-9a-f]{40}$',false) AS valid,
+ j.progress->'expiredEvidence'->>'transactionHash' AS transaction_hash,j.progress->'expiredEvidence'->>'blockHash' AS block_hash,
+ CASE WHEN jsonb_typeof(j.progress->'expiredEvidence'->'dependencyProof')='string'
+  AND j.progress->'expiredEvidence'->>'dependencyProof'~'^[0-9a-f]{64}$'
+  AND jsonb_typeof(j.progress->'expiredEvidence'->'dependencyAddresses')='array' THEN
+   CASE WHEN jsonb_array_length(j.progress->'expiredEvidence'->'dependencyAddresses') BETWEEN 1 AND 512
+    AND j.progress->'expiredEvidence'->'dependencyAddresses' ? member.wallet
+    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(j.progress->'expiredEvidence'->'dependencyAddresses')d(address)
+     WHERE jsonb_typeof(d.address) IS DISTINCT FROM 'string' OR (d.address#>>'{}')!~'^0x[0-9a-f]{40}$')
+    AND jsonb_array_length(j.progress->'expiredEvidence'->'dependencyAddresses')=(SELECT count(DISTINCT d.address)
+     FROM jsonb_array_elements_text(j.progress->'expiredEvidence'->'dependencyAddresses')d(address))
+   THEN j.progress->'expiredEvidence'->'dependencyAddresses' END
+ END AS dependencies
  FROM fresh.jobs j
  CROSS JOIN LATERAL(SELECT CASE WHEN j.progress->'expiredEvidence'->>'blockNumber'~'^[1-9][0-9]{0,14}$'
   THEN(j.progress->'expiredEvidence'->>'blockNumber')::bigint END AS block_number)n
@@ -29,33 +42,47 @@ const expiredGapBounds=`(WITH refs AS(
  WHERE j.kind='decode_receipt' AND j.progress ? 'expiredEvidence')
  SELECT jsonb_object_agg(b.wallet,b.bounds)FROM(SELECT wallet,jsonb_build_object('first',min(block_number),
   'blocks',jsonb_agg(DISTINCT block_number)FILTER(WHERE block_number IS NOT NULL),
+  'refs',jsonb_agg(jsonb_build_object('block',block_number,'dependencies',dependencies,'transactionHash',transaction_hash,'blockHash',block_hash)),
   'badThrough',max(CASE WHEN valid THEN NULL ELSE COALESCE(block_number,9007199254740991) END))AS bounds FROM refs GROUP BY wallet)b)`;
 
-/** A wallet gap stays blocking unless ALL its recorded missing receipts ended
+/** A wallet gap stays blocking unless ALL relevant missing receipts ended
  * before this token actually existed. A pool/launch timestamp is insufficient.
- * Same-block gaps, unknown birth, unbounded/registration gaps, contradictory
+ * A retained full-trace dependency index can also prove that an individual
+ * missing receipt never touched this token. Malformed/opaque indices remain
+ * global. Aggregate the journal once, then scope its compact entries per token;
+ * never correlate a new full jobs-table scan to every position.
+ * If every missing receipt is provably unrelated, no token-birth bound is needed.
+ * Relevant same-block gaps, opaque gaps with unknown birth, unbounded/registration gaps, contradictory
  * earlier token facts and incomplete expiry journals remain blocking. Current
  * receipt decoding and exact canonical balance checks are still mandatory. */
 export function freshPositionWalletGapSql(block:string,token='p.token_address'){
  if(!/^\$[1-9][0-9]*$|^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$|^\(SELECT block_number FROM fresh\.checkpoints WHERE key='capture'\)$/i.test(block))throw Error('position_gap_block_invalid');
  const birth=freshAuthenticatedTokenBirthBlockSql(token,{durableCertificate:true});
+ // Use a hashed receipt-identity membership check, not a financial index scan
+ // for every reference. OFFSET 0 below prevents PostgreSQL from inlining and
+ // duplicating the complete journal aggregate at each bounds-field access.
+ const relevant=`(COALESCE(r.ref->'dependencies','null'::jsonb)='null'::jsonb OR r.ref->'dependencies' ? ${token}
+  OR (r.ref->>'transactionHash',r.ref->>'blockHash') IN(SELECT gap_fact.transaction_hash,gap_fact.block_hash
+   FROM fresh.financial_events gap_fact WHERE gap_fact.canonical AND gap_fact.wallet_address=w.address AND gap_fact.token_address=${token}))`;
  return`EXISTS(SELECT 1 FROM fresh.wallets w WHERE w.address=ANY(s.wallet_addresses) AND w.decode_gap_from_block<=${block}
   AND NOT COALESCE(w.decode_gap_reason='expired_undecoded_evidence' AND EXISTS(
-   SELECT 1 FROM(SELECT ${expiredGapBounds}->w.address AS bounds) gap_bound
+   SELECT 1 FROM(SELECT ${expiredGapBounds}->w.address AS bounds OFFSET 0) gap_bound
    CROSS JOIN LATERAL(SELECT min(candidate.last_block) AS last_block FROM(
-    SELECT max(b.number::bigint) AS last_block FROM jsonb_array_elements_text(COALESCE(NULLIF(gap_bound.bounds->'blocks','null'::jsonb),'[]'::jsonb))b(number)
-     WHERE b.number::bigint<=${block}
+    SELECT COALESCE(max((r.ref->>'block')::bigint),0) AS last_block FROM jsonb_array_elements(COALESCE(gap_bound.bounds->'refs','[]'::jsonb))r(ref)
+     WHERE (r.ref->>'block')::bigint<=${block}
+      AND ${relevant}
      HAVING (gap_bound.bounds->>'first')::bigint=w.decode_gap_from_block AND gap_bound.bounds->>'badThrough' IS NULL
     UNION ALL
-    SELECT greatest(epoch.block_number,COALESCE((SELECT max(b.number::bigint)
-     FROM jsonb_array_elements_text(COALESCE(NULLIF(gap_bound.bounds->'blocks','null'::jsonb),'[]'::jsonb))b(number)
-     WHERE b.number::bigint>epoch.block_number AND b.number::bigint<=${block}),epoch.block_number))
+    SELECT greatest(epoch.block_number,COALESCE((SELECT max((r.ref->>'block')::bigint)
+     FROM jsonb_array_elements(COALESCE(gap_bound.bounds->'refs','[]'::jsonb))r(ref)
+     WHERE (r.ref->>'block')::bigint>epoch.block_number AND (r.ref->>'block')::bigint<=${block}
+      AND ${relevant}),epoch.block_number))
     FROM fresh.checkpoints epoch JOIN fresh.checkpoints epoch_start ON epoch_start.key='start'
     JOIN fresh.checkpoints epoch_capture ON epoch_capture.key='capture' JOIN fresh.checkpoints epoch_health ON epoch_health.key='health:maintenance'
     WHERE ${freshTrustedPositionGapEpochSql} AND epoch.block_number<=${block}
      AND COALESCE((gap_bound.bounds->>'badThrough')::bigint,0)<=epoch.block_number
    )candidate)cutoff
-   WHERE cutoff.last_block<${birth}
+   WHERE (cutoff.last_block=0 OR cutoff.last_block<${birth})
     AND NOT EXISTS(SELECT 1 FROM fresh.financial_events contradiction WHERE contradiction.canonical
      AND contradiction.wallet_address=w.address AND contradiction.token_address=${token}
      AND contradiction.block_number<=cutoff.last_block)),false))`;
