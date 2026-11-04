@@ -1,4 +1,4 @@
-import { defaultExtensionPreferences, extensionAddress, type ExtensionWorkspace, type ExtensionTokenIdentity, type ExtensionPreferences } from '../../../shared/extension';
+import { defaultExtensionPreferences, extensionAddress, type ExtensionWorkspace, type ExtensionTokenIdentity, type ExtensionPreferences, type ExtensionAuthOptions } from '../../../shared/extension';
 
 export interface LocalStore { get<T>(key: string): Promise<T | undefined>; set<T>(key: string, value: T): Promise<void> }
 export interface Draft {
@@ -7,9 +7,20 @@ export interface Draft {
 }
 interface AccountState { workspace?: ExtensionWorkspace; drafts: Draft[]; preferenceDraft?: {preferences: ExtensionPreferences; revision: number; conflict?: boolean} }
 interface Auth { token: string; expiresAt: string; userId?: string }
+type Pairing = { id: string; expiresAt: string; verifier: string; method?: 'web' | 'google' | 'email'; email?: string; proof?: string };
+const livePairing = (pairing: Pairing | null | undefined): pairing is Pairing => Boolean(pairing && Date.parse(pairing.expiresAt) > Date.now());
+function authResult(result: string | undefined, redirect: string) {
+  if (!result) throw Error('Sign-in was cancelled.');
+  const returned = new URL(result), expected = new URL(redirect);
+  if (returned.origin !== expected.origin || returned.pathname !== expected.pathname || returned.search || returned.username || returned.password) {
+    throw Error('Invalid sign-in response.');
+  }
+  return new URLSearchParams(returned.hash.slice(1));
+}
 export interface PopupUi {view:'matches'|'saved'|'activity';editor:{identity:ExtensionTokenIdentity;text:string;dirty:boolean}|null}
 export class WorkspaceSync {
   private syncing = false;
+  private linking = false;
   private lastRefresh = 0;
   private currentEpoch = 0;
   private serial = Promise.resolve();
@@ -19,7 +30,7 @@ export class WorkspaceSync {
       headers: { ...(typeof location!=='undefined'&&location.protocol==='chrome-extension:'?{'X-Kollens-Extension-Origin':location.origin}:{}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000) });
-    const value = await response.json(); return { status: response.status, value };
+    const value = await response.json().catch(() => null); return { status: response.status, value };
   }
   async auth() { return this.store.get<Auth>('auth'); }
   private async account(id: string): Promise<AccountState> { return await this.store.get<AccountState>(`account:${id}`) ?? { drafts: [] }; }
@@ -28,11 +39,12 @@ export class WorkspaceSync {
   }
   async state() {
     const auth = await this.auth(), state = auth?.userId ? await this.account(auth.userId) : { drafts: [] } as AccountState;
-    const pairing=await this.store.get<{id:string;expiresAt:string}>('pairing');
+    const pairing=await this.store.get<Pairing>('pairing');
     return { connected: Boolean(auth?.token && auth.userId && Date.parse(auth.expiresAt) > Date.now()),
       workspace: state.workspace ?? null, drafts: state.drafts, preferenceDraft: state.preferenceDraft,
       ownerId:auth?.userId??'guest',ui:await this.store.get<PopupUi>(`popup:${auth?.userId??'guest'}`)??{view:'matches',editor:null},
-      pending: pairing?{id:pairing.id,expiresAt:pairing.expiresAt}:null, error: await this.store.get<string>('syncError') };
+      pending: livePairing(pairing)?{id:pairing.id,expiresAt:pairing.expiresAt,method:pairing.method??'web',email:pairing.email}:null,
+      error: await this.store.get<string>('syncError') };
   }
   async rememberUi(ownerId:string,patch:Partial<PopupUi>){
     if((await this.auth())?.userId!==ownerId&&!(ownerId==='guest'&&!(await this.auth())?.userId))throw Error('Account changed');
@@ -45,31 +57,162 @@ export class WorkspaceSync {
       await this.store.set(`popup:${ownerId}`,{...current,...patch});
     });
   }
-  async connect(open: (url: string) => Promise<void>) {
+  async authOptions(): Promise<ExtensionAuthOptions> {
+    const result = await this.request('auth/options');
+    if (result.status === 404) return {google:false,email:false};
+    if (result.status !== 200) throw Error('Sign-in options unavailable');
+    return {google: result.value?.google === true, email: result.value?.email === true,
+      telegram: result.value?.telegram === true, x: result.value?.x === true};
+  }
+  private async startPairing(method: NonNullable<Pairing['method']>) {
+    const epoch = await this.queue(async () => {
+      const auth = await this.auth(), pending = await this.store.get<Pairing>('pairing');
+      if (auth?.token && Date.parse(auth.expiresAt) > Date.now()) throw Error('Log out before connecting another account.');
+      if (livePairing(pending)) throw Error('A sign-in is already in progress.');
+      await this.store.set('syncError',null);
+      return ++this.currentEpoch;
+    });
     const verifier = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2,'0')).join('');
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
     const challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-    const result = await this.request('auth/start', 'POST', {challenge});
-    if (result.status !== 200) throw new Error(result.value.error ?? 'Could not start connection');
-    const url = new URL(result.value.url);
-    if (url.origin !== this.origin || url.pathname !== '/extension/connect') throw new Error('Invalid connection destination');
-    await this.store.set('pairing', {id:result.value.id,expiresAt:result.value.expiresAt,verifier});
-    await open(url.href);
+    const result = await this.request('auth/start', 'POST', method === 'web' ? {challenge} : {challenge, mode:'native'});
+    if (result.status !== 200 || !result.value) throw Error('Could not start connection. Try again.');
+    const pairing: Pairing = {id:result.value.id,expiresAt:result.value.expiresAt,verifier,method};
+    await this.queue(async () => {
+      if (epoch !== this.currentEpoch) throw Error('Sign-in was cancelled.');
+      await this.store.set('pairing', pairing);
+    });
+    return {pairing, url:result.value.url};
+  }
+  async connect(open: (url: string) => Promise<void>) {
+    const {pairing, url:value} = await this.startPairing('web');
+    try {
+      const url = new URL(value);
+      if (url.origin !== this.origin || url.pathname !== '/extension/connect') throw Error('Invalid connection destination');
+      await open(url.href);
+    } catch (error) {
+      await this.clearPairing(pairing.id);
+      throw error;
+    }
+  }
+  private async clearPairing(id: string, message?: string) {
+    await this.queue(async () => {
+      if ((await this.store.get<Pairing>('pairing'))?.id !== id) return;
+      this.currentEpoch++;
+      await this.store.set('pairing',null);
+      await this.store.set('syncError',message??null);
+    });
+  }
+  async cancelPairing() {
+    await this.queue(async () => {
+      this.currentEpoch++;
+      await this.store.set('pairing',null);
+      await this.store.set('syncError',null);
+    });
+  }
+  private async completePairing(pairing: Pairing, proof: unknown) {
+    if (typeof proof !== 'string' || !/^[a-f0-9]{64}$/.test(proof)) throw Error('Could not verify sign-in.');
+    await this.queue(async () => {
+      if ((await this.store.get<Pairing>('pairing'))?.id !== pairing.id) throw Error('Sign-in was cancelled.');
+      await this.store.set('pairing',{...pairing,proof});
+    });
+    await this.sync();
+  }
+  async googleConnect(launch: (url: string) => Promise<string | undefined>, redirect: string) {
+    const {pairing} = await this.startPairing('google');
+    let failure = 'Could not complete Google sign-in. Try again.';
+    try {
+      const response = await this.request('auth/google/start','POST',{id:pairing.id,verifier:pairing.verifier});
+      if (response.status !== 200 || !response.value?.url) throw Error(failure);
+      const url = new URL(response.value.url);
+      if (url.origin !== this.origin || url.pathname !== '/api/auth/google/extension/launch' || url.username || url.password
+        || (await this.store.get<Pairing>('pairing'))?.id !== pairing.id) throw Error(failure);
+      const fragment = authResult(await launch(url.href),redirect);
+      if (fragment.get('error') === 'cancelled') failure = 'Google sign-in was cancelled.';
+      if (fragment.getAll('id').length !== 1 || fragment.get('id') !== pairing.id || fragment.getAll('proof').length !== 1 || fragment.has('error')) throw Error(failure);
+      await this.completePairing(pairing,fragment.get('proof'));
+    } catch {
+      await this.clearPairing(pairing.id,failure);
+      throw Error(failure);
+    }
+  }
+  async startEmail(email: string) {
+    const current = await this.store.get<Pairing>('pairing');
+    const pairing = livePairing(current) && current.method === 'email' && !current.proof ? current : (await this.startPairing('email')).pairing;
+    try {
+      const result = await this.request('auth/email/start','POST',{id:pairing.id,verifier:pairing.verifier,email});
+      if (result.status !== 200 || result.value?.sent !== true) {
+        if (result.status === 429) throw Error('Wait before requesting another code.');
+        throw Error('Could not send a sign-in code. Try again.');
+      }
+      await this.queue(async () => {
+        if ((await this.store.get<Pairing>('pairing'))?.id !== pairing.id) throw Error('Sign-in was cancelled.');
+        await this.store.set('pairing',{...pairing,email});
+      });
+    } catch (error) {
+      if (!pairing.email) await this.clearPairing(pairing.id);
+      throw error;
+    }
+  }
+  async verifyEmail(email: string, code: string) {
+    const pairing = await this.store.get<Pairing>('pairing');
+    if (!livePairing(pairing) || pairing.method !== 'email' || pairing.email !== email) throw Error('Request a new sign-in code.');
+    const result = await this.request('auth/email/verify','POST',{id:pairing.id,verifier:pairing.verifier,email,code});
+    if (result.status !== 200 || result.value?.verified !== true) throw Error('The code is invalid or has expired.');
+    await this.completePairing(pairing,result.value.proof);
+  }
+  async linkSocial(provider: 'telegram' | 'x', launch: (url: string) => Promise<string | undefined>, redirect: string) {
+    if (this.linking) throw Error('An account link is already in progress.');
+    this.linking = true;
+    try {
+      const auth = await this.auth();
+      if (!auth?.token || !auth.userId || Date.parse(auth.expiresAt) <= Date.now()) throw Error('Connect your Kollens account first');
+      const prefix = `auth/social/${provider}`;
+      const start = await this.request(prefix + '/start','POST',{},auth.token);
+      if (start.status !== 200 || !start.value?.url || !/^[a-f0-9]{64}$/.test(start.value.state)) throw Error('Could not start the account link. Try again.');
+      const url = new URL(start.value.url);
+      if (url.origin !== this.origin || url.pathname !== `/api/auth/extension-social/${provider}/launch` || url.username || url.password) {
+        throw Error('Could not start the account link. Try again.');
+      }
+      let result: URLSearchParams;
+      try { result = authResult(await launch(url.href),redirect); }
+      catch { throw Error('Account linking was interrupted. Try again.'); }
+      if (result.get('error') === 'cancelled') throw Error('Account linking was cancelled.');
+      const proof = result.get('proof');
+      if (result.getAll('state').length !== 1 || result.get('state') !== start.value.state
+        || result.getAll('proof').length !== 1 || !proof || !/^[a-f0-9]{64}$/.test(proof) || result.has('error')) {
+        throw Error('Could not verify the account link. Try again.');
+      }
+      if ((await this.auth())?.token !== auth.token) throw Error('Account changed');
+      const finish = await this.request(prefix + '/finish','POST',{state:start.value.state,proof},auth.token);
+      if (finish.status === 409) throw Error('This account already has a link, or the profile is linked elsewhere.');
+      if (finish.status !== 200 || finish.value?.linked !== true) throw Error('Could not verify the account link. Try again.');
+      await this.refresh(true);
+    } finally {
+      this.linking = false;
+    }
   }
   async advancePairing() {
     const epoch=this.currentEpoch;
-    const pairing = await this.store.get<{id:string;expiresAt:string;verifier:string}>('pairing');
+    const pairing = await this.store.get<Pairing>('pairing');
     if (!pairing) return;
-    if (Date.parse(pairing.expiresAt) <= Date.now()) { await this.store.set('pairing', null); throw new Error('Connection expired. Connect again.'); }
-    const result = await this.request('auth/exchange','POST',{id:pairing.id,verifier:pairing.verifier});
-    if(epoch!==this.currentEpoch||(await this.store.get<{id:string}>('pairing'))?.id!==pairing.id){
-      if(result.status===200)await this.request('auth/revoke','POST',{},result.value.token).catch(()=>{});
+    if (!(Date.parse(pairing.expiresAt) > Date.now())) { await this.clearPairing(pairing.id,'Connection expired. Connect again.'); return; }
+    if (pairing.method && pairing.method !== 'web' && !pairing.proof) return;
+    const result = await this.request('auth/exchange','POST',{id:pairing.id,verifier:pairing.verifier,...(pairing.proof?{proof:pairing.proof}:{})});
+    if (result.status === 202) return;
+    if (result.status === 429 || result.status >= 500) throw Error('Connection interrupted.');
+    if (result.status !== 200 || typeof result.value?.token !== 'string') {
+      await this.clearPairing(pairing.id,'Connection expired or interrupted. Connect again.');
       return;
     }
-    if (result.status === 202) return;
-    await this.store.set('pairing', null);
-    if (result.status !== 200) throw new Error(result.value.error ?? 'Connection failed');
-    await this.queue(async()=>{if(epoch!==this.currentEpoch)return;this.currentEpoch++;await this.store.set('auth', {token:result.value.token,expiresAt:result.value.expiresAt});});
+    const accepted = await this.queue(async () => {
+      if (epoch !== this.currentEpoch || (await this.store.get<Pairing>('pairing'))?.id !== pairing.id) return false;
+      this.currentEpoch++;
+      await this.store.set('auth',{token:result.value.token,expiresAt:result.value.expiresAt});
+      await this.store.set('pairing',null);
+      return true;
+    });
+    if (!accepted) { await this.request('auth/revoke','POST',{},result.value.token).catch(()=>{}); return; }
     this.lastRefresh = 0; await this.refresh(true);
   }
   async refresh(force = false) {
@@ -77,8 +220,15 @@ export class WorkspaceSync {
     const auth = await this.auth(), epoch = this.currentEpoch; if (!auth?.token) return;
     const result = await this.request('workspace','GET',undefined,auth.token);
     if (epoch !== this.currentEpoch || (await this.auth())?.token !== auth.token) return;
-    if (result.status === 401) { await this.store.set('auth',{...auth,token:''});await this.store.set('syncError','Disconnected. Local drafts are retained for this account.'); return; }
-    if (result.status !== 200) throw new Error(result.value.error ?? 'Workspace unavailable');
+    if (result.status === 401) {
+      await this.queue(async () => {
+        if (epoch !== this.currentEpoch || (await this.auth())?.token !== auth.token) return;
+        await this.store.set('auth',{...auth,token:''});
+        await this.store.set('syncError','Disconnected. Local drafts are retained for this account.');
+      });
+      return;
+    }
+    if (result.status !== 200 || !result.value?.user?.id) throw new Error(result.value?.error ?? 'Workspace unavailable');
     const workspace = result.value as ExtensionWorkspace;
     if (auth.userId && workspace.user.id !== auth.userId) throw new Error('Account identity changed');
     await this.queue(async () => {
@@ -86,8 +236,9 @@ export class WorkspaceSync {
       const state = await this.account(workspace.user.id); state.workspace = workspace;
       await this.store.set(`account:${workspace.user.id}`,state);
       await this.store.set('auth',{...auth,userId:workspace.user.id});
+      await this.store.set('syncError',null);
+      this.lastRefresh = Date.now();
     });
-    await this.store.set('syncError',null); this.lastRefresh = Date.now();
   }
   async edit(item: ExtensionTokenIdentity & {pinned:boolean;note:string}, kind: 'save'|'delete' = 'save') {
     if (item.note.length > 2000) throw new Error('Notes are limited to 2,000 characters');

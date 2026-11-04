@@ -40,7 +40,7 @@ The isolated PostgreSQL cluster must already be running on port 5442. Set `EXTEN
 3. Open **http://127.0.0.1:3360/fixture?extension=1**. This variant uses only the actual Chrome content script; it removes the web-preview panel.
 4. Pin Kollens Companion to Chrome’s toolbar and click its icon, or click a matching badge. The compact popup opens over the page without resizing it. It closes when you click elsewhere, following normal Chrome popup behavior.
 
-The bottom bar opens **Wallets**, **Tokens**, **Settings** and **Profile**, in that order. **Profile** shows the connected account or opens the Kollens connection page. **Tokens** keeps the Matches, Saved and Activity tabs, stacked token rows, and source links. Market cap and volume use the displayed values and GMGN's default color tiers. A saved token shows dashes when its card is unavailable.
+The bottom bar opens **Wallets**, **Tokens**, **Settings** and **Account**, in that order. **Account** shows the verified email when available, the display name, a copyable UID, logout and linked social profiles. Google uses Chrome's sign-in window. Email addresses and one-time codes are entered in the extension. Reopen the popup after Google authorization to see the account. **Tokens** keeps the Matches, Saved and Activity tabs, stacked token rows, and source links. Market cap and volume use the displayed values and GMGN's default color tiers. A saved token shows dashes when its card is unavailable.
 
 **Wallets** creates BNB Chain addresses or imports a private key or the first standard EVM address from an English recovery phrase. The Chrome extension encrypts each wallet locally with its own password. Back up its private key before adding funds. Use the actual unpacked extension for wallet testing. The web fixture displays the layout only. Checking native BNB balances requires optional access to the BNB Chain RPC and sends public wallet addresses to that endpoint.
 
@@ -80,15 +80,24 @@ Keep `PUBLIC_APP_URL` set to the correct app origin. Unregistered extension orig
 
 Route families:
 
-- `/api/extension/auth/*`: verifier-protected, ten-minute, single-use pairing; approval on the trusted Kollens page; scoped 30-day sessions; individual and account-wide revocation.
-- `GET /api/extension/workspace`: current account’s saved items and preferences only.
+- `/api/extension/auth/*` creates scoped 30-day sessions using a verifier and single-use completion proof. Legacy clients can still use web pairing. Chrome sign-in from the popup leaves the website session independent.
+- `GET /api/extension/workspace` returns the signed-in account’s saved items, preferences and verified profile details.
 - `PUT/DELETE /api/extension/tokens/:address`: owner-scoped revision checks, bounded notes and atomic per-account capacity enforcement.
 - `PUT /api/extension/preferences`: revision-checked updates preserving unrelated account preferences.
 - `/extension/connect`: sign in with an existing web session, Google, an email code, or Telegram, then explicitly approve the connection. Google and email create separate accounts.
 
 Google requires `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and a registered `${PUBLIC_APP_URL}/api/auth/google/callback` redirect. Email requires `RESEND_API_KEY`, a verified sender in `KOLLENS_EMAIL_FROM`, and a random 64-character hex `KOLLENS_EMAIL_AUTH_SECRET`. Configured email sign-in adds the short-lived `auth_email_login_attempts` table. The standalone local demo uses its existing test accounts.
 
-The extension workspace uses `extension_pairing_attempts` and `extension_saved_tokens`. Existing `auth_sessions` gains a `purpose` field defaulting to `web`. Extension credentials cannot authenticate normal website-cookie routes. Per-token revisions remain monotonic across deletion/recreation, preventing old drafts from overwriting a recreated row. Expired pairing rows are pruned on new pairing requests, and outstanding attempts are globally bounded.
+The Google flow keeps its existing server callback and returns to the extension through Chrome's `identity` API. A Google account's email becomes visible after a successful sign-in with a verified email claim. A prior email-only account shows its verified address after the next successful code verification.
+
+To enable optional verified social profile links, register each callback with its provider:
+
+- For Telegram, register `${PUBLIC_APP_URL}/api/auth/extension-social/telegram/callback` in BotFather and set `EXTENSION_TELEGRAM_LINK_ENABLED=true` alongside the existing Telegram OAuth client. The link requests profile access and does not enable alerts. [Telegram callback setup](https://core.telegram.org/bots/telegram-login#registering-your-allowed-urls)
+- For X, register `${PUBLIC_APP_URL}/api/auth/extension-social/x/callback` on a dedicated confidential X OAuth 2.0 client. Set `KOLLENS_EXTENSION_X_CLIENT_ID` and `KOLLENS_EXTENSION_X_CLIENT_SECRET`. It uses the read scopes for the signed-in user's profile. [X authentication scopes](https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping#user-lookup)
+
+Social links only verify the profile displayed in Account. Login, Telegram alerts and the X publisher have their own permissions and credentials. Linking rejects a social profile already linked to a different Kollens account.
+
+The extension workspace uses `extension_pairing_attempts`, `extension_saved_tokens` and `extension_account_links`. Existing `auth_sessions` gains a `purpose` field defaulting to `web`. Extension credentials cannot authenticate normal website-cookie routes. Per-token revisions remain monotonic across deletion/recreation, preventing old drafts from overwriting a recreated row. Expired pairing rows are pruned on new pairing requests, and outstanding attempts are globally bounded.
 
 ## Validation
 
@@ -96,6 +105,8 @@ The extension workspace uses `extension_pairing_attempts` and `extension_saved_t
 npm test --prefix extensions/kollens
 npm run check --prefix extensions/kollens
 node --import tsx server/extensionApi.integration.ts
+node --import tsx server/googleAuth.integration.ts
+node --import tsx server/emailAuth.integration.ts
 npm run test:browser --prefix extensions/kollens
 node extensions/kollens/scripts/unpacked-test.mjs
 node extensions/kollens/scripts/build.mjs --local --gmgn-qa

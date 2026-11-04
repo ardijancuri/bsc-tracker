@@ -53,7 +53,7 @@ try{
  await panel.getByRole('button',{name:'Tokens',exact:true}).click();
  await panel.getByRole('button',{name:/^Saved/}).click();
  const connectPage=context.waitForEvent('page');await panel.getByRole('button',{name:'Connect Kollens',exact:true}).click();const login=await connectPage;await login.waitForLoadState();
- await login.getByRole('button',{name:'Use test account A',exact:true}).click();await login.getByRole('button',{name:'Connect this extension',exact:true}).click();await login.getByText('Connected. Return to the extension.').waitFor();await login.close();await panel.bringToFront();await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Disconnect',exact:true}).waitFor();await panel.getByRole('button',{name:'Tokens',exact:true}).click();checks++;
+ await login.getByRole('button',{name:'Use test account A',exact:true}).click();await login.getByRole('button',{name:'Connect this extension',exact:true}).click();await login.getByText('Connected. Return to the extension.').waitFor();await login.close();await panel.bringToFront();await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Log out',exact:true}).waitFor();await panel.getByRole('button',{name:'Tokens',exact:true}).click();checks++;
  const privateStorage=await worker.evaluate(async()=>{const data=await chrome.storage.local.get('auth');return{scoped:data.auth?.token?.startsWith('kex_'),userId:typeof data.auth?.userId,hasToken:!!data.auth?.token};});
  assert.deepEqual(privateStorage,{scoped:true,userId:'string',hasToken:true});checks++;
  // A clean demo account need not contain a token from an earlier test run.
@@ -91,7 +91,7 @@ try{
  await cleanupNote();cleanupNote=async()=>{};await cleanupCreated();cleanupCreated=async()=>{};
  const size=await panel.evaluate(()=>({width:document.body.getBoundingClientRect().width,height:document.body.getBoundingClientRect().height}));assert.deepEqual(size,{width:360,height:600});checks++;
  await panel.getByRole('button',{name:/^Matches/}).click();await panel.screenshot({path:resolve(artifacts,'toolbar-popup.png'),clip:{x:0,y:0,width:360,height:600}});
- console.log('Checking disconnection');await panel.bringToFront();await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Disconnect',exact:true}).click();await panel.getByRole('button',{name:'Connect Kollens',exact:true}).waitFor();checks++;
+ console.log('Checking disconnection');await panel.bringToFront();await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Log out',exact:true}).click();await panel.getByRole('button',{name:'Connect Kollens',exact:true}).waitFor();checks++;
  const manifest=JSON.parse(await readFile(resolve(out,'manifest.json'),'utf8'));assert.ok(manifest.permissions.includes('activeTab'));assert.ok(manifest.permissions.includes('scripting'));assert.ok(!manifest.permissions.includes('cookies'));assert.ok(!manifest.permissions.includes('tabs'));assert.ok(!manifest.permissions.includes('sidePanel'));assert.equal(manifest.side_panel,undefined);assert.equal(manifest.action.default_popup,'popup.html');assert.ok(!manifest.host_permissions.some(h=>h.includes('gmgn')));assert.ok(manifest.content_scripts.every(s=>s.matches.every(m=>m.startsWith('http://127.0.0.1:3360/'))));checks++;
  await fixture.screenshot({path:resolve(artifacts,'unpacked-chrome.png')});
  assert.deepEqual(errors,[]);checks++;

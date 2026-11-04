@@ -18,7 +18,7 @@ await build({absWorkingDir:root,entryPoints:{background:'src/background.ts',cont
 await build({absWorkingDir:root,entryPoints:['src/content.ts'],bundle:true,format:'iife',platform:'browser',target:'chrome116',outfile:resolve(out,'content.js'),sourcemap:local,minify:!local,define:{__API_ORIGIN__:JSON.stringify(local?'http://127.0.0.1:3360':'https://kollens.com'),__GMGN_AUTHORIZED__:'false',__LOCAL_FIXTURE__:JSON.stringify(local),__LOCAL_GMGN_LIVE__:JSON.stringify(local)}});
 const manifest={manifest_version:3,name:'Kollens Companion',version:'0.1.0',minimum_chrome_version:'127',description:'Find tokens sharing social links, with a private Kollens watch desk.',
   key:developmentKey,
-  permissions:['storage','offscreen','activeTab','scripting'],host_permissions:[local?'http://127.0.0.1:3360/*':'https://kollens.com/*',...(qa?['https://gmgn.ai/*','https://www.gmgn.ai/*']:[])],
+  permissions:['storage','offscreen','activeTab','scripting','identity'],host_permissions:[local?'http://127.0.0.1:3360/*':'https://kollens.com/*',...(qa?['https://gmgn.ai/*','https://www.gmgn.ai/*']:[])],
   optional_host_permissions:['https://gmgn.ai/*','https://www.gmgn.ai/*','https://bsc-dataseed.bnbchain.org/*'],background:{service_worker:'background.js',type:'module'},
   action:{default_title:'Open Kollens Companion',default_popup:'popup.html',default_icon:'assets/icon.png'},icons:{128:'assets/icon.png'},
   content_security_policy:{extension_pages:`script-src 'self'; object-src 'none'; form-action 'none'; connect-src 'self' ${local?'http://127.0.0.1:3360':'https://kollens.com'} https://bsc-dataseed.bnbchain.org;`},

@@ -35,7 +35,7 @@ try{
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.setAttribute('src','https://cdn.gmgn.ai/kollens-fixture/changed.webp'));
  await until(s=>s.page.cards[0].logoUrl?.endsWith('/changed.webp'));await panel.locator('.token-thumbnail img[src$="/changed.webp"]').waitFor();assert.equal((await state()).page.alerts.length,0);checks++;
  // Isolated fake account transport. No real account, login or API request.
- await worker.evaluate(async()=>{const workspace={user:{id:'thumbnail-test',name:'Local thumbnail test'},items:[],preferences:{highlights:true,matchTypes:['x_post','x_community','telegram','x_profile'],newGroups:true,newMembers:true,watchedOnly:false,sound:false},preferencesRevision:0};
+ await worker.evaluate(async()=>{const workspace={user:{id:'thumbnail-test',name:'Local thumbnail test',email:'extension-qa@example.test',telegramLinked:true,telegramUsername:'kollens_demo'},items:[],preferences:{highlights:true,matchTypes:['x_post','x_community','telegram','x_profile'],newGroups:true,newMembers:true,watchedOnly:false,sound:false},preferencesRevision:0};
   await chrome.storage.local.set({auth:{token:'fake-thumbnail-token',expiresAt:new Date(Date.now()+86400000).toISOString(),userId:'thumbnail-test'},'account:thumbnail-test':{workspace,drafts:[]}});
   globalThis.fetch=async(input,init={})=>{const url=String(input);if(!url.startsWith('http://127.0.0.1:3360/api/extension/'))throw Error('Unexpected test transport');
    if(url.includes('/tokens/')){const body=JSON.parse(init.body);workspace.items=[{...body,address:url.split('/').pop(),revision:1,updatedAt:new Date().toISOString()}];}
@@ -44,8 +44,15 @@ try{
  await panel.reload();await panel.getByRole('button',{name:'Save NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Save NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
  current=await command({kind:'state'});assert.equal(current.workspace.items[0].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  assert.equal(await panel.locator('footer').count(),0);assert.equal(await panel.locator('header .brand-logo').evaluate(e=>Math.round(e.getBoundingClientRect().width)),76);checks++;
- await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Disconnect',exact:true}).waitFor();checks++;
- await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Disconnect',exact:true}).count(),0);await panel.getByRole('button',{name:'Tokens',exact:true}).click();checks++;
+ await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('heading',{name:'Account',exact:true}).waitFor();
+ await panel.getByRole('heading',{name:'extension-qa@example.test',exact:true}).waitFor();await panel.getByRole('button',{name:'Log out',exact:true}).waitFor();
+ await panel.getByText('@kollens_demo',{exact:true}).waitFor();await panel.getByText('Twitter/X',{exact:true}).waitFor();
+ assert.equal(await panel.getByText('Public Wallets',{exact:true}).count(),0);
+ await panel.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__copiedAccountId=value;}}});});
+ await panel.getByRole('button',{name:'Copy account UID',exact:true}).click();await panel.getByText('Account UID copied',{exact:true}).waitFor();
+ assert.equal(await panel.evaluate(()=>window.__copiedAccountId),'thumbnail-test');checks++;
+ await panel.screenshot({path:resolve(artifacts,'account-popup.png'),clip:{x:0,y:0,width:360,height:600}});
+ await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Log out',exact:true}).count(),0);await panel.getByRole('button',{name:'Tokens',exact:true}).click();checks++;
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.closest('[data-testid="trench-token-card"]').remove());await until(s=>!s.page.cards.some(c=>c.address===raw.cards[0].address));
  await panel.reload();await panel.locator('.saved-item .token-thumbnail img').waitFor();assert.equal(await panel.locator('.saved-item .token-thumbnail img').getAttribute('src'),'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  // A recycled token gets its own source; it cannot keep the previous logo.

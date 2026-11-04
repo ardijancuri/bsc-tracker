@@ -15,7 +15,7 @@ async function connect(target,account='A'){
  const frame=target.frameLocator('#panel');await frame.getByRole('button',{name:/^Saved/}).click();
  const popupPromise=target.waitForEvent('popup');await frame.getByRole('button',{name:'Connect Kollens',exact:true}).click();const popup=await popupPromise;await popup.waitForLoadState();
  await popup.getByRole('button',{name:`Use test account ${account}`,exact:true}).click();await popup.getByRole('button',{name:'Connect this extension',exact:true}).click();
- await popup.getByText('Connected. Return to the extension.').waitFor();await popup.close();await frame.getByRole('button',{name:'Profile',exact:true}).click();await frame.getByRole('button',{name:'Disconnect',exact:true}).waitFor();await frame.getByRole('button',{name:'Tokens',exact:true}).click();
+ await popup.getByText('Connected. Return to the extension.').waitFor();await popup.close();await frame.getByRole('button',{name:'Profile',exact:true}).click();await frame.getByRole('button',{name:'Log out',exact:true}).waitFor();await frame.getByRole('button',{name:'Tokens',exact:true}).click();
 }
 try{
  await page.goto(origin+'/fixture');await wait();

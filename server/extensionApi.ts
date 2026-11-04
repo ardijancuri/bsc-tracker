@@ -3,10 +3,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { resolveAuthUser, type ResolvedAuthUser } from './telegramAuth.js';
-import { defaultExtensionPreferences, extensionMatchTypes, extensionTokenImageUrl, type ExtensionPreferences, type ExtensionWorkspace } from '../shared/extension.js';
+import { defaultExtensionPreferences, extensionMatchTypes, extensionTokenImageUrl, type ExtensionAuthOptions, type ExtensionPreferences, type ExtensionWorkspace } from '../shared/extension.js';
+import { registerExtensionSocial, type ExtensionSocialProviders } from './extensionSocial.js';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const challenge = (value: string) => createHash('sha256').update(value).digest('base64url');
+const verifierSchema = z.string().regex(/^[A-Za-z0-9_-]{43,128}$/);
+const proofSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const idSchema = z.string().uuid();
 const addressSchema = z.string().regex(/^0x[0-9a-f]{40}$/);
 const preferencesSchema = z.object({
@@ -21,6 +24,25 @@ const itemSchema = z.object({
 const clean = (value: string) => value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 type DatabaseClient = Pick<PoolClient, 'query'>;
 
+export function extensionRequestOrigin(req: FastifyRequest, allowedOrigins: ReadonlySet<string>) {
+  const tag = req.headers['x-kollens-extension-origin'];
+  const origin = req.headers.origin ?? (typeof tag === 'string' ? tag : undefined);
+  return origin && allowedOrigins.has(origin) && (tag === undefined || tag === origin) ? origin : null;
+}
+
+function matchesProof(stored: string | null, expected: string) {
+  return stored !== null && Buffer.byteLength(stored) === Buffer.byteLength(expected)
+    && timingSafeEqual(Buffer.from(stored), Buffer.from(expected));
+}
+
+export async function readExtensionNativePairing(db: DatabaseClient, id: string, origin: string, verifier: string) {
+  if (!verifierSchema.safeParse(verifier).success) return null;
+  const { rows: [row] } = await db.query<{ expires_at: Date; verifier_challenge: string }>(`SELECT expires_at,verifier_challenge
+    FROM extension_pairing_attempts WHERE id=$1 AND extension_origin=$2 AND mode='native'
+    AND expires_at>now() AND consumed_at IS NULL AND user_id IS NULL`, [id, origin]);
+  return row && matchesProof(row.verifier_challenge, challenge(verifier)) ? { expires_at: row.expires_at } : null;
+}
+
 /** Two non-financial tables. All existing accounts/session values are preserved. */
 export const extensionSchemaSql = `
   CREATE TABLE IF NOT EXISTS extension_pairing_attempts (
@@ -30,6 +52,15 @@ export const extensionSchemaSql = `
     consumed_at timestamptz
   );
   CREATE INDEX IF NOT EXISTS extension_pairing_expiry_idx ON extension_pairing_attempts(expires_at);
+  ALTER TABLE extension_pairing_attempts ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'web' CHECK(mode IN ('web','native'));
+  ALTER TABLE extension_pairing_attempts ADD COLUMN IF NOT EXISTS completion_hash text;
+  ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email text;
+  CREATE TABLE IF NOT EXISTS extension_account_links (
+    user_id uuid NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+    provider text NOT NULL CHECK(provider IN ('telegram','x')),
+    subject text NOT NULL, username text,
+    PRIMARY KEY(user_id,provider), UNIQUE(provider,subject)
+  );
   CREATE TABLE IF NOT EXISTS extension_saved_tokens (
     user_id uuid NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
     chain_id integer NOT NULL CHECK(chain_id=56), address text NOT NULL CHECK(address ~ '^0x[0-9a-f]{40}$'),
@@ -53,14 +84,25 @@ async function workspace(db: DatabaseClient, user: { id: string; name: string })
   const [rows, prefs] = await Promise.all([
     db.query(`SELECT address,chain_id AS "chainId",name,symbol,logo_url AS "logoUrl",pinned,note,revision::int,updated_at AS "updatedAt"
       FROM extension_saved_tokens WHERE user_id=$1 ORDER BY updated_at DESC,address LIMIT 100`, [user.id]),
-    db.query(`SELECT preferences->'extension' AS extension FROM auth_users WHERE id=$1`, [user.id]),
+    db.query(`SELECT u.preferences->'extension' AS extension,u.email,
+      (u.telegram_id IS NOT NULL OR telegram.subject IS NOT NULL) AS telegram_linked,
+      COALESCE(telegram.username,CASE WHEN u.telegram_id IS NOT NULL THEN u.username END) AS telegram_username,
+      x.username AS x_username
+      FROM auth_users u
+      LEFT JOIN extension_account_links telegram ON telegram.user_id=u.id AND telegram.provider='telegram'
+      LEFT JOIN extension_account_links x ON x.user_id=u.id AND x.provider='x' WHERE u.id=$1`, [user.id]),
   ]);
-  const settings = storedPreferences(prefs.rows[0]?.extension);
-  return { user, items: rows.rows.map(row => ({ ...row, updatedAt: new Date(row.updatedAt).toISOString() })),
+  const profile = prefs.rows[0];
+  const settings = storedPreferences(profile?.extension);
+  return { user: { ...user, email: profile?.email ?? null, telegramLinked: profile?.telegram_linked === true,
+    telegramUsername: profile?.telegram_username ?? null, xUsername: profile?.x_username ?? null },
+    items: rows.rows.map(row => ({ ...row, updatedAt: new Date(row.updatedAt).toISOString() })),
     preferences: settings.preferences, preferencesRevision: settings.revision };
 }
 export interface ExtensionApiOptions {
   db: Pool; origin: string; extensionOrigins: string[];
+  authOptions?: ExtensionAuthOptions;
+  socialProviders?: ExtensionSocialProviders;
   now?: () => number;
   resolveWebUser?: (request: FastifyRequest, db: Pool) => Promise<ResolvedAuthUser | null>;
 }
@@ -83,11 +125,10 @@ export function registerExtensionApi(app: FastifyInstance, options: ExtensionApi
     // Privileged Chrome extension GET fetches may omit Origin. This registered
     // client tag is routing/CSRF context, never authentication: bearer secrets
     // or the single-use pairing verifier are still independently mandatory.
-    const tag=req.headers['x-kollens-extension-origin'];
-    const origin=req.headers.origin??(typeof tag==='string'?tag:undefined);
-    if(!origin||!allowedOrigins.has(origin)||(tag!==undefined&&tag!==origin)){reply.code(403).send({error:'Extension origin rejected'});return false;}
+    const origin=extensionRequestOrigin(req, allowedOrigins);
+    if(!origin){reply.code(403).send({error:'Extension origin rejected'});return false;}
     reply.header('Access-Control-Allow-Origin', origin).header('Vary', 'Origin');
-    return true;
+    return origin;
   }
   const privateHeaders = (reply: FastifyReply) => reply.header('Cache-Control', 'private,no-store').header('Referrer-Policy', 'no-referrer');
   async function bearer(req: FastifyRequest, reply: FastifyReply) {
@@ -112,23 +153,32 @@ export function registerExtensionApi(app: FastifyInstance, options: ExtensionApi
     return reply.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
       .header('Access-Control-Allow-Headers', 'Authorization,Content-Type,X-Kollens-Extension-Origin').header('Access-Control-Max-Age', '600').code(204).send();
   });
+  app.get('/api/extension/auth/options', { logLevel: 'silent' }, async (req, reply) => {
+    privateHeaders(reply);
+    if (!extensionRequest(req, reply) || !limit(req, reply, 'auth_options', 30)) return;
+    return { ...options.authOptions ?? { google: false, email: false },
+      telegram: Boolean(options.socialProviders?.telegram), x: Boolean(options.socialProviders?.x) };
+  });
+  if (options.socialProviders) registerExtensionSocial(app, db, webOrigin, options.socialProviders, bearer);
   app.post('/api/extension/auth/start', { logLevel: 'silent' }, async (req, reply) => {
     privateHeaders(reply);
-    if (!extensionRequest(req, reply) || !limit(req, reply, 'pair', 10, 600_000)) return;
-    const input = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict().safeParse(req.body);
+    const origin = extensionRequest(req, reply);
+    if (!origin || !limit(req, reply, 'pair', 10, 600_000)) return;
+    const input = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/), mode: z.enum(['web','native']).default('web') }).strict().safeParse(req.body);
     if (!input.success) return reply.code(400).send({ error: 'Invalid connection request' });
+    if (input.data.mode === 'native' && !origin.startsWith('chrome-extension://')) return reply.code(403).send({ error: 'Extension origin rejected' });
     await db.query('DELETE FROM extension_pairing_attempts WHERE expires_at<=$1', [new Date(now())]);
     const count = await db.query('SELECT count(*)::int AS n FROM extension_pairing_attempts');
     if (count.rows[0].n >= 2048) return reply.code(429).send({ error: 'Try again shortly' });
     const id = randomUUID(), expiresAt = new Date(now() + 600_000).toISOString();
-    await db.query(`INSERT INTO extension_pairing_attempts(id,verifier_challenge,extension_origin,expires_at) VALUES($1,$2,$3,$4)`,
-      [id, input.data.challenge, req.headers.origin??req.headers['x-kollens-extension-origin'], expiresAt]);
-    return { id, url: `${webOrigin}/extension/connect?id=${id}`, expiresAt, pollAfterMs: 2000 };
+    await db.query(`INSERT INTO extension_pairing_attempts(id,verifier_challenge,extension_origin,expires_at,mode) VALUES($1,$2,$3,$4,$5)`,
+      [id, input.data.challenge, origin, expiresAt, input.data.mode]);
+    return { id, expiresAt, pollAfterMs: 2000, ...(input.data.mode === 'web' ? { url: `${webOrigin}/extension/connect?id=${id}` } : {}) };
   });
   app.get<{ Params: { id: string } }>('/api/extension/auth/attempt/:id', { logLevel: 'silent' }, async (req, reply) => {
     const user = await signedWeb(req, reply); if (!user) return;
     if (!idSchema.safeParse(req.params.id).success) return reply.code(400).send({ error: 'Invalid connection' });
-    const found = await db.query(`SELECT extension_origin,expires_at FROM extension_pairing_attempts WHERE id=$1 AND expires_at>$2 AND consumed_at IS NULL`,
+    const found = await db.query(`SELECT extension_origin,expires_at FROM extension_pairing_attempts WHERE id=$1 AND mode='web' AND expires_at>$2 AND consumed_at IS NULL`,
       [req.params.id, new Date(now())]);
     if (!found.rows[0]) return reply.code(410).send({ error: 'Connection expired. Start again from the extension.' });
     return { user: { id: user.id, name: user.name }, extensionOrigin: found.rows[0].extension_origin, expiresAt: found.rows[0].expires_at };
@@ -138,31 +188,34 @@ export function registerExtensionApi(app: FastifyInstance, options: ExtensionApi
     const input = z.object({ id: idSchema, expectedUserId: idSchema }).strict().safeParse(req.body);
     if (!input.success) return reply.code(400).send({ error: 'Invalid connection' });
     if (input.data.expectedUserId !== user.id) return reply.code(409).send({ error: 'Your account changed. Review the connection again.' });
-    const result = await db.query(`UPDATE extension_pairing_attempts SET user_id=$2 WHERE id=$1 AND expires_at>$3 AND consumed_at IS NULL AND user_id IS NULL RETURNING id`,
+    const result = await db.query(`UPDATE extension_pairing_attempts SET user_id=$2 WHERE id=$1 AND mode='web' AND expires_at>$3 AND consumed_at IS NULL AND user_id IS NULL RETURNING id`,
       [input.data.id, user.id, new Date(now())]);
     return result.rowCount ? { approved: true } : reply.code(410).send({ error: 'Connection expired or already approved' });
   });
   app.post('/api/extension/auth/exchange', { logLevel: 'silent' }, async (req, reply) => {
     privateHeaders(reply);
-    if (!extensionRequest(req, reply) || !limit(req, reply, 'exchange', 90)) return;
-    const input = z.object({ id: idSchema, verifier: z.string().regex(/^[A-Za-z0-9_-]{43,128}$/) }).strict().safeParse(req.body);
+    const origin = extensionRequest(req, reply);
+    if (!origin || !limit(req, reply, 'exchange', 90)) return;
+    const input = z.object({ id: idSchema, verifier: verifierSchema, proof: proofSchema.optional() }).strict().safeParse(req.body);
     if (!input.success) return reply.code(400).send({ error: 'Invalid connection' });
     const client = await db.connect();
     try {
       await client.query('BEGIN');
       const row = (await client.query(`SELECT * FROM extension_pairing_attempts WHERE id=$1 FOR UPDATE`, [input.data.id])).rows[0];
-      const proof = challenge(input.data.verifier);
-      if (!row || row.extension_origin !== (req.headers.origin??req.headers['x-kollens-extension-origin']) || row.consumed_at || new Date(row.expires_at).getTime() <= now()) {
+      if (!row || row.extension_origin !== origin || row.consumed_at || new Date(row.expires_at).getTime() <= now()) {
         await client.query('ROLLBACK'); return reply.code(410).send({ error: 'Connection expired or already used' });
       }
-      if (Buffer.byteLength(row.verifier_challenge) !== Buffer.byteLength(proof) || !timingSafeEqual(Buffer.from(row.verifier_challenge), Buffer.from(proof))) {
+      if (!matchesProof(row.verifier_challenge, challenge(input.data.verifier))) {
         await client.query('ROLLBACK'); return reply.code(401).send({ error: 'Connection proof rejected' });
       }
       if (!row.user_id) { await client.query('ROLLBACK'); return reply.code(202).send({ pending: true }); }
+      if (row.mode === 'native' ? !input.data.proof || !matchesProof(row.completion_hash, digest(input.data.proof)) : Boolean(input.data.proof)) {
+        await client.query('ROLLBACK'); return reply.code(401).send({ error: 'Connection proof rejected' });
+      }
       const token = `kex_${randomBytes(32).toString('base64url')}`, expiresAt = new Date(now() + 30 * 86400_000).toISOString();
       await client.query(`INSERT INTO auth_sessions(id,user_id,secret_hash,expires_at,purpose) VALUES($1,$2,$3,$4,'extension')`,
         [randomUUID(), row.user_id, digest(token), expiresAt]);
-      await client.query('UPDATE extension_pairing_attempts SET consumed_at=$2 WHERE id=$1', [row.id, new Date(now())]);
+      await client.query('UPDATE extension_pairing_attempts SET consumed_at=$2,completion_hash=NULL WHERE id=$1', [row.id, new Date(now())]);
       await client.query('COMMIT'); return { token, expiresAt };
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   });

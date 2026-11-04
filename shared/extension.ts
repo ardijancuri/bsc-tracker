@@ -18,11 +18,12 @@ export interface ExtensionSavedToken extends ExtensionTokenIdentity {
   pinned: boolean; note: string; revision: number; updatedAt: string;
 }
 export interface ExtensionWorkspace {
-  user: { id: string; name: string };
+  user: { id: string; name: string; email?: string | null; telegramLinked?: boolean; telegramUsername?: string | null; xUsername?: string | null };
   items: ExtensionSavedToken[];
   preferences: ExtensionPreferences;
   preferencesRevision: number;
 }
+export interface ExtensionAuthOptions { google: boolean; email: boolean; telegram?: boolean; x?: boolean }
 export interface SocialLink { type: ExtensionMatchType; key: string; url: string }
 export interface TokenCardMetric { value: string; color?: string }
 export interface TokenCard extends ExtensionTokenIdentity {

@@ -83,8 +83,8 @@ html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:aut
 .wallet-card{padding:12px;border:1px solid var(--line);border-radius:12px}
 .wallet-intro{display:flex;gap:10px;align-items:flex-start}
 .wallet-intro-icon{display:grid;place-items:center;flex:0 0 32px;height:32px;border-radius:9px;background:var(--surface2);color:var(--yellow)}
-.wallet-card h2,.profile-card h2{margin:0 0 4px;font-size:13px}
-.wallet-card p,.profile-card p,.wallet-feedback{font-size:11px;line-height:1.5;color:var(--muted)}
+.wallet-card h2{margin:0 0 4px;font-size:13px}
+.wallet-card p,.wallet-feedback{font-size:11px;line-height:1.5;color:var(--muted)}
 .wallet-actions,.wallet-toolbar{display:flex;gap:8px}
 .wallet-actions{margin-top:12px}
 .wallet-actions>button{flex:1}
@@ -93,10 +93,32 @@ html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:aut
 .popup-action:hover{background:#393f43}
 .popup-action.secondary{border-color:#34393d;background:transparent}
 .popup-action.secondary:hover{background:var(--surface2)}
-.profile-card{display:grid;justify-items:start;gap:7px;padding:14px;border-radius:12px;background:var(--surface)}
-.profile-card>svg{color:var(--muted);margin-bottom:4px}
-.profile-card h2{margin:0}
-.profile-card .popup-action{margin-top:4px}
+.account-stack{display:grid;gap:8px}
+.account-card{min-width:0;padding:16px;background:var(--surface);border-radius:12px}
+.account-summary h2{margin:0;font-size:15px;font-weight:650;overflow-wrap:anywhere}
+.account-display-name{margin-top:3px;font-size:12px;line-height:1.4;color:var(--muted)}
+.account-meta{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.account-action{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0;color:var(--muted);font-size:13px;white-space:nowrap}
+.account-action:not(:disabled):hover{color:var(--text)}
+.account-uid{font-variant-numeric:tabular-nums}
+.account-uid svg,.account-action svg{flex-shrink:0}
+.account-copy-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.account-connections{padding-block:9px}
+.account-connections dl{display:grid;gap:0;margin:0}
+.account-connections dl>div{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.account-connections dt{color:var(--muted);font-size:14px}
+.account-connections dd{min-width:0;margin:0;color:var(--muted);font-size:13px;overflow-wrap:anywhere;text-align:right}
+.account-connections dd.linked{color:var(--text)}
+.account-connections p{margin:3px 0 2px;font-size:11px;line-height:1.4;color:var(--muted)}
+.account-signin h2{margin:0 0 4px;font-size:15px}
+.account-signin p{font-size:12px;line-height:1.5;color:var(--muted)}
+.account-signin-actions,.account-email{display:grid;justify-items:start;gap:8px;margin-top:14px}
+.account-provider{justify-self:stretch;min-height:36px;font-size:13px}
+.account-email label{display:grid;gap:5px;justify-self:stretch;color:var(--text);font-size:13px}
+.account-email input{width:100%;min-height:36px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)}
+.account-email input:focus-visible{outline:2px solid var(--yellow);outline-offset:1px}
+.account-email .account-code-destination{max-width:100%;overflow-wrap:anywhere}
+.account-form-actions{display:flex;align-items:center;gap:12px;margin-top:3px}
 .wallet-record{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .wallet-record code{font-size:11px;color:var(--muted)}
 .wallet-record-actions{display:flex;gap:2px}

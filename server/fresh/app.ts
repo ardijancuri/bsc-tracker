@@ -26,8 +26,10 @@ import{freshPublicKolTokenPageSql}from'./kolTokenPage.js';
 import {freshTrackedEventSql,freshScopeTokenBoundarySql} from './tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import { ensureExtensionSchema, registerExtensionApi } from '../extensionApi.js';
-import { registerGoogleAuthRoutes } from '../googleAuth.js';
-import { registerEmailAuthRoutes } from '../emailAuth.js';
+import { googleAuthConfig, registerGoogleAuthRoutes } from '../googleAuth.js';
+import { emailAuthConfig, registerEmailAuthRoutes } from '../emailAuth.js';
+import { telegramExtensionIdentity } from '../extensionTelegramIdentity.js';
+import { xExtensionIdentity } from '../extensionXIdentity.js';
 
 const address=(s:string)=>/^0x[0-9a-f]{40}$/i.test(s)?s.toLowerCase():null;
 const num=(s:unknown,defaultValue=50,max=100)=>Number.isInteger(Number(s))&&Number(s)>0?Math.min(Number(s),max):defaultValue;
@@ -52,12 +54,15 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   registerFreshFeatures(app,{db});
   if (process.env.KOLLENS_EXTENSION_ENABLED === 'true') {
     await ensureExtensionSchema(db);
+    const extensionOrigins = (process.env.KOLLENS_EXTENSION_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean);
+    const google = googleAuthConfig(), email = emailAuthConfig();
     registerExtensionApi(app, {
       db, origin: process.env.PUBLIC_APP_URL ?? 'https://kollens.com',
-      extensionOrigins: (process.env.KOLLENS_EXTENSION_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean),
+      extensionOrigins, authOptions: {google: Boolean(google), email: Boolean(email)},
+      socialProviders: {telegram:telegramExtensionIdentity(), x:xExtensionIdentity()},
     });
-    registerGoogleAuthRoutes(app, {db});
-    registerEmailAuthRoutes(app, {db});
+    registerGoogleAuthRoutes(app, {db, config: google, extensionOrigins});
+    registerEmailAuthRoutes(app, {db, config: email, extensionOrigins});
   }
   app.setErrorHandler((error,request,reply)=>{app.log.warn({event:'fresh_request_failed',method:request.method},'Request unavailable');
     if(!reply.sent)reply.code(503).header('Cache-Control','no-store').header('Retry-After','3').send({error:'Data is temporarily unavailable. Try again shortly.'});});

@@ -1,17 +1,19 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Copy, ExternalLink, LogOut, Pencil, Settings, Star, Tag, Trash2, UserRound, WalletCards} from 'lucide-react';
-import {defaultExtensionPreferences,extensionMatchTypes,extensionLabels,extensionTokenImageUrl,type ExtensionPage,type ExtensionWorkspace,type ExtensionPreferences,type TokenCard,type ExtensionTokenIdentity} from '../../../shared/extension';
+import {Copy, ExternalLink, Pencil, Settings, Star, Tag, Trash2, UserRound, WalletCards} from 'lucide-react';
+import {defaultExtensionPreferences,extensionMatchTypes,extensionLabels,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage,type ExtensionWorkspace,type ExtensionPreferences,type TokenCard,type ExtensionTokenIdentity} from '../../../shared/extension';
 import {requestBackground,isExtension,browserApi} from './platform';
 import {gmgnOrigins} from './liveAccess';
 import {cardMetricColor} from './cardMetrics';
+import {AccountView,type AccountPending} from './AccountView';
 import {WalletsView} from './WalletsView';
 import type {Draft,PopupUi} from './sync';
 import '@fontsource-variable/inter';
 import './panel.css';
 import './popup.css';
 
-interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:{expiresAt:string}|null;error?:string;gmgnAuthorized:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
+interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;error?:string;gmgnAuthorized:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
+const accountReturnKey='popupAccountReturnUntil';
 const empty:State={connected:false,workspace:null,drafts:[],preferences:defaultExtensionPreferences,saved:[],page:null,selected:null,gmgnAuthorized:false};
 const short=(address:string)=>`${address.slice(0,6)}…${address.slice(-4)}`;
 const destinations = [
@@ -67,9 +69,16 @@ function Panel(){
   const [refreshFailed, setRefreshFailed] = useState(false);
   const mainRef=useRef<HTMLElement>(null);
   const selectedGroupRef=useRef<HTMLElement>(null);
+  const chosenDestination=useRef(false),firstState=useRef(true);
   const[note,setNote]=useState<PopupUi['editor']>(null),inFlight=useRef(false),mutationEpoch=useRef(0),uiOwner=useRef<string|undefined>(undefined),chosenView=useRef<PopupUi['view']|null>(null);
+  const clearAccountReturn=()=>{if(isExtension)void browserApi.storage.session.remove(accountReturnKey).catch(()=>{});};
+  const navigate=(next:Destination)=>{
+    chosenDestination.current=true;
+    if(next!=='profile')clearAccountReturn();
+    setDestination(next);
+  };
   const remember=(patch:Partial<PopupUi>,ownerId=uiOwner.current)=>{if(ownerId)void requestBackground({kind:'ui',ownerId,patch}).catch(()=>setError('Could not keep this draft locally. Save it before closing.'));};
-  const changeView=(next:PopupUi['view'])=>{chosenView.current=next;setView(next);setDestination('tokens');remember({view:next});};
+  const changeView=(next:PopupUi['view'])=>{chosenView.current=next;setView(next);navigate('tokens');remember({view:next});};
   const changeNote=(editor:PopupUi['editor'])=>{setNote(editor);remember({editor});};
   const refresh = async () => {
     if (inFlight.current) return;
@@ -78,6 +87,16 @@ function Panel(){
     try {
       const result = await requestBackground<State>({kind:'state'});
       if (epoch !== mutationEpoch.current) return;
+      if (firstState.current) {
+        const stored=await (isExtension?browserApi.storage.session.get(accountReturnKey).catch(()=>null):null);
+        if (epoch !== mutationEpoch.current) return;
+        firstState.current=false;
+        const returning=Number(stored?.[accountReturnKey])>Date.now();
+        if (!chosenDestination.current && (returning || result.pending?.method==='email' || result.pending?.method==='google')) {
+          setDestination('profile');
+        }
+        if (returning && result.connected) clearAccountReturn();
+      }
       if (result.ownerId !== uiOwner.current) {
         const nextView = chosenView.current ?? result.ui?.view ?? 'matches';
         uiOwner.current = result.ownerId;
@@ -108,7 +127,31 @@ function Panel(){
     else{window.addEventListener('kollens:live-page',page);window.addEventListener('kollens:live-focus',focus);}
     return()=>{if(isExtension)browserApi.runtime.onMessage.removeListener(update);else{window.removeEventListener('kollens:live-page',page);window.removeEventListener('kollens:live-focus',focus);}};
   },[]);
-  const action=async(message:Record<string,unknown>)=>{mutationEpoch.current++;setBusy(true);setError('');try{await requestBackground({...message,ownerId:uiOwner.current});await refresh();return true;}catch(e){setError(e instanceof Error?e.message:'Request failed');return false;}finally{setBusy(false);}};
+  const action=async(message:Record<string,unknown>)=>{
+    const epoch=++mutationEpoch.current;
+    setBusy(true);
+    setError('');
+    try {
+      await requestBackground({...message,ownerId:uiOwner.current});
+      if (epoch!==mutationEpoch.current) return false;
+      await refresh();
+      return true;
+    } catch(e) {
+      if (epoch===mutationEpoch.current) setError(e instanceof Error?e.message:'Request failed');
+      return false;
+    } finally {
+      if (epoch===mutationEpoch.current) setBusy(false);
+    }
+  };
+  const accountAction=async(message:Record<string,unknown>)=>{
+    if (isExtension && (message.kind==='google-connect' || message.kind==='link-social')) {
+      // The toolbar popup can close while Chrome's authorization window has focus.
+      void browserApi.storage.session.set({[accountReturnKey]:Date.now()+10*60_000}).catch(()=>{});
+    }
+    const success=await action(message);
+    if (success && (message.kind==='cancel-pairing' || message.kind==='disconnect')) clearAccountReturn();
+    return success;
+  };
   const enableLive=async()=>{
     // Must be invoked directly from the click, before any asynchronous work.
     try{const granted=await browserApi.permissions.request({origins:gmgnOrigins});if(!granted){setError('GMGN site access was not granted.');return;}changeView('matches');await action({kind:'enable-live'});}
@@ -145,14 +188,16 @@ function Panel(){
   const canEnableLive = state.canScanPage && state.localLiveAvailable && !state.liveEnabled;
   const canScanManually = state.canScanPage && !state.localLiveAvailable;
   const copyError=()=>setError('Copy failed');
-  const connect = <button className="popup-action" disabled={busy||Boolean(state.pending)} onClick={()=>void action({kind:'connect'})}>
-    {state.pending?'Connecting…':'Connect Kollens'}
+  const demoConnect = state.demoAccount && !state.authOptions?.google && !state.authOptions?.email;
+  const connect = <button className="popup-action" disabled={busy || Boolean(demoConnect && state.pending)}
+    onClick={()=>demoConnect ? void action({kind:'connect'}) : navigate('profile')}>
+    {demoConnect ? 'Connect Kollens' : 'Sign in'}
   </button>;
   return <div className="workspace">
     <header className="popup-header">
       {destination==='tokens'
         ? <img className="brand-logo" src="assets/kollens-logo.svg" alt="Kollens"/>
-        : <><img className="brand-mark" src="assets/icon.png" alt="Kollens"/><h1>{destinations.find(item=>item.id===destination)?.label}</h1></>}
+        : <><img className="brand-mark" src="assets/icon.png" alt="Kollens"/><h1>{destination==='profile' ? 'Account' : destinations.find(item=>item.id===destination)?.label}</h1></>}
       {destination==='wallets'&&<span className="network-pill"><img src="assets/bnb-chain.svg" alt=""/>BNB</span>}
       {destination==='tokens'&&!state.gmgnAuthorized&&<span className="preview-label">Local</span>}
     </header>
@@ -165,14 +210,9 @@ function Panel(){
     {destination!=='wallets'&&state.error&&<p className="feedback" role="status">{state.error}</p>}
     <main ref={mainRef} className={`popup-main ${destination}-view`}>
     {destination==='wallets'&&<WalletsView/>}
-    {destination==='profile'&&<section className="profile-card">
-      <UserRound size={20} aria-hidden="true"/>
-      <h2>{state.connected?state.workspace?.user.name??'Kollens account':'Kollens account'}</h2>
-      <p>{state.connected?'Connected':'Sign in to sync saved tokens, notes and alert preferences.'}</p>
-      {state.connected
-        ? <button className="popup-action secondary" disabled={busy} onClick={()=>void action({kind:'disconnect'})}><LogOut size={15} aria-hidden="true"/>Disconnect</button>
-        : connect}
-    </section>}
+    {destination==='profile'&&<AccountView user={state.connected ? state.workspace?.user : undefined}
+      options={state.authOptions} pending={state.pending} demo={state.demoAccount===true} busy={busy}
+      action={accountAction} onCopyError={copyError}/>}
     {destination==='settings'&&<section className="settings"><div className="settings-group"><h2>Match settings</h2><label><input type="checkbox" checked={state.preferences.highlights} onChange={e=>preferences({highlights:e.target.checked})}/>Highlight matching cards</label>
       {extensionMatchTypes.map(type=><label key={type}><input type="checkbox" checked={state.preferences.matchTypes.includes(type)} onChange={e=>preferences({matchTypes:e.target.checked?[...state.preferences.matchTypes,type]:state.preferences.matchTypes.filter(t=>t!==type)})}/>{extensionLabels[type]}</label>)}
       </div><div className="settings-group"><h2>Page alerts</h2>{(['newGroups','newMembers','watchedOnly','sound']as const).map(key=><label key={key}><input type="checkbox" checked={key==='sound'?state.preferences.sound&&Boolean(state.soundActivated):state.preferences[key]} onChange={e=>preferences({[key]:e.target.checked})}/>{{newGroups:'New matching groups',newMembers:'New tokens joining a group',watchedOnly:'Only groups with saved tokens',sound:'Enable alert sound'}[key]}</label>)}
@@ -245,7 +285,7 @@ function Panel(){
     </main>
     <nav className="bottom-nav" aria-label="Extension navigation">
       {destinations.map(({id,label,Icon:DestinationIcon})=><button key={id} aria-label={label} title={label}
-        className="destination-button" aria-current={destination===id?'page':undefined} onClick={()=>setDestination(id)}>
+        className="destination-button" aria-current={destination===id?'page':undefined} onClick={()=>navigate(id)}>
         <DestinationIcon size={21} strokeWidth={1.55} aria-hidden="true"/>
         {id==='profile'&&state.connected&&<span className="account-status" aria-hidden="true"/>}
       </button>)}
