@@ -12,9 +12,9 @@ import '@fontsource-variable/inter';
 import './panel.css';
 import './popup.css';
 
-interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;error?:string;gmgnAuthorized:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
+interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;error?:string;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
 const accountReturnKey='popupAccountReturnUntil';
-const empty:State={connected:false,workspace:null,drafts:[],preferences:defaultExtensionPreferences,saved:[],page:null,selected:null,gmgnAuthorized:false};
+const empty:State={connected:false,workspace:null,drafts:[],preferences:defaultExtensionPreferences,saved:[],page:null,selected:null};
 const short=(address:string)=>`${address.slice(0,6)}…${address.slice(-4)}`;
 const destinations = [
   {id:'wallets', label:'Wallets', Icon:WalletCards},
@@ -195,11 +195,9 @@ function Panel(){
   </button>;
   return <div className="workspace">
     <header className="popup-header">
-      {destination==='tokens'
-        ? <img className="brand-logo" src="assets/kollens-logo.svg" alt="Kollens"/>
-        : <><img className="brand-mark" src="assets/icon.png" alt="Kollens"/><h1>{destination==='profile' ? 'Account' : destinations.find(item=>item.id===destination)?.label}</h1></>}
+      <img className="brand-mark" src="assets/icon.png" alt="Kollens"/>
+      <h1>{destination==='profile' ? 'Account' : destinations.find(item=>item.id===destination)?.label}</h1>
       {destination==='wallets'&&<span className="network-pill"><img src="assets/bnb-chain.svg" alt=""/>BNB</span>}
-      {destination==='tokens'&&!state.gmgnAuthorized&&<span className="preview-label">Local</span>}
     </header>
     {destination==='tokens'&&<nav className="workspace-tabs" aria-label="Workspace views">{(['matches','saved','activity']as const).map(tab=><button key={tab} className={view===tab?'active':''} aria-current={view===tab?'page':undefined} onClick={()=>changeView(tab)}>{tab[0].toUpperCase()+tab.slice(1)}<span>{tab==='matches'?groups.length:tab==='saved'?shownItems.size:state.page?.alerts.length??0}</span></button>)}</nav>}
     {error&&<div role="alert" className="feedback">{error}<button aria-label="Dismiss error" onClick={()=>setError('')}>×</button></div>}

@@ -43,7 +43,11 @@ try{
   };});
  await panel.reload();await panel.getByRole('button',{name:'Save NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Save NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
  current=await command({kind:'state'});assert.equal(current.workspace.items[0].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
- assert.equal(await panel.locator('footer').count(),0);assert.equal(await panel.locator('header .brand-logo').evaluate(e=>Math.round(e.getBoundingClientRect().width)),76);checks++;
+ assert.equal(await panel.locator('footer').count(),0);
+ const tokensHeader=panel.locator('.popup-header');
+ await tokensHeader.getByRole('heading',{name:'Tokens',exact:true}).waitFor();
+ assert.equal(await tokensHeader.locator('.brand-mark').evaluate(e=>Math.round(e.getBoundingClientRect().width)),23);
+ assert.equal(await tokensHeader.evaluate(e=>getComputedStyle(e).backgroundColor),await panel.locator('body').evaluate(e=>getComputedStyle(e).backgroundColor));checks++;
  await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('heading',{name:'Account',exact:true}).waitFor();
  await panel.getByRole('heading',{name:'extension-qa@example.test',exact:true}).waitFor();await panel.getByRole('button',{name:'Log out',exact:true}).waitFor();
  await panel.getByText('@kollens_demo',{exact:true}).waitFor();await panel.getByText('Twitter/X',{exact:true}).waitFor();

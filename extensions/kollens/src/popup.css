@@ -2,7 +2,6 @@
 /* Palette from the web app's styles.css and compact.css. */
 html[data-surface="popup"] {
   --bg: #101214;
-  --header: #0b0e11;
   --surface: #171a1d;
   --surface2: #1c2023;
   --line: #282d30;
@@ -15,13 +14,11 @@ html[data-surface="popup"],html[data-surface="popup"] body{width:360px;height:60
 html[data-surface="popup"] #root,html[data-surface="popup"] .workspace{height:100%;min-height:0}
 html[data-surface="popup"] body{font-size:14px;background:var(--bg);color:var(--text)}
 html[data-surface="popup"] .workspace{display:flex;flex-direction:column;position:relative}
-html[data-surface="popup"] header{height:48px;min-height:48px;padding:0 14px;gap:8px;flex-shrink:0;border:0;background:var(--header)}
-html[data-surface="popup"] header .brand-logo{width:76px}
+html[data-surface="popup"] .popup-header{height:48px;min-height:48px;padding:0 14px;gap:8px;flex-shrink:0;border:0;background:var(--bg)}
 html[data-surface="popup"] header .brand-mark{width:23px;height:23px;object-fit:contain}
 html[data-surface="popup"] .popup-header h1{margin:0;font-size:15px;letter-spacing:-.2px;font-weight:650}
 .network-pill{margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--line);border-radius:999px;color:var(--text);font-size:11px;font-weight:650}
 html[data-surface="popup"] header .network-pill img{width:13px;height:13px}
-.preview-label{font-size:10px;color:var(--muted);background:none;padding:0}
 .account-status{position:absolute;right:8px;bottom:8px;width:5px;height:5px;border-radius:50%;background:var(--yellow)}
 .scan-action{display:flex;justify-content:center}
 .scan-button{padding:4px 6px;border-radius:5px;color:var(--yellow);font-size:12px;white-space:nowrap}
