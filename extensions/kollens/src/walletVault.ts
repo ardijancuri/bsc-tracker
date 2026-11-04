@@ -12,7 +12,7 @@ interface EncryptedWallet extends LocalWallet {
   ciphertext: ArrayBuffer;
 }
 
-export const minimumWalletPasswordLength = 12;
+export const minimumWalletPasswordLength = 8;
 const maximumWalletPasswordLength = 1024;
 const databaseName = 'kollens-wallet-vault';
 const walletStore = 'wallets';

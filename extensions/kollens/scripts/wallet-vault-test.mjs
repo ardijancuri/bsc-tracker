@@ -39,16 +39,19 @@ try {
   const result = await page.evaluate(async () => {
     const vault = await import('./vault.js');
     const password = 'Kollens testing only 2026';
+    const shortPassword = 'Vault-82';
     const privateKey = '0x' + '0'.repeat(63) + '1';
-    const imported = await vault.importLocalWallet(privateKey, password);
+    const tooShort = await vault.createLocalWallet('Vault-8').catch(error => error.message);
+    const imported = await vault.importLocalWallet(privateKey, shortPassword);
     const importedPhrase = await vault.importLocalWallet(
       'test test test test test test test test test test test junk', password,
     );
-    const created = await vault.createLocalWallet(password);
+    const created = await vault.createLocalWallet(shortPassword);
     const duplicate = await vault.importLocalWallet(privateKey, 'different password').catch(error => error.message);
     const wrongPassword = await vault.exportLocalWallet(imported.address, 'different password').catch(error => error.message);
-    const exported = await vault.exportLocalWallet(imported.address, password);
-    const createdExport = await vault.exportLocalWallet(created.address, password);
+    const exported = await vault.exportLocalWallet(imported.address, shortPassword);
+    const createdExport = await vault.exportLocalWallet(created.address, shortPassword);
+    const phraseExport = await vault.exportLocalWallet(importedPhrase.address, password);
     const privateKeyRecord = await new Promise(resolve => {
       const request = indexedDB.open('kollens-wallet-vault');
       request.onsuccess = () => {
@@ -71,11 +74,12 @@ try {
         };
       };
     });
-    const tampered = await vault.exportLocalWallet(imported.address, password).catch(error => error.message);
+    const tampered = await vault.exportLocalWallet(imported.address, shortPassword).catch(error => error.message);
     const currentWallets = await vault.listLocalWallets();
     return {
-      imported, importedPhrase, created, duplicate, wrongPassword, privateKeyRecord, tampered,
-      roundTrips: exported === privateKey && /^0x[a-f\d]{64}$/.test(createdExport) && createdExport !== exported,
+      imported, importedPhrase, created, duplicate, wrongPassword, privateKeyRecord, tampered, tooShort,
+      roundTrips: exported === privateKey && [createdExport, phraseExport].every(key => /^0x[a-f\d]{64}$/.test(key))
+        && new Set([exported, createdExport, phraseExport]).size === 3,
       count: currentWallets.length,
     };
   });
@@ -83,6 +87,7 @@ try {
   assert.equal(result.importedPhrase.address, '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
   assert.equal(result.count, 3);
   assert.equal(result.roundTrips, true);
+  assert.match(result.tooShort, /between 8 and 1024 characters/);
   assert.match(result.duplicate, /already saved/);
   assert.match(result.wrongPassword, /Could not unlock/);
   assert.match(result.tampered, /Could not unlock/);
