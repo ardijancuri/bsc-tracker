@@ -144,7 +144,7 @@ export function createCreatorService(db: Pool = pool, rpc: Rpc = chainRpc) {
       // A new login/logout, concurrent claim or second proof cannot reuse this challenge.
       const consumed = await client.query(`UPDATE creator_challenges SET consumed_at=now() WHERE id=$1 AND user_id=$2 AND session_hash=$3
         AND wallet_address=$4 AND origin=$5 AND action=$6 AND chain_id=56 AND consumed_at IS NULL AND expires_at>now()
-        AND EXISTS(SELECT 1 FROM auth_sessions s WHERE s.user_id=$2 AND s.secret_hash=$3 AND s.expires_at>now()) RETURNING id`, values);
+        AND EXISTS(SELECT 1 FROM auth_sessions s WHERE s.user_id=$2 AND s.secret_hash=$3 AND s.purpose='web' AND s.expires_at>now()) RETURNING id`, values);
       if (!consumed.rowCount) throw new CreatorInputError('challenge_invalid', 'This wallet challenge expired or was already used. Start again.', 409);
       const tracked = await client.query('SELECT address FROM kols WHERE address=$1 AND is_tracked FOR SHARE', [input.wallet]);
       if (!tracked.rowCount) throw new CreatorInputError('not_tracked', 'This KOL is no longer tracked', 404);

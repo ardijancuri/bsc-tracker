@@ -25,6 +25,9 @@ import {readFreshTokenDirectory} from './tokenDirectory.js';
 import{freshPublicKolTokenPageSql}from'./kolTokenPage.js';
 import {freshTrackedEventSql,freshScopeTokenBoundarySql} from './tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
+import { ensureExtensionSchema, registerExtensionApi } from '../extensionApi.js';
+import { registerGoogleAuthRoutes } from '../googleAuth.js';
+import { registerEmailAuthRoutes } from '../emailAuth.js';
 
 const address=(s:string)=>/^0x[0-9a-f]{40}$/i.test(s)?s.toLowerCase():null;
 const num=(s:unknown,defaultValue=50,max=100)=>Number.isInteger(Number(s))&&Number(s)>0?Math.min(Number(s),max):defaultValue;
@@ -47,6 +50,15 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     webhook:alerts.webhook,botLoginStart:login.handleStart});
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
+  if (process.env.KOLLENS_EXTENSION_ENABLED === 'true') {
+    await ensureExtensionSchema(db);
+    registerExtensionApi(app, {
+      db, origin: process.env.PUBLIC_APP_URL ?? 'https://kollens.com',
+      extensionOrigins: (process.env.KOLLENS_EXTENSION_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean),
+    });
+    registerGoogleAuthRoutes(app, {db});
+    registerEmailAuthRoutes(app, {db});
+  }
   app.setErrorHandler((error,request,reply)=>{app.log.warn({event:'fresh_request_failed',method:request.method},'Request unavailable');
     if(!reply.sent)reply.code(503).header('Cache-Control','no-store').header('Retry-After','3').send({error:'Data is temporarily unavailable. Try again shortly.'});});
   app.get('/api/health',async()=>{await db.query('SELECT 1');return{ok:true,service:'kollens-fresh',state:await reads.state()};});

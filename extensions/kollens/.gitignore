@@ -1,0 +1,5 @@
+/dist/
+/dist-local/
+/dist-gmgn-qa/
+/test-results/
+/playwright-report/

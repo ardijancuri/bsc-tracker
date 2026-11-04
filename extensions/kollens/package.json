@@ -1,0 +1,20 @@
+{
+  "name": "@kollens/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts",
+    "demo": "node --import tsx scripts/demo.ts",
+    "test:browser": "node scripts/browser-test.mjs",
+    "test:unpacked": "node scripts/unpacked-test.mjs",
+    "test:thumbnails": "node scripts/thumbnail-test.mjs"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@playwright/test": "^1.64.1",
+    "@types/chrome": "^0.3.7"
+  }
+}

@@ -7,6 +7,7 @@ import { ensureCreatorSchema } from '../creatorSchema.js';
 import { ensureTelegramNotificationsSchema } from '../telegramNotificationsSchema.js';
 import {freshRollingSchemaSql} from './rollingSchema.js';
 import{freshPendingTradesSchemaSql}from'./pendingTrades.js';
+import { extensionSchemaSql } from '../extensionApi.js';
 
 
 /** Existing objects owned by this startup, including compatibility views.
@@ -15,6 +16,7 @@ export const FRESH_STARTUP_PUBLIC_RELATIONS = Object.freeze([
   'kols','tokens','worker_state','trades','watch_sessions','watch_entries','journal_wallets',
   'auth_users','auth_sessions','auth_login_attempts','auth_bot_login_attempts','auth_bot_login_updates','auth_bot_login_pacing','auth_telegram_avatars',
   'account_watch_entries','active_watch_entries','creator_claims','creator_profiles','creator_challenges','published_kols',
+  'extension_pairing_attempts','extension_saved_tokens',
   'telegram_notification_settings','telegram_kol_notification_settings','telegram_trade_events','telegram_notification_outbox',
   'telegram_notification_items','telegram_notification_updates','telegram_notification_pacing',
 ]);
@@ -268,6 +270,7 @@ async function ensureFreshSchemaAttempt(db: Pool) {
     await client.query(freshRollingSchemaSql);
     const helpers=freshStartupHelperPool(client);
     await ensureAuthSchema(helpers);
+    if (process.env.KOLLENS_EXTENSION_ENABLED === 'true') await client.query(extensionSchemaSql);
     await ensureTelegramBotLoginSchema(helpers);
     await ensureTelegramAvatarSchema(helpers);
     await ensureAccountWatchlistSchema(helpers);

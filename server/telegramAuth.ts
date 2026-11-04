@@ -65,6 +65,7 @@ export async function ensureAuthSchema(db: Pool) {
     );
     CREATE INDEX IF NOT EXISTS auth_sessions_expiry_idx ON auth_sessions(expires_at);
     CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id);
+    ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'web';
     CREATE TABLE IF NOT EXISTS auth_login_attempts (
       state_hash text PRIMARY KEY, browser_hash text NOT NULL, code_verifier text NOT NULL, nonce text NOT NULL,
       return_to text NOT NULL, guest_snapshot jsonb, expires_at timestamptz NOT NULL
@@ -97,7 +98,7 @@ export async function resolveAuthUser(request: FastifyRequest, db: Pool = pool):
   const value = authSessionSecret(request.headers.cookie);
   if (!value) return null;
   const result = await db.query(`SELECT u.id,u.name,u.username,u.avatar_url AS "avatarUrl"
-    FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.secret_hash=$1 AND s.expires_at>now()`, [digest(value)]);
+    FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.secret_hash=$1 AND s.purpose='web' AND s.expires_at>now()`, [digest(value)]);
   return result.rows[0] ?? null;
 }
 
@@ -245,7 +246,7 @@ export function registerTelegramAuthRoutes(app: FastifyInstance, options: AuthOp
     const value = authSessionSecret(request.headers.cookie);
     if (!value) return null;
     const result = await db.query(`SELECT u.id,u.issuer,u.subject,u.telegram_id::text AS "telegramId" FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
-      WHERE s.secret_hash=$1 AND s.expires_at>now()`, [digest(value)]);
+      WHERE s.secret_hash=$1 AND s.purpose='web' AND s.expires_at>now()`, [digest(value)]);
     return result.rows[0] ? { ...result.rows[0], sessionHash: digest(value) } as { id: string; issuer: string; subject: string; telegramId?: string; sessionHash: string } : null;
   }
   async function consentIdentityMatches(request: FastifyRequest, attempt: LoginAttempt) {

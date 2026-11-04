@@ -1,0 +1,7 @@
+{
+  "gmgnAuthorized": false,
+  "gmgnLayoutVerified": false,
+  "manualReaderVerified": true,
+  "localAutomaticTestAvailable": true,
+  "note": "User requested local automatic matching on November 2. Local mode requires optional Chrome site access, verified captured DOM and enable/pause controls. GMGN approval and production live acceptance remain separate; production automatic activation stays disabled."
+}

@@ -30,6 +30,11 @@ export function PrivacyPolicyPage() {
 
     <section><h2>{t("Watchlists")}</h2><p>{t('Guest favorites are saved for this browser using a hashed browser-session secret. Guest sessions expire after up to a year without a save. Clearing cookies loses access to guest favorites.')}</p><p>{t('Optional Telegram login saves favorites across devices. The Kollens bot sends a short-lived login link; signing in does not enable trade alerts. We store your verified Telegram ID, display name, username and optional profile photo. Guest favorites merge only in the browser that started login. We do not request your phone number.')}</p><p>{t('Login sessions use secure HttpOnly cookies and expire after 30 days. Logging out ends the current device session; account favorites stay saved. Contact us to request account data deletion.')}</p></section>
 
+    <section><h2>{t("Kollens Companion and Google sign-in")}</h2>
+      <p>{t("If you choose Google sign-in from Kollens Companion, we use your Google account identifier and display name to recognize your Kollens account. After you approve the connection, the extension uses its own session to sync your saved tokens, private notes and alert preferences.")}</p>
+      <p>{t("You can disconnect the extension from its Profile tab. Contact us to request deletion of your account data.")}</p>
+    </section>
+
     <section><h2>{t('Telegram alerts')}</h2><p>{t('Telegram trade alerts are optional and require separate messaging consent. We store your verified numeric Telegram user ID, alert preferences, muted KOLs, and delivery records to send favorite KOL trade updates and prevent duplicate messages. You can pause alerts in Watchlist, mute individual KOLs, or send /stop to the bot. Signing in alone does not enable alerts.')}</p></section>
 
     <section><h2>{t('Creator profiles and wallet proofs')}</h2><p>{t('Creators can connect a browser wallet to sign a domain-bound claim or release message. We store the account-to-wallet claim, challenge records and published profile customization. A wallet-control badge verifies control of the wallet at the time of the proof; it does not verify social accounts or trading quality. Signing a profile message does not authorize a blockchain transaction.')}</p></section>

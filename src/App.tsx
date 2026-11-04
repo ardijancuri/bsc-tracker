@@ -1,4 +1,5 @@
 import { CreatorProfile } from './CreatorProfile';
+import { ExtensionConnect } from './ExtensionConnect';
 import { PortfolioPage, CreatorProfilesPage } from './Journal';
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
@@ -417,6 +418,7 @@ export default function App() {
       <Route path="/tokens" element={<TokensPage />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
+      <Route path="/extension/connect" element={<ExtensionConnect />} />
       <Route path="/portfolio" element={<PortfolioPage />} />
       <Route path="/journal" element={<Navigate to={{ pathname: '/portfolio', search, hash }} replace />} />
       <Route path="/creator" element={<CreatorProfilesPage />} />

@@ -22,6 +22,18 @@ describe('Fresh production candidate isolation',()=>{
   expect(services.app.environment.GMGN_CHART_CACHE_DIR).toBe('/app/.cache/fresh/charts');expect(services.app.volumes).toContain('fresh_chartcache:/app/.cache/fresh/charts');
   expect(services.app.environment.FRESH_REPLAY_SECRET).toContain(':?');expect(Object.keys(services.app.environment).some(key=>key.startsWith('VITE_'))).toBe(false);
  });
+ it('makes Google extension sign-in opt-in and supplies its settings only to the app',()=>{
+  const appEnvironment = {
+   KOLLENS_EXTENSION_ENABLED:'${KOLLENS_EXTENSION_ENABLED:-false}',
+   KOLLENS_EXTENSION_ORIGINS:'${KOLLENS_EXTENSION_ORIGINS:-}',
+   GOOGLE_CLIENT_ID:'${GOOGLE_CLIENT_ID:-}',
+   GOOGLE_CLIENT_SECRET:'${GOOGLE_CLIENT_SECRET:-}',
+  };
+  expect(services.app.environment).toMatchObject(appEnvironment);
+  for(const name of ['fresh-db','worker','cutover']) {
+   for(const key of Object.keys(appEnvironment)) expect(services[name].environment).not.toHaveProperty(key);
+  }
+ });
  it('keeps private tracing worker-only on the existing read-only socket',()=>{
   const mount=services.worker.volumes[0];expect(mount.type).toBe('bind');expect(mount.target).toBe('/run/bsc/geth.ipc');expect(mount.read_only).toBe(true);expect(mount.bind.create_host_path).toBe(false);
   expect(services.worker.environment.BSC_TRACE_IPC).toBe('/run/bsc/geth.ipc');expect(services.app.volumes.every((v:unknown)=>typeof v==='string')).toBe(true);expect(services.app.environment.BSC_TRACE_IPC).toBeUndefined();

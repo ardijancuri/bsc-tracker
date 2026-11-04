@@ -1,0 +1,34 @@
+import {chromium} from '@playwright/test';
+import {build} from 'esbuild';
+import assert from 'node:assert/strict';
+import {readFile,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const bundle=await build({entryPoints:[resolve(root,'src/gmgnReader.ts')],bundle:true,format:'esm',write:false,target:'es2022'});
+const {readRenderedGmgnTrenches}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+const html=await readFile(resolve(root,'fixtures-gmgn-bsc.html'),'utf8');
+const browser=await chromium.launch({headless:true});let checks=0;
+try{
+ const page=await browser.newPage();let remoteRequests=0;
+ await page.route('**/*',route=>{if(route.request().isNavigationRequest()&&route.request().frame()===page.mainFrame())return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':"default-src 'none'"}});remoteRequests++;return route.abort();});
+ await page.goto('https://gmgn.ai/?chain=bsc');
+ const before=await page.locator('body').innerHTML(),result=await page.evaluate(readRenderedGmgnTrenches);
+ assert.equal(result.status,'ready');assert.equal(result.cards.length,23);assert.equal(new Set(result.cards.map(card=>card.address)).size,22);checks++;
+ assert.equal(result.cards[0].symbol,'NVA');assert.equal(result.cards[0].name,'NovaBurn');assert.ok(result.cards.some(card=>card.socialUrls.some(url=>url==='https://x.com/i/status/2117077441000972695')));checks++;
+ assert.equal(await page.locator('body').innerHTML(),before);assert.equal(remoteRequests,0);checks++;
+ const cards=page.locator('[data-testid="trench-token-card"]');
+ await cards.first().evaluate(el=>el.hidden=true);assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards.length,22);await cards.first().evaluate(el=>el.hidden=false);checks++;
+ await cards.first().evaluate(el=>el.setAttribute('data-trenches-token-chain','eth'));assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards.length,22);await cards.first().evaluate(el=>el.setAttribute('data-trenches-token-chain','bsc'));checks++;
+ await cards.first().evaluate(el=>el.setAttribute('href','https://evil.example/bsc/token/'+el.getAttribute('data-trenches-token-address')));assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards.length,22);checks++;
+ await cards.first().evaluate(el=>{el.setAttribute('data-trenches-token-address','0x'+'1'.repeat(40));el.setAttribute('href','/bsc/token/0x'+'1'.repeat(40));});assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards[0].address,'0x'+'1'.repeat(40));checks++;
+ await page.evaluate(()=>document.querySelector('#MainDomId').append(document.querySelector('[data-testid="trench-token-card"]').cloneNode(true)));assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards.length,23);checks++;
+ await page.goto('https://gmgn.ai/?chain=eth');assert.equal((await page.evaluate(readRenderedGmgnTrenches)).status,'unsupported');checks++;
+ await page.goto('https://gmgn.ai/trend?chain=bsc');assert.equal((await page.evaluate(readRenderedGmgnTrenches)).status,'unsupported');checks++;
+ await page.goto('https://example.com/?chain=bsc');assert.equal((await page.evaluate(readRenderedGmgnTrenches)).status,'unsupported');checks++;
+ await page.goto('https://gmgn.ai/?chain=bsc');await page.evaluate(()=>{const board=document.querySelector('[data-testid^="trenches"]'),card=board.querySelector('[data-testid="trench-token-card"]');for(let i=0;i<207;i++)board.append(card.cloneNode(true));});
+ const durations=[];for(let i=0;i<20;i++){const start=performance.now();assert.equal((await page.evaluate(readRenderedGmgnTrenches)).cards.length,230);durations.push(performance.now()-start);}durations.sort((a,b)=>a-b);const p95=durations[18];assert.ok(p95<250);checks++;
+ await page.evaluate(()=>{const board=document.querySelector('[data-testid^="trenches"]'),card=board.querySelector('[data-testid="trench-token-card"]');for(let i=0;i<1771;i++)board.append(card.cloneNode(true));});assert.equal((await page.evaluate(readRenderedGmgnTrenches)).status,'unsupported');checks++;
+ const report={ok:true,checks,capturedRenderedCards:23,distinctTokens:22,fixtureSource:'Chrome Save Page, BSC Trenches, 2026-11-02',scaleCards:230,p95Ms:p95,remoteRequests,domWritesByReader:0,automaticActivation:false};
+ await writeFile(resolve(root,'../../.cache/extension/qa/gmgn-reader-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+}finally{await browser.close();}

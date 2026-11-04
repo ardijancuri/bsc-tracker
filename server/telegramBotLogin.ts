@@ -244,7 +244,7 @@ export function createTelegramBotLogin(options: TelegramBotLoginOptions) {
           await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,782325))', [String(attempt.telegram_id)]);
           const existing = (await client.query<{ id: string }>('SELECT id FROM auth_users WHERE telegram_id=$1 FOR UPDATE', [String(attempt.telegram_id)])).rows[0];
           const oldSession = authSessionSecret(request.headers.cookie);
-          const current = oldSession ? (await client.query<{ id: string }>(`SELECT u.id FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.secret_hash=$1 AND s.expires_at>$2`, [hash(oldSession), new Date(now()).toISOString()])).rows[0] : null;
+          const current = oldSession ? (await client.query<{ id: string }>(`SELECT u.id FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.secret_hash=$1 AND s.purpose='web' AND s.expires_at>$2`, [hash(oldSession), new Date(now()).toISOString()])).rows[0] : null;
           if (current && current.id !== existing?.id) throw new BotLoginInputError(409, 'You are signed in to a different account. Log out before using this link.');
           // Older OIDC accounts may have no numeric identity yet. Never silently replace their favorites/journal with a new empty account.
           if (!existing && await recoveryRequired(client, String(attempt.telegram_id))) throw new BotLoginInputError(428, 'Verify your existing Telegram login once before continuing.');

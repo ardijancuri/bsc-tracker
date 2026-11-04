@@ -47,7 +47,7 @@ export function registerTelegramAvatarRoute(app: FastifyInstance, db: Pool) {
     const value = authSessionSecret(request.headers.cookie);
     if (!value || !/^[1-9][0-9]{0,15}$/.test(request.params.id)) return reply.code(404).send();
     const result = await db.query(`SELECT a.image FROM auth_telegram_avatars a JOIN auth_users u ON u.telegram_id=a.telegram_id
-      JOIN auth_sessions s ON s.user_id=u.id WHERE s.secret_hash=$1 AND s.expires_at>now() AND a.telegram_id=$2`,
+      JOIN auth_sessions s ON s.user_id=u.id WHERE s.secret_hash=$1 AND s.purpose='web' AND s.expires_at>now() AND a.telegram_id=$2`,
     [createHash('sha256').update(value).digest('hex'), request.params.id]);
     if (!result.rows[0]?.image) return reply.code(404).send();
     return reply.type('image/webp').send(result.rows[0].image);
