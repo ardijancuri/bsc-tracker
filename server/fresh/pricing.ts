@@ -6,6 +6,7 @@ import { TRUSTED_QUOTE_FEEDS, oracleMarketAbi, poolMarketAbi } from '../nodeMark
 import { MarketDecimal, ratioPrice, sqrtPrice } from '../nodeMarketMath.js';
 import { freshAddress, freshHash, freshInteger } from './capture.js';
 import { freshStockwaveMetadataFromFact } from './factoryLaunch.js';
+import { FRESH_FLAP_POOL_PORTAL } from './flapPoolLaunch.js';
 import { readFreshStockwaveMarket, validFreshStockwaveMarketIdentity } from './stockwaveMarket.js';
 import {readFreshInfinityClMarket,validFreshInfinityClMarketIdentity,validFreshCurrentInfinityClMarketIdentity}from'./infinityClMarket.js';
 import { FRESH_STOCK_QUOTE_TOKEN } from './stockQuote.js';
@@ -216,13 +217,15 @@ async function registeredInfinityClPrice(token:FreshTokenMetadata,options:FreshP
  return{quote:WBNB,marketQuote:WBNB,decimals:18,priceQuote:priceRatio.text(),priceRatio,liquidity,address:value.manager,protocol:'infinity_cl',id:`infinity_cl:${value.manager}:${value.poolId}`,observedAt:options.block.timestamp,
   identity:{manager:value.manager,poolId:value.poolId,poolKey:value.poolKey,market:value},state:{sqrtPriceX96:market.sqrtPriceX96,liquidity:market.liquidityRaw,rawQuoteNumerator:raw.numerator,rawQuoteDenominator:raw.denominator}};
 }
-async function discoverPool(token: FreshTokenMetadata, quote: string, options: FreshPriceOptions): Promise<{candidates:QuoteCandidate[];complete:boolean}> {
+async function discoverPool(token: FreshTokenMetadata, quote: string, options: FreshPriceOptions, expectedV2Pair?: string): Promise<{candidates:QuoteCandidate[];complete:boolean}> {
   const quoteDecimals = Number((await freshCall(options, quote, tokenAbi, 'decimals'))[0]);
   if (!Number.isInteger(quoteDecimals) || quoteDecimals < 0 || quoteDecimals > 36) throw new Error('quote_precision_invalid');
   const requests: { address: string; protocol: 'pcs_v2' | 'pcs_v3'; fee: number | null }[] = [];
   const v2 = await freshCall(options, PCS_V2_FACTORY, poolMarketAbi, 'getPair', [token.address, quote]);
-  if (freshAddress(v2[0]) && String(v2[0]).toLowerCase() !== ZeroAddress) requests.push({ address: String(v2[0]).toLowerCase(), protocol: 'pcs_v2', fee: null });
-  const v3 = await Promise.allSettled([100, 500, 2_500, 10_000].map(async fee => ({ address: String((await freshCall(options, PCS_V3_FACTORY, poolMarketAbi, 'getPool', [token.address, quote, fee]))[0]).toLowerCase(), fee })));
+  const v2Address = freshAddress(v2[0]);
+  if (expectedV2Pair && v2Address !== expectedV2Pair) throw new Error('flap_direct_pool_factory_mismatch');
+  if (v2Address && v2Address !== ZeroAddress) requests.push({ address: v2Address, protocol: 'pcs_v2', fee: null });
+  const v3 = expectedV2Pair ? [] : await Promise.allSettled([100, 500, 2_500, 10_000].map(async fee => ({ address: String((await freshCall(options, PCS_V3_FACTORY, poolMarketAbi, 'getPool', [token.address, quote, fee]))[0]).toLowerCase(), fee })));
   for (const result of v3) if (result.status === 'fulfilled' && freshAddress(result.value.address) && result.value.address !== ZeroAddress) requests.push({ ...result.value, protocol: 'pcs_v3' });
   const candidates = await Promise.allSettled(requests.map(async request => {
     const [factory, t0, t1] = await Promise.all(['factory', 'token0', 'token1'].map(method => freshCall(options, request.address, poolMarketAbi, method)));
@@ -256,6 +259,19 @@ async function discoverPool(token: FreshTokenMetadata, quote: string, options: F
 }
 
 interface LaunchObservation {proof:Record<string,unknown>|null;emptyQuote?:string;marketQuote?:string}
+function directFlapPool(token: FreshTokenMetadata, options: FreshPriceOptions) {
+  const fact = options.launchFact as Record<string, unknown> | null | undefined;
+  const proof = fact?.proof as Record<string, unknown> | null | undefined;
+  if (fact?.protocol !== 'flap' || fact.status !== 'eligible' || proof?.launchKind !== 'direct_v2_pool') return null;
+  const quote = freshAddress(proof.quoteAddress), pair = freshAddress(proof.poolAddress);
+  const number = Number(fact.block_number ?? fact.blockNumber), hash = freshHash(fact.block_hash ?? fact.blockHash);
+  if (proof.controller !== FRESH_FLAP_POOL_PORTAL || (fact.token_address ?? fact.tokenAddress) !== token.address
+    || !quote || quote === ZeroAddress || quote === token.address || !pair || pair === ZeroAddress || pair === quote || pair === token.address
+    || !Number.isSafeInteger(number) || number < 0 || number > options.block.number || !hash
+    || number === options.block.number && hash !== options.block.hash) throw new Error('flap_direct_pool_launch_invalid');
+  return { quote, pair };
+}
+
 async function launchPrice(token: FreshTokenMetadata, options: FreshPriceOptions, observed: LaunchObservation): Promise<QuoteCandidate | null> {
   if (token.decimals !== 18) return null;
   try {
@@ -321,8 +337,9 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   const historical=freshHistoricalValuation(options);
   const token = await freshTokenMetadata(tokenAddress, { ...options, requireSupply: true });
   if(token.supplyRaw===null)throw new Error('token_supply_unavailable');
+  const directPool = directFlapPool(token, options);
   const launch:LaunchObservation = { proof: null }, [controller, stockwave,registeredV4] = await Promise.all([
-    launchPrice(token, options, launch), stockwavePrice(token, options).catch(() => null),
+    directPool ? null : launchPrice(token, options, launch), stockwavePrice(token, options).catch(() => null),
     Promise.allSettled((options.marketIdentities??[]).slice(0,8).map(identity=>validFreshCurrentInfinityClMarketIdentity(identity)?registeredInfinityClPrice(token,options,identity):registeredV4Price(token,options,identity))),
   ]);
   let routed:QuoteCandidate|null=null;
@@ -345,8 +362,8 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   // Incomplete discovery, a positive alternative or registered V4 identity
   // continues to prevent the terminal empty-market classification below.
   const emptyCurve=!!launch.emptyQuote;
-  const discoveryQuotes=[...new Set([...Object.keys(TRUSTED_QUOTE_FEEDS),...(launch.marketQuote?[launch.marketQuote]:[]),...(emptyCurve?[launch.emptyQuote!]:[])])].filter(quote=>quote!==token.address);
-  const discovered=launchCandidate?[]:await Promise.allSettled(discoveryQuotes.map(quote=>discoverPool(token,quote,options)));
+  const discoveryQuotes=directPool?[directPool.quote]:[...new Set([...Object.keys(TRUSTED_QUOTE_FEEDS),...(launch.marketQuote?[launch.marketQuote]:[]),...(emptyCurve?[launch.emptyQuote!]:[])])].filter(quote=>quote!==token.address);
+  const discovered=launchCandidate?[]:await Promise.allSettled(discoveryQuotes.map(quote=>discoverPool(token,quote,options,directPool?.pair)));
   const candidates = [...(launchCandidate ? [launchCandidate] : discovered.flatMap(value=>value.status==='fulfilled'?value.value.candidates:[])),...(stockwave?[stockwave]:[]),
     ...registeredV4.flatMap(value=>value.status==='fulfilled'&&value.value?[value.value]:[])];
   const valued = await Promise.allSettled(candidates.map(async candidate => {

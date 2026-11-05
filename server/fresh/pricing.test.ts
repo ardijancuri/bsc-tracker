@@ -10,6 +10,7 @@ import { FRESH_SPCXB_QUOTE,FRESH_SPCXB_NATIVE_PAIR } from './currentSpcxbQuote.j
 import { factoryCode,pairCode } from './currentQuote.fixture.js';
 import {FRESH_CURRENT_STABLE_BRIDGE,freshPoolNativePair,freshPoolQuotePair} from './currentPoolQuote.js';
 import{FRESH_PCS_V3_DEPLOYER,freshPoolStableV3}from'./currentV3Quote.js';
+import { FRESH_FLAP_POOL_PORTAL } from './flapPoolLaunch.js';
 
 const token = `0x${'7'.repeat(40)}`, pool = `0x${'2'.repeat(40)}`, block = { number: 101, hash: `0x${'a'.repeat(64)}`, timestamp: '2026-10-21T18:00:00.000Z' };
 const tokenAbi = new Interface(['function decimals() view returns(uint8)', 'function totalSupply() view returns(uint256)', 'function name() view returns(string)', 'function symbol() view returns(string)']);
@@ -240,6 +241,41 @@ describe('graduated Flap current-market discovery',()=>{
     for(const options of [{emptyMarket:true},{emptyMarket:true,failedDiscovery:true}]){
       await expect(freshCurrentQuote(token,graduatedFlapFixture(migratedQuotes[0],options))).rejects.toThrow('authenticated_market_quote_unavailable');
     }
+  });
+});
+
+describe('direct Flap Pool Launch valuation', () => {
+  const launchFact = (quoteAddress = WBNB, poolAddress = pool) => ({
+    token_address: token, protocol: 'flap', status: 'eligible', block_number: block.number - 1, block_hash: block.hash,
+    proof: { launchKind: 'direct_v2_pool', controller: FRESH_FLAP_POOL_PORTAL, quoteAddress, poolAddress },
+  });
+
+  it('prices the event pair from confirmed V2 reserves without a bonding or graduation read', async () => {
+    const rpc = rpcFixture();
+    await expect(freshCurrentQuote(token, { rpc, block, launchFact: launchFact() })).resolves.toMatchObject({
+      priceUsd: '6', marketCapUsd: '6000000',
+      market: { id: `pcs_v2:${pool}`, protocol: 'pcs_v2', address: pool, quoteAddress: WBNB },
+    });
+    const destinations = vi.mocked(rpc).mock.calls.map(([, params]) => (params[0] as { to: string }).to);
+    expect(destinations).not.toContain(FLAP_PORTAL);
+    expect(destinations).not.toContain(FOUR_HELPER);
+    expect(destinations).not.toContain(PCS_V3_FACTORY);
+  });
+
+  it('values a non-feed quote through the existing authenticated conversion route', async () => {
+    const quoteAddress = '0x' + '9'.repeat(40);
+    const fixture = graduatedFlapFixture({ quote: quoteAddress, nativePair: freshPoolNativePair(quoteAddress) }, { quoteDecimals: 6 });
+    await expect(freshCurrentQuote(token, { ...fixture, launchFact: launchFact(quoteAddress) })).resolves.toMatchObject({
+      priceUsd: '600',
+      market: { protocol: 'pcs_v2', address: pool, quoteAddress, identity: { quoteConversion: { kind: 'authenticated_current_pcs_v2_native' } } },
+    });
+  });
+
+  it('keeps an inconsistent launch pair, fake factory or noncanonical same-block launch unavailable', async () => {
+    const rpc = rpcFixture(), other = '0x' + '3'.repeat(40);
+    await expect(freshCurrentQuote(token, { rpc, block, launchFact: launchFact(WBNB, other) })).rejects.toThrow('authenticated_market_quote_unavailable');
+    await expect(freshCurrentQuote(token, { rpc: rpcFixture({ badFactory: true }), block, launchFact: launchFact() })).rejects.toThrow('authenticated_market_quote_unavailable');
+    await expect(freshCurrentQuote(token, { rpc, block, launchFact: { ...launchFact(), block_number: block.number, block_hash: '0x' + 'b'.repeat(64) } })).rejects.toThrow('flap_direct_pool_launch_invalid');
   });
 });
 

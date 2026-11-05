@@ -49,6 +49,9 @@ import{freshPaidCreationPurchase,freshPaidCreationPurchaseCandidate}from'./paidC
 import{certifyFreshPaidCreationEvent,planFreshPaidCreationKindCorrections,retireFreshPaidCreationInterpretations}from'./paidCreationCorrection.js';
 import{FRESH_UNISWAP_V4_BSC_MANAGER,stockwavePoolManagerInterface}from'./stockwaveMarket.js';
 import{freshMixedV4Settlement}from'./mixedV4Settlement.js';
+import { decodeFreshFlapPoolLaunch, FRESH_FLAP_POOL_PORTAL } from './flapPoolLaunch.js';
+import { freshFlapPoolCreatorBuy, freshFlapPoolSwaps } from './flapPoolCreatorBuy.js';
+import { freshFlapPoolV2Settlement } from './flapPoolV2Settlement.js';
 
 export const FRESH_DECODER_VERSION = 3;
 const q = FreshRational.parse, units = (raw: bigint, decimals: number) => new FreshRational(raw, 10n ** BigInt(decimals)).decimal(255);
@@ -265,6 +268,10 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
   };
   for (const execution of executions) {
     if (execution.status === 'unsupported') { reasons.add('unsupported_smart_account_operation'); continue; }
+    const flapPoolLaunches = execution.logs.flatMap(log => {
+      const launch = decodeFreshFlapPoolLaunch(log);
+      return launch ? [launch] : [];
+    });
     const flows = tokenFlows(execution.wallet, execution.logs), targets: { token: string; raw: bigint; logs: FreshLog[]; metadata: FreshTokenMetadata }[] = [];
     for (const [token, flow] of flows) {
       if (isExcludedKolProfileTokenAddress(token) || isFreshSettlementQuote(token)) continue;
@@ -331,6 +338,30 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     if (targets.length > 1 && !exchange && !selfTransfersOnly && feeUsd !== '0') reasons.add('operation_fee_allocation_unknown');
     const previousEvents = events.length;
     for (const target of targets) {
+      const poolLaunch = flapPoolLaunches.find(launch => launch.token === target.token);
+      const poolSwaps = poolLaunch ? freshFlapPoolSwaps(poolLaunch, execution.logs) : [];
+      if (poolLaunch && poolSwaps.length && (execution.kind !== 'transfer' || poolLaunch.creator === execution.wallet)) {
+        const buy = freshFlapPoolCreatorBuy(tx, execution.wallet, poolLaunch, execution.logs, poolSwaps,
+          target.logs, target.raw, flows.get(poolLaunch.quoteAddress)?.raw ?? 0n);
+        if (!buy || execution.kind !== 'transaction' || targets.length !== 1) {
+          reasons.add('flap_pool_creator_buy_unverified');
+          continue;
+        }
+        const precision = buy.native ? { decimals: 18 } : await meta(poolLaunch.quoteAddress);
+        const usd = await price(poolLaunch.quoteAddress);
+        const quoteAmount = precision ? units(buy.quoteRaw, precision.decimals) : null;
+        const quoteSymbol = buy.native ? 'BNB' : freshSettlementQuoteSymbol(poolLaunch.quoteAddress);
+        const amountUsd = usd !== null && quoteAmount !== null ? q(quoteAmount).mul(q(usd)).decimal() : null;
+        if (amountUsd === null) reasons.add('trade_value_unavailable');
+        const quote = quoteAmount !== null && quoteSymbol ? { quoteAddress: poolLaunch.quoteAddress, quoteAmount, quoteSymbol } : undefined;
+        emit(target.token, 'buy', units(target.raw, target.metadata.decimals), amountUsd, buy.logIndex, null, null, extraFeeAttribution, quote);
+        if (quote && quote.quoteAddress !== WBNB) {
+          const nativeUsd = await price(WBNB);
+          if (nativeUsd !== null && nativeUsd.length <= 384 && /^\d+(?:\.\d+)?$/.test(nativeUsd) && q(nativeUsd).n > 0n)
+            tradeBnbPrices[events[events.length - 1].id] = nativeUsd;
+        }
+        continue;
+      }
       const controller = controllerTrade(execution, target.token);
       if (controller.length > 1) { reasons.add('multiple_actions_require_execution_decoder'); continue; }
       const v4Swap=freshLinkedV4Swap(execution,target.logs,target.raw)||(execution.kind==='transaction'&&targets.length===1&&freshMixedV4Settlement(entry,execution.wallet,target.token,target.raw));
@@ -353,7 +384,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
         directTransfer=freshDirectTransferIntent(entry,execution,block,target.token,target.raw,intentTrace);
         if(directTransfer)directTransferIntents.push(directTransfer);
       }
-      const swap = !directTransfer && execution.kind !== 'transfer' && (paidCreation||controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0]))||v4Swap);
+      const swap = !poolLaunch && !directTransfer && execution.kind !== 'transfer' && (paidCreation||controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0]))||v4Swap);
       if (swap && target.raw !== 0n) {
         if (controller.length && (controller[0].side === 'buy') !== positive) { reasons.add('controller_quantity_direction_mismatch'); continue; }
         const selfCallTrace=execution.kind==='transaction'&&targets.length===1&&entry.selfCallContext?await getTrace():null;
@@ -376,11 +407,18 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
         const smartNativeSettlement=smartTrace?freshSmartAccountNativeSell(entry,execution,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,target.raw,smartTrace):null;
         const smartSettlement=smartNativeSettlement?{quoteAddress:WBNB,quoteRaw:BigInt(smartNativeSettlement.nativeReceivedWei)}:smartTrace&&hasFreshSmartSellSettlement(execution.logs)?freshSmartAccountSellSettlement(entry,execution,target.token,target.raw,smartTrace):null;
         const wrappedSell=amountUsd===null&&!positive&&targets.length===1&&execution.kind==='transaction'&&opposingQuotes.length===1&&opposingQuotes[0][0]===WBNB;
-        const wrappedTrace=wrappedSell?await getTrace():null,wrappedTraceAuthenticated=!!wrappedTrace&&validFreshCompleteCallTrace(entry,wrappedTrace);
+        // The signed one-hop nonpayable Pancake V2 route pays WBNB directly.
+        // Use its exact receipt only for an authenticated Flap launch pair.
+        const admission = wrappedSell ? await services.tradeAdmission?.(target.token) : null;
+        const launchProof = admission?.kind === 'new_launch' && admission.fact.protocol === 'flap' ? admission.fact.proof : null;
+        const flapPoolWrappedSell = launchProof?.controller === FRESH_FLAP_POOL_PORTAL && launchProof.launchKind === 'direct_v2_pool' &&
+          launchProof.quoteAddress === WBNB && (!entry.trace || !validFreshCompleteCallTrace(entry, entry.trace) || freshNativeDelta(entry.trace, execution.wallet) === 0n) &&
+          freshFlapPoolV2Settlement(tx, execution.wallet, target.token, target.raw, execution.logs, launchProof) === opposingQuotes[0][1].raw;
+        const wrappedTrace=wrappedSell&&!flapPoolWrappedSell?await getTrace():null,wrappedTraceAuthenticated=!!wrappedTrace&&validFreshCompleteCallTrace(entry,wrappedTrace);
         const wrappedNativeDelta=wrappedTraceAuthenticated?freshNativeDelta(wrappedTrace!,execution.wallet):null;
         const mixedWrappedMetadata=wrappedSell&&wrappedTraceAuthenticated&&wrappedNativeDelta!==null&&wrappedNativeDelta>0n?await meta(WBNB):null;
         const mixedSettlement=mixedWrappedMetadata?freshMixedNativeWrappedSell(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw,mixedWrappedMetadata):null;
-        const wrappedSettlementUnverified=wrappedSell&&(!wrappedTraceAuthenticated||wrappedNativeDelta!==0n&&!mixedSettlement);
+        const wrappedSettlementUnverified=wrappedSell&&!flapPoolWrappedSell&&(!wrappedTraceAuthenticated||wrappedNativeDelta!==0n&&!mixedSettlement);
         if(wrappedSettlementUnverified)reasons.add('wrapped_settlement_trace_unverified');
         if(mixedSettlement){
           const quoteAmount=units(BigInt(mixedSettlement.totalNativeEquivalentWei),18),usd=await price(WBNB);
@@ -495,6 +533,13 @@ function retainedNativeQuote(entry:FreshCapturedReceipt,event:FreshFinancialEven
   const logIndex=controller[0]?Number(freshInteger(controller[0].log.logIndex)):target.logs.length===1?Number(freshInteger(target.logs[0].logIndex)):null;
   const key=`${execution.key}:${event.tokenAddress}:${event.kind}:${logIndex??'aggregate'}`;
   if(event.executionKey!==key||event.id!==createHash('sha256').update(key).digest('hex')||event.logIndex!==logIndex)return null;
+  for (const log of execution.logs) {
+    const launch = decodeFreshFlapPoolLaunch(log);
+    if (launch?.token !== event.tokenAddress) continue;
+    const buy = positive ? freshFlapPoolCreatorBuy(tx, wallet, launch, execution.logs, freshFlapPoolSwaps(launch, execution.logs),
+      target.logs, target.raw, flows.get(launch.quoteAddress)?.raw ?? 0n) : null;
+    return buy?.native ? { quoteAddress: WBNB, quoteSymbol: 'BNB', quoteAmount: units(buy.quoteRaw, 18) } : null;
+  }
   const raw=target.raw>0n?target.raw:-target.raw;
   const receiptPayment=positive?freshNativeBuyCost(tx,wallet,event.tokenAddress,raw,execution.logs):nativeSellProceeds(wallet,raw,execution.logs,execution.router,event.tokenAddress);
   let native:bigint|null=null;

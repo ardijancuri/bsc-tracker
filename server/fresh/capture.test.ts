@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { getCreateAddress } from 'ethers';
 import type { PoolClient } from 'pg';
 import type { Rpc, RpcBatchRequest } from '../rpc.js';
 import { transferTopic } from '../swap.js';
-import { fourInterface, FOUR_MANAGERS, pairInterface, PCS_V2_FACTORY } from '../launchpad.js';
-import { collectFreshPage, commitFreshPage, decodeFreshEvidence, decodeFreshLaunch, encodeFreshEvidence, FRESH_EVIDENCE_TTL_MS, runFreshCapture, validateFreshReceipt, type FreshBlock, type FreshCapturedReceipt, type FreshLog } from './capture.js';
+import { fourInterface, FOUR_MANAGERS, pairInterface, PCS_V2_FACTORY, WBNB } from '../launchpad.js';
+import { collectFreshPage, commitFreshPage, decodeFreshEvidence, decodeFreshFlapPoolLaunchFact, decodeFreshLaunch, encodeFreshEvidence, FRESH_EVIDENCE_TTL_MS, runFreshCapture, validateFreshReceipt, type FreshBlock, type FreshCapturedReceipt, type FreshLog, type FreshReceipt, type FreshTransaction } from './capture.js';
+import { FRESH_FLAP_POOL_LAUNCH_TOPIC, FRESH_FLAP_POOL_PORTAL, FRESH_FLAP_POOL_V2_SCHEMA } from './flapPoolLaunch.js';
 import { FRESH_NONLEDGER_TEMPLATES } from './tokenAuthenticity.js';
 import * as stockwave from './factoryLaunch.js';
 import * as tokenBirth from './tokenBirth.js';
@@ -332,5 +334,78 @@ describe('Stockwave factory capture', () => {
     expect(page.receipts).toEqual([expect.objectContaining({ receipt: f.receipt, wallets: [],
       launchRepair: { version: 1, kind: 'stockwave', reason: 'factory_creation_code_unverified' } })]);
     expect(decodeFreshEvidence(encodeFreshEvidence(page.receipts[0])).launchRepair).toEqual(page.receipts[0].launchRepair);
+  });
+});
+
+function flapPoolCaptureFixture(change?: 'missing_receipt' | 'mismatched_log' | 'foreign_emitter' | 'future_schema' | 'missing_index') {
+  const chain = JSON.parse(readFileSync(new URL('./fixtures/flapPoolLaunchChain.json', import.meta.url), 'utf8')) as {
+    token: string; pool: string;
+    launch: { block: Pick<FreshBlock, 'number' | 'hash' | 'parentHash' | 'timestamp'> & { transactions: string[] }; transaction: FreshTransaction; receipt: FreshReceipt };
+  };
+  const { transaction, receipt } = chain.launch, rawBlock = chain.launch.block;
+  const block: FreshBlock = { ...rawBlock, transactions: rawBlock.transactions.map((txHash, index) => txHash === transaction.hash ? transaction : {
+    hash: txHash, transactionIndex: '0x' + index.toString(16), blockHash: rawBlock.hash, blockNumber: rawBlock.number,
+    from: router, to: router, value: '0x0',
+  }) };
+  const log = receipt.logs.find(log => log.address === FRESH_FLAP_POOL_PORTAL && log.topics[0] === FRESH_FLAP_POOL_LAUNCH_TOPIC)!;
+  if (change === 'foreign_emitter') log.address = router;
+  if (change === 'future_schema') log.data = log.data.replace(FRESH_FLAP_POOL_V2_SCHEMA.slice(2), hash('f').slice(2));
+  const discoveryLog = change === 'mismatched_log' ? { ...log, data: log.data + '00' } : log;
+  const number = Number(BigInt(block.number)), prior = { ...checkpoint, blockNumber: number - 1, blockHash: block.parentHash, startBlock: number - 1, startHash: block.parentHash };
+  const rpc = vi.fn(async (method: string, params: unknown[]) => {
+    if (method === 'eth_getBlockByNumber') return block;
+    if (method === 'eth_getTransactionReceipt' && params[0] === transaction.hash) return change === 'missing_receipt' ? null : receipt;
+    if (method === 'eth_getLogs') {
+      const filter = params[0] as { address?: string[]; topics: (string[] | string)[] };
+      return change !== 'missing_index' && filter.address?.includes(FRESH_FLAP_POOL_PORTAL) && filter.topics[0].includes(FRESH_FLAP_POOL_LAUNCH_TOPIC) ? [discoveryLog] : [];
+    }
+    throw new Error('unexpected_rpc');
+  }) as Rpc;
+  return { ...chain, block, transaction, receipt, log, number, prior, rpc };
+}
+
+describe('Flap Pool Launch capture', () => {
+  it('certifies a real unmonitored direct pool launch from its complete canonical receipt without storing unrelated raw transactions', async () => {
+    const f = flapPoolCaptureFixture();
+    const page = await collectFreshPage({ rpc: f.rpc, checkpoint: f.prior, wallets: [], head: f.number + 6 });
+    expect(page.launches).toEqual([expect.objectContaining({ tokenAddress: f.token, protocol: 'flap', status: 'eligible',
+      blockNumber: f.number, blockHash: f.block.hash, txHash: f.transaction.hash,
+      proof: expect.objectContaining({ controller: FRESH_FLAP_POOL_PORTAL, topic: FRESH_FLAP_POOL_LAUNCH_TOPIC,
+        launchKind: 'direct_v2_pool', quoteAddress: WBNB, poolAddress: f.pool,
+        tokenBirth: expect.objectContaining({ authentication: expect.objectContaining({ kind: 'flap_direct_pool_issuance' }) }) }),
+    })]);
+    expect(page.receipts).toEqual([]);
+    expect(f.rpc).toHaveBeenCalledWith('eth_getTransactionReceipt', [f.transaction.hash]);
+    expect(decodeFreshFlapPoolLaunchFact(f.log, f.block, f.number)?.status).toBe('before_boundary');
+  });
+
+  it.each(['missing_receipt', 'mismatched_log'] as const)('blocks a checkpoint on %s for a discovered launch', async change => {
+    const f = flapPoolCaptureFixture(change);
+    await expect(collectFreshPage({ rpc: f.rpc, checkpoint: f.prior, wallets: [], head: f.number + 6 }))
+      .rejects.toThrow(change === 'missing_receipt' ? 'required_receipt_missing' : 'receipt_discovery_mismatch');
+  });
+
+  it('recognizes a launch inside a receipt already fetched for a monitored wallet', async () => {
+    const f = flapPoolCaptureFixture('missing_index');
+    const page = await collectFreshPage({ rpc: f.rpc, checkpoint: f.prior, wallets: [{ address: f.transaction.from, fromBlock: f.number }], head: f.number + 6 });
+    expect(page.launches).toEqual([expect.objectContaining({ tokenAddress: f.token, status: 'eligible' })]);
+    expect(page.receipts).toEqual([expect.objectContaining({ receipt: f.receipt, wallets: [f.transaction.from] })]);
+  });
+
+  it.each(['foreign_emitter', 'future_schema'] as const)('advances capture without admitting an event with %s', async change => {
+    const f = flapPoolCaptureFixture(change);
+    const page = await collectFreshPage({ rpc: f.rpc, checkpoint: f.prior, wallets: [], head: f.number + 6 });
+    expect(page.launches).toEqual([]);
+    expect(page.blocks).toHaveLength(1);
+  });
+
+  it('requires the original full-supply issuance for a before-birth gap certificate', () => {
+    const f = flapPoolCaptureFixture(), fact = decodeFreshFlapPoolLaunchFact(f.log, f.block, f.prior.startBlock)!;
+    const start = { number: f.prior.startBlock, hash: f.prior.startHash };
+    const creation = { transaction: f.transaction, block: f.block, receipt: f.receipt };
+    expect(tokenBirth.certifyFreshKnownTokenBirth({ fact, creation, start })).not.toBeNull();
+    const mint = f.receipt.logs.find(log => log.address === f.token && log.topics[0] === transferTopic && log.topics[1] === hash('0'))!;
+    mint.data = word('0x1');
+    expect(tokenBirth.certifyFreshKnownTokenBirth({ fact, creation, start })).toBeNull();
   });
 });

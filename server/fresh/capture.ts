@@ -6,6 +6,7 @@ import { blockHex, rpcBatch, type Rpc, type RpcBatchRequest } from '../rpc.js';
 import { transferTopic } from '../swap.js';
 import { userOperationTopic } from '../smartAccountTrades.js';
 import { FOUR_MANAGERS, FLAP_PORTAL, fourInterface, fourV1Interface, flapInterface } from '../launchpad.js';
+import { decodeFreshFlapPoolLaunch, FRESH_FLAP_POOL_LAUNCH_TOPIC, FRESH_FLAP_POOL_PORTAL } from './flapPoolLaunch.js';
 import type { FreshCallTrace } from './trace.js';
 import type { FreshStateReadEvidence } from './stateEvidence.js';
 import { classifyFreshCreationToken } from './tokenAuthenticity.js';
@@ -85,6 +86,7 @@ export function validateFreshReceipt(receipt: FreshReceipt | null, tx: FreshTran
 }
 
 const creationTopics = [...new Set([fourInterface, fourV1Interface, flapInterface].flatMap(abi => abi.fragments.filter(fragment => fragment.type === 'event' && ['TokenCreate', 'TokenCreated'].includes((fragment as { name?: string }).name ?? '')).map(fragment => abi.getEvent(fragment.format('sighash'))!.topicHash)))];
+const isFlapPoolLaunchLog = (log: FreshLog) => log.address.toLowerCase() === FRESH_FLAP_POOL_PORTAL && log.topics[0]?.toLowerCase() === FRESH_FLAP_POOL_LAUNCH_TOPIC;
 /** Only authenticated token-creation events establish launch eligibility. Pair
  * and pool-created events deliberately have no entry in this decoder. */
 export function decodeFreshLaunch(log: FreshLog, block: FreshBlock, startBlock: number): FreshLaunchFact | null {
@@ -105,6 +107,19 @@ export function decodeFreshLaunch(log: FreshLog, block: FreshBlock, startBlock: 
     } catch { /* Unknown ABI versions remain unverified. */ }
   }
   return null;
+}
+
+/** Only call with a log from a complete canonical launch receipt. */
+export function decodeFreshFlapPoolLaunchFact(log: FreshLog, block: FreshBlock, startBlock: number): FreshLaunchFact | null {
+  const launch = decodeFreshFlapPoolLaunch(log);
+  if (!launch) return null;
+  const number = safeNumber(block.number);
+  return { tokenAddress: launch.token, protocol: 'flap', blockNumber: number, blockHash: block.hash.toLowerCase(),
+    txHash: log.transactionHash.toLowerCase(), logIndex: safeNumber(log.logIndex), launchedAt: new Date(safeNumber(block.timestamp) * 1_000).toISOString(),
+    proof: { controller: FRESH_FLAP_POOL_PORTAL, topic: FRESH_FLAP_POOL_LAUNCH_TOPIC, launchKind: 'direct_v2_pool',
+      creator: launch.creator, quoteAddress: launch.quoteAddress, poolAddress: launch.poolAddress, reportedLaunchTime: launch.reportedLaunchTime,
+      name: launch.name.slice(0, 256), symbol: launch.symbol.slice(0, 64), meta: launch.meta.slice(0, 1024), totalSupplyRaw: launch.totalSupplyRaw },
+    status: number > startBlock ? 'eligible' : 'before_boundary' };
 }
 
 function assertPageLog(log: FreshLog, blocks: Map<number, FreshBlock>) {
@@ -141,7 +156,8 @@ export async function collectFreshPage(options: { rpc: Rpc; checkpoint: FreshCap
   const active = options.wallets.filter(wallet => wallet.fromBlock <= to && (wallet.toBlock == null || wallet.toBlock >= first));
   const fromBlock = blockHex(first), toBlock = blockHex(to), discovery: FreshLog[] = [];
   const launches = options.launchDiscovery === false ? [] : await rpc<FreshLog[]>('eth_getLogs', [{ fromBlock, toBlock,
-    address: [...FOUR_MANAGERS, FLAP_PORTAL, FRESH_STOCKWAVE_FACTORY], topics: [[...creationTopics, FRESH_STOCKWAVE_LAUNCH_TOPIC]] }]);
+    address: [...FOUR_MANAGERS, FLAP_PORTAL, FRESH_STOCKWAVE_FACTORY, FRESH_FLAP_POOL_PORTAL],
+    topics: [[...creationTopics, FRESH_STOCKWAVE_LAUNCH_TOPIC, FRESH_FLAP_POOL_LAUNCH_TOPIC]] }]);
   if (!Array.isArray(launches)) throw new Error('launch_discovery_invalid'); discovery.push(...launches);
   const discoveryRequests: RpcBatchRequest[] = [];
   for (let offset = 0; offset < active.length; offset += 128) {
@@ -159,7 +175,9 @@ export async function collectFreshPage(options: { rpc: Rpc; checkpoint: FreshCap
   discovery.forEach(log => assertPageLog(log, byNumber));
   const stockwaveLaunches = launches.filter(log => log.address.toLowerCase() === FRESH_STOCKWAVE_FACTORY && log.topics[0]?.toLowerCase() === FRESH_STOCKWAVE_LAUNCH_TOPIC);
   const factoryReceipts = new Set(stockwaveLaunches.map(log => log.transactionHash.toLowerCase()));
-  const discovered = new Set(discovery.filter(log => !creationTopics.includes(log.topics[0]) && log.topics[0]?.toLowerCase() !== FRESH_STOCKWAVE_LAUNCH_TOPIC).map(log => log.transactionHash.toLowerCase()));
+  const poolLaunchReceipts = new Set(launches.filter(isFlapPoolLaunchLog).map(log => log.transactionHash.toLowerCase()));
+  const discovered = new Set(discovery.filter(log => !creationTopics.includes(log.topics[0])
+    && log.topics[0]?.toLowerCase() !== FRESH_STOCKWAVE_LAUNCH_TOPIC && log.topics[0]?.toLowerCase() !== FRESH_FLAP_POOL_LAUNCH_TOPIC).map(log => log.transactionHash.toLowerCase()));
   const activeAt = (number: number) => active.filter(wallet => wallet.fromBlock <= number && (wallet.toBlock == null || wallet.toBlock >= number));
   const receipts: FreshCapturedReceipt[] = [], facts: FreshLaunchFact[] = [];
   for (const log of launches) { const fact = decodeFreshLaunch(log, byNumber.get(safeNumber(log.blockNumber))!, checkpoint.startBlock); if (fact) facts.push(fact); }
@@ -172,7 +190,8 @@ export async function collectFreshPage(options: { rpc: Rpc; checkpoint: FreshCap
       // A top-level contract creation is independently observable from the
       // block. Its tiny fact permits later discovery without retaining its raw
       // receipt forever. CREATE2 without an authenticated event stays unknown.
-      if (!relevant && !factoryReceipts.has(tx.hash.toLowerCase()) && (tx.to !== null || options.collectCreations === false)) continue;
+      if (!relevant && !factoryReceipts.has(tx.hash.toLowerCase()) && !poolLaunchReceipts.has(tx.hash.toLowerCase())
+        && (tx.to !== null || options.collectCreations === false)) continue;
       receiptRequests.push({ tx, block, watched, relevant: Boolean(relevant) });
     }
   }
@@ -187,6 +206,13 @@ export async function collectFreshPage(options: { rpc: Rpc; checkpoint: FreshCap
       // unmonitored factory creation, must contain its discovery logs verbatim.
       const lookup = new Map(receipt.logs.map(log => [log.logIndex, JSON.stringify([log.address.toLowerCase(), log.topics.map(topic => topic.toLowerCase()), log.data.toLowerCase()])]));
       for (const log of discovery.filter(log => log.transactionHash.toLowerCase() === tx.hash.toLowerCase())) if (lookup.get(log.logIndex) !== JSON.stringify([log.address.toLowerCase(), log.topics.map(topic => topic.toLowerCase()), log.data.toLowerCase()])) throw new Error('receipt_discovery_mismatch');
+      if (options.launchDiscovery !== false && receipt.status === '0x1') {
+        for (const log of receipt.logs) {
+          if (!isFlapPoolLaunchLog(log)) continue;
+          const fact = decodeFreshFlapPoolLaunchFact(log, block, checkpoint.startBlock);
+          if (fact) facts.push(fact);
+        }
+      }
       if (factoryReceipts.has(tx.hash.toLowerCase())) {
         // Only pages containing this factory pay four bounded code/chain reads.
         // Unsupported code/semantics retains the full creation receipt for

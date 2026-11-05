@@ -1,8 +1,10 @@
 import {createHash} from 'node:crypto';
-import {freshAddress,freshHash,freshInteger,validateFreshBlock,validateFreshReceipt,type FreshBlock,type FreshLaunchFact} from './capture.js';
+import {decodeFreshFlapPoolLaunchFact,freshAddress,freshHash,freshInteger,validateFreshBlock,validateFreshReceipt,type FreshBlock,type FreshLaunchFact} from './capture.js';
 import {authenticateFreshConstantCloneCreation,FRESH_CONSTANT_PRECISION_AUDITS,freshConstantCloneInitcode,freshConstantCloneRuntime,type FreshMetadataCreationContext} from './constantMetadataRecovery.js';
 import {classifyFreshStockwaveCreation,FRESH_BSC_GENESIS_HASH,FRESH_STOCKWAVE_FACTORY,FRESH_STOCKWAVE_DEPLOYER,FRESH_STOCKWAVE_FACTORY_CODE_HASH,FRESH_STOCKWAVE_DEPLOYER_CODE_HASH,FRESH_STOCKWAVE_CREATION_CODE_HASH,FRESH_STOCKWAVE_LAUNCH_TOPIC} from './factoryLaunch.js';
 import {FLAP_PORTAL,FOUR_MANAGERS,flapInterface,fourInterface,fourV1Interface} from '../launchpad.js';
+import {FRESH_FLAP_POOL_LAUNCH_TOPIC,FRESH_FLAP_POOL_PORTAL} from './flapPoolLaunch.js';
+import {transferTopic} from '../swap.js';
 import {keccak256} from 'ethers';
 
 const stable=(v:unknown):string=>JSON.stringify(v,(_key,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b))):value);
@@ -27,7 +29,23 @@ export function certifyFreshKnownTokenBirth(input:{fact:FreshLaunchFact;creation
   let authentication:Record<string,unknown>|null=null;
   if(fact.protocol==='evm_creation'&&fact.logIndex===null&&fact.proof.creation==='top_level'&&c.transaction.to===null&&c.receipt.contractAddress?.toLowerCase()===fact.tokenAddress
    &&fact.proof.creator===c.transaction.from.toLowerCase())authentication={kind:'top_level_receipt_creation',creator:c.transaction.from.toLowerCase()};
-  if(fact.protocol==='flap'||fact.protocol==='fourmeme'){
+  if(fact.protocol==='flap'&&fact.proof.launchKind==='direct_v2_pool'){
+   const launches=c.receipt.logs.flatMap(log=>{
+    const replay=decodeFreshFlapPoolLaunchFact(log,c.block,start.number);
+    return replay?.tokenAddress===fact.tokenAddress?[replay]:[];
+   });
+   const original={...fact.proof};delete original.tokenBirth;
+   if(launches.length!==1||stable(identity(launches[0]))!==stable(identity(fact))||stable(launches[0].proof)!==stable(original)
+    ||fact.proof.reportedLaunchTime!==freshInteger(c.block.timestamp).toString())return null;
+   const zero='0x'+'0'.repeat(64),recipient='0x'+'0'.repeat(24)+FRESH_FLAP_POOL_PORTAL.slice(2);
+   const mints=c.receipt.logs.filter(log=>log.address.toLowerCase()===fact.tokenAddress&&log.topics.length===3
+    &&log.topics[0].toLowerCase()===transferTopic&&log.topics[1].toLowerCase()===zero);
+   const mint=mints[0];
+   if(mints.length!==1||fact.logIndex===null||integer(mint.logIndex)>=fact.logIndex||mint.topics[2].toLowerCase()!==recipient
+    ||!freshHash(mint.data)||freshInteger(mint.data).toString()!==fact.proof.totalSupplyRaw)return null;
+   authentication={kind:'flap_direct_pool_issuance',controller:FRESH_FLAP_POOL_PORTAL,topic:FRESH_FLAP_POOL_LAUNCH_TOPIC,
+    mintLogIndex:integer(mint.logIndex),totalSupplyRaw:fact.proof.totalSupplyRaw,poolAddress:fact.proof.poolAddress,quoteAddress:fact.proof.quoteAddress};
+  }else if(fact.protocol==='flap'||fact.protocol==='fourmeme'){
    const candidates=Object.entries(FRESH_CONSTANT_PRECISION_AUDITS).filter(([,a])=>a.protocol===fact.protocol);
    const matches=candidates.flatMap(([protocol,a])=>{const proof=authenticateFreshConstantCloneCreation(protocol as keyof typeof FRESH_CONSTANT_PRECISION_AUDITS,fact.tokenAddress,c);return proof?[{auditId:a.id,creation:proof}]:[];});
    if(matches.length!==1)return null;const match=matches[0],proof=match.creation;
@@ -79,6 +97,13 @@ export function freshKnownProtocolTokenBirthSql(factAlias='token_birth',bornAlia
   AND(${f}.protocol='evm_creation' AND ${f}.log_index IS NULL AND ${f}.proof->>'creation'='top_level' AND ${a}->>'kind'='top_level_receipt_creation'
     AND ${a}->>'creator'=${f}.proof->>'creator' AND ${a}->>'creator'~'^0x[0-9a-f]{40}$'
    OR ${a}->>'kind'='fixed_clone_create2' AND ${f}.log_index IS NOT NULL AND(${clones})
+   OR ${f}.protocol='flap' AND ${f}.log_index IS NOT NULL AND ${a}->>'kind'='flap_direct_pool_issuance'
+    AND ${f}.proof->>'launchKind'='direct_v2_pool' AND ${f}.proof->>'controller'=${sqlLiteral(FRESH_FLAP_POOL_PORTAL)}
+    AND ${f}.proof->>'topic'=${sqlLiteral(FRESH_FLAP_POOL_LAUNCH_TOPIC)} AND ${a}->>'controller'=${f}.proof->>'controller' AND ${a}->>'topic'=${f}.proof->>'topic'
+    AND ${a}->>'totalSupplyRaw'=${f}.proof->>'totalSupplyRaw' AND ${a}->>'totalSupplyRaw'~'^[1-9][0-9]{0,77}$'
+    AND ${a}->>'poolAddress'=${f}.proof->>'poolAddress' AND ${a}->>'poolAddress'~'^0x[0-9a-f]{40}$'
+    AND ${a}->>'quoteAddress'=${f}.proof->>'quoteAddress' AND ${a}->>'quoteAddress'~'^0x[0-9a-f]{40}$'
+    AND jsonb_typeof(${a}->'mintLogIndex')='number' AND ${a}->>'mintLogIndex'~'^(0|[1-9][0-9]*)$' AND ${a}->'mintLogIndex'<to_jsonb(${f}.log_index)
    OR ${f}.protocol='stockwave' AND ${f}.log_index IS NOT NULL AND ${a}->>'kind'='pinned_stockwave_create2'
     AND ${f}.proof->'version'='1'::jsonb AND ${f}.proof->>'classification'='authenticated_factory_create2'
     AND ${f}.proof->>'historicalCodeBasis'='bsc_bep344_persistent_runtime_inference'
