@@ -23,11 +23,13 @@ try{
  const raw=await gmgn.evaluate(readRenderedGmgnTrenches);assert.equal(raw.cards[0].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/0.webp');assert.equal(raw.cards[1].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/1.webp');checks++;
  const panel=await context.newPage();panel.on('pageerror',e=>errors.push(e.message));await panel.goto(`chrome-extension://${id}/panel.html`);
  const command=message=>panel.evaluate(message=>chrome.runtime.sendMessage(message),message);
+ const openTokens=()=>panel.getByRole('button',{name:'Tokens',exact:true}).click();
+ await openTokens();
  await gmgn.bringToFront();await panel.getByRole('button',{name:'Enable on GMGN',exact:true}).click();await gmgn.bringToFront();
  async function state(){await gmgn.bringToFront();return command({kind:'state'});}
  async function until(test){for(let i=0;i<80;i++){const s=await state();if(test(s))return s;await gmgn.waitForTimeout(50);}throw Error('Thumbnail state did not settle');}
  let current=await until(s=>s.page?.cards[0]?.logoUrl===raw.cards[0].logoUrl);assert.equal(current.page.alerts.length,0);checks++;
- await panel.reload();await panel.locator('.token-thumbnail img').first().waitFor();await panel.waitForFunction(()=>[...document.querySelectorAll('.token-thumbnail img')].every(i=>i.complete&&i.naturalWidth>0));
+ await panel.reload();await openTokens();await panel.locator('.token-thumbnail img').first().waitFor();await panel.waitForFunction(()=>[...document.querySelectorAll('.token-thumbnail img')].every(i=>i.complete&&i.naturalWidth>0));
  assert.deepEqual((await panel.locator('.token-thumbnail img').evaluateAll(images=>images.map(i=>i.getAttribute('src')))).sort(),['https://cdn.gmgn.ai/kollens-fixture/0.webp','https://cdn.gmgn.ai/kollens-fixture/1.webp']);checks++;
  const width=await panel.locator('.token-thumbnail').first().evaluate(e=>({width:Math.round(e.getBoundingClientRect().width),height:Math.round(e.getBoundingClientRect().height),radius:getComputedStyle(e).borderRadius}));assert.deepEqual(width,{width:36,height:36,radius:'10px'});checks++;
  await panel.evaluate(()=>window.__thumbnailNode=document.querySelector('.token-thumbnail img'));const requestsBefore=imageRequests.length;
@@ -41,7 +43,7 @@ try{
    if(url.includes('/tokens/')){const body=JSON.parse(init.body);workspace.items=[{...body,address:url.split('/').pop(),revision:1,updatedAt:new Date().toISOString()}];}
    return Response.json(workspace);
   };});
- await panel.reload();await panel.getByRole('button',{name:'Save NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Save NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
+ await panel.reload();await openTokens();await panel.getByRole('button',{name:'Save NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Save NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
  current=await command({kind:'state'});assert.equal(current.workspace.items[0].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  assert.equal(await panel.locator('footer').count(),0);
  const tokensHeader=panel.locator('.popup-header');
@@ -56,9 +58,9 @@ try{
  await panel.getByRole('button',{name:'Copy account UID',exact:true}).click();await panel.getByText('Account UID copied',{exact:true}).waitFor();
  assert.equal(await panel.evaluate(()=>window.__copiedAccountId),'thumbnail-test');checks++;
  await panel.screenshot({path:resolve(artifacts,'account-popup.png'),clip:{x:0,y:0,width:360,height:600}});
- await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Log out',exact:true}).count(),0);await panel.getByRole('button',{name:'Tokens',exact:true}).click();checks++;
+ await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Log out',exact:true}).count(),0);await openTokens();checks++;
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.closest('[data-testid="trench-token-card"]').remove());await until(s=>!s.page.cards.some(c=>c.address===raw.cards[0].address));
- await panel.reload();await panel.locator('.saved-item .token-thumbnail img').waitFor();assert.equal(await panel.locator('.saved-item .token-thumbnail img').getAttribute('src'),'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
+ await panel.reload();await openTokens();await panel.locator('.saved-item .token-thumbnail img').waitFor();assert.equal(await panel.locator('.saved-item .token-thumbnail img').getAttribute('src'),'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  // A recycled token gets its own source; it cannot keep the previous logo.
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>{const card=e.closest('[data-testid="trench-token-card"]'),address='0x'+'c'.repeat(40);card.setAttribute('data-trenches-token-address',address);card.setAttribute('href','/bsc/token/'+address);e.src='https://cdn.gmgn.ai/kollens-fixture/recycled.webp';});
  await until(s=>s.page.cards.some(c=>c.address==='0x'+'c'.repeat(40)&&c.logoUrl?.endsWith('/recycled.webp')));checks++;

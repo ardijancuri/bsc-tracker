@@ -3,16 +3,27 @@ import { computeAddress, getAddress, getBytes, HDNodeWallet, hexlify, Wallet } f
 export interface LocalWallet {
   address: string;
   createdAt: number;
+  protection: 'device' | 'password';
+  alias: string;
+  archived: boolean;
 }
 
-interface EncryptedWallet extends LocalWallet {
-  version: 1;
-  salt: Uint8Array<ArrayBuffer>;
+interface WalletRecord {
+  address: string;
+  createdAt: number;
+  alias?: string;
+  archived?: boolean;
   iv: Uint8Array<ArrayBuffer>;
   ciphertext: ArrayBuffer;
 }
 
+type WalletProtection =
+  | {version: 1; salt: Uint8Array<ArrayBuffer>}
+  | {version: 2; deviceKey: CryptoKey};
+type EncryptedWallet = WalletRecord & WalletProtection;
+
 export const minimumWalletPasswordLength = 8;
+export const maximumWalletAliasLength = 32;
 const maximumWalletPasswordLength = 1024;
 const databaseName = 'kollens-wallet-vault';
 const walletStore = 'wallets';
@@ -26,8 +37,8 @@ function requireExtensionWindow() {
   }
 }
 
-function validatePassword(password: string) {
-  if (password.length < minimumWalletPasswordLength || password.length > maximumWalletPasswordLength) {
+function validatePassword(password: string | undefined): asserts password is string {
+  if (password === undefined || password.length < minimumWalletPasswordLength || password.length > maximumWalletPasswordLength) {
     throw new Error(`Use a wallet password between ${minimumWalletPasswordLength} and ${maximumWalletPasswordLength} characters.`);
   }
 }
@@ -55,13 +66,42 @@ async function readVault<T>(read: (store: IDBObjectStore) => IDBRequest<T>): Pro
   }
 }
 
-function publicWallet({address, createdAt}: LocalWallet): LocalWallet {
-  return {address, createdAt};
+function publicWallet({address, createdAt, version, alias = '', archived = false}: EncryptedWallet): LocalWallet {
+  return {address, createdAt, protection: version === 2 ? 'device' : 'password', alias, archived};
 }
 
 export async function listLocalWallets(): Promise<LocalWallet[]> {
   const records = await readVault<EncryptedWallet[]>(store => store.getAll());
   return records.map(publicWallet).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function updateLocalWallet(address: string, patch: {alias?: string; archived?: boolean}): Promise<LocalWallet> {
+  const key = getAddress(address);
+  const alias = patch.alias?.trim();
+  if (alias !== undefined && alias.length > maximumWalletAliasLength) {
+    throw new Error(`Use at most ${maximumWalletAliasLength} characters for the wallet alias.`);
+  }
+  const database = await openVault();
+  try {
+    return await new Promise<LocalWallet>((resolve, reject) => {
+      const transaction = database.transaction(walletStore, 'readwrite', {durability: 'strict'});
+      const store = transaction.objectStore(walletStore);
+      const request = store.get(key);
+      let updated: EncryptedWallet | undefined;
+      request.onsuccess = () => {
+        const record: EncryptedWallet | undefined = request.result;
+        if (!record) return;
+        updated = {...record, alias: alias ?? record.alias, archived: patch.archived ?? record.archived};
+        store.put(updated);
+      };
+      transaction.oncomplete = () => updated
+        ? resolve(publicWallet(updated))
+        : reject(new Error('Could not find this wallet.'));
+      transaction.onabort = () => reject(new Error('Could not update the wallet.'));
+    });
+  } finally {
+    database.close();
+  }
 }
 
 async function passwordKey(password: string, salt: Uint8Array<ArrayBuffer>) {
@@ -88,15 +128,13 @@ function cipherParams(wallet: Omit<EncryptedWallet, 'ciphertext'>): AesGcmParams
   };
 }
 
-async function storeWallet(privateKey: string, password: string): Promise<LocalWallet> {
+async function storeWallet(privateKey: string, protection: WalletProtection, key: CryptoKey): Promise<LocalWallet> {
   const wallet = {
-    version: 1 as const,
+    ...protection,
     address: computeAddress(privateKey),
     createdAt: Date.now(),
-    salt: crypto.getRandomValues(new Uint8Array(32)),
     iv: crypto.getRandomValues(new Uint8Array(12)),
   };
-  const key = await passwordKey(password, wallet.salt);
   const bytes = new Uint8Array(getBytes(privateKey));
   let ciphertext: ArrayBuffer;
   try {
@@ -105,11 +143,12 @@ async function storeWallet(privateKey: string, password: string): Promise<LocalW
     bytes.fill(0);
   }
 
+  const record: EncryptedWallet = {...wallet, ciphertext};
   const database = await openVault();
   try {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(walletStore, 'readwrite', {durability: 'strict'});
-      const request = transaction.objectStore(walletStore).add({...wallet, ciphertext} satisfies EncryptedWallet);
+      const request = transaction.objectStore(walletStore).add(record);
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(new Error(
         request.error?.name === 'ConstraintError' ? 'This wallet is already saved.' : 'Could not save the wallet.',
@@ -118,13 +157,15 @@ async function storeWallet(privateKey: string, password: string): Promise<LocalW
   } finally {
     database.close();
   }
-  return publicWallet(wallet);
+  return publicWallet(record);
 }
 
-export async function createLocalWallet(password: string): Promise<LocalWallet> {
+export async function createLocalWallet(): Promise<LocalWallet> {
   requireExtensionWindow();
-  validatePassword(password);
-  return storeWallet(Wallet.createRandom().privateKey, password);
+  // IndexedDB atomically stores this non-extractable key with the ciphertext.
+  // The extension profile can still use it to unlock the wallet without a password.
+  const deviceKey = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+  return storeWallet(Wallet.createRandom().privateKey, {version: 2, deviceKey}, deviceKey);
 }
 
 export async function importLocalWallet(secret: string, password: string): Promise<LocalWallet> {
@@ -144,23 +185,31 @@ export async function importLocalWallet(secret: string, password: string): Promi
     // Library validation errors may contain the supplied input.
     throw new Error('Enter a valid private key or recovery phrase.');
   }
-  return storeWallet(privateKey, password);
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  return storeWallet(privateKey, {version: 1, salt}, await passwordKey(password, salt));
 }
 
-export async function exportLocalWallet(address: string, password: string): Promise<string> {
+export async function exportLocalWallet(address: string, password?: string): Promise<string> {
   requireExtensionWindow();
-  validatePassword(password);
   const record = await readVault<EncryptedWallet | undefined>(store => store.get(getAddress(address)));
-  if (!record || record.version !== 1) throw new Error('Could not find this wallet.');
-  const key = await passwordKey(password, record.salt);
+  if (!record || (record.version !== 1 && record.version !== 2)) throw new Error('Could not find this wallet.');
   let bytes: Uint8Array | undefined;
+  let key: CryptoKey;
+  if (record.version === 1) {
+    validatePassword(password);
+    key = await passwordKey(password, record.salt);
+  } else {
+    key = record.deviceKey;
+  }
   try {
     bytes = new Uint8Array(await crypto.subtle.decrypt(cipherParams(record), key, record.ciphertext));
     const privateKey = hexlify(bytes);
     if (computeAddress(privateKey) !== record.address) throw new Error();
     return privateKey;
   } catch {
-    throw new Error('Could not unlock this wallet. Check your wallet password.');
+    throw new Error(record.version === 1
+      ? 'Could not unlock this wallet. Check your wallet password.'
+      : 'Could not unlock this wallet in this Chrome profile.');
   } finally {
     bytes?.fill(0);
   }

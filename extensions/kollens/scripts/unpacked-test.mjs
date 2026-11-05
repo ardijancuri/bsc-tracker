@@ -17,7 +17,7 @@ try{
  const urlBefore=await fixture.locator('[data-token-link]').first().getAttribute('href');await fixture.getByRole('button',{name:'Test trade button',exact:true}).first().click();assert.equal(await fixture.locator('[data-trade-clicks]').textContent(),'1');assert.equal(await fixture.locator('[data-token-link]').first().getAttribute('href'),urlBefore);checks++;
  const panel=await context.newPage();await panel.goto(`chrome-extension://${extensionId}/panel.html`);
  await panel.bringToFront();
- await panel.getByRole('button',{name:'Wallets',exact:true}).click();
+ await panel.getByRole('heading',{name:'Wallets',exact:true}).waitFor();
  await panel.getByRole('heading',{name:'Get started with wallets'}).waitFor();
  const nav=panel.getByRole('navigation',{name:'Extension navigation'});
  assert.deepEqual(await nav.getByRole('button').evaluateAll(buttons=>buttons.map(button=>button.getAttribute('aria-label'))),['Wallets','Tokens','Settings','Profile']);
@@ -28,12 +28,17 @@ try{
   await panel.getByLabel('Wallet password',{exact:true}).fill(walletPassword);
   await panel.getByLabel('Confirm password',{exact:true}).fill(walletPassword);
  };
- await panel.getByRole('button',{name:'Create Wallet',exact:true}).click();
- await fillPassword();
  await panel.getByRole('button',{name:'Create wallet',exact:true}).click();
  await panel.getByText('Wallet created.',{exact:false}).waitFor();
- await panel.getByRole('button',{name:'Back up wallet',exact:true}).click();
- await panel.getByLabel('Wallet password',{exact:true}).fill(walletPassword);
+ assert.equal(await panel.getByLabel('Wallet password',{exact:true}).count(),0);
+ const walletSelection=panel.getByRole('checkbox',{name:/^Select wallet /});
+ assert.equal(await walletSelection.isChecked(),false);
+ await walletSelection.check();
+ assert.equal(await walletSelection.isChecked(),true);
+ await walletSelection.press('Space');
+ assert.equal(await walletSelection.isChecked(),false);
+ await panel.getByRole('button',{name:/Wallet options for/}).click();
+ await panel.getByRole('button',{name:'View private key',exact:true}).click();
  await panel.getByRole('button',{name:'Show private key',exact:true}).click();
  await panel.getByLabel('Private key',{exact:true}).waitFor();
  assert.match(await panel.getByLabel('Private key',{exact:true}).inputValue(),/^0x[\da-f]{64}$/);
@@ -48,7 +53,7 @@ try{
  await panel.getByText('Wallet imported.',{exact:true}).waitFor();
  assert.equal(await panel.locator('.wallet-record').count(),2);
  await panel.reload();
- await panel.getByRole('button',{name:'Wallets',exact:true}).click();
+ await panel.getByRole('heading',{name:'Wallets',exact:true}).waitFor();
  await panel.waitForFunction(()=>document.querySelectorAll('.wallet-record').length===2);checks++;
  await panel.getByRole('button',{name:'Tokens',exact:true}).click();
  await panel.getByRole('button',{name:/^Saved/}).click();
@@ -86,6 +91,8 @@ try{
  await panel.bringToFront();await panel.waitForTimeout(300);assert.equal((await worker.evaluate(()=>chrome.runtime.getContexts({contextTypes:['POPUP']}))).length,0);checks++;
  await panel.getByRole('button',{name:'Tokens',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.getByRole('button',{name:'Edit note',exact:true}).first().click();
  const unsaved='Keep this text when the popup closes';await panel.getByRole('textbox').fill(unsaved);await panel.waitForTimeout(300);await panel.reload();
+ await panel.getByRole('heading',{name:'Wallets',exact:true}).waitFor();
+ await panel.getByRole('button',{name:'Tokens',exact:true}).click();
  await panel.getByRole('textbox').waitFor();assert.equal(await panel.getByRole('textbox').inputValue(),unsaved);checks++;
  panel.once('dialog',dialog=>dialog.accept());await panel.getByRole('button',{name:'Cancel',exact:true}).click();
  await cleanupNote();cleanupNote=async()=>{};await cleanupCreated();cleanupCreated=async()=>{};

@@ -19,6 +19,7 @@ try{
   const sizeBefore=await gmgn.locator('[data-testid="trench-token-card"]').first().boundingBox();
   const panel=await context.newPage();await panel.goto(`chrome-extension://${id}/panel.html`);
   const command=message=>panel.evaluate(message=>chrome.runtime.sendMessage(message),message);
+  await panel.getByRole('button',{name:'Tokens',exact:true}).click();
   await gmgn.bringToFront();
   await panel.getByRole('button',{name:'Enable on GMGN',exact:true}).click();await gmgn.bringToFront();
   await gmgn.locator('.kollens-match').first().waitFor();

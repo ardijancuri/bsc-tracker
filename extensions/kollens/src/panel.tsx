@@ -65,7 +65,7 @@ function TokenRow({card,metrics,actions,onCopyError}:{card:ExtensionTokenIdentit
   </div>;
 }
 function Panel(){
-  const[state,setState]=useState(empty),[view,setView]=useState<PopupUi['view']>('matches'),[destination,setDestination]=useState<Destination>('tokens'),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const[state,setState]=useState(empty),[view,setView]=useState<PopupUi['view']>('matches'),[destination,setDestination]=useState<Destination>(isExtension?'wallets':'tokens'),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const mainRef=useRef<HTMLElement>(null);
   const selectedGroupRef=useRef<HTMLElement>(null);
