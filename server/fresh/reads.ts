@@ -136,7 +136,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
         AND (t.launch_status<>'preexisting' OR s.kind<>'kol' OR (${freshPublicTokenSql('t')})) ${tokens?'AND p.token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const lots=await db.query(`SELECT * FROM fresh.open_lots WHERE scope_id=$1 ${tokens?'AND token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const scopes=await db.query(`SELECT * FROM fresh.accounting_scopes WHERE id=$1 AND active`,[scopeId]),states=await state();
-    let scope=scopes.rows[0]; if(!scope)return [];if(rows.rows.some(row=>row.token_address===GANG_TOKEN_ADDRESS))scope=await hydrateReadScope(scope);
+    let scope=scopes.rows[0]; if(!scope)return [];if(rows.rows.some(row=>row.token_address===GANG_TOKEN_ADDRESS||row.token_address===GREEN_MORNING_TOKEN_ADDRESS))scope=await hydrateReadScope(scope);
     const estimateTokens=rows.rows.filter(r=>r.estimate_policy_ready&&(r.unknown_cost||r.unknown_fee||r.realized_q===null||r.decoding_pending||r.wallet_gap||r.balance_status!=='matched')).map(r=>r.token_address);
     const estimates=scope.kind==='kol'&&estimateTokens.length?await readFreshPositionEstimates(db,scopeId,estimateTokens,lots.rows.filter(l=>estimateTokens.includes(l.token_address)).map(freshLotFromRow)):new Map();
     const lotsByToken=new Map<string,FreshLot[]>();for(const row of lots.rows){const list=lotsByToken.get(row.token_address)??[];list.push(freshLotFromRow(row));lotsByToken.set(row.token_address,list);}
@@ -158,7 +158,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
       const snapshot:{estimate?:NodeCostEstimate}&{version:2;snapshotId:string;source:'mixed'|'node';scope:'public'|'portfolio';asOf:string;historyFingerprint:string;historyFrom:string|null;coveredThroughBlock:string|null;valuationBlock:string|null;valuationHash:string|null;complete:boolean;reasons:string[];historyBoundary:any;refreshStatus?:'pending';refreshReason?:string}={version:2 as const,snapshotId:fingerprint([snapshotId,'token_cost_estimate_v1',estimates.get(r.token_address)??null]),source:(r.imported_provenance?'mixed':'node')as'mixed'|'node',scope:(scope.kind==='kol'?'public':'portfolio') as 'public'|'portfolio',
         asOf:iso(r.balance_checked_at)??iso(states.decode?.updated_at)??new Date(now()).toISOString(),historyFingerprint:fingerprint([scopeId,r.token_address,scope.correction_epoch,r.position_revision,Boolean(r.imported_provenance),history?.permissionDigest]),
         historyFrom:tokenFromTime(scope,r.token_address),coveredThroughBlock:balanceReady?String(r.balance_block):states.decode?.block_number??null,valuationBlock:r.observed_block==null?null:String(r.observed_block),
-        valuationHash:r.observed_hash??null,complete:realizedComplete,reasons:financialReasons,historyBoundary:scope.kind==='kol'?(history?'token_creation' as const:r.launch_status==='preexisting'?'wallet_discovery' as const:'token_creation' as const):'membership_added' as const,
+        valuationHash:r.observed_hash??null,complete:realizedComplete,reasons:financialReasons,historyBoundary:scope.kind==='kol'?(history?.policy==='gmgn_gang_only_history_v1'?'token_creation' as const:r.launch_status==='preexisting'?'wallet_discovery' as const:'token_creation' as const):'membership_added' as const,
         ...(realizedComplete&&!endingReady?{refreshStatus:'pending' as const,refreshReason:endingReasons[0]??'quote_unavailable'}:{})};
       const storedEstimate=estimates.get(r.token_address);
       if(!endingReady&&storedEstimate&&r.accounting_policy_ready&&r.estimate_policy_ready&&!r.pending_precision){snapshot.estimate={version:1,policy:'omit_unknown_costs_v1',basis:'recorded_facts',snapshotId:snapshot.snapshotId,historyFingerprint:snapshot.historyFingerprint,asOf:snapshot.asOf,reasons:endingReasons.length?endingReasons:['unknown_costs'],...freshPositionEstimateValues(position,storedEstimate,summary.valueUsd),missingCostCount:null,missingFeeCount:null,missingProceedsCount:null};}
@@ -173,13 +173,13 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
       FROM fresh.tokens t JOIN fresh.accounting_scopes s ON s.id=$1 AND s.active WHERE t.address=ANY($2::text[])
       AND ${freshTrackedTokenSql('t')} AND ${freshPendingTradeScopeSql('s','t.address')}
       AND(s.kind<>'kol' OR (${freshPublicTokenSql('t')}))`,[scopeId,tokens])).rows;
-    for(const row of rows)if(row.address===GANG_TOKEN_ADDRESS)row.pending_scope=await hydrateReadScope(row.pending_scope);return rows;
+    for(const row of rows)if(row.address===GANG_TOKEN_ADDRESS||row.address===GREEN_MORNING_TOKEN_ADDRESS)row.pending_scope=await hydrateReadScope(row.pending_scope);return rows;
   }
   function pendingSnapshot(scope:any,token:string,reason:string,states:Record<string,any>){
     const historyFingerprint=fingerprint([scope.id,token,scope.revision,scope.correction_epoch,reason,states.capture?.block_number,tokenHistory(scope,token)?.permissionDigest]);
     return{version:2 as const,snapshotId:fingerprint(['pending',historyFingerprint]),source:'node' as const,scope:(scope.kind==='kol'?'public':'portfolio')as'public'|'portfolio',
       asOf:new Date(now()).toISOString(),historyFingerprint,historyFrom:tokenFromTime(scope,token),coveredThroughBlock:states.capture?.block_number??null,
-      valuationBlock:null,valuationHash:null,complete:false,reasons:[reason,'unknown_costs'],historyBoundary:scope.kind==='kol'?(tokenHistory(scope,token)?'token_creation' as const:'wallet_discovery' as const):'membership_added' as const};
+      valuationBlock:null,valuationHash:null,complete:false,reasons:[reason,'unknown_costs'],historyBoundary:scope.kind==='kol'?(tokenHistory(scope,token)?.policy==='gmgn_gang_only_history_v1'?'token_creation' as const:'wallet_discovery' as const):'membership_added' as const};
   }
   async function summaries(wallet:string,tokens:string[],scopeId=publicScope(wallet)):Promise<Record<string,NodeAccountingSummary>> {
     const rows=await positionRows(scopeId,tokens),result:Record<string,NodeAccountingSummary>=Object.fromEntries(rows.map(({r,summary:s,snapshot,scope,realizedComplete,endingReady,endingReasons,balanceReady})=>[r.token_address,{

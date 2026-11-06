@@ -1,11 +1,15 @@
 import{WBNB,FLAP_PORTAL}from'../launchpad.js';
-import{flapMarketAbi}from'../nodeMarketProtocols.js';
+import{flapMarketAbi,poolMarketAbi}from'../nodeMarketProtocols.js';
 import {Interface} from 'ethers';
 import type {FreshExecution} from './decode.js';
 import {FRESH_ENTRY_POINTS,freshAddress,freshInteger,validateFreshReceipt,type FreshCapturedReceipt,type FreshBlock} from './capture.js';
 import {freshNativeDelta,freshTraceMatchesTransaction,validateFreshTrace,type FreshCallTrace} from './trace.js';
 import {beforeExecutionTopic,userOperationTopic} from '../smartAccountTrades.js';
 import {transferTopic} from '../swap.js';
+import {validFreshCompleteCallTrace} from './passiveIncoming.js';
+import {FRESH_BTCB_QUOTE} from './currentBtcQuote.js';
+import {FRESH_BNCB_QUOTE} from './currentBncbQuote.js';
+import {freshPoolQuotePair} from './currentPoolQuote.js';
 
 const router='0x5994814f2c4040b863a0125a45de152a8c2a4dec';
 const stable='0x55d398326f99059ff775485246999027b3197955';
@@ -20,6 +24,48 @@ interface Movement{asset:string;from:string;to:string;raw:bigint;index:number}
 export interface FreshTokenExchangeSettlement {
   kind:'ordinary_token_exchange_via_usdt'|'ordinary_token_exchange_via_wbnb';wallet:string;sellToken:string;sellRaw:bigint;buyToken:string;buyRaw:bigint;
   quoteAddress:string;quoteRaw:bigint;gasFeeWei:bigint;
+}
+
+/** Split stable branches converge through BNCB into one PancakeSwap V2
+ * purchase. Match every spent unit to a unique paying pool and verify that
+ * the exact BNCB those pools delivered funds the wallet's final fill. */
+function splitStableBncbPurchase(bridge:Movement[],moves:Movement[],wallet:string,buy:string){
+  const arrived=bridge.filter(move=>move.to===router),departed=bridge.filter(move=>move.from===router);
+  if(arrived.length<2||arrived.length>3||departed.length<2||departed.length>3||
+    arrived.at(-1)!.index>=departed[0].index)return null;
+  const sources=new Set(arrived.map(move=>move.from));
+  if(sources.size!==arrived.length||arrived.some(move=>!moves.some(input=>
+    (input.asset===FRESH_BTCB_QUOTE||input.asset===WBNB)&&input.to===move.from&&input.raw>0n)))return null;
+  const pair=freshPoolQuotePair(buy,FRESH_BNCB_QUOTE);
+  const deliveries=moves.filter(move=>move.asset===FRESH_BNCB_QUOTE&&move.to===router);
+  const funding=moves.filter(move=>move.asset===FRESH_BNCB_QUOTE&&move.from===router);
+  if(deliveries.length!==departed.length||funding.length!==1||funding[0].to!==pair||
+    moves.filter(move=>move.asset===FRESH_BNCB_QUOTE).length!==deliveries.length+1)return null;
+  const payingPools=new Set(deliveries.map(move=>move.from));
+  if(payingPools.size!==deliveries.length||deliveries.some(move=>sources.has(move.from)||move.raw<=0n||
+    move.index>=funding[0].index))return null;
+  const relays=new Set(bridge.filter(move=>move.from!==router&&move.to!==router)),matched=new Set<string>();
+  for(const [index,send] of departed.entries()){
+    const next=departed[index+1]?.index??funding[0].index;
+    let leg=send;
+    const visited=new Set([router]);
+    for(let hop=0;!payingPools.has(leg.to);hop++){
+      if(hop===2||visited.has(leg.to)||sources.has(leg.to))return null;
+      visited.add(leg.to);
+      const forwards=[...relays].filter(move=>move.from===leg.to&&move.raw===send.raw&&move.index>leg.index&&move.index<next);
+      if(forwards.length!==1)return null;
+      leg=forwards[0];
+      relays.delete(leg);
+    }
+    if(matched.has(leg.to))return null;
+    matched.add(leg.to);
+  }
+  const received=arrived.reduce((sum,move)=>sum+move.raw,0n);
+  if(relays.size||received!==departed.reduce((sum,move)=>sum+move.raw,0n)||
+    funding[0].raw!==deliveries.reduce((sum,move)=>sum+move.raw,0n))return null;
+  const walletCredits=moves.filter(move=>move.asset===buy&&move.to===wallet);
+  if(walletCredits.length!==1||walletCredits[0].from!==pair||walletCredits[0].index<=funding[0].index)return null;
+  return {quoteRaw:received,pair,paid:funding[0].raw};
 }
 
 /** A bounded single EOA exchange, not a wallet-wide mixed-asset allocation.
@@ -76,12 +122,15 @@ export function freshTokenExchangeSettlement(entry:FreshCapturedReceipt,executio
     const quote=moves.some(m=>m.asset===stable)?stable:WBNB;
     if(sell===quote||buy===quote)return null;
     const bridge=moves.filter(m=>m.asset===quote);
-    // Prove a bounded linear all-USDT path through exactly one router arrival and departure.
-    const bridgeNodes=bridge.length?[bridge[0].from,...bridge.map(m=>m.to)]:[];
+    if(bridge.length<(quote===WBNB?2:3)||bridge.length>10||
+      bridge.some(m=>m.raw<=0n||m.from===wallet||m.to===wallet||m.from===m.to))return null;
+    const bridgeNodes=[bridge[0].from,...bridge.map(m=>m.to)];
     const arrived=bridge.filter(m=>m.to===router),departed=bridge.filter(m=>m.from===router);
-    if(bridge.length<(quote===WBNB?2:3)||bridge.length>8||bridge[0].raw<=0n||bridge.some(m=>m.raw!==bridge[0].raw||m.from===wallet||m.to===wallet||m.from===m.to)
-      ||bridge.some((m,i)=>i>0&&(bridge[i-1].to!==m.from||bridge[i-1].index>=m.index))
-      ||new Set(bridgeNodes).size!==bridgeNodes.length||arrived.length!==1||departed.length!==1||arrived[0].index>=departed[0].index)return null;
+    const linear=bridge.length<=8&&bridge.every((m,i)=>m.raw===bridge[0].raw&&
+      (i===0||bridge[i-1].to===m.from&&bridge[i-1].index<m.index))&&
+      new Set(bridgeNodes).size===bridgeNodes.length&&arrived.length===1&&departed.length===1&&arrived[0].index<departed[0].index;
+    const split=!linear&&quote===stable&&validFreshCompleteCallTrace(entry,trace)?splitStableBncbPurchase(bridge,moves,wallet,buy):null;
+    if(!linear&&!split)return null;
     const unique=(predicate:(c:FreshCallTrace)=>boolean)=>{const a=calls.filter(predicate);return a.length===1?a[0]:null;};
     const bridgeCalls:FreshCallTrace[]=[];
     for(const m of bridge){const input=abi.encodeFunctionData('transfer',[m.to,m.raw]).toLowerCase();
@@ -122,8 +171,19 @@ export function freshTokenExchangeSettlement(entry:FreshCapturedReceipt,executio
       ||Number(freshInteger(final[0].logIndex))<=delivery[0].index)return null;
     const path=[debit,...bridgeCalls,credit].map(c=>calls.indexOf(c));
     if(path.some((v,i)=>i>0&&v<=path[i-1]))return null;
+    if(split){
+      const swaps=execution.logs.filter(log=>log.address===split.pair&&log.topics[0]===poolMarketAbi.getEvent('Swap')!.topicHash);
+      if(swaps.length!==1||Number(freshInteger(swaps[0].logIndex))<=delivery[0].index)return null;
+      const swap=poolMarketAbi.parseLog(swaps[0]);
+      const buyIsToken0=buy<FRESH_BNCB_QUOTE;
+      if(!swap||String(swap.args.to).toLowerCase()!==wallet||
+        swap.args[buyIsToken0?'amount1In':'amount0In']!==split.paid||
+        swap.args[buyIsToken0?'amount0In':'amount1In']!==0n||
+        swap.args[buyIsToken0?'amount0Out':'amount1Out']!==gross||
+        swap.args[buyIsToken0?'amount1Out':'amount0Out']!==0n)return null;
+    }
     const gas=freshInteger(entry.receipt.gasUsed)*freshInteger(entry.receipt.effectiveGasPrice??tx.gasPrice);
     if(gas<=0n||execution.feeWei!==gas)return null;
-    return{kind:quote===stable?'ordinary_token_exchange_via_usdt':'ordinary_token_exchange_via_wbnb',wallet,sellToken:sell,sellRaw:rawIn,buyToken:buy,buyRaw:incoming.incoming,quoteAddress:quote,quoteRaw:bridge[0].raw,gasFeeWei:gas};
+    return{kind:quote===stable?'ordinary_token_exchange_via_usdt':'ordinary_token_exchange_via_wbnb',wallet,sellToken:sell,sellRaw:rawIn,buyToken:buy,buyRaw:incoming.incoming,quoteAddress:quote,quoteRaw:split?.quoteRaw??bridge[0].raw,gasFeeWei:gas};
   }catch{return null;}
 }

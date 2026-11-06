@@ -7,7 +7,7 @@ import { ChartDiskCache } from './cache.js';
 import { createFreshReplay, type FreshReplayManifest } from './replay.js';
 import { createGmgnRequester } from '../gmgnTransport.js';
 import {freshPendingTradeScopeSql}from'./positionDependencies.js';
-import {freshTrackedTokenSql,readFreshGangHistoryAdmission,GANG_TOKEN_ADDRESS}from'./tracking.js';
+import {freshTrackedTokenSql,readFreshGangHistoryAdmission,GANG_TOKEN_ADDRESS,GREEN_MORNING_TOKEN_ADDRESS,readFreshGreenMorningHistoryAdmission}from'./tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import{chainRpc}from'../rpc.js';
 import{freshPositionWalletGapSql}from'./positionGapCoverage.js';
@@ -31,9 +31,11 @@ export function createFreshServices(db:Pool) {
     if(!row||row.correction_epoch!==claims.correctionEpoch||!row.wallet_addresses.includes(claims.wallet))return false;
     if(row.kind==='kol'){
       if(claims.historyPermissionDigest!==undefined){
-        if(claims.token!==GANG_TOKEN_ADDRESS||!/^[0-9a-f]{64}$/.test(claims.historyPermissionDigest))return false;
-        const history=await readFreshGangHistoryAdmission(db);if(!history||history.digest!==claims.historyPermissionDigest)return false;
-      }else if(claims.token===GANG_TOKEN_ADDRESS&&Date.parse(claims.from)<new Date(row.starts_at).getTime())return false;
+        if(!/^[0-9a-f]{64}$/.test(claims.historyPermissionDigest))return false;
+        const digest=claims.token===GANG_TOKEN_ADDRESS?(await readFreshGangHistoryAdmission(db))?.digest
+          :claims.token===GREEN_MORNING_TOKEN_ADDRESS?(await readFreshGreenMorningHistoryAdmission(db,claims.wallet))?.permissionDigest:undefined;
+        if(digest!==claims.historyPermissionDigest)return false;
+      }else if((claims.token===GANG_TOKEN_ADDRESS||claims.token===GREEN_MORNING_TOKEN_ADDRESS)&&Date.parse(claims.from)<new Date(row.starts_at).getTime())return false;
       return claims.scope==='public'&&(await db.query(`SELECT 1 FROM fresh.kols WHERE wallet_address=$1 AND is_tracked`,[claims.wallet])).rowCount===1;
     }
     if(claims.historyPermissionDigest!==undefined)return false;
