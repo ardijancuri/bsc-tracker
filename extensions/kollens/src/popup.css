@@ -8,10 +8,9 @@ html[data-surface] {
   --text: #e9edf1;
   --muted: #939da2;
   --yellow: #f0b90b;
-  --buy-text: #65e8a9;
-  --buy-border: #37b878;
-  --buy-surface: #153528;
-  --buy-hover: #1c4936;
+  --buy-text: #88ba9f;
+  --buy-border: #425c50;
+  --buy-hover: rgb(136 186 159 / 10%);
   --popup-header-height: 48px;
   color-scheme: dark;
 }
@@ -302,6 +301,7 @@ html[data-surface] .group-heading{min-width:0;min-height:28px;margin:0;gap:7px}
 html[data-surface] .group-heading strong{font-size:13px}
 html[data-surface] .group-heading>span:last-child{font-size:11px;white-space:nowrap;color:var(--muted)}
 html[data-surface] .token-row{min-height:54px;padding:5px 8px 5px 10px;gap:8px}
+html[data-surface] .token-row:has(.token-buy-area){padding-block:2px;padding-inline-end:2px}
 .group .token-row,.saved-item+.saved-item{position:relative}
 .group .token-row::before,.saved-item+.saved-item::before {
   content: '';
@@ -321,9 +321,9 @@ html[data-surface] .token-row{min-height:54px;padding:5px 8px 5px 10px;gap:8px}
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
-.token-metrics div{display:flex;gap:3px;align-items:baseline}
-.token-metrics dt{color:var(--muted);font-size:9px}
-.token-metrics dd{margin:0;text-align:right;color:var(--text);font-weight:600;white-space:nowrap}
+.token-metric{display:flex;min-width:0;max-width:100%;gap:3px;align-items:baseline}
+.token-metric>span:first-child{flex:none;color:var(--muted);font-size:9px}
+.token-metric>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--text);font-weight:600;white-space:nowrap}
 html[data-surface] .token-monogram{flex-shrink:0;background:var(--surface2);color:var(--yellow)}
 .ui-icon{display:block;flex-shrink:0}
 .token-thumbnail{position:relative;overflow:hidden;flex-shrink:0}
@@ -386,19 +386,35 @@ html[data-surface] .saved-item .token-actions :is(button,a){width:24px}
 .saved-item .address .ui-icon{width:10px;height:10px}
 html[data-surface] .token-buy,
 html[data-surface] .wallet-buy .buy-submit{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
   flex:none;
-  min-width:56px;
-  min-height:34px;
-  padding:0 10px;
+  gap:3px;
+  min-height:24px;
+  padding:0 3px;
   border:1px solid var(--buy-border);
-  border-radius:8px;
-  background:var(--buy-surface);
+  border-radius:5px;
+  background:transparent;
   color:var(--buy-text);
-  font-size:12px;
-  font-weight:700;
+  font-size:11px;
+  font-weight:600;
   white-space:nowrap;
 }
-html[data-surface] .group-actions .token-buy{min-width:65px}
+html[data-surface] .token-buy.token-buy-area{
+  display:grid;
+  grid-template-rows:minmax(0,1fr) auto;
+  justify-content:stretch;
+  justify-items:end;
+  width:82px;
+  height:54px;
+  gap:2px;
+  padding:2px 4px;
+}
+.token-buy-area .token-metrics{width:100%;min-width:0;gap:1px}
+.token-buy-label{display:flex;align-items:center;gap:3px}
+html[data-surface] .token-buy-area:focus-visible{outline-offset:-2px}
+html[data-surface] .wallet-buy .buy-submit{min-height:34px;padding-inline:10px}
 html[data-surface] :is(.token-buy,.wallet-buy .buy-submit):hover:not(:disabled){background:var(--buy-hover)}
 html[data-surface] :is(.token-buy,.wallet-buy .buy-submit):focus-visible{outline-color:var(--buy-text)}
 .saved-status,html[data-surface] .note-preview{padding:0 10px 8px 54px;margin:0;font-size:12px;line-height:1.45}

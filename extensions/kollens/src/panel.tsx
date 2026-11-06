@@ -1,6 +1,6 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
-import {CircleCheck, Copy, ExternalLink, Globe, History, Pencil, Settings, Star, Tag, Trash2, UserRound, WalletCards, X} from 'lucide-react';
+import {CircleCheck, Copy, ExternalLink, Globe, History, Pencil, Settings, Star, Tag, Trash2, UserRound, WalletCards, X, Zap} from 'lucide-react';
 import {defaultExtensionPreferences,extensionMatchTypes,extensionLabels,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage,type ExtensionWorkspace,type ExtensionPreferences,type TokenCard,type ExtensionTokenIdentity} from '../../../shared/extension';
 import {requestBackground,isExtension,browserApi} from './platform';
 import {gmgnOrigins} from './liveAccess';
@@ -19,7 +19,7 @@ import './panel.css';
 import './popup.css';
 import './matchPause.css';
 
-interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;error?:string;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
+interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;syncError?:string;tabId?:number;pagePending?:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
 const accountReturnKey='popupAccountReturnUntil';
 const empty:State={connected:false,workspace:null,drafts:[],preferences:defaultExtensionPreferences,saved:[],page:null,selected:null};
 const short=(address:string)=>`${address.slice(0,6)}…${address.slice(-4)}`;
@@ -55,7 +55,7 @@ function emptyMatches(state: State, hasCards: boolean) {
     if (!hasCards) return 'Waiting for token cards';
     return state.preferences.matchTypes.length ? 'No shared links on this page' : 'Match types are off';
   }
-  if (state.liveEnabled) return 'Waiting for token cards';
+  if (state.liveEnabled || state.pagePending || state.page?.status==='waiting') return 'Waiting for token cards';
   return 'Could not read BNB Trenches. Reopen Kollens on the tab.';
 }
 const rowIcons = {edit:Pencil, trash:Trash2, external:ExternalLink, star:Star};
@@ -69,6 +69,16 @@ function TokenThumbnail({card}:{card:ExtensionTokenIdentity}){
 }
 function TokenRow({card,metrics,favorite,actions,onCopyError,onBuy,buyAmount,buyReady}:{card:ExtensionTokenIdentity;metrics?:Pick<TokenCard,'marketCap'|'volume'>;favorite?:React.ReactNode;actions?:React.ReactNode;onCopyError:()=>void;onBuy?:()=>void;buyAmount?:string;buyReady:boolean}){
   const hasDistinctName = card.name && card.symbol && card.name.trim().toLowerCase() !== card.symbol.trim().toLowerCase();
+  const marketCap = metrics?.marketCap?.value;
+  const volume = metrics?.volume?.value;
+  const marketMetrics = <span className="token-metrics">
+    <span className="token-metric" title={marketCap ? 'Market cap: '+marketCap : 'Market cap'}>
+      <span>MC</span><span style={{color:cardMetricColor(metrics?.marketCap)}}>{marketCap??'—'}</span>
+    </span>
+    <span className="token-metric" title={volume ? 'Volume: '+volume : 'Volume'}>
+      <span>V</span><span style={{color:cardMetricColor(metrics?.volume)}}>{volume??'—'}</span>
+    </span>
+  </span>;
   return <div className="token-row">
     <TokenThumbnail card={card}/>
     <div className="token-identity">
@@ -84,19 +94,21 @@ function TokenRow({card,metrics,favorite,actions,onCopyError,onBuy,buyAmount,buy
         <img src="assets/gmgn.png" alt=""/>
       </a>
     </div>
-    <dl className="token-metrics">
-      <div title="Market cap"><dt>MC</dt><dd style={{color:cardMetricColor(metrics?.marketCap)}}>{metrics?.marketCap?.value??'—'}</dd></div>
-      <div title="Volume"><dt>V</dt><dd style={{color:cardMetricColor(metrics?.volume)}}>{metrics?.volume?.value??'—'}</dd></div>
-    </dl>
+    {!onBuy&&marketMetrics}
     {actions&&<div className="token-actions">{actions}</div>}
-    {onBuy&&<button type="button" className="token-buy" aria-label={`Buy ${card.symbol||card.name||short(card.address)}`}
+    {onBuy&&<button type="button" className="token-buy token-buy-area" aria-label={`Buy ${card.symbol||card.name||short(card.address)}`}
         title={buyAmount ? `Buy ${buyAmount} BNB per selected wallet` : 'Set a single-token amount in Settings → Buy'}
-        disabled={!buyReady} onClick={onBuy}>Buy</button>}
+        aria-description={[marketCap && 'Market cap '+marketCap,volume && 'Volume '+volume].filter(Boolean).join(', ')||undefined}
+        disabled={!buyReady} onClick={onBuy}>
+      {marketMetrics}
+      <span className="token-buy-label"><Zap size={12} fill="currentColor" aria-hidden="true"/>Buy</span>
+    </button>}
   </div>;
 }
 function Panel(){
   const[state,setState]=useState(empty),[view,setView]=useState<PopupUi['view']>('matches'),[destination,setDestination]=useState<Destination>(isExtension?'wallets':'tokens'),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [checkingTab, setCheckingTab] = useState(isExtension);
   const [walletCopy, setWalletCopy] = useState<{success:boolean}|null>(null);
   const [buyView, setBuyView] = useState<WalletBuyRequest|'activity'|null>(null);
   const [buyContext, setBuyContext] = useState<WalletBuyContext|null>(null);
@@ -110,6 +122,8 @@ function Panel(){
   const chosenDestination=useRef(false),firstState=useRef(true);
   const scanActiveTab=useRef(isExtension);
   const tabEpoch=useRef(0);
+  const displayedTab=useRef<number|undefined>(undefined);
+  const refreshQueued=useRef(false);
   const[note,setNote]=useState<PopupUi['editor']>(null),inFlight=useRef(false),mutationEpoch=useRef(0),uiOwner=useRef<string|undefined>(undefined),chosenView=useRef<PopupUi['view']|null>(null);
   const clearAccountReturn=()=>{if(isExtension)void browserApi.storage.session.remove(accountReturnKey).catch(()=>{});};
   const selectSettingsSection = (section: SettingsSection) => {
@@ -189,7 +203,12 @@ function Panel(){
   const changeView=(next:PopupUi['view'])=>{chosenView.current=next;setView(next);navigate('tokens');remember({view:next});};
   const changeNote=(editor:PopupUi['editor'])=>{setNote(editor);remember({editor});};
   const refresh = async () => {
-    if (inFlight.current) return;
+    if (inFlight.current) {
+      // The next snapshot can arrive while the previous request is awaiting
+      // storage. Coalesce it, but don't leave it waiting on the polling timer.
+      refreshQueued.current = true;
+      return;
+    }
     inFlight.current = true;
     const epoch = mutationEpoch.current;
     const activeTabEpoch = tabEpoch.current;
@@ -221,13 +240,21 @@ function Panel(){
         setDestination('tokens');
         remember({view:'matches'}, result.ownerId);
       }
+      displayedTab.current=result.tabId;
       setState(result);
+      setCheckingTab(false);
       setRefreshFailed(false);
     } catch {
-      if (isCurrent()) setRefreshFailed(true);
+      if (isCurrent()) {
+        setCheckingTab(false);
+        setRefreshFailed(true);
+      }
     } finally {
       inFlight.current = false;
-      if (scanActiveTab.current) void refresh();
+      if (refreshQueued.current || scanActiveTab.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     }
   };
   useEffect(()=>{
@@ -292,6 +319,8 @@ function Panel(){
     if (!inSidePanel||windowId===undefined) return;
     const switchTab=()=>{
       tabEpoch.current++;
+      displayedTab.current=undefined;
+      setCheckingTab(true);
       scanActiveTab.current=true;
       setState(current=>({...current,page:null,selected:null,canScanPage:false}));
       void refresh();
@@ -323,7 +352,16 @@ function Panel(){
   useEffect(()=>{
     const page=(event:Event)=>setState(current=>({...current,page:(event as CustomEvent).detail}));
     const focus=(event:Event)=>{setState(current=>({...current,selected:(event as CustomEvent).detail}));changeView('matches');};
-    const update=(message:any,sender:any)=>{if(sender.id!==browserApi.runtime.id||sender.tab)return;if(message?.kind==='panel/changed')void refresh();if(message?.kind==='panel/focus'){setState(current=>({...current,selected:message.groupId}));changeView('matches');void refresh();}};
+    const update=(message:any,sender:any)=>{
+      if(sender.id!==browserApi.runtime.id||sender.tab)return;
+      if(message?.tabId!==undefined&&displayedTab.current!==undefined&&message.tabId!==displayedTab.current)return;
+      if(message?.kind==='panel/changed')void refresh();
+      if(message?.kind==='panel/focus'){
+        setState(current=>({...current,selected:message.groupId}));
+        changeView('matches');
+        void refresh();
+      }
+    };
     if(isExtension)browserApi.runtime.onMessage.addListener(update);
     else{window.addEventListener('kollens:live-page',page);window.addEventListener('kollens:live-focus',focus);}
     return()=>{if(isExtension)browserApi.runtime.onMessage.removeListener(update);else{window.removeEventListener('kollens:live-page',page);window.removeEventListener('kollens:live-focus',focus);}};
@@ -369,7 +407,7 @@ function Panel(){
   },[matchPause,activeMatchPause]);
   const liveAccessPrompt = Boolean(state.canScanPage && state.localLiveAvailable && !state.liveEnabled);
   const visibleRefreshFailed = activeMatchPause?.refreshFailed ?? refreshFailed;
-  const visibleSyncError = activeMatchPause ? activeMatchPause.syncError : state.error;
+  const visibleSyncError = activeMatchPause ? activeMatchPause.syncError : state.syncError;
   const pauseMatch = (event:React.PointerEvent,groupId:string) => {
     if (event.pointerType==='mouse' && matchesPage?.status==='ready') {
       setMatchPause({groupId,page:matchesPage,showEnableLive:activeMatchPause?.showEnableLive ?? liveAccessPrompt,
@@ -417,7 +455,7 @@ function Panel(){
       logoUrl:saved?.logoUrl??card.logoUrl??null,pinned:!saved?.pinned,note:saved?.note??'',
     }});
   };
-  const showTrenchesLink = !state.canScanPage && (!state.page || state.page.status === 'disabled');
+  const showTrenchesLink = !checkingTab && !state.canScanPage && (!state.page || state.page.status === 'disabled');
   const canEnableLive = activeMatchPause?.showEnableLive ?? liveAccessPrompt;
   const copyError=()=>setError('Copy failed');
   const copyWalletAddress=async(address:string)=>{
@@ -558,7 +596,7 @@ function Panel(){
               {isExtension&&group.addresses.every(address=>unique.has(address))&&
                 <button type="button" className="token-buy" disabled={!buyContext} title={groupBuyAmount
                   ? `Buy ${groupBuyAmount} BNB per token, per selected wallet` : 'Set a group-buy amount in Settings → Buy'}
-                  onClick={()=>startBuy(group.addresses.map(address=>unique.get(address)!),'group')}>Buy all</button>}
+                  onClick={()=>startBuy(group.addresses.map(address=>unique.get(address)!),'group')}><Zap size={12} fill="currentColor" aria-hidden="true"/>Buy all</button>}
             </div>
           </div>
           <div className="token-stack">
@@ -579,7 +617,7 @@ function Panel(){
         </section>):showTrenchesLink?<a className="trenches-empty" href="https://gmgn.ai/?chain=bsc" target="_blank" rel="noopener noreferrer">
           <img src="assets/gmgn.png" alt=""/>
           <span>Open GMGN BNB trenches to find matches</span>
-        </a>:canEnableLive&&!state.page?null:<div className="empty"><h2>{emptyMatches(state,unique.size>0)}</h2></div>}
+        </a>:canEnableLive&&!state.page?null:<div className="empty"><h2>{checkingTab?'Loading token matches…':emptyMatches(state,unique.size>0)}</h2></div>}
       </div>}
       {view==='saved'&&<>
         {!state.connected&&<div className="empty"><h2>Connect to save tokens</h2>{connect}</div>}
