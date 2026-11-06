@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {GANG_TOKEN_ADDRESS,SAFU_TOKEN_ADDRESS,freshTokenAdmissionKey,freshTokenAdmissionDigest,validFreshExistingTokenPermission,readFreshTokenAdmission,
+import {GANG_TOKEN_ADDRESS,SAFU_TOKEN_ADDRESS,GREEN_MORNING_TOKEN_ADDRESS,freshTokenAdmissionKey,freshTokenAdmissionDigest,validFreshExistingTokenPermission,readFreshTokenAdmission,
  freshTrackedTokenSql,freshTrackedEventSql,freshExistingTokenAdmissionSql,type FreshExistingTokenPermission,type FreshTrackingStart} from './tracking.js';
 const start:FreshTrackingStart={block_number:'100',block_hash:'0x'+'a'.repeat(64),value:{startBlock:100,startHash:'0x'+'a'.repeat(64),startTime:'2026-10-25T02:42:03.000Z'}};
 const approved=():FreshExistingTokenPermission=>({version:1,kind:'explicit_existing',chainId:56,tokenAddress:GANG_TOKEN_ADDRESS,active:true,
@@ -22,6 +22,14 @@ describe('one explicit preexisting GANG tracking permission',()=>{
   expect(validFreshExistingTokenPermission({...p,reason:'user_approved_gang_only'},start)).toBe(false);
   expect(validFreshExistingTokenPermission({...p,active:false},start)).toBe(false);
   expect(await readFreshTokenAdmission(fixture({permission:p}).db,SAFU_TOKEN_ADDRESS,{blockNumber:100})).toBeNull();
+ });
+ it('tracks GREEN MORNING only with its own permission after the original boundary',async()=>{
+  const p:FreshExistingTokenPermission={...approved(),tokenAddress:GREEN_MORNING_TOKEN_ADDRESS,reason:'user_approved_green_morning_only'};
+  expect(await readFreshTokenAdmission(fixture({permission:p}).db,GREEN_MORNING_TOKEN_ADDRESS,{blockNumber:101})).toMatchObject({kind:'preexisting',permission:p,fromBlock:101});
+  expect(await readFreshTokenAdmission(fixture({permission:p}).db,GREEN_MORNING_TOKEN_ADDRESS,{blockNumber:100})).toBeNull();
+  expect(await readFreshTokenAdmission(fixture().db,GREEN_MORNING_TOKEN_ADDRESS,{blockNumber:101})).toBeNull();
+  expect(await readFreshTokenAdmission(fixture({permission:approved()}).db,GREEN_MORNING_TOKEN_ADDRESS,{blockNumber:101})).toBeNull();
+  expect(freshExistingTokenAdmissionSql('$1')).toContain(`WHEN '${GREEN_MORNING_TOKEN_ADDRESS}' THEN '${p.reason}'`);
  });
  it('binds a typed permission to the original start without claiming a launch',()=>{
   expect(validFreshExistingTokenPermission(approved(),start)).toBe(true);expect(freshTokenAdmissionKey(GANG_TOKEN_ADDRESS)).toBe('token_admission:'+GANG_TOKEN_ADDRESS);

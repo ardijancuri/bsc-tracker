@@ -8,7 +8,7 @@ import { freshPositionReceiptRelevantSql,freshPendingTradeScopeSql,freshPendingT
 import { freshPositionWalletGapSql } from './balanceScheduling.js';
 import { freshStoredKolRollingMetrics, rankFreshStoredLeaderboard, freshRankedLeaderboardValue, freshRollingLeaderboardPendingSql, freshPublicTokenDiscoveryPendingSql } from './leaderboard.js';
 import {freshTradeBnbEquivalent} from './tradeBnbDisplay.js';
-import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeTokenBoundarySql,GANG_TOKEN_ADDRESS} from './tracking.js';
+import {freshTrackedTokenSql,freshTrackedEventSql,freshScopeEventSql,freshScopeTokenBoundarySql,GANG_TOKEN_ADDRESS,GREEN_MORNING_TOKEN_ADDRESS} from './tracking.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import{FRESH_REALIZED_POLICY,freshRealizedPolicyReadySql}from'./realizedPolicy.js';
@@ -30,10 +30,15 @@ const tokenFrom=(scope:any,token:string)=>tokenHistory(scope,token)?.startsBlock
 const tokenFromTime=(scope:any,token:string)=>tokenHistory(scope,token)?.startsAt??iso(scope.starts_at);
 const preparationPending=(reasons:string[])=>reasons.length>0&&reasons.every(reason=>['accounting_policy_pending','balance_pending','decoding_pending','registration_pending','quote_unavailable'].includes(reason));
 export const publicScope = (wallet: string) => `kol:${wallet}`;
+function tokenArtworkUrl(address: string, data: unknown, url?: string | null) {
+  // Flap's original image differs from the current contract-specific CoinGecko and project artwork.
+  if (address === GREEN_MORNING_TOKEN_ADDRESS) return '/token-icons/green-morning.webp';
+  return data ? `/api/token-image/${address}` : url ?? null;
+}
 export const tokenIdentity = (r: Record<string, any>) => {
   const day=r.utc_date??(r.today_utc instanceof Date?r.today_utc.toISOString().slice(0,10):String(r.today_utc??'').slice(0,10)),today=day===freshUtcDay();
   return { address: r.address, symbol: r.symbol, name: r.name,
-  logoUrl: r.logo_data ? `/api/token-image/${r.address}` : r.logo_url ?? null, priceUsd: r.valuation_status==='no_liquidity'?null:r.price_usd ?? null,
+  logoUrl: tokenArtworkUrl(r.address,r.logo_data,r.logo_url), priceUsd: r.valuation_status==='no_liquidity'?null:r.price_usd ?? null,
   marketCapUsd: r.valuation_status==='no_liquidity'?null:r.market_cap_usd ?? null, valuationStatus:r.valuation_status, change24h: null, kolCount24h: today?r.today_kol_count??0:0,
   buys24h: today?r.today_buy_count??0:0, sells24h: today?r.today_sell_count??0:0, volume24hUsd: today?freshDecimal(r.today_volume_q??'0'):'0',
   lastTradeAt: iso(r.last_trade_at), trackingBoundary: r.trackingBoundary, utcDay: freshUtcDay(),
@@ -49,7 +54,7 @@ export function tradeIdentity(r: Record<string, any>): KolTokenTrade {
   const bnbEquivalent=freshTradeBnbEquivalent(r);
   return { id:r.id,txHash:r.transaction_hash ?? r.tx_hash,walletAddress:r.wallet_address,tokenAddress:r.token_address,
     kolName:r.display_name ?? null,kolAvatarUrl:r.avatar_url ?? null,kolTwitter:r.twitter ?? null,
-    tokenSymbol:r.symbol ?? null,tokenName:r.name ?? null,tokenLogoUrl:r.logo_data ? `/api/token-image/${r.token_address}` : r.logo_url ?? null,
+    tokenSymbol:r.symbol ?? null,tokenName:r.name ?? null,tokenLogoUrl:tokenArtworkUrl(r.token_address,r.logo_data,r.logo_url),
     side:r.kind ?? r.side,tokenAmount:quantity,quoteSymbol:r.quote_symbol ?? null,quoteTokenAddress:r.quote_address??null,quoteAmount:freshQuantity(r.quote_amount ?? null),
     ...(bnbEquivalent!==null?{bnbEquivalentAmount:bnbEquivalent}:{}),
     ...(r.acquisition_cost?.policy==='actual_quote_acquisition_cost_v1'?{acquisitionCost:r.acquisition_cost}:{}),
@@ -217,7 +222,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
       const page=await trades({wallet,token,scopeId,limit:100});if(!page.items.length)return null;const states=await state(),snapshot=pendingSnapshot(scope,token,r.pending_reason,states);
       const buys=page.items.filter(e=>e.side==='buy'),sells=page.items.filter(e=>e.side==='sell'),valued=(items:KolTokenTrade[])=>items.filter(e=>e.amountUsd!==null).length;
       const result:KolTokenActivity={kol:{address:wallet,name:identity?.display_name??null,avatarUrl:identity?.avatar_url??null,twitter:identity?.twitter??null,source:'node',lastSeenAt:page.items[0].timestamp},
-        token:{address:token,symbol:r.symbol,name:r.name,logoUrl:r.logo_data?`/api/token-image/${token}`:r.logo_url??null,priceUsd:r.valuation_status==='ready'?r.price_usd:null,
+        token:{address:token,symbol:r.symbol,name:r.name,logoUrl:tokenArtworkUrl(token,r.logo_data,r.logo_url),priceUsd:r.valuation_status==='ready'?r.price_usd:null,
           marketCapUsd:r.valuation_status==='ready'?r.market_cap_usd:null,marketCapSupply:r.total_supply_raw!=null&&r.decimals!=null?q(String(r.total_supply_raw)).div(new FreshRational(10n**BigInt(r.decimals))).decimal(255):null,valuationStatus:r.valuation_status},
         trades:page.items,summary:{investedUsd:null,soldUsd:null,realizedProfitUsd:null,avgBoughtPriceUsd:null,avgSoldPriceUsd:null,avgBoughtMcapUsd:null,avgSoldMcapUsd:null,
           remainingTokenAmount:null,remainingCostBasisUsd:null,buyCount:buys.length,sellCount:sells.length,valuedBuyCount:valued(buys),valuedSellCount:valued(sells),excludedSellCount:sells.length-valued(sells),
@@ -257,7 +262,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
       ...(s.investedUsd!==null&&s.soldUsd!==null&&s.transferOutIncomeUsd!==null&&s.feesUsd!==null?{cashFlow:{investedUsd:s.investedUsd,soldUsd:s.soldUsd,transferOutIncomeUsd:s.transferOutIncomeUsd,feesUsd:s.feesUsd}}:{}),...(complete?{}:{reason})};
     const result:KolTokenActivity={kol:identity?{address:wallet,name:identity.display_name,avatarUrl:identity.avatar_url,twitter:identity.twitter,source:'node',lastSeenAt:iso(row.r.last_event_at)}:
       {address:wallet,name:null,avatarUrl:null,twitter:null,source:'node',lastSeenAt:iso(row.r.last_event_at)},
-      token:{address:token,symbol:row.r.symbol,name:row.r.name,logoUrl:row.r.logo_data?`/api/token-image/${token}`:row.r.logo_url,priceUsd:row.r.valuation_status==='no_liquidity'?null:row.r.price_usd,marketCapUsd:row.r.valuation_status==='no_liquidity'?null:row.r.market_cap_usd,
+      token:{address:token,symbol:row.r.symbol,name:row.r.name,logoUrl:tokenArtworkUrl(token,row.r.logo_data,row.r.logo_url),priceUsd:row.r.valuation_status==='no_liquidity'?null:row.r.price_usd,marketCapUsd:row.r.valuation_status==='no_liquidity'?null:row.r.market_cap_usd,
         marketCapSupply:row.r.total_supply_raw!=null&&row.r.decimals!=null?q(String(row.r.total_supply_raw)).div(new FreshRational(10n**BigInt(row.r.decimals))).decimal(255):null,valuationStatus:row.r.valuation_status},
       trades:page.items,summary:{investedUsd:s.investedUsd,soldUsd:s.soldUsd,realizedProfitUsd:row.realizedComplete?s.realizedProfitUsd:null,avgBoughtPriceUsd:null,avgSoldPriceUsd:null,
         avgBoughtMcapUsd:null,avgSoldMcapUsd:null,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,buyCount:counts.buys,sellCount:counts.sells,

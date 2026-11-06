@@ -1,7 +1,8 @@
 import {describe,it,expect,vi} from 'vitest';
 import sharp from 'sharp';
 import {freshArtworkRaster,freshArtworkUrl,freshFlapArtworkFromHtml,loadFreshArtwork,normalizeFreshArtwork,runFreshArtwork,freshArtworkCaptureReady} from './artwork.js';
-import {tokenIdentity} from './reads.js';
+import {tokenIdentity,tradeIdentity} from './reads.js';
+import {GREEN_MORNING_TOKEN_ADDRESS} from './tracking.js';
 import type {Pool} from 'pg';
 
 const token='0x9ae8b2957399e8103e7cc190ec1d9a12ec9a7777';
@@ -99,6 +100,14 @@ describe('artwork durable work and read identities',()=>{
     const query=vi.fn().mockResolvedValueOnce({rows:[{address:token}],rowCount:1}).mockResolvedValue({rows:[{}],rowCount:1});
     expect(await runFreshArtwork({query} as unknown as Pool,{loader:async()=>{throw Error('SECRET_RESPONSE');}})).toEqual({ready:0,failed:1});
     expect(query.mock.calls[2][0]).toContain("interval '1 hour'");expect(query.mock.calls[2][1][2]).toBe('artwork_unavailable');
+  });
+  it('serves the bundled GREEN MORNING image for its exact contract even with stale or missing artwork',()=>{
+    const address=GREEN_MORNING_TOKEN_ADDRESS,portrait='/token-icons/green-morning.webp';
+    const stale={logo_data:Buffer.from('old image'),logo_url:icon};
+    expect(tokenIdentity({address,...stale}).logoUrl).toBe(portrait);
+    expect(tokenIdentity({address}).logoUrl).toBe(portrait);
+    expect(tradeIdentity({token_address:address,amount_usd:'1',quantity:'1',kind:'buy',...stale}).tokenLogoUrl).toBe(portrait);
+    expect(tokenIdentity({address:other,name:'GREEN MORNING',symbol:'GM',...stale}).logoUrl).toBe(`/api/token-image/${other}`);
   });
   it('uses local cached artwork and exposes no-liquidity without stale current market cap',()=>{
     const value=tokenIdentity({address:token,logo_data:Buffer.from('cached'),logo_url:icon,valuation_status:'no_liquidity',price_usd:'1',market_cap_usd:'100'});
