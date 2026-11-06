@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import {queueFreshTransferValuation} from './deferredTransferValuation.js';
 import type { PoolClient } from 'pg';
 import type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshPositionSummary, FreshScope,FreshFeeExclusions,FreshAirdropBasis } from '../../shared/freshAccounting.js';
-import{GANG_TOKEN_ADDRESS,FRESH_GANG_HISTORY_FROM_BLOCK,FRESH_GANG_CREATION_TIME,readFreshGangHistoryAdmission,freshScopeEventSql,GREEN_MORNING_TOKEN_ADDRESS,GREEN_MORNING_HISTORY_POLICY,greenMorningHistoryOrigin,readFreshGreenMorningHistoryAdmission}from'./tracking.js';
+import{GANG_TOKEN_ADDRESS,FRESH_GANG_HISTORY_FROM_BLOCK,FRESH_GANG_CREATION_TIME,readFreshGangHistoryAdmission,freshScopeEventSql,GREEN_MORNING_TOKEN_ADDRESS,greenMorningHistoryPolicy,greenMorningHistoryOrigin,readFreshGreenMorningHistoryAdmission}from'./tracking.js';
 import{freshScopeTokenCaptureSql}from'./gangTokenCoverage.js';
 import {advanceFreshRollingKolTotals,addFreshRollingKolResult,addFreshRollingKolExcludedFee,rebuildFreshRollingKolTotals} from './rolling.js';
 export type { FreshEventResult, FreshFinancialEvent, FreshLot, FreshPosition, FreshScope } from '../../shared/freshAccounting.js';
@@ -80,7 +80,7 @@ export const freshEventInScope = (scope: FreshScope, event: FreshFinancialEvent)
   const origin=event.tokenAddress===GREEN_MORNING_TOKEN_ADDRESS?greenMorningHistoryOrigin(event.walletAddress):null;
   const allowedHistory=history&&/^[0-9a-f]{64}$/.test(history.permissionDigest)&&(
     event.tokenAddress===GANG_TOKEN_ADDRESS&&history.policy==='gmgn_gang_only_history_v1'&&history.startsBlock===String(FRESH_GANG_HISTORY_FROM_BLOCK)&&history.startsAt===FRESH_GANG_CREATION_TIME
-    ||origin&&history.policy===GREEN_MORNING_HISTORY_POLICY&&history.startsBlock===String(origin.block)&&history.startsAt===origin.time);
+    ||origin&&history.policy===greenMorningHistoryPolicy(event.walletAddress)&&history.startsBlock===String(origin.block)&&history.startsAt===origin.time);
   const boundary = allowedHistory?history:(scope.walletStarts?.[event.walletAddress] ?? scope);
   return scope.walletAddresses.includes(event.walletAddress) && BigInt(event.blockNumber) >= BigInt(boundary.startsBlock) && Date.parse(event.occurredAt) >= Date.parse(boundary.startsAt);
 };

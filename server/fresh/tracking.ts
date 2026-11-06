@@ -16,14 +16,18 @@ const existingReason=(token:unknown)=>typeof token==='string'&&Object.hasOwn(exi
 export const freshExplicitExistingToken=(token:string)=>existingReason(token)!==null;
 export const FRESH_GANG_HISTORY_FROM_BLOCK=128977030,FRESH_GANG_CREATION_HASH='0x5f21700cb2dd516df53c00b30dff0e0fa15d80ac3097f020591cd4b4a599ed46',FRESH_GANG_CREATION_TIME='2026-10-21T17:20:53.000Z';
 export const FRESH_GANG_HISTORY_ADMISSION_KEY='token_history_admission:'+GANG_TOKEN_ADDRESS;
-// The approved historical import is limited to two public GM books.
+// Each approved historical import is limited to its public GM book.
 export const GREEN_MORNING_HISTORY_POLICY='node_green_morning_two_wallets_v1' as const;
+const GREEN_MORNING_985ETH_WALLET='0x61fd0d043d519f5a2bd05785000f30db96809429';
+export const GREEN_MORNING_985ETH_HISTORY_POLICY='node_green_morning_985eth_v1' as const;
 export const GREEN_MORNING_HISTORY_WALLETS={
  '0xcc291dcd83bd9f2600cca4d65ae3b724eaf4f5a9':{block:124780316,hash:'0xe6cfd95f19eb1c58cbc7baab3bf2dcd996f81086812f7b066f74428d1076395e',time:'2026-09-29T20:26:01.000Z'},
  '0xa05ec35f7d1eba823cff2ed26aeaed419683742f':{block:126991059,hash:'0x0fb47e57520f807fe3370a460bbbe8a1191320b0f40972d45bc5035b7ed042d2',time:'2026-10-11T08:53:23.000Z'},
+ [GREEN_MORNING_985ETH_WALLET]:{block:124778728,hash:'0x874e3457542749092c23a6fb0cc0dbf1f6ae6960ef5611edc890cfb9717f8b77',time:'2026-09-29T20:14:07.000Z'},
 } as const;
 type GreenMorningWallet=keyof typeof GREEN_MORNING_HISTORY_WALLETS;
 export const greenMorningHistoryOrigin=(wallet:string)=>Object.hasOwn(GREEN_MORNING_HISTORY_WALLETS,wallet)?GREEN_MORNING_HISTORY_WALLETS[wallet as GreenMorningWallet]:null;
+export const greenMorningHistoryPolicy=(wallet:string)=>wallet===GREEN_MORNING_985ETH_WALLET?GREEN_MORNING_985ETH_HISTORY_POLICY:GREEN_MORNING_HISTORY_POLICY;
 const greenMorningHistoryPrefix='green_morning_history:';
 export const greenMorningHistoryKey=(wallet:string)=>greenMorningHistoryPrefix+wallet;
 export const freshTokenAdmissionKey=(address:string)=>'token_admission:'+address.toLowerCase();
@@ -76,7 +80,7 @@ export async function readFreshGangHistoryAdmission(db:Pick<Pool,'query'>,option
  return{permission:history,digest:freshGangHistoryPermissionDigest(history)};
 }
 export async function readFreshGreenMorningHistoryAdmission(db:Pick<Pool,'query'>,wallet:string,options:{lock?:boolean}={}){
- const origin=greenMorningHistoryOrigin(wallet);
+ const origin=greenMorningHistoryOrigin(wallet),policy=greenMorningHistoryPolicy(wallet);
  if(!origin)return null;
  const lock=options.lock?' FOR SHARE':'';
  const start=(await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'${lock}`)).rows[0] as FreshTrackingStart|undefined;
@@ -85,12 +89,12 @@ export async function readFreshGreenMorningHistoryAdmission(db:Pick<Pool,'query'
  const admitted=rows.find(row=>row.key===freshTokenAdmissionKey(GREEN_MORNING_TOKEN_ADDRESS))?.value;
  const row=rows.find(row=>row.key===greenMorningHistoryKey(wallet)),p=row?.value;
  if(!validFreshExistingTokenPermission(admitted,start)||admitted.tokenAddress!==GREEN_MORNING_TOKEN_ADDRESS||!p
-  ||Number(row.block_number)!==origin.block||row.block_hash!==origin.hash||p.version!==1||p.policy!==GREEN_MORNING_HISTORY_POLICY||p.active!==true
+  ||Number(row.block_number)!==origin.block||row.block_hash!==origin.hash||p.version!==1||p.policy!==policy||p.active!==true
   ||p.startBlock!==Number(start.block_number)||p.startHash!==start.block_hash||p.wallet!==wallet||p.token!==GREEN_MORNING_TOKEN_ADDRESS
   ||typeof p.evidenceSha256!=='string'||!/^[a-f0-9]{64}$/.test(p.evidenceSha256))return null;
  if((await db.query(`SELECT 1 FROM fresh.launch_facts WHERE token_address=$1 AND status='excluded_non_token'${lock}`,[GREEN_MORNING_TOKEN_ADDRESS])).rows.length)return null;
- const digest=createHash('sha256').update(JSON.stringify([GREEN_MORNING_HISTORY_POLICY,wallet,origin,start.block_hash,p.evidenceSha256])).digest('hex');
- return{startsAt:origin.time,startsBlock:String(origin.block),permissionDigest:digest,policy:GREEN_MORNING_HISTORY_POLICY};
+ const digest=createHash('sha256').update(JSON.stringify([policy,wallet,origin,start.block_hash,p.evidenceSha256])).digest('hex');
+ return{startsAt:origin.time,startsBlock:String(origin.block),permissionDigest:digest,policy};
 }
 export async function readFreshTokenAdmission(db:Pick<Pool,'query'>,token:string,options:{blockNumber?:number;lock?:boolean}={}):Promise<FreshTokenAdmission|null>{
  token=token.toLowerCase();if(!address.test(token))return null;
@@ -147,13 +151,13 @@ export function freshGangHistoryScopeSql(scopeAlias:string,tokenExpression:strin
  WHERE history_kol.wallet_address=${s}.wallet_addresses[1] AND history_kol.is_tracked AND history_wallet.active) AND ${freshGangHistoryAdmissionSql(token)})`;}
 function freshGreenMorningHistoryEventSql(wallet:string,token:string,block:string,time?:string){
  const cases=Object.entries(GREEN_MORNING_HISTORY_WALLETS).map(([address,origin])=>`(${wallet}='${address}' AND gm_history.block_number=${origin.block}
-  AND gm_history.block_hash='${origin.hash}' AND ${block}>=${origin.block}${time?` AND ${time}>='${origin.time}'::timestamptz`:''})`).join(' OR ');
+  AND gm_history.block_hash='${origin.hash}' AND gm_history.value->>'policy'='${greenMorningHistoryPolicy(address)}' AND ${block}>=${origin.block}${time?` AND ${time}>='${origin.time}'::timestamptz`:''})`).join(' OR ');
  return`(${token}='${GREEN_MORNING_TOKEN_ADDRESS}' AND ${freshExistingTokenAdmissionSql(token)}
   AND EXISTS(SELECT 1 FROM fresh.checkpoints gm_history JOIN fresh.checkpoints gm_start ON gm_start.key='start'
   WHERE gm_history.key='${greenMorningHistoryPrefix}'||${wallet}
   AND ${block}<=gm_start.block_number AND gm_start.block_number>gm_history.block_number
   AND (${cases})
-  AND gm_history.value @> jsonb_build_object('version',1,'policy','${GREEN_MORNING_HISTORY_POLICY}','active',true,
+  AND gm_history.value @> jsonb_build_object('version',1,'active',true,
    'wallet',${wallet},'token',${token},'startBlock',gm_start.block_number,'startHash',gm_start.block_hash)
   AND gm_history.value->>'evidenceSha256' ~ '^[a-f0-9]{64}$'))`;
 }

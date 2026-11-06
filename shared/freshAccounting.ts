@@ -30,7 +30,7 @@ export interface FreshScope {
   walletStarts?: Record<string, { startsAt: string; startsBlock: string }>;
   /** Server-validated explicit public-token history only; private membership
    * boundaries never inherit this extension. Not a changed collection start. */
-  tokenHistoryStarts?:Record<string,{startsAt:string;startsBlock:string;permissionDigest:string;policy:'gmgn_gang_only_history_v1'|'node_green_morning_two_wallets_v1'}>;
+  tokenHistoryStarts?:Record<string,{startsAt:string;startsBlock:string;permissionDigest:string;policy:'gmgn_gang_only_history_v1'|'node_green_morning_two_wallets_v1'|'node_green_morning_985eth_v1'}>;
 }
 export interface FreshLot {
   id: string; scopeId: string; tokenAddress: string; walletAddress: string;
