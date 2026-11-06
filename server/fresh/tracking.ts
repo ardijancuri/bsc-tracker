@@ -20,14 +20,21 @@ export const FRESH_GANG_HISTORY_ADMISSION_KEY='token_history_admission:'+GANG_TO
 export const GREEN_MORNING_HISTORY_POLICY='node_green_morning_two_wallets_v1' as const;
 const GREEN_MORNING_985ETH_WALLET='0x61fd0d043d519f5a2bd05785000f30db96809429';
 export const GREEN_MORNING_985ETH_HISTORY_POLICY='node_green_morning_985eth_v1' as const;
+const GREEN_MORNING_MIRRO_WALLET='0xa7d4ffc4eca3c71af150ce302560a9d04a1d2b9f';
+export const GREEN_MORNING_MIRRO_HISTORY_POLICY='node_green_morning_mirro_v1' as const;
 export const GREEN_MORNING_HISTORY_WALLETS={
  '0xcc291dcd83bd9f2600cca4d65ae3b724eaf4f5a9':{block:124780316,hash:'0xe6cfd95f19eb1c58cbc7baab3bf2dcd996f81086812f7b066f74428d1076395e',time:'2026-09-29T20:26:01.000Z'},
  '0xa05ec35f7d1eba823cff2ed26aeaed419683742f':{block:126991059,hash:'0x0fb47e57520f807fe3370a460bbbe8a1191320b0f40972d45bc5035b7ed042d2',time:'2026-10-11T08:53:23.000Z'},
  [GREEN_MORNING_985ETH_WALLET]:{block:124778728,hash:'0x874e3457542749092c23a6fb0cc0dbf1f6ae6960ef5611edc890cfb9717f8b77',time:'2026-09-29T20:14:07.000Z'},
+ [GREEN_MORNING_MIRRO_WALLET]:{block:131649723,hash:'0x4cde657193af669fcc611d5f68b34189e02dfdc421d941cf1a0e953f54b201d6',time:'2026-11-04T15:34:57.000Z'},
 } as const;
 type GreenMorningWallet=keyof typeof GREEN_MORNING_HISTORY_WALLETS;
 export const greenMorningHistoryOrigin=(wallet:string)=>Object.hasOwn(GREEN_MORNING_HISTORY_WALLETS,wallet)?GREEN_MORNING_HISTORY_WALLETS[wallet as GreenMorningWallet]:null;
-export const greenMorningHistoryPolicy=(wallet:string)=>wallet===GREEN_MORNING_985ETH_WALLET?GREEN_MORNING_985ETH_HISTORY_POLICY:GREEN_MORNING_HISTORY_POLICY;
+export function greenMorningHistoryPolicy(wallet:string){
+ if(wallet===GREEN_MORNING_MIRRO_WALLET)return GREEN_MORNING_MIRRO_HISTORY_POLICY;
+ if(wallet===GREEN_MORNING_985ETH_WALLET)return GREEN_MORNING_985ETH_HISTORY_POLICY;
+ return GREEN_MORNING_HISTORY_POLICY;
+}
 const greenMorningHistoryPrefix='green_morning_history:';
 export const greenMorningHistoryKey=(wallet:string)=>greenMorningHistoryPrefix+wallet;
 export const freshTokenAdmissionKey=(address:string)=>'token_admission:'+address.toLowerCase();
@@ -84,7 +91,8 @@ export async function readFreshGreenMorningHistoryAdmission(db:Pick<Pool,'query'
  if(!origin)return null;
  const lock=options.lock?' FOR SHARE':'';
  const start=(await db.query(`SELECT block_number::text,block_hash,value FROM fresh.checkpoints WHERE key='start'${lock}`)).rows[0] as FreshTrackingStart|undefined;
- if(!start||Number(start.block_number)<=origin.block)return null;
+ const registrationHistory=policy===GREEN_MORNING_MIRRO_HISTORY_POLICY;
+ if(!start||(registrationHistory?Number(start.block_number)>=origin.block:Number(start.block_number)<=origin.block))return null;
  const rows=(await db.query(`SELECT key,block_number::text,block_hash,value FROM fresh.checkpoints WHERE key=ANY($1::text[]) ORDER BY key${lock}`,[[freshTokenAdmissionKey(GREEN_MORNING_TOKEN_ADDRESS),greenMorningHistoryKey(wallet)]])).rows;
  const admitted=rows.find(row=>row.key===freshTokenAdmissionKey(GREEN_MORNING_TOKEN_ADDRESS))?.value;
  const row=rows.find(row=>row.key===greenMorningHistoryKey(wallet)),p=row?.value;
@@ -93,7 +101,17 @@ export async function readFreshGreenMorningHistoryAdmission(db:Pick<Pool,'query'
   ||p.startBlock!==Number(start.block_number)||p.startHash!==start.block_hash||p.wallet!==wallet||p.token!==GREEN_MORNING_TOKEN_ADDRESS
   ||typeof p.evidenceSha256!=='string'||!/^[a-f0-9]{64}$/.test(p.evidenceSha256))return null;
  if((await db.query(`SELECT 1 FROM fresh.launch_facts WHERE token_address=$1 AND status='excluded_non_token'${lock}`,[GREEN_MORNING_TOKEN_ADDRESS])).rows.length)return null;
- const digest=createHash('sha256').update(JSON.stringify([policy,wallet,origin,start.block_hash,p.evidenceSha256])).digest('hex');
+ const registration:unknown[]=[];
+ if(registrationHistory){
+  if(!Number.isSafeInteger(p.throughBlock)||p.throughBlock<origin.block||typeof p.throughHash!=='string'||!hash.test(p.throughHash))return null;
+  const scope=(await db.query(`SELECT starts_block::text FROM fresh.accounting_scopes WHERE id='kol:'||$1 AND active AND kind='kol'
+   AND account_id IS NULL AND wallet_addresses=ARRAY[$1]::text[]${lock}`,[wallet])).rows[0];
+  if(Number(scope?.starts_block)!==p.throughBlock+1)return null;
+  const header=(await db.query(`SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1${lock}`,[p.throughBlock])).rows[0];
+  if(header&&header.block_hash!==p.throughHash)return null;
+  registration.push(p.throughBlock,p.throughHash);
+ }
+ const digest=createHash('sha256').update(JSON.stringify([policy,wallet,origin,start.block_hash,p.evidenceSha256,...registration])).digest('hex');
  return{startsAt:origin.time,startsBlock:String(origin.block),permissionDigest:digest,policy};
 }
 export async function readFreshTokenAdmission(db:Pick<Pool,'query'>,token:string,options:{blockNumber?:number;lock?:boolean}={}):Promise<FreshTokenAdmission|null>{
@@ -149,13 +167,23 @@ export function freshGangHistoryScopeSql(scopeAlias:string,tokenExpression:strin
  return`(${s}.kind='kol' AND ${s}.account_id IS NULL AND cardinality(${s}.wallet_addresses)=1 AND ${s}.id='kol:'||${s}.wallet_addresses[1]
  AND EXISTS(SELECT 1 FROM fresh.kols history_kol JOIN fresh.wallets history_wallet ON history_wallet.address=history_kol.wallet_address
  WHERE history_kol.wallet_address=${s}.wallet_addresses[1] AND history_kol.is_tracked AND history_wallet.active) AND ${freshGangHistoryAdmissionSql(token)})`;}
-function freshGreenMorningHistoryEventSql(wallet:string,token:string,block:string,time?:string){
- const cases=Object.entries(GREEN_MORNING_HISTORY_WALLETS).map(([address,origin])=>`(${wallet}='${address}' AND gm_history.block_number=${origin.block}
-  AND gm_history.block_hash='${origin.hash}' AND gm_history.value->>'policy'='${greenMorningHistoryPolicy(address)}' AND ${block}>=${origin.block}${time?` AND ${time}>='${origin.time}'::timestamptz`:''})`).join(' OR ');
+function freshGreenMorningHistoryEventSql(wallet:string,token:string,block:string,time?:string,scopeStart?:string){
+ const cases=Object.entries(GREEN_MORNING_HISTORY_WALLETS).flatMap(([address,origin])=>{
+  const policy=greenMorningHistoryPolicy(address),registrationHistory=policy===GREEN_MORNING_MIRRO_HISTORY_POLICY;
+  if(registrationHistory&&!scopeStart)return [];
+  const cutoff=registrationHistory
+   ?`gm_start.block_number<gm_history.block_number AND ${scopeStart}>gm_history.block_number AND ${block}<${scopeStart}
+    AND gm_history.value->'throughBlock'=to_jsonb(${scopeStart}-1) AND gm_history.value->>'throughHash'~'^0x[0-9a-f]{64}$'
+    AND NOT EXISTS(SELECT 1 FROM fresh.recent_blocks gm_boundary WHERE gm_boundary.block_number=${scopeStart}-1
+      AND gm_boundary.block_hash<>gm_history.value->>'throughHash')`
+   :`gm_start.block_number>gm_history.block_number AND ${block}<=gm_start.block_number`;
+  return[`(${wallet}='${address}' AND gm_history.block_number=${origin.block}
+   AND gm_history.block_hash='${origin.hash}' AND gm_history.value->>'policy'='${policy}' AND ${block}>=${origin.block}
+   AND ${cutoff}${time?` AND ${time}>='${origin.time}'::timestamptz`:''})`];
+ }).join(' OR ');
  return`(${token}='${GREEN_MORNING_TOKEN_ADDRESS}' AND ${freshExistingTokenAdmissionSql(token)}
   AND EXISTS(SELECT 1 FROM fresh.checkpoints gm_history JOIN fresh.checkpoints gm_start ON gm_start.key='start'
   WHERE gm_history.key='${greenMorningHistoryPrefix}'||${wallet}
-  AND ${block}<=gm_start.block_number AND gm_start.block_number>gm_history.block_number
   AND (${cases})
   AND gm_history.value @> jsonb_build_object('version',1,'active',true,
    'wallet',${wallet},'token',${token},'startBlock',gm_start.block_number,'startHash',gm_start.block_hash)
@@ -165,7 +193,7 @@ function freshGreenMorningHistoryScopeSql(s:string,token:string,block:string,tim
  return`(${s}.kind='kol' AND ${s}.account_id IS NULL AND cardinality(${s}.wallet_addresses)=1 AND ${s}.id='kol:'||${s}.wallet_addresses[1]
   AND EXISTS(SELECT 1 FROM fresh.kols gm_kol JOIN fresh.wallets gm_wallet ON gm_wallet.address=gm_kol.wallet_address
   WHERE gm_kol.wallet_address=${s}.wallet_addresses[1] AND gm_kol.is_tracked AND gm_wallet.active)
-  AND ${freshGreenMorningHistoryEventSql(s+'.wallet_addresses[1]',token,block,time)})`;
+  AND ${freshGreenMorningHistoryEventSql(s+'.wallet_addresses[1]',token,block,time,s+'.starts_block')})`;
 }
 export function freshScopeTokenBoundarySql(scopeAlias:string,tokenExpression:string,blockExpression:string,timeExpression:string,options:{allowMissingTime?:boolean}={}){
  const s=identifier(scopeAlias),token=expression(tokenExpression),block=boundaryExpression(blockExpression),time=boundaryExpression(timeExpression),missing=options.allowMissingTime?`${time} IS NULL OR `:'';
