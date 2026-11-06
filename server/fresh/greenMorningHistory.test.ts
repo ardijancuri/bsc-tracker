@@ -10,7 +10,7 @@ const origin=GREEN_MORNING_HISTORY_WALLETS[wallet],startBlock=129627586,startHas
 const start={block_number:String(startBlock),block_hash:startHash,value:{startBlock,startHash,startTime}};
 const tokenPermission={version:1,kind:'explicit_existing',chainId:56,tokenAddress:token,active:true,startBlock,startHash,startTime,fromBlock:startBlock+1,approvedAt:'2026-11-06T00:00:00.000Z',reason:'user_approved_green_morning_only'};
 const permission={version:1,policy:GREEN_MORNING_HISTORY_POLICY,active:true,wallet,token,startBlock,startHash,evidenceSha256:'c'.repeat(64)};
-function fixture(selected=wallet){
+function fixture(selected:keyof typeof GREEN_MORNING_HISTORY_WALLETS=wallet){
   const boundary=GREEN_MORNING_HISTORY_WALLETS[selected];
   let value={...permission,wallet:selected,policy:String(permission.policy)},original=tokenPermission;
   const db={async query(sql:string){
