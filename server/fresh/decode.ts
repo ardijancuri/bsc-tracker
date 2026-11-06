@@ -34,6 +34,7 @@ import{freshFailedFeeOnlyCompletion}from'./failedFeeCompletion.js';
 import {hasFreshSmartSellSettlement,freshSmartAccountSellSettlement} from './smartAccountSettlement.js';
 import {freshSmartAccountNativeSell} from './smartAccountNativeSettlement.js';
 import {freshNativeSellSettlement} from './nativeSellSettlement.js';
+import {freshBotTaxedNativeSale,isFreshBotTaxedNativeSale} from './botTaxedNativeSale.js';
 import {freshMixedNativeWrappedSell} from './mixedNativeWrappedSettlement.js';
 import {freshDirectTransferIntent,freshDirectTransferIntentCandidate,type FreshDirectTransferIntent} from './directTransferIntent.js';
 import {persistFreshTradeBnbPrice} from './tradeBnbDisplay.js';
@@ -387,6 +388,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
       const swap = !poolLaunch && !directTransfer && execution.kind !== 'transfer' && (paidCreation||controller.length === 1 || hasRecognizedSwap(execution.logs) || execution.logs.some(log => extraSwapTopics.has(log.topics[0]))||v4Swap);
       if (swap && target.raw !== 0n) {
         if (controller.length && (controller[0].side === 'buy') !== positive) { reasons.add('controller_quantity_direction_mismatch'); continue; }
+        const taxedBotSell = !positive && execution.kind === 'transaction' && isFreshBotTaxedNativeSale(tx);
         const selfCallTrace=execution.kind==='transaction'&&targets.length===1&&entry.selfCallContext?await getTrace():null;
         const selfCallSettlement=selfCallTrace&&entry.selfCallContext?freshSignedSelfCallSettlement({...entry,trace:selfCallTrace},{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw,entry.selfCallContext):null;
         let settledQuote:Pick<FreshFinancialEvent,'quoteAddress'|'quoteSymbol'|'quoteAmount'>|undefined=selfCallSettlement?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(selfCallSettlement.nativeAmountWei),18)}:paidCreation?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(paidCreation.nativeAmountWei),18)}:undefined;
@@ -397,7 +399,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
           ? await services.directFlapPurchaseUsd(target.token,execution.wallet,target.raw,await price(WBNB),()=>getTrace()).catch(()=>null) : null;
         // Reuse an already authenticated valuation route before trying a newly
         // available metadata source. Future recovery must not reprice old facts.
-        if(amountUsd===null&&targets.length===1&&execution.kind==='transaction'&&services.quotePaymentUsd)
+        if(!taxedBotSell&&amountUsd===null&&targets.length===1&&execution.kind==='transaction'&&services.quotePaymentUsd)
           amountUsd=await services.quotePaymentUsd(target.token,execution.wallet,target.raw,await price(WBNB),true).catch(()=>null);
         if(amountUsd===null&&positive&&targets.length===1&&execution.kind==='transaction'&&services.nativeQuoteChangeUsd)
           amountUsd=await services.nativeQuoteChangeUsd(target.token,execution.wallet,target.raw,await price(WBNB),true).catch(()=>null);
@@ -406,7 +408,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
         const smartTrace=!positive&&targets.length===1&&execution.kind==='user_operation'?await getTrace():null;
         const smartNativeSettlement=smartTrace?freshSmartAccountNativeSell(entry,execution,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,target.raw,smartTrace):null;
         const smartSettlement=smartNativeSettlement?{quoteAddress:WBNB,quoteRaw:BigInt(smartNativeSettlement.nativeReceivedWei)}:smartTrace&&hasFreshSmartSellSettlement(execution.logs)?freshSmartAccountSellSettlement(entry,execution,target.token,target.raw,smartTrace):null;
-        const wrappedSell=amountUsd===null&&!positive&&targets.length===1&&execution.kind==='transaction'&&opposingQuotes.length===1&&opposingQuotes[0][0]===WBNB;
+        const wrappedSell=!taxedBotSell&&amountUsd===null&&!positive&&targets.length===1&&execution.kind==='transaction'&&opposingQuotes.length===1&&opposingQuotes[0][0]===WBNB;
         // The signed one-hop nonpayable Pancake V2 route pays WBNB directly.
         // Use its exact receipt only for an authenticated Flap launch pair.
         const admission = wrappedSell ? await services.tradeAdmission?.(target.token) : null;
@@ -434,7 +436,18 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
             if(usd!==null)amountUsd=q(quoteAmount).mul(q(usd)).decimal();
           }
         }
-        if (!smartSettlement && !mixedSettlement && !wrappedSettlementUnverified && targets.length === 1 && opposingQuotes.length === 1) {
+        if (taxedBotSell) {
+          // The withdrawal is gross funding for the router. Only its proven
+          // wallet payment, after the route fee, belongs in sale proceeds.
+          const sale = targets.length===1 ? freshBotTaxedNativeSale(entry,{number:Number(freshInteger(block.number)),hash:block.hash,timestamp:occurredAt},target.token,execution.wallet,target.raw) : null;
+          amountUsd = null;
+          settledQuote = undefined;
+          if (sale) {
+            const quoteAmount = units(BigInt(sale.walletReceivedWei),18), usd = await price(WBNB);
+            settledQuote = {quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount};
+            if (usd!==null) amountUsd = q(quoteAmount).mul(q(usd)).decimal();
+          } else reasons.add('native_payout_mismatch');
+        } else if (!smartSettlement && !mixedSettlement && !wrappedSettlementUnverified && targets.length === 1 && opposingQuotes.length === 1) {
           const [quoteAddress, flow] = opposingQuotes[0];
           // A supported non-feed asset is valued from its authenticated raw
           // wallet settlement and historical conversion, never a generic token
@@ -518,7 +531,7 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
  * quantity. Native wallet payment is a separate proof, in wei; it does not
  * need or reassert token decimals. This fallback supports only one ordinary
  * successful sender execution with no other nonzero wallet asset movement. */
-function retainedNativeQuote(entry:FreshCapturedReceipt,event:FreshFinancialEvent,events:readonly FreshFinancialEvent[]){
+function retainedNativeQuote(entry:FreshCapturedReceipt,block:FreshPriceBlock,event:FreshFinancialEvent,events:readonly FreshFinancialEvent[]){
   const tx=entry.transaction,wallet=event.walletAddress;
   if(entry.receipt.status!=='0x1'||!['0x0','0x1','0x2'].includes(String(tx.type))||tx.authorizationList!==undefined||tx.from!==wallet||tx.to===wallet
     ||FRESH_ENTRY_POINTS.includes(tx.to??'')||entry.receipt.logs.some(log=>[beforeExecutionTopic,userOperationTopic].includes(log.topics[0]))
@@ -541,6 +554,10 @@ function retainedNativeQuote(entry:FreshCapturedReceipt,event:FreshFinancialEven
     return buy?.native ? { quoteAddress: WBNB, quoteSymbol: 'BNB', quoteAmount: units(buy.quoteRaw, 18) } : null;
   }
   const raw=target.raw>0n?target.raw:-target.raw;
+  if(!positive&&isFreshBotTaxedNativeSale(tx)){
+    const sale=freshBotTaxedNativeSale(entry,block,event.tokenAddress,wallet,target.raw);
+    return sale?{quoteAddress:WBNB,quoteSymbol:'BNB',quoteAmount:units(BigInt(sale.walletReceivedWei),18)}:null;
+  }
   const receiptPayment=positive?freshNativeBuyCost(tx,wallet,event.tokenAddress,raw,execution.logs):nativeSellProceeds(wallet,raw,execution.logs,execution.router,event.tokenAddress);
   let native:bigint|null=null;
   if(entry.trace){
@@ -577,7 +594,7 @@ export async function recoverFreshRetainedTradeQuotes(entry:FreshCapturedReceipt
     assertFreshEventQuoteCompatible(saved,event);quotes.push({...saved,quoteAddress:event.quoteAddress,quoteSymbol:event.quoteSymbol,quoteAmount:event.quoteAmount});
   }
   for(const saved of events)if(!quotes.some(value=>value.id===saved.id)&&!decoded.events.some(value=>value.id===saved.id&&!freshSameTradeQuoteContext(saved,value))){
-    const quote=retainedNativeQuote(entry,saved,events);if(!quote)continue;
+    const quote=retainedNativeQuote(entry,block,saved,events);if(!quote)continue;
     const enriched={...saved,...quote};assertFreshEventQuoteCompatible(saved,enriched);quotes.push(enriched);
   }
   return{events:quotes,missingStateReads,reasons:decoded.reasons,rpcRequests:0 as const,providerRequests:0 as const};
