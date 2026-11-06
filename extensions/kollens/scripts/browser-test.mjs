@@ -20,7 +20,21 @@ async function connect(target,account='A'){
 try{
  await page.goto(origin+'/fixture');await wait();
  assert.equal((await snapshot()).cards.length,9);assert.equal((await snapshot()).groups.length,4);assert.equal((await snapshot()).alerts.length,0);checks++;
- await page.getByRole('button',{name:'Add matching token',exact:true}).click();await page.waitForFunction(()=>window.__fixturePage.cards.length===10);assert.equal((await snapshot()).groups.find(g=>g.type==='x_post').addresses.length,4);assert.equal((await snapshot()).alerts.length,2);checks++;
+ const telegramGroup=panel().locator('.group').filter({hasText:'Same Telegram link'});
+ await telegramGroup.getByRole('button',{name:/Same Telegram link/}).hover();
+ await telegramGroup.getByText('Paused',{exact:true}).waitFor();
+ const pausedBox=await telegramGroup.boundingBox();
+ const pausedTokens=await telegramGroup.locator('.token-row strong').allTextContents();
+ // Update both this group and an earlier one without moving the pointer out of the panel.
+ await page.locator('#add-match').evaluate(button=>button.click());
+ await page.waitForFunction(()=>window.__fixturePage.cards.length===10);
+ assert.equal((await snapshot()).groups.find(g=>g.type==='x_post').addresses.length,4);
+ assert.equal((await snapshot()).alerts.length,2);
+ assert.deepEqual(await telegramGroup.boundingBox(),pausedBox);
+ assert.deepEqual(await telegramGroup.locator('.token-row strong').allTextContents(),pausedTokens);
+ await page.getByRole('button',{name:'Add matching token',exact:true}).hover();
+ await telegramGroup.getByText('Paused',{exact:true}).waitFor({state:'hidden'});
+ await telegramGroup.getByText('3 tokens',{exact:true}).waitFor();checks++;
  const before=(await snapshot()).alerts.length;await page.getByRole('button',{name:'Reverse card order'}).click();await page.waitForTimeout(180);assert.equal((await snapshot()).alerts.length,before);checks++;
  await page.getByRole('button',{name:'Test trade button',exact:true}).first().click();assert.equal(await page.locator('[data-trade-clicks]').textContent(),'1');checks++;
  await page.getByRole('button',{name:'Switch chain'}).click();await page.waitForTimeout(180);assert.equal(await page.locator('.kollens-match').count(),0);checks++;
@@ -31,10 +45,13 @@ try{
  const groupCount=(await snapshot()).groups.find(g=>g.type==='x_post').addresses.length;
  await page.locator('[data-token-card]').first().evaluate(element=>{const clone=element.cloneNode(true);clone.setAttribute('data-clone','');element.parentElement.append(clone);});await page.waitForFunction(n=>window.__fixturePage.cards.length===n+1,count);
  assert.equal((await snapshot()).groups.find(g=>g.type==='x_post').addresses.length,groupCount);await page.locator('[data-clone]').evaluate(element=>element.remove());checks++;
- await panel().getByRole('button',{name:'Settings',exact:true}).click();await panel().getByLabel('Highlight matching cards').uncheck();await page.waitForTimeout(2500);assert.equal(await page.locator('.kollens-match').count(),0);checks++;
+ await panel().getByRole('button',{name:'Settings',exact:true}).click();
+ await panel().getByRole('tab',{name:'Matches',exact:true}).click();
+ await panel().getByLabel('Highlight matching cards').uncheck();
+ await page.waitForTimeout(2500);assert.equal(await page.locator('.kollens-match').count(),0);checks++;
  await panel().getByLabel('Highlight matching cards').check();await page.waitForTimeout(2500);assert.ok(await page.locator('.kollens-match').count()>0);await panel().getByRole('button',{name:'Tokens',exact:true}).click();checks++;
  const old=await page.locator('[data-token-card]').first().getAttribute('data-token-address');await page.getByRole('button',{name:'Recycle a card'}).click();await page.waitForTimeout(200);assert.ok(!(await snapshot()).cards.some(c=>c.address===old));checks++;
- await connect(page);await panel().getByRole('button',{name:/^Matches/}).click();await panel().getByRole('button',{name:/Save /}).first().click();await panel().getByRole('button',{name:/^Saved/}).click();await panel().getByRole('button',{name:'Edit note',exact:true}).first().click();
+ await connect(page);await panel().getByRole('button',{name:/^Matches/}).click();await panel().getByRole('button',{name:/^Favorite /}).first().click();await panel().getByRole('button',{name:/^Saved/}).click();await panel().getByRole('button',{name:'Edit note',exact:true}).first().click();
  const originalNote=await panel().getByRole('textbox').inputValue(),note='PRIVATE NOTE · local browser QA '+Date.now();await panel().getByRole('textbox').fill(note);await panel().getByRole('button',{name:'Save note',exact:true}).click();await panel().getByText(note,{exact:true}).waitFor();assert.ok(!(await page.locator('[data-kollens-trenches]').textContent()).includes(note));checks++;
  const secondContext=await browser.newContext({viewport:{width:1510,height:1040}}),second=await secondContext.newPage();await second.goto(origin+'/fixture');await second.waitForFunction(()=>window.__fixturePage?.cards.length===9);await connect(second);
  const secondPanel=second.frameLocator('#panel');await secondPanel.getByText(note,{exact:true}).waitFor();checks++;

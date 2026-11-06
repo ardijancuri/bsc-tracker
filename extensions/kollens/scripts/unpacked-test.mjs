@@ -15,7 +15,8 @@ try{
  await fixture.locator('.kollens-match').first().waitFor();assert.equal(await fixture.locator('.kollens-match').count(),7);checks++;
  assert.equal(await fixture.locator('[data-kollens-decoration] button').count(),7);checks++;
  const urlBefore=await fixture.locator('[data-token-link]').first().getAttribute('href');await fixture.getByRole('button',{name:'Test trade button',exact:true}).first().click();assert.equal(await fixture.locator('[data-trade-clicks]').textContent(),'1');assert.equal(await fixture.locator('[data-token-link]').first().getAttribute('href'),urlBefore);checks++;
- const panel=await context.newPage();await panel.goto(`chrome-extension://${extensionId}/panel.html`);
+ const extensionOrigin=`chrome-extension://${extensionId}`;
+ const panel=await context.newPage();await panel.goto(`${extensionOrigin}/popup.html`);
  await panel.bringToFront();
  await panel.getByRole('heading',{name:'Wallets',exact:true}).waitFor();
  await panel.getByRole('heading',{name:'Get started with wallets'}).waitFor();
@@ -43,6 +44,7 @@ try{
  await panel.getByLabel('Private key',{exact:true}).waitFor();
  assert.match(await panel.getByLabel('Private key',{exact:true}).inputValue(),/^0x[\da-f]{64}$/);
  await panel.getByRole('button',{name:'Settings',exact:true}).click();
+ await panel.getByRole('tab',{name:'Matches',exact:true}).click();
  await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();
  assert.equal(await panel.getByLabel('Private key',{exact:true}).count(),0);
  await panel.getByRole('button',{name:'Wallets',exact:true}).click();
@@ -77,7 +79,9 @@ try{
  let contentWorld;
  for(const world of worlds){const value=await session.send('Runtime.evaluate',{contextId:world.id,expression:`typeof chrome!=='undefined'&&chrome.runtime?.id==='${extensionId}'`,returnByValue:true}).catch(()=>null);if(value?.result.value)contentWorld=world.id;}
  assert.ok(contentWorld);const access=await session.send('Runtime.evaluate',{contextId:contentWorld,expression:'chrome.storage.local.get("auth").then(()=>({allowed:true}),()=>({allowed:false}))',awaitPromise:true,returnByValue:true});assert.equal(access.result.value.allowed,false);checks++;
- await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByLabel('Enable alert sound').check();await panel.waitForTimeout(600);
+ await panel.getByRole('button',{name:'Settings',exact:true}).click();
+ await panel.getByRole('tab',{name:'Alerts',exact:true}).click();
+ await panel.getByLabel('Enable alert sound').check();await panel.waitForTimeout(600);
  await fixture.bringToFront();await fixture.getByRole('button',{name:'Add matching token',exact:true}).click();await fixture.waitForTimeout(250);assert.equal(await fixture.locator('.kollens-match').count(),8);checks++;
  for(let i=0;i<20&&!await worker.evaluate(()=>chrome.offscreen.hasDocument());i++)await fixture.waitForTimeout(100);
  assert.equal(await worker.evaluate(()=>chrome.offscreen.hasDocument()),true);const playback=await worker.evaluate(()=>chrome.runtime.sendMessage({kind:'audio/beep'}));assert.equal(playback.played,true);checks++;
@@ -99,9 +103,35 @@ try{
  const size=await panel.evaluate(()=>({width:document.body.getBoundingClientRect().width,height:document.body.getBoundingClientRect().height}));assert.deepEqual(size,{width:360,height:600});checks++;
  await panel.getByRole('button',{name:/^Matches/}).click();await panel.screenshot({path:resolve(artifacts,'toolbar-popup.png'),clip:{x:0,y:0,width:360,height:600}});
  console.log('Checking disconnection');await panel.bringToFront();await panel.getByRole('button',{name:'Profile',exact:true}).click();await panel.getByRole('button',{name:'Log out',exact:true}).click();await panel.getByRole('button',{name:'Connect Kollens',exact:true}).waitFor();checks++;
- const manifest=JSON.parse(await readFile(resolve(out,'manifest.json'),'utf8'));assert.ok(manifest.permissions.includes('activeTab'));assert.ok(manifest.permissions.includes('scripting'));assert.ok(!manifest.permissions.includes('cookies'));assert.ok(!manifest.permissions.includes('tabs'));assert.ok(!manifest.permissions.includes('sidePanel'));assert.equal(manifest.side_panel,undefined);assert.equal(manifest.action.default_popup,'popup.html');assert.ok(!manifest.host_permissions.some(h=>h.includes('gmgn')));assert.ok(manifest.content_scripts.every(s=>s.matches.every(m=>m.startsWith('http://127.0.0.1:3360/'))));checks++;
+ const manifest=JSON.parse(await readFile(resolve(out,'manifest.json'),'utf8'));assert.ok(manifest.permissions.includes('activeTab'));assert.ok(manifest.permissions.includes('scripting'));assert.ok(!manifest.permissions.includes('cookies'));assert.ok(!manifest.permissions.includes('tabs'));assert.ok(manifest.permissions.includes('sidePanel'));assert.equal(manifest.side_panel?.default_path,'sidepanel.html');assert.equal(manifest.action.default_popup,'popup.html');assert.ok(!manifest.host_permissions.some(h=>h.includes('gmgn')));assert.ok(manifest.content_scripts.every(s=>s.matches.every(m=>m.startsWith('http://127.0.0.1:3360/'))));checks++;
  await fixture.screenshot({path:resolve(artifacts,'unpacked-chrome.png')});
+ const sidepanelUrl=`${extensionOrigin}/${manifest.side_panel.default_path}`;
+ const sidepanel=await context.newPage();
+ sidepanel.on('pageerror',e=>errors.push(e.message));
+ const sidepanelSize={width:320,height:760};
+ await sidepanel.setViewportSize(sidepanelSize);await sidepanel.goto(sidepanelUrl);
+ await sidepanel.getByRole('heading',{name:'Wallets',exact:true}).waitFor();
+ await sidepanel.locator('.wallet-record').nth(1).waitFor();
+ assert.equal(await sidepanel.locator('.wallet-record').count(),2);
+ assert.equal(await sidepanel.getByRole('button',{name:'Open side panel',exact:true}).count(),0);
+ assert.deepEqual(await sidepanel.evaluate(()=>({width:document.body.getBoundingClientRect().width,height:document.body.getBoundingClientRect().height})),sidepanelSize);
+ const sidepanelNav=await sidepanel.getByRole('navigation',{name:'Extension navigation'}).boundingBox();
+ assert.equal(Math.round(sidepanelNav.y+sidepanelNav.height),sidepanelSize.height);
+ await sidepanel.screenshot({path:resolve(artifacts,'sidepanel-layout.png')});await sidepanel.close();checks++;
+ await panel.bringToFront();
+ const windowId=await panel.evaluate(async()=> (await chrome.windows.getCurrent()).id);
+ await worker.evaluate(()=>chrome.sidePanel.onOpened?.addListener(event=>{globalThis.sidePanelOpened=event;}));
+ await panel.getByRole('button',{name:'Open side panel',exact:true}).click();
+ let nativeSidePanelOpened=false;
+ for(let i=0;i<20;i++){
+  const {sidePanels,opened}=await worker.evaluate(async()=>({sidePanels:await chrome.runtime.getContexts({contextTypes:['SIDE_PANEL']}),opened:globalThis.sidePanelOpened}));
+  if(sidePanels.some(item=>item.documentUrl===sidepanelUrl&&(item.windowId===windowId||opened?.windowId===windowId))){
+   nativeSidePanelOpened=true;checks++;break;
+  }
+  await fixture.waitForTimeout(100);
+ }
+ if(process.argv.includes('--headed'))assert.ok(nativeSidePanelOpened,'Chrome did not open the native side panel from its header button');
  assert.deepEqual(errors,[]);checks++;
- const report={ok:true,checks,extensionId,chromeVersion:context.browser()?.version(),surface:'toolbar_popup',size:{width:360,height:600},nativePopupOpened:true,nativePopupClosedOnBlur:true,unsavedNoteRestored:true,gmgnActivation:false,privateStorageIsolated:true,audioPlayback:true,errors,screenshot:resolve(artifacts,'toolbar-popup.png')};
+ const report={ok:true,checks,extensionId,chromeVersion:context.browser()?.version(),surface:'toolbar_popup',size:{width:360,height:600},nativePopupOpened:true,nativePopupClosedOnBlur:true,nativeSidePanelOpened,sidepanelSize,unsavedNoteRestored:true,gmgnActivation:false,privateStorageIsolated:true,audioPlayback:true,errors,screenshot:resolve(artifacts,'toolbar-popup.png')};
  await writeFile(resolve(artifacts,'unpacked-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
 }finally{await cleanupNote().catch(()=>{});await cleanupCreated().catch(()=>{});await context.close();}

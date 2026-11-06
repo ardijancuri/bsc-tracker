@@ -35,7 +35,7 @@ app.post('/__demo/message',async(req,reply)=>{
       case 'connect':{let url='';await client.connect(async value=>{url=value;});return{ok:true,url};}
       case 'disconnect':await client.disconnect();break;
       case 'cancel-pairing':await client.cancelPairing();return{ok:true};
-      case 'edit':await client.edit(message.item,message.action??'save');break;
+      case 'edit':await client.edit(message.item,message.action??'save',message.field);break;
       case 'resolve':await client.resolve(message.address,message.choice);break;
       case 'preferences':await client.preferences(message.preferences,message.activateSound===true);break;
       case 'resolvePreferences':await client.resolvePreferences(message.choice);break;

@@ -20,7 +20,8 @@ try {
     manifest_version: 3,
     name: 'Kollens wallet balances test',
     version: '1.0',
-    host_permissions: [`${rpcUrl}/*`],
+    optional_host_permissions: [`${rpcUrl}/*`],
+    content_security_policy: {extension_pages: `script-src 'self'; object-src 'none'; connect-src 'self' ${rpcUrl};`},
     background: {service_worker: 'worker.js'},
     action: {default_popup: 'popup.html'},
   }));
@@ -34,13 +35,10 @@ try {
       import React, {useState} from 'react';
       import {createRoot} from 'react-dom/client';
       import {formatWalletBalance, useWalletBalances} from './src/useWalletBalances';
-      let granted = false;
-      globalThis.acceptPermission = false;
       globalThis.permissionRequests = 0;
-      chrome.permissions.contains = async () => granted;
       chrome.permissions.request = async () => {
         globalThis.permissionRequests++;
-        return granted = globalThis.acceptPermission;
+        throw new Error('Balance reads should not request host permission');
       };
       function App() {
         const [wallets,setWallets] = useState([{address: '${first}', createdAt: 1}]);
@@ -64,44 +62,44 @@ try {
   const payloads = [];
   await browser.route(/^https?:/, async route => {
     if (route.request().url() !== `${rpcUrl}/`) return route.abort();
+    const headers = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+    };
+    if (route.request().method() === 'OPTIONS') return route.fulfill({status: 204, headers});
     const body = route.request().postDataJSON();
     payloads.push(body);
     const address = body.params[0];
     const response = address === second && failSecond
       ? {error: {code: -32000, message: 'Test read failure'}}
       : {result: address === first ? '0x0' : '0x' + (1_250_000_000_000_000_000n).toString(16)};
-    await route.fulfill({json: {jsonrpc: '2.0', id: 1, ...response}});
+    await route.fulfill({headers, json: {jsonrpc: '2.0', id: 1, ...response}});
   });
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
   const page = await browser.newPage();
   await page.goto(`chrome-extension://${new URL(worker.url()).hostname}/popup.html`);
   const waitStatus = (status) => page.waitForFunction(value => document.querySelector('#status')?.textContent === value, status);
   const read = (selector) => page.locator(selector).textContent();
-  await waitStatus('permission_required');
-  assert.equal(payloads.length, 0);
-  await page.getByRole('button', {name: 'Refresh'}).click();
-  await waitStatus('permission_required');
-  assert.equal(payloads.length, 0);
-  assert.equal(await page.evaluate(() => globalThis.permissionRequests), 1);
-  await page.evaluate(() => {globalThis.acceptPermission = true;});
-  await page.getByRole('button', {name: 'Refresh'}).click();
   await waitStatus('ready');
-  assert.equal(await read('#total'), '0.00 BNB');
+  assert.equal(await page.evaluate(origin => chrome.permissions.contains({origins: [origin]}), `${rpcUrl}/*`), false);
+  assert.equal(payloads.length, 1);
+  assert.equal(await read('#total'), '0.00');
   await page.getByRole('button', {name: 'Add'}).click();
   await waitStatus('ready');
-  assert.equal(await read('#total'), '1.25 BNB');
+  assert.equal(await read('#total'), '1.25');
   assert.equal(await read('#balances'), '["0","1250000000000000000"]');
-  assert.equal(await page.evaluate(() => globalThis.permissionRequests), 2);
   failSecond = true;
   await page.getByRole('button', {name: 'Refresh'}).click();
   await waitStatus('partial');
   assert.equal(await read('#total'), 'unknown');
   assert.equal(await read('#balances'), '["0",null]');
+  assert.equal(await page.evaluate(() => globalThis.permissionRequests), 0);
   assert.deepEqual(new Set(payloads.map(body => body.params[0])), new Set([first, second]));
   for (const body of payloads) {
     assert.deepEqual(body, {jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [body.params[0], 'latest']});
   }
-  console.log('Wallet balances verified in isolated Chromium: permission checks, confirmed zero, automatic refresh, per-wallet values and partial failure.');
+  console.log('Wallet balances verified in isolated Chromium: automatic read without host permission, confirmed zero, per-wallet values, and partial failure.');
 } finally {
   await browser?.close();
   const verifiedCache = await realpath(cache);

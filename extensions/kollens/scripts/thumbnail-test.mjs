@@ -43,7 +43,7 @@ try{
    if(url.includes('/tokens/')){const body=JSON.parse(init.body);workspace.items=[{...body,address:url.split('/').pop(),revision:1,updatedAt:new Date().toISOString()}];}
    return Response.json(workspace);
   };});
- await panel.reload();await openTokens();await panel.getByRole('button',{name:'Save NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Save NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
+ await panel.reload();await openTokens();await panel.getByRole('button',{name:'Favorite NVA',exact:true}).waitFor();await panel.getByRole('button',{name:'Favorite NVA',exact:true}).click();await panel.getByRole('button',{name:/^Saved/}).click();await panel.locator('.saved-item .token-thumbnail img').waitFor();
  current=await command({kind:'state'});assert.equal(current.workspace.items[0].logoUrl,'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  assert.equal(await panel.locator('footer').count(),0);
  const tokensHeader=panel.locator('.popup-header');
@@ -58,7 +58,9 @@ try{
  await panel.getByRole('button',{name:'Copy account UID',exact:true}).click();await panel.getByText('Account UID copied',{exact:true}).waitFor();
  assert.equal(await panel.evaluate(()=>window.__copiedAccountId),'thumbnail-test');checks++;
  await panel.screenshot({path:resolve(artifacts,'account-popup.png'),clip:{x:0,y:0,width:360,height:600}});
- await panel.getByRole('button',{name:'Settings',exact:true}).click();await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Log out',exact:true}).count(),0);await openTokens();checks++;
+ await panel.getByRole('button',{name:'Settings',exact:true}).click();
+ await panel.getByRole('tab',{name:'Matches',exact:true}).click();
+ await panel.getByRole('heading',{name:'Match settings',exact:true}).waitFor();assert.equal(await panel.getByRole('button',{name:'Log out',exact:true}).count(),0);await openTokens();checks++;
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.closest('[data-testid="trench-token-card"]').remove());await until(s=>!s.page.cards.some(c=>c.address===raw.cards[0].address));
  await panel.reload();await openTokens();await panel.locator('.saved-item .token-thumbnail img').waitFor();assert.equal(await panel.locator('.saved-item .token-thumbnail img').getAttribute('src'),'https://cdn.gmgn.ai/kollens-fixture/changed.webp');checks++;
  // A recycled token gets its own source; it cannot keep the previous logo.

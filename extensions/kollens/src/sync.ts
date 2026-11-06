@@ -240,8 +240,8 @@ export class WorkspaceSync {
       this.lastRefresh = Date.now();
     });
   }
-  async edit(item: ExtensionTokenIdentity & {pinned:boolean;note:string}, kind: 'save'|'delete' = 'save') {
-    if (item.note.length > 2000) throw new Error('Notes are limited to 2,000 characters');
+  async edit(item: ExtensionTokenIdentity & {pinned?:boolean;note?:string}, kind: 'save'|'delete' = 'save', field?: 'pinned'|'note') {
+    if ((item.note?.length ?? 0) > 2000) throw new Error('Notes are limited to 2,000 characters');
     const auth = await this.auth(); if (!auth?.userId || Date.parse(auth.expiresAt) <= Date.now()) throw new Error('Connect your Kollens account first');
     return this.queue(async () => {
       const state = await this.account(auth.userId!);
@@ -251,8 +251,15 @@ export class WorkspaceSync {
       const original = state.workspace.items.find(saved=>saved.address===item.address);
       if(kind==='delete'&&!original&&previous?.revision===0){state.drafts=state.drafts.filter(d=>d.address!==item.address);await this.store.set(`account:${auth.userId}`,state);return;}
       if (!original && !previous && state.workspace.items.length + state.drafts.filter(d=>d.revision===0).length >= 100) throw new Error('Save up to 100 tokens');
+      const saved = previous?.item ?? original;
       const draft: Draft = {id:crypto.randomUUID(),userId:auth.userId!,address:item.address,kind,
-        revision:previous?.revision ?? original?.revision ?? 0,item};
+        revision:previous?.revision ?? original?.revision ?? 0,
+        // Older workers require both fields. Only apply the field this edit targeted.
+        item:{
+          ...item,
+          pinned:(field==='note'?undefined:item.pinned) ?? saved?.pinned ?? true,
+          note:(field==='pinned'?undefined:item.note) ?? saved?.note ?? '',
+        }};
       state.drafts = [...state.drafts.filter(d=>d.address!==item.address),draft];
       await this.store.set(`account:${auth.userId}`,state);
     });

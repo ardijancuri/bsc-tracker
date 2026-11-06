@@ -1,0 +1,24 @@
+.buy-settings-mode {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.buy-amount-settings .buy-setting-inline {
+  grid-template-columns: minmax(0, 1fr) 74px;
+  align-items: center;
+}
+
+.buy-amount-settings .buy-destination-setting {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.buy-destination-setting select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface2);
+  color: var(--text);
+  font: inherit;
+}

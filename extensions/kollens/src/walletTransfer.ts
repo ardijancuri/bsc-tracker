@@ -1,6 +1,7 @@
 import { Wallet, ZeroAddress, getAddress, keccak256, parseEther, toQuantity } from 'ethers';
 import { browserApi } from './platform';
 import { WalletBroadcastRejection, parseRpcQuantity, walletRpc } from './walletRpc';
+import { pendingWalletBuyKey, walletTransactionLockKey } from './walletTransactionKeys';
 import { exportLocalWallet } from './walletVault';
 
 const chainId = 56;
@@ -60,12 +61,16 @@ async function requireBnbChain(): Promise<void> {
   }
 }
 
-function pendingTransferKey(from: string) {
-  return `wallet-transfer:${from.toLowerCase()}`;
+async function requireNoPendingBuy(from: string) {
+  const key = pendingWalletBuyKey(from);
+  const pending: unknown = (await browserApi.storage.local.get(key))[key];
+  if (pending !== undefined && (!Array.isArray(pending) || pending.length > 0)) {
+    throw new WalletTransferError('Check pending token purchases before sending BNB.');
+  }
 }
 
 export async function loadPendingWalletTransfer(from: string): Promise<PendingWalletTransfer | null> {
-  const key = pendingTransferKey(from);
+  const key = walletTransactionLockKey(from);
   const item: unknown = (await browserApi.storage.local.get(key))[key];
   if (item === undefined) return null;
   if (!item || typeof item !== 'object') throw new Error('Invalid saved transaction.');
@@ -81,6 +86,7 @@ export async function loadPendingWalletTransfer(from: string): Promise<PendingWa
 
 export async function previewWalletTransfer(from: string, recipient: string, amount: string): Promise<TransferPreview> {
   const { to, value } = transferInput(recipient, amount);
+  await requireNoPendingBuy(from);
   if (await loadPendingWalletTransfer(from)) {
     throw new WalletTransferError('Check the previous transaction before sending again.');
   }
@@ -137,7 +143,7 @@ export async function submitWalletTransfer(preview: TransferPreview, password?: 
   status: 'pending' | 'unknown';
 }> {
   const { reviewedAt, ...details } = preview;
-  const key = pendingTransferKey(details.from);
+  const key = walletTransactionLockKey(details.from);
   return navigator.locks.request(key, async () => {
     if (Date.now() - reviewedAt > reviewLifetime) {
       throw new WalletTransferError('This review expired. Review the transfer again.');
@@ -145,6 +151,7 @@ export async function submitWalletTransfer(preview: TransferPreview, password?: 
     if (await loadPendingWalletTransfer(details.from)) {
       throw new WalletTransferError('Check the previous transaction before sending again.');
     }
+    await requireNoPendingBuy(details.from);
     await requireBnbChain();
     const [balance, nonce] = (await Promise.all([
       walletRpc('eth_getBalance', [details.from, 'pending']),
@@ -200,7 +207,7 @@ async function inspectWalletTransfer(transfer: PendingWalletTransfer): Promise<T
 }
 
 export async function checkWalletTransfer(transfer: PendingWalletTransfer, retry?: { password?: string }) {
-  const key = pendingTransferKey(transfer.from);
+  const key = walletTransactionLockKey(transfer.from);
   return navigator.locks.request(key, async () => {
     const current = await loadPendingWalletTransfer(transfer.from);
     if (!current || current.hash !== transfer.hash) {

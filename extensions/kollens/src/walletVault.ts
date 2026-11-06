@@ -32,7 +32,7 @@ const defaultEvmPath = "m/44'/60'/0'/0/0";
 function requireExtensionWindow() {
   const {protocol, hostname, pathname} = globalThis.location ?? {};
   if (protocol !== 'chrome-extension:' || hostname !== globalThis.chrome?.runtime?.id ||
-      (pathname !== '/popup.html' && pathname !== '/panel.html') || window.top !== window) {
+      !['/popup.html','/panel.html','/sidepanel.html'].includes(pathname) || window.top !== window) {
     throw new Error('Open the Kollens extension to manage wallets.');
   }
 }

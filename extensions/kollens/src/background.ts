@@ -13,7 +13,8 @@ const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}
 const sync=new WorkspaceSync(config.apiOrigin,store),pages=new Map<number,ExtensionPage>(),selections=new Map<number,string>();
 const configuredPages=new Map<number,string>();
 const settingsVersions=new Map<number,string>();
-const uiUrls=new Set([chrome.runtime.getURL('popup.html'),chrome.runtime.getURL('panel.html')]);
+const sidePanelUrl=chrome.runtime.getURL('sidepanel.html');
+const uiUrls=new Set([chrome.runtime.getURL('popup.html'),chrome.runtime.getURL('panel.html'),sidePanelUrl]);
 const focusRequests=new Set<number>();
 const manualPages=new Set<number>();
 let authOptions: ExtensionAuthOptions | undefined;
@@ -45,8 +46,45 @@ function contentSender(sender:any){
 }
 declare const __LOCAL_FIXTURE__:boolean;
 async function active(){return(await chrome.tabs.query({active:true,currentWindow:true}))[0]?.id as number|undefined;}
+async function activeUiTab(sender:chrome.runtime.MessageSender,windowId:unknown) {
+  if (sender.url?.split('?')[0]!==sidePanelUrl) {
+    return (await chrome.tabs.query({active:true,currentWindow:true}))[0];
+  }
+  // This URL has already passed the extension-page sender check. Chrome can
+  // omit its document context or report -1 for a global side panel, so keep
+  // the window reported by that panel rather than using the worker's window.
+  const [context] = sender.documentId
+    ? await chrome.runtime.getContexts({contextTypes:['SIDE_PANEL'],documentIds:[sender.documentId]}).catch(()=>[])
+    : [];
+  const owningWindow = context && context.windowId>=0?context.windowId:windowId;
+  if (typeof owningWindow==='number'&&Number.isInteger(owningWindow)&&owningWindow>=0) {
+    return (await chrome.tabs.query({active:true,windowId:owningWindow}))[0];
+  }
+}
 async function pushSettings(tabId:number){const settings=await sync.settings(),version=(pages.get(tabId)?.pageId??'')+JSON.stringify(settings);if(settingsVersions.get(tabId)===version)return;settingsVersions.set(tabId,version);if(manualPages.has(tabId)){const page=pages.get(tabId);if(page)page.groups=matchCards(page.cards,settings.preferences.matchTypes);return;}await chrome.tabs.sendMessage(tabId,{kind:'settings',...settings,preferences:{...settings.preferences,sound:settings.preferences.sound&&settings.soundActivated}}).catch(()=>{settingsVersions.delete(tabId);});}
 async function refreshTabs(){await Promise.all([...pages.keys()].map(pushSettings));}
+async function scanTrenches(tabId:number,url:string) {
+  const [snapshot] = await chrome.scripting.executeScript({
+    target:{tabId,frameIds:[0]},world:'ISOLATED',func:readRenderedGmgnTrenches,
+  });
+  const raw = snapshot?.result;
+  if (!raw || raw.url!==url) return;
+  const settings = await sync.settings();
+  const after = await chrome.tabs.get(tabId);
+  if (!after.active || after.url!==url || live.enabled) return;
+
+  const pageId = crypto.randomUUID();
+  const cards = raw.cards.map((card,index)=>({
+    chainId:56 as const,address:card.address,name:card.name,symbol:card.symbol,
+    logoUrl:extensionTokenImageUrl(card.logoUrl),tokenUrl:card.tokenUrl,cardId:`${pageId}:${index}`,
+    socialLinks:card.socialUrls.map(normalizeSocialLink).filter(link=>link!==null),
+    marketCap:normalizeCardMetric(card.marketCap),volume:normalizeCardMetric(card.volume),
+  }));
+  pages.set(tabId,{pageId,status:raw.status,url:raw.url,cards,groups:matchCards(cards,settings.preferences.matchTypes),
+    alerts:[],active:true,updatedAt:raw.observedAt,durations:[]});
+  manualPages.add(tabId);
+  selections.delete(tabId);
+}
 let lastSound=-Infinity;
 let audioError:string|null=null;
 async function sound(){
@@ -104,29 +142,23 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
         // Storage and popup navigation stay available while a provider or the API is slow.
         void sync.sync();
         loadAuthOptions();
-        const tab=(await chrome.tabs.query({active:true,currentWindow:true}).catch(()=>[]))[0],tabId=tab?.id;
-        if(tabId!=null&&!pages.has(tabId))void chrome.tabs.sendMessage(tabId,{kind:'request-page'}).catch(()=>{});
+        const tab=await activeUiTab(sender,message.windowId).catch(()=>undefined),tabId=tab?.id;
+        const tabUrl=tab?.url??'';
+        const canScanPage=isBscTrenches(tabUrl);
+        // The toolbar click already grants temporary activeTab access. Regular
+        // state polling does not inject a reader.
+        if(message.scanActiveTab===true&&tabId!=null&&canScanPage&&!live.enabled&&!config.gmgnAuthorized){
+          await scanTrenches(tabId,tabUrl).catch(()=>{});
+        }else if(tabId!=null&&!pages.has(tabId)){
+          void chrome.tabs.sendMessage(tabId,{kind:'request-page'}).catch(()=>{});
+        }
         const state=await sync.state();
         void refreshTabs().catch(()=>{});
-        const focusRequested=tabId!=null&&focusRequests.delete(tabId);
+        const focusRequested=sender.url?.split('?')[0]!==sidePanelUrl&&tabId!=null&&focusRequests.delete(tabId);
         const linkError = state.connected && socialError?.ownerId === state.ownerId ? socialError.message : null;
-        return{...state,...await sync.settings(),authOptions,demoAccount:__LOCAL_FIXTURE__,focusRequested,error:state.error??linkError??audioError,page:tabId==null?null:pages.get(tabId)??null,selected:tabId==null?null:selections.get(tabId)??null,gmgnAuthorized:config.gmgnAuthorized,canScanPage:isBscTrenches(tab?.url??''),manualPage:tabId!=null&&manualPages.has(tabId),localLiveAvailable:config.localGmgnLive,liveEnabled:live.enabled};
+        return{...state,...await sync.settings(),authOptions,demoAccount:__LOCAL_FIXTURE__,focusRequested,error:state.error??linkError??audioError,page:tabId==null?null:pages.get(tabId)??null,selected:tabId==null?null:selections.get(tabId)??null,gmgnAuthorized:config.gmgnAuthorized,canScanPage,manualPage:tabId!=null&&manualPages.has(tabId),localLiveAvailable:config.localGmgnLive,liveEnabled:live.enabled};
       }
       case 'enable-live':await live.setEnabled(true);manualPages.clear();break;
-      case 'scan':{
-        const tab=(await chrome.tabs.query({active:true,currentWindow:true}))[0];
-        if(tab?.id==null||!isBscTrenches(tab.url??''))throw Error('Open GMGN BNB trenches first');
-        const tabId=tab.id;
-        const result=await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:readRenderedGmgnTrenches});
-        const raw=result[0]?.result;
-        const after=await chrome.tabs.get(tabId);
-        if(!raw||after.url!==tab.url||raw.url!==tab.url||!isBscTrenches(raw.url))throw Error('Page changed. Scan again.');
-        const settings=await sync.settings(),pageId=crypto.randomUUID();
-        const cards=raw.cards.map((card,index)=>({chainId:56 as const,address:card.address,name:card.name,symbol:card.symbol,logoUrl:extensionTokenImageUrl(card.logoUrl),tokenUrl:card.tokenUrl,cardId:`${pageId}:${index}`,socialLinks:card.socialUrls.map(normalizeSocialLink).filter(link=>link!==null),
-          marketCap:normalizeCardMetric(card.marketCap),volume:normalizeCardMetric(card.volume)}));
-        pages.set(tabId,{pageId,status:raw.status,url:raw.url,cards,groups:matchCards(cards,settings.preferences.matchTypes),alerts:[],active:true,updatedAt:raw.observedAt,durations:[]});
-        manualPages.add(tabId);selections.delete(tabId);break;
-      }
       case 'connect':await sync.connect(async url=>{await chrome.tabs.create({url});});break;
       case 'google-connect':
         await sync.googleConnect(url=>chrome.identity.launchWebAuthFlow({url,interactive:true}),chrome.identity.getRedirectURL('kollens'));
@@ -154,12 +186,12 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
       }
       case 'cancel-pairing':await sync.cancelPairing();return {ok:true};
       case 'disconnect':await sync.disconnect();socialError=null;break;
-      case 'edit':await sync.edit(message.item,message.action??'save');break;
+      case 'edit':await sync.edit(message.item,message.action??'save',message.field);break;
       case 'resolve':await sync.resolve(message.address,message.choice);break;
       case 'preferences':await sync.preferences(message.preferences,message.activateSound===true);break;
       case 'resolvePreferences':await sync.resolvePreferences(message.choice);break;
       case 'ui':await sync.rememberUi(message.ownerId,message.patch);return{ok:true};
-      case 'select':{const tabId=await active();if(tabId!=null&&pages.get(tabId)?.groups.some(g=>g.id===message.groupId)){
+      case 'select':{const tabId=(await activeUiTab(sender,message.windowId))?.id;if(tabId!=null&&pages.get(tabId)?.groups.some(g=>g.id===message.groupId)){
         selections.set(tabId,message.groupId);if(!manualPages.has(tabId))await chrome.tabs.sendMessage(tabId,{kind:'select',groupId:message.groupId});}break;}
       default:throw new Error('Unknown extension request');
     }
@@ -167,7 +199,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
   };
   void work().then(respond,(error:unknown)=>{
     console.warn('extension_request_failed',{kind:message?.kind,errorName:error instanceof Error?error.name:'unknown',frame:error instanceof Error?error.stack?.split('\n')[1]:undefined});
-    const safe=new Set(['Try again shortly','Connect your Kollens account first','Notes are limited to 2,000 characters','Save up to 100 tokens','Resolve this note conflict before saving again','Connection expired. Connect again.','Open GMGN BNB trenches first','Page changed. Scan again.','Allow GMGN site access first',
+    const safe=new Set(['Try again shortly','Connect your Kollens account first','Notes are limited to 2,000 characters','Save up to 100 tokens','Resolve this note conflict before saving again','Connection expired. Connect again.','Allow GMGN site access first',
       'Log out before connecting another account.','A sign-in is already in progress.','Could not start connection. Try again.','Sign-in was cancelled.',
       'Could not complete Google sign-in. Try again.','Google sign-in was cancelled.','Enter a valid email address.','Enter the six-digit code.',
       'Wait before requesting another code.','Could not send a sign-in code. Try again.','Request a new sign-in code.','The code is invalid or has expired.']);

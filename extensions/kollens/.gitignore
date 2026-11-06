@@ -1,5 +1,6 @@
 /dist/
 /dist-local/
+/dist-local-gmgn/
 /dist-gmgn-qa/
 /test-results/
 /playwright-report/

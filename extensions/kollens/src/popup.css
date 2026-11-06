@@ -1,6 +1,6 @@
-/* Native Chrome toolbar popup: fixed shell, scrollable contents, no page resize. */
+/* Shared Chrome extension layout for the toolbar popup and side panel. */
 /* Palette from the web app's styles.css and compact.css. */
-html[data-surface="popup"] {
+html[data-surface] {
   --bg: #101214;
   --surface: #171a1d;
   --surface2: #1c2023;
@@ -8,23 +8,32 @@ html[data-surface="popup"] {
   --text: #e9edf1;
   --muted: #939da2;
   --yellow: #f0b90b;
+  --buy-text: #65e8a9;
+  --buy-border: #37b878;
+  --buy-surface: #153528;
+  --buy-hover: #1c4936;
+  --popup-header-height: 48px;
   color-scheme: dark;
 }
 html[data-surface="popup"],html[data-surface="popup"] body{width:360px;height:600px;min-width:360px;min-height:600px;overflow:hidden}
-html[data-surface="popup"] #root,html[data-surface="popup"] .workspace{height:100%;min-height:0}
-html[data-surface="popup"] body{font-size:14px;background:var(--bg);color:var(--text)}
-html[data-surface="popup"] .workspace{display:flex;flex-direction:column;position:relative}
-html[data-surface="popup"] .popup-header{height:48px;min-height:48px;padding:0 14px;gap:8px;flex-shrink:0;border:0;background:var(--bg)}
-html[data-surface="popup"] header .brand-mark{width:23px;height:23px;object-fit:contain}
-html[data-surface="popup"] .popup-header h1{margin:0;font-size:15px;letter-spacing:-.2px;font-weight:650}
-.network-pill{margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--line);border-radius:999px;color:var(--text);font-size:11px;font-weight:650}
-html[data-surface="popup"] header .network-pill img{width:13px;height:13px}
+html[data-surface="side-panel"],html[data-surface="side-panel"] body{width:100%;height:100%;overflow:hidden}
+html[data-surface] #root,html[data-surface] .workspace{height:100%;min-height:0}
+html[data-surface] body{font-size:14px;background:var(--bg);color:var(--text)}
+html[data-surface] .workspace{display:flex;flex-direction:column;position:relative}
+html[data-surface] .popup-header{height:var(--popup-header-height);min-height:var(--popup-header-height);padding:0 14px;gap:8px;flex-shrink:0;border:0;background:var(--bg)}
+html[data-surface] header .brand-mark{width:23px;height:23px;object-fit:contain}
+html[data-surface] .popup-header h1{margin:0;font-size:15px;letter-spacing:-.2px;font-weight:650}
+.header-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.network-pill{display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--line);border-radius:999px;color:var(--text);font-size:11px;font-weight:650}
+.side-panel-button{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border-radius:7px;color:var(--muted)}
+.side-panel-button:not(:disabled):hover{color:#fff}
+html[data-surface] header .network-pill img{width:13px;height:13px}
 .account-status{position:absolute;right:8px;bottom:8px;width:5px;height:5px;border-radius:50%;background:var(--yellow)}
-.scan-action{display:flex;justify-content:center}
 .scan-button{padding:4px 6px;border-radius:5px;color:var(--yellow);font-size:12px;white-space:nowrap}
 .scan-button:hover{background:var(--surface2)}
-html[data-surface="popup"] .workspace-tabs{margin:6px 12px 2px;padding:0;flex-shrink:0;gap:5px;border:0}
-html[data-surface="popup"] .workspace-tabs button {
+html[data-surface] .workspace-tabs{margin:6px 12px 2px;padding:0 0 6px;flex-shrink:0;gap:5px;border:0}
+html[data-surface] .workspace-tabs button,
+html[data-surface] .wallet-toolbar .popup-action.secondary {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -38,12 +47,14 @@ html[data-surface="popup"] .workspace-tabs button {
   font-size: 11px;
   font-weight: 600;
 }
-html[data-surface="popup"] .workspace-tabs button:hover{border-color:var(--muted);color:var(--text)}
-html[data-surface="popup"] .workspace-tabs button.active{background:var(--surface2);border-color:var(--surface2);color:var(--text)}
-html[data-surface="popup"] .workspace-tabs button:focus-visible{outline-color:var(--muted)}
-html[data-surface="popup"] .workspace-tabs button.active:after{display:none}
-html[data-surface="popup"] .workspace-tabs button span{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
-html[data-surface="popup"] .bottom-nav {
+html[data-surface] .workspace-tabs button:hover,
+html[data-surface] .wallet-toolbar .popup-action.secondary:hover{border-color:var(--muted);color:var(--text);background:transparent}
+html[data-surface] .workspace-tabs button:is(.active,[aria-selected="true"]){background:var(--surface2);border-color:var(--surface2);color:var(--text)}
+html[data-surface] .workspace-tabs button:focus-visible,
+html[data-surface] .wallet-toolbar .popup-action.secondary:focus-visible{outline-color:var(--muted)}
+html[data-surface] .workspace-tabs button.active:after{display:none}
+html[data-surface] .workspace-tabs button span{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+html[data-surface] .bottom-nav {
   display:grid;
   grid-template-columns:repeat(4,minmax(0,1fr));
   justify-items:center;
@@ -53,7 +64,7 @@ html[data-surface="popup"] .bottom-nav {
   border:0;
   background:var(--surface);
 }
-html[data-surface="popup"] .bottom-nav .destination-button{
+html[data-surface] .bottom-nav .destination-button{
   display:grid;
   place-items:center;
   width:44px;
@@ -62,20 +73,21 @@ html[data-surface="popup"] .bottom-nav .destination-button{
   border-radius:11px;
   color:var(--muted);
 }
-html[data-surface="popup"] .bottom-nav .destination-button:hover,
-html[data-surface="popup"] .bottom-nav .destination-button[aria-current="page"]{
+html[data-surface] .bottom-nav .destination-button:hover,
+html[data-surface] .bottom-nav .destination-button[aria-current="page"]{
   color:var(--text);
   background:#303438;
 }
-html[data-surface="popup"] main{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px 12px 12px;scrollbar-gutter:stable}
-html[data-surface="popup"] .wallets-view,
-html[data-surface="popup"] .profile-view,
-html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:auto}
+html[data-surface] main{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px 12px 12px;scrollbar-gutter:stable}
+html[data-surface] .wallets-view,
+html[data-surface] .profile-view,
+html[data-surface] .settings-view{padding:14px 16px;scrollbar-gutter:auto}
 .wallet-layout{display:grid;gap:12px}
 .wallet-balance{padding:11px 12px;background:var(--surface2);border-radius:12px}
 .wallet-balance p{font-size:10px;color:var(--muted)}
 .wallet-balance>div{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}
-.wallet-balance strong{font-size:20px;font-weight:600;letter-spacing:-.35px;font-variant-numeric:tabular-nums}
+.wallet-balance strong{display:flex;align-items:center;gap:6px;font-size:20px;font-weight:600;letter-spacing:-.35px;font-variant-numeric:tabular-nums}
+.wallet-balance strong img{width:16px;height:16px;flex:none}
 .wallet-balance small{display:block;margin-top:5px;color:var(--muted);font-size:11px}
 .wallet-card{min-width:0;padding:12px;border:1px solid var(--line);border-radius:12px}
 .wallet-intro{display:flex;gap:10px;align-items:flex-start}
@@ -90,6 +102,16 @@ html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:aut
 .popup-action:hover{background:#393f43}
 .popup-action.secondary{border-color:#34393d;background:transparent}
 .popup-action.secondary:hover{background:var(--surface2)}
+.wallet-toolbar .wallet-archive-toggle{
+  width:26px;
+  min-height:26px;
+  padding:0;
+  margin-inline-start:auto;
+  border-radius:7px;
+  background:var(--surface2);
+  color:var(--muted);
+}
+.wallet-toolbar .wallet-archive-toggle:hover{color:var(--text)}
 .account-stack{display:grid;gap:8px}
 .account-card{min-width:0;padding:16px;background:var(--surface);border-radius:12px}
 .account-summary h2{margin:0;font-size:15px;font-weight:650;overflow-wrap:anywhere}
@@ -117,23 +139,73 @@ html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:aut
 .account-email .account-code-destination{max-width:100%;overflow-wrap:anywhere}
 .account-form-actions{display:flex;align-items:center;gap:12px;margin-top:3px}
 .wallet-record{min-width:0;border-radius:15px;background:var(--surface)}
+.wallet-record:hover{background:var(--surface2)}
 .wallet-record-head{display:flex;align-items:center;gap:5px;min-height:42px;padding:6px 9px 6px 11px}
+.wallet-record-head[data-expandable]{cursor:pointer}
 .wallet-record-identity{display:flex;align-items:center;gap:7px;flex:1;min-width:0}
-.wallet-record-select{flex:none;width:16px;height:16px;margin:0 3px;accent-color:var(--text);cursor:pointer}
-@media(forced-colors:none){
-  .wallet-record-select{appearance:none;display:grid;place-items:center;background:transparent;border:1px solid #555;border-radius:4px}
-  .wallet-record-select:checked{background:#2a2a2a;border-color:#666}
-  .wallet-record-select:checked::before{content:'';width:10px;height:10px;border-radius:2px;background:#d0d0d0}
+.wallet-record-select,
+.settings input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--checkbox-fill, var(--text));
+  cursor: pointer;
 }
-.wallet-record-address{display:flex;align-items:center;gap:5px;min-width:0;padding:0;font-size:12px;font-weight:600;text-align:left}
-.wallet-record-address span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wallet-record-address svg{flex:none;color:var(--muted)}
-.wallet-record-address:hover svg{color:var(--text)}
+.wallet-record-select{margin:0 3px}
+@media(forced-colors:none){
+  :is(.wallet-record-select, .settings input[type="checkbox"]){
+    appearance:none;
+    display:grid;
+    place-items:center;
+    background:transparent;
+    border:1px solid #555;
+    border-radius:4px;
+  }
+  :is(.wallet-record-select, .settings input[type="checkbox"]):checked{
+    background:#2a2a2a;
+    border-color:#666;
+  }
+  :is(.wallet-record-select, .settings input[type="checkbox"]):checked::before{
+    content:'';
+    width:10px;
+    height:10px;
+    border-radius:2px;
+    background:var(--checkbox-fill, #d0d0d0);
+  }
+}
+.wallet-address-anchor{position:relative;min-width:0}
+.wallet-record-address{display:block;max-width:100%;padding:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600;text-align:left}
+.wallet-address-popover{
+  position:absolute;
+  bottom:100%;
+  left:-6px;
+  z-index:2;
+  visibility:hidden;
+  /* Keep the gap in the hover area so the cursor can reach the copy button. */
+  padding-bottom:5px;
+}
+.wallet-address-anchor:is(:hover,[data-keyboard-focus]) .wallet-address-popover{visibility:visible}
+.wallet-address-bubble{
+  display:flex;
+  align-items:center;
+  gap:3px;
+  padding:2px 3px 2px 8px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:var(--surface2);
+  color:var(--muted);
+  font:10px/1.4 monospace;
+  white-space:nowrap;
+}
+.wallet-address-copy{display:grid;place-items:center;width:20px;height:20px;padding:0;border-radius:4px}
+.wallet-address-copy:hover{background:var(--line);color:var(--text)}
 .wallet-record-balance{display:flex;align-items:center;gap:4px;flex:none;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}
 .wallet-record-balance img,.wallet-menu img{width:13px;height:13px;flex:none}
 .wallet-icon-button{display:grid;place-items:center;flex:none;width:25px;height:26px;padding:0;border-radius:6px;color:var(--muted)}
-.wallet-icon-button:hover,.wallet-icon-button[aria-expanded="true"]:hover{background:#303438;color:var(--text)}
+.wallet-icon-button:hover{color:var(--text)}
+.wallet-balance .wallet-icon-button:hover{background:#303438}
 .wallet-menu-anchor{position:relative;flex:none}
+.wallet-menu-anchor + .wallet-icon-button{margin-inline-start:-4px}
 .wallet-menu{position:absolute;top:100%;right:0;z-index:3;width:174px;padding:3px 0;border:1px solid #383e42;border-radius:11px;background:#202326;box-shadow:0 6px 18px #0006}
 .wallet-menu-above{top:auto;bottom:100%}
 .wallet-menu-group{padding:3px 4px}
@@ -146,24 +218,55 @@ html[data-surface="popup"] .settings-view{padding:14px 16px;scrollbar-gutter:aut
 .wallet-record-assets[hidden]{display:none}
 .wallet-record-assets :is(p,code){margin:0;color:var(--muted);font-size:11px}
 .wallet-record-assets .popup-action{min-height:26px;padding-block:4px}
-.wallet-archive{display:grid;justify-items:start;gap:8px}
-.wallet-archive .wallet-record{width:100%}
-.wallet-enable-balances{min-height:26px;padding-block:3px}
+.wallet-archive{display:grid;gap:8px}
 .wallet-editor form{display:grid;gap:10px;margin-top:10px}
 .wallet-editor label{display:grid;gap:5px;font-size:11px;color:var(--text)}
 .wallet-editor label small{color:var(--muted);font-size:10px}
 .wallet-editor :is(input,textarea){width:100%;min-width:0;border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--surface);color:var(--text)}
+.buy-amount-preset-row{display:flex;align-items:center;gap:5px;margin-top:6px}
+.buy-amount-presets{display:flex;flex:1;min-width:0;flex-wrap:wrap;gap:5px}
+.buy-amount-presets .popup-action{max-width:100%;min-height:24px;padding:3px 7px;font-size:10px}
+.buy-amount-presets .popup-action span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.buy-amount-presets .popup-action img{flex:none}
+.buy-amount-presets .popup-action[data-selected]{border-color:var(--yellow);color:var(--yellow)}
+.buy-amount-preset-editor{display:grid;flex:1;min-width:0;grid-template-columns:repeat(4,minmax(0,1fr)) auto;align-items:center;gap:5px}
+.wallet-editor .buy-amount-preset-editor input{height:24px;padding:3px 4px;font-size:10px;text-align:center}
+.buy-amount-preset-actions{display:flex;flex:none;gap:2px}
+.buy-amount-preset-actions button{display:grid;place-items:center;width:24px;height:24px;padding:0;color:var(--muted)}
+.buy-amount-preset-actions button:hover:not(:disabled){color:var(--text)}
 .wallet-editor textarea{min-height:64px;resize:vertical}
 .wallet-editor>label,.wallet-editor>.popup-action{margin-top:10px}
-.wallet-editor .wallet-error{color:#f5a3a3}
+.wallet-editor .wallet-error,
+.wallet-editor .wallet-security-warning{color:#f5a3a3}
+.wallet-editor .wallet-security-warning{font-weight:600}
 .wallet-transfer input[readonly]{margin-top:5px;font-family:monospace}
 .wallet-transfer-review{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;margin:0;padding:10px;border-radius:8px;background:var(--surface);font-size:11px}
 .wallet-transfer-review dt{color:var(--muted)}
 .wallet-transfer-review dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
 .wallet-transfer-address{overflow-wrap:anywhere}
 .wallet-transfer-link{display:inline-block;margin-top:6px;color:var(--yellow);font-size:11px}
-html[data-surface="popup"] h1{font-size:19px}
-html[data-surface="popup"] .section-intro{margin-bottom:21px}
+.wallet-buy .buy-list{
+  display:grid;
+  gap:6px;
+  margin:8px 0;
+  padding:0;
+  list-style:none;
+}
+.wallet-buy .buy-list li{
+  display:grid;
+  min-width:0;
+  gap:4px;
+  padding:8px;
+  border-radius:8px;
+  background:var(--surface);
+  font-size:12px;
+  overflow-wrap:anywhere;
+}
+.wallet-buy small{font-size:10px;color:var(--muted)}
+.wallet-buy h2{overflow-wrap:anywhere}
+.wallet-buy .wallet-error{margin-block:8px}
+html[data-surface] h1{font-size:19px}
+html[data-surface] .section-intro{margin-bottom:21px}
 .match-stack{display:grid;gap:6px}
 .match-stack:has(.trenches-empty){min-height:100%;place-items:center}
 .trenches-empty {
@@ -178,7 +281,7 @@ html[data-surface="popup"] .section-intro{margin-bottom:21px}
 }
 .trenches-empty img{width:22px;height:22px;object-fit:contain}
 .trenches-empty:hover{color:var(--text)}
-html[data-surface="popup"] .group,.saved-stack {
+html[data-surface] .group,.saved-stack {
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -186,7 +289,7 @@ html[data-surface="popup"] .group,.saved-stack {
   border: 0;
   border-radius: 10px;
 }
-html[data-surface="popup"] .group.selected{box-shadow:inset 2px 0 var(--group-color)}
+html[data-surface] .group{border:1px solid var(--group-color);animation:none}
 .group-header {
   display: grid;
   grid-template-columns: minmax(0,1fr) auto;
@@ -194,10 +297,11 @@ html[data-surface="popup"] .group.selected{box-shadow:inset 2px 0 var(--group-co
   column-gap: 6px;
   padding: 4px 8px 4px 10px;
 }
-html[data-surface="popup"] .group-heading{min-width:0;min-height:28px;margin:0;gap:7px}
-html[data-surface="popup"] .group-heading strong{font-size:13px}
-html[data-surface="popup"] .group-heading>span:last-child{font-size:11px;white-space:nowrap;color:var(--muted)}
-html[data-surface="popup"] .token-row{min-height:54px;padding:5px 8px 5px 10px;gap:8px}
+.group-actions{display:flex;align-items:center;gap:4px}
+html[data-surface] .group-heading{min-width:0;min-height:28px;margin:0;gap:7px}
+html[data-surface] .group-heading strong{font-size:13px}
+html[data-surface] .group-heading>span:last-child{font-size:11px;white-space:nowrap;color:var(--muted)}
+html[data-surface] .token-row{min-height:54px;padding:5px 8px 5px 10px;gap:8px}
 .group .token-row,.saved-item+.saved-item{position:relative}
 .group .token-row::before,.saved-item+.saved-item::before {
   content: '';
@@ -220,20 +324,29 @@ html[data-surface="popup"] .token-row{min-height:54px;padding:5px 8px 5px 10px;g
 .token-metrics div{display:flex;gap:3px;align-items:baseline}
 .token-metrics dt{color:var(--muted);font-size:9px}
 .token-metrics dd{margin:0;text-align:right;color:var(--text);font-weight:600;white-space:nowrap}
-html[data-surface="popup"] .token-monogram{flex-shrink:0;background:var(--surface2);color:var(--yellow)}
+html[data-surface] .token-monogram{flex-shrink:0;background:var(--surface2);color:var(--yellow)}
 .ui-icon{display:block;flex-shrink:0}
 .token-thumbnail{position:relative;overflow:hidden;flex-shrink:0}
 .token-thumbnail img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
-html[data-surface="popup"] .address{display:flex;align-items:center;gap:5px}
-html[data-surface="popup"] .address .ui-icon{width:12px;height:12px}
-html[data-surface="popup"] .token-actions{gap:2px}
-html[data-surface="popup"] .token-actions button,html[data-surface="popup"] .token-actions a{width:26px;height:30px;display:grid;place-items:center;border-radius:7px}
-html[data-surface="popup"] .token-actions .is-saved{color:var(--yellow)}
-html[data-surface="popup"] .token-actions .is-saved .ui-icon{fill:color-mix(in srgb,var(--yellow) 20%,transparent)}
-html[data-surface="popup"] .token-actions .gmgn-link{background:none}
-html[data-surface="popup"] .gmgn-link img{width:24px;height:24px;object-fit:contain}
-html[data-surface="popup"] .token-actions button:hover,html[data-surface="popup"] .token-actions a:hover{background:var(--surface2);color:var(--yellow)}
-html[data-surface="popup"] .source-link {
+html[data-surface] .address{display:flex;align-items:center;gap:5px}
+html[data-surface] .token-actions{gap:2px}
+html[data-surface] .token-actions button,html[data-surface] .token-actions a{width:26px;height:30px;display:grid;place-items:center;border-radius:7px}
+html[data-surface] .token-quick-actions{display:grid;flex:none;gap:1px}
+html[data-surface] .token-quick-actions :is(button,a){
+  display:grid;
+  width:23px;
+  height:20px;
+  padding:0;
+  place-items:center;
+  border-radius:4px;
+  color:var(--muted);
+}
+html[data-surface] .token-quick-actions .ui-icon{width:14px;height:14px}
+html[data-surface] .token-quick-actions .is-saved,
+html[data-surface] .token-quick-actions .token-save:hover{color:var(--yellow)}
+html[data-surface] .token-quick-actions .is-saved .ui-icon{fill:currentColor}
+html[data-surface] .token-quick-actions .gmgn-link img{width:17px;height:17px;object-fit:contain}
+html[data-surface] .source-link {
   display: grid;
   place-items: center;
   width: 28px;
@@ -242,39 +355,96 @@ html[data-surface="popup"] .source-link {
   border-radius: 7px;
   color: var(--muted);
 }
-html[data-surface="popup"] .source-link:hover{background:var(--surface2);color:var(--yellow)}
-html[data-surface="popup"] .source-link .ui-icon{width:15px;height:15px}
-html[data-surface="popup"] .token-identity{gap:1px;line-height:1.25}
-html[data-surface="popup"] .token-identity strong{font-size:13px}
-html[data-surface="popup"] .token-identity>span{font-size:11px;color:var(--muted)}
-html[data-surface="popup"] .address{font-size:11px;color:var(--muted)}
-html[data-surface="popup"] .settings{padding:0;background:transparent;border:0}
-html[data-surface="popup"] .settings-group{padding:16px 14px;margin-bottom:12px;background:var(--surface);border:0;border-radius:12px}
-html[data-surface="popup"] .settings label{font-size:14px;gap:10px;margin:13px 0}
-html[data-surface="popup"] .settings h2{font-size:16px}
-html[data-surface="popup"] .settings input{width:16px;height:16px}
-html[data-surface="popup"] .saved-item{padding:0;border-bottom:0}
-.saved-status,html[data-surface="popup"] .note-preview{padding:0 10px 8px 54px;margin:0;font-size:12px;line-height:1.45}
+html[data-surface] .source-link:hover{color:var(--yellow)}
+html[data-surface] .source-link .ui-icon{width:15px;height:15px}
+html[data-surface] .token-identity{gap:1px;line-height:1.25}
+html[data-surface] .token-identity strong{font-size:13px}
+html[data-surface] .token-identity>span{font-size:11px;color:var(--muted)}
+html[data-surface] .address{font-size:11px;color:var(--muted)}
+html[data-surface] .settings{padding:0;background:transparent;border:0}
+.settings .settings-conflict{margin:0 0 12px}
+html[data-surface] .settings-group{padding:16px 14px;margin-bottom:12px;background:var(--surface);border:0;border-radius:12px}
+html[data-surface] .settings label{font-size:14px;gap:10px;min-height:24px;margin:13px 0;cursor:pointer}
+html[data-surface] .settings h2{font-size:16px}
+html[data-surface] .buy-amount-settings label{margin:0;font-size:12px;gap:5px;cursor:auto}
+.buy-amount-settings :is(p,input){font-size:12px}
+.buy-amount-settings .popup-action{justify-self:start}
+.settings input[type="checkbox"]{--checkbox-fill:var(--yellow);margin:0}
+html[data-surface] .settings input[type="checkbox"]:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
+.settings-links a{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  color:var(--muted);
+}
+.settings-links a:hover{color:var(--text)}
+html[data-surface] .saved-item{padding:0;border-bottom:0}
+html[data-surface] .saved-item .token-actions{gap:0}
+html[data-surface] .saved-item .token-actions :is(button,a){width:24px}
+.saved-item .token-actions .ui-icon{width:14px;height:14px}
+.saved-item .address .ui-icon{width:10px;height:10px}
+html[data-surface] .token-buy,
+html[data-surface] .wallet-buy .buy-submit{
+  flex:none;
+  min-width:56px;
+  min-height:34px;
+  padding:0 10px;
+  border:1px solid var(--buy-border);
+  border-radius:8px;
+  background:var(--buy-surface);
+  color:var(--buy-text);
+  font-size:12px;
+  font-weight:700;
+  white-space:nowrap;
+}
+html[data-surface] .group-actions .token-buy{min-width:65px}
+html[data-surface] :is(.token-buy,.wallet-buy .buy-submit):hover:not(:disabled){background:var(--buy-hover)}
+html[data-surface] :is(.token-buy,.wallet-buy .buy-submit):focus-visible{outline-color:var(--buy-text)}
+.saved-status,html[data-surface] .note-preview{padding:0 10px 8px 54px;margin:0;font-size:12px;line-height:1.45}
 .saved-status{color:var(--yellow)}
 .saved-item .conflict{margin:0 8px 8px}
-html[data-surface="popup"] .activity-row strong{font-size:14px}
-html[data-surface="popup"] .activity-row{padding:15px 12px;margin-bottom:10px;background:var(--surface);border:0;border-radius:12px;gap:8px}
-html[data-surface="popup"] button.activity-row:hover{background:var(--surface2)}
-html[data-surface="popup"] .activity-row>div{min-width:0}
-html[data-surface="popup"] .activity-row time{flex-shrink:0}
-html[data-surface="popup"] .activity-row p{font-size:12px}
-html[data-surface="popup"] .activity-row time{font-size:11px}
-html[data-surface="popup"] .empty h2{font-size:15px;color:var(--muted);font-weight:500}
-html[data-surface="popup"] .coverage{font-size:11px;color:var(--muted)}
-html[data-surface="popup"] .feedback{flex-shrink:0;margin:10px 12px 0;padding:10px 12px;max-height:78px;overflow:auto;font-size:12px;border:0;border-radius:10px}
+html[data-surface] .activity-row strong{font-size:14px}
+html[data-surface] .activity-row{padding:15px 12px;margin-bottom:10px;background:var(--surface);border:0;border-radius:12px;gap:8px}
+html[data-surface] button.activity-row:hover{background:var(--surface2)}
+html[data-surface] .activity-row>div{min-width:0}
+html[data-surface] .activity-row time{flex-shrink:0}
+html[data-surface] .activity-row p{font-size:12px}
+html[data-surface] .activity-row time{font-size:11px}
+html[data-surface] .empty h2{font-size:15px;color:var(--muted);font-weight:500}
+html[data-surface] .feedback{flex-shrink:0;margin:10px 12px 0;padding:10px 12px;max-height:78px;overflow:auto;font-size:12px;border:0;border-radius:10px}
+html[data-surface] .wallet-copy-feedback{
+  position:absolute;
+  top:var(--popup-header-height);
+  inset-inline:16px;
+  z-index:4;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin:0;
+  padding:6px 8px 6px 12px;
+  box-shadow:0 4px 16px #0005;
+  pointer-events:none;
+}
+html[data-surface] .wallet-copy-feedback.success{
+  background:color-mix(in srgb,var(--surface2) 82%,transparent);
+  backdrop-filter:blur(10px);
+  border:1px solid rgb(255 255 255 / 11%);
+  color:var(--text);
+}
+.wallet-copy-status{display:flex;align-items:center;gap:7px}
+.wallet-copy-status svg{flex:none;color:#39cb8f}
+.wallet-copy-feedback button{display:grid;place-items:center;flex:none;width:24px;height:24px;padding:0;border-radius:6px;pointer-events:auto}
+.wallet-copy-feedback button:hover{background:var(--surface)}
 .refresh-feedback{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .refresh-feedback button{flex-shrink:0;padding:3px 0;color:var(--yellow)}
-html[data-surface="popup"] .conflict{font-size:12px;border:0;border-radius:10px}
-html[data-surface="popup"] .note-editor{position:absolute;inset:82px 12px 69px;display:flex;flex-direction:column;padding:17px;border:0;border-radius:12px;background:var(--surface2)}
-html[data-surface="popup"] .note-editor textarea{flex:1;min-height:0;resize:none;border:0;border-radius:8px}
-html[data-surface="popup"] .note-editor>div:first-child{gap:10px;flex-shrink:0}
-html[data-surface="popup"] .note-editor h2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;max-width:190px}
-html[data-surface="popup"] .note-editor>div:last-child{flex-shrink:0}
-html[data-surface="popup"] .note-editor span,html[data-surface="popup"] .note-editor small{font-size:12px}
-html[data-surface="popup"] ::-webkit-scrollbar{width:5px}
-html[data-surface="popup"] ::-webkit-scrollbar-thumb{background:var(--muted);border-radius:8px}
+html[data-surface] .conflict{font-size:12px;border:0;border-radius:10px}
+html[data-surface] .note-editor{position:absolute;inset:82px 12px 69px;display:flex;flex-direction:column;padding:17px;border:0;border-radius:12px;background:var(--surface2)}
+html[data-surface] .note-editor textarea{flex:1;min-height:0;resize:none;border:0;border-radius:8px}
+html[data-surface] .note-editor>div:first-child{gap:10px;flex-shrink:0}
+html[data-surface] .note-editor h2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;max-width:190px}
+html[data-surface] .note-editor>div:last-child{flex-shrink:0}
+html[data-surface] .note-editor span,html[data-surface] .note-editor small{font-size:12px}
+html[data-surface] ::-webkit-scrollbar{width:5px}
+html[data-surface] ::-webkit-scrollbar-thumb{background:var(--muted);border-radius:8px}

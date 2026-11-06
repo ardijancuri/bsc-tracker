@@ -1,0 +1,10 @@
+.match-group-status {
+  display: grid;
+  flex: none;
+  justify-items: end;
+}
+
+.match-group-status > span { grid-area: 1 / 1; }
+.match-group-paused { color: var(--yellow); visibility: hidden; }
+.group[data-paused="true"] .match-group-count { visibility: hidden; }
+.group[data-paused="true"] .match-group-paused { visibility: visible; }

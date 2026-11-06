@@ -31,6 +31,16 @@ describe('account-bound workspace synchronization',()=>{
   const t=setup();await t.sync.refresh(true);await t.sync.edit(identity);t.mode('offline');await t.sync.sync();expect((await t.sync.state()).drafts[0].item?.note).toBe(identity.note);
   t.mode('ready');await t.sync.sync();expect((await t.sync.state()).drafts).toHaveLength(0);expect((await t.sync.state()).workspace?.items[0].note).toBe(identity.note);
  });
+ it('preserves queued notes and favorite status when edited independently',async()=>{
+  const t=setup();
+  await t.sync.refresh(true);
+  await t.sync.edit(identity);
+  await t.sync.edit({...identity,note:'Outdated panel note',pinned:false},'save','pinned');
+  expect((await t.sync.state()).drafts[0].item).toMatchObject({note:identity.note,pinned:false});
+  await t.sync.edit({...identity,note:'Updated note'},'save','note');
+  await t.sync.sync();
+  expect((await t.sync.state()).workspace?.items[0]).toMatchObject({note:'Updated note',pinned:false});
+ });
  it('preserves a conflicting note until an explicit resolution',async()=>{
   const t=setup();await t.sync.refresh(true);await t.sync.edit(identity);t.mode('conflict');await t.sync.sync();expect((await t.sync.state()).drafts[0]).toMatchObject({conflict:true,item:{note:identity.note}});
   const sent=t.sent.length;await t.sync.sync();expect(t.sent.length).toBe(sent);
