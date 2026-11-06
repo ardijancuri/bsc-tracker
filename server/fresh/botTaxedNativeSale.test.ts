@@ -12,8 +12,8 @@ import { createFreshStateEvidenceRpc } from './stateEvidence.js';
 import type { FreshCallTrace } from './trace.js';
 
 type SaleFixture = { entry: FreshCapturedReceipt; block: FreshPriceBlock; token: string; sold: string; gross: string; net: string; eventId: string };
-// Original confirmed 19-, 20- and 30-log sales. The first includes the retained
-// trace; the last includes a token-owned tax swap before the wallet's swap.
+// Original confirmed V2-only and V2/V3 sales. Each route includes a retained
+// trace, receipt-only proof and a separate token-owned tax swap.
 const fixtures = JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/bot-taxed-native-sales.json.gz', import.meta.url))).toString()) as SaleFixture[];
 const prove = (fixture: SaleFixture) => freshBotTaxedNativeSale(fixture.entry, fixture.block, fixture.token, fixture.entry.transaction.from, -BigInt(fixture.sold));
 const calls = (node: FreshCallTrace): FreshCallTrace[] => [node, ...(node.calls ?? []).flatMap(calls)];
@@ -40,7 +40,7 @@ async function normalize(fixture: SaleFixture) {
   return { result, price };
 }
 
-describe('taxed two-hop bot sale', () => {
+describe('taxed bot native sale', () => {
   it.each(fixtures.map((_, i) => i))('recovers verified proceeds and independent chain gas for real receipt %s', async index => {
     const fixture = structuredClone(fixtures[index]);
     expect(isFreshBotTaxedNativeSale(fixture.entry.transaction)).toBe(true);
@@ -56,8 +56,8 @@ describe('taxed two-hop bot sale', () => {
       quoteAmount: native.decimal(), amountUsd: native.mul(FreshRational.parse(price)).decimal(), feeUsd: gas.mul(FreshRational.parse(price)).decimal() });
   });
 
-  it('never uses gross withdrawal when the claimed route has a contradictory receipt', async () => {
-    const fixture = structuredClone(fixtures[1]);
+  it.each([1, 4])('never uses gross withdrawal when the claimed route has a contradictory receipt %i', async index => {
+    const fixture = structuredClone(fixtures[index]);
     const settlement = fixture.entry.receipt.logs.at(-1)!;
     settlement.data = settlement.data.slice(0, 66) + BigInt(fixture.gross).toString(16).padStart(64, '0');
     expect(isFreshBotTaxedNativeSale(fixture.entry.transaction)).toBe(true);
@@ -69,11 +69,22 @@ describe('taxed two-hop bot sale', () => {
     expect(result.reasons).toContain('trade_value_unavailable');
   });
 
-  it('rejects contradictory trace even when the original signed call and receipt match', () => {
-    const fixture = structuredClone(fixtures[0]);
+  it.each([0, 3])('rejects contradictory trace even when the original signed call and receipt match %i', index => {
+    const fixture = structuredClone(fixtures[index]);
     const payout = calls(fixture.entry.trace!).find(call => call.to === fixture.entry.transaction.from && call.value && BigInt(call.value) > 0n)!;
     payout.value = '0x1';
     expect(prove(fixture)).toBeNull();
+  });
+
+  it('requires the direct V2 WBNB payment to fund the full withdrawal', async () => {
+    const fixture = structuredClone(fixtures[4]);
+    const transfer = fixture.entry.receipt.logs.find(log => log.address === WBNB && log.topics[0].startsWith('0xddf252ad') && BigInt(log.data) === BigInt(fixture.gross))!;
+    transfer.data = '0x' + (BigInt(fixture.gross) - 1n).toString(16).padStart(64, '0');
+    expect(prove(fixture)).toBeNull();
+    const { result } = await normalize(fixture);
+    expect(result.events[0].amountUsd).toBeNull();
+    expect(result.events[0].quoteAmount).toBeUndefined();
+    expect(result.reasons).toContain('native_payout_mismatch');
   });
 
   it('requires the exact bound token quantity and canonical receipt position', () => {
