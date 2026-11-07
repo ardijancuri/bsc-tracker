@@ -1,8 +1,16 @@
-# Kollens Companion — local initial package
+# Kollens Companion
 
 Chrome Manifest V3 extension for matching the social links of distinct BSC token contracts. Includes matching outlines/badges, related-token groups, an account-synced saved-token workspace and private notes, conflict resolution, page alerts and opted-in audio. Its main UI is a **360 × 600 Chrome toolbar popup**, opened beneath the Kollens extension icon. Chrome 127 or newer is required for programmatic opening from a matching badge.
 
-**Status:** the local unpacked build now supports opt-in automatic BSC Trenches detection and matching highlights. Selectors were inspected in regular Chrome and tested with 23 captured GMGN cards, dynamic mutations and 230-card loads in isolated Chrome extension QA. The user's November 2 request authorizes this local test mode; GMGN's own authorization response remains pending. No commit, deployment or store release is authorized.
+The local test build supports opt-in automatic BSC Trenches detection and matching highlights. Selectors were inspected in regular Chrome and tested with 23 captured GMGN cards, dynamic mutations and 230-card loads in isolated Chrome extension QA. GMGN authorization for automatic matching remains pending.
+
+## Install the v1.5 download
+
+1. Download and extract the [Kollens Companion ZIP](https://kollens.com/downloads/kollens-companion.zip).
+2. Open `chrome://extensions`, turn on **Developer mode**, then choose **Load unpacked** and select the extracted folder containing `manifest.json`. To update an existing unpacked copy, extract the new files into its current folder and click **Reload** on its extension card.
+3. In the Companion popup, open **Settings → About → Show trending BNB tokens** and approve the optional X site access in Chrome. **Trending Tokens** appears above **Today’s News** on X pages that show that sidebar card.
+
+Build the same archive from source with `npm ci` followed by `npm run extension:download` in the repository root.
 
 ## Automatic GMGN matching — local test
 

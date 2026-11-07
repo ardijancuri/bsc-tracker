@@ -10,6 +10,7 @@ __pycache__/
 *.log
 # Local release archives, previews and one-off diagnostics.
 /output/
+/public/downloads/kollens-companion.zip
 *.tar.gz
 *.tgz
 

@@ -8,6 +8,7 @@ import {cardMetricColor} from './cardMetrics';
 import {AccountView,type AccountPending} from './AccountView';
 import {WalletsView} from './WalletsView';
 import {WalletBuyAmountSettings} from './WalletBuyAmountSettings';
+import { XTrendingSettings } from './XTrendingSettings';
 import {WalletBuyView,loadWalletBuyContext,requestWalletBuyPermission,type WalletBuyContext,type WalletBuyRequest} from './WalletBuyView';
 import type {WalletBuyMode} from './walletBuyDefaults';
 import {captureWalletBuyTab} from './walletBuyNavigation';
@@ -561,6 +562,7 @@ function Panel(){
         </section>
       </div>
       <div role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" hidden={settingsSection!=='about'}>
+        {isExtension&&<XTrendingSettings/>}
         <section className="settings-group settings-links">
           <h2>Kollens links</h2>
           <a href="https://kollens.com/" target="_blank" rel="noopener noreferrer">

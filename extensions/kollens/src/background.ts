@@ -5,12 +5,14 @@ import { readRenderedGmgnTrenches } from './gmgnReader';
 import { normalizeCardMetric } from './cardMetrics';
 import { normalizeSocialLink, matchCards } from './matching';
 import {LiveGmgnAccess,gmgnOrigins} from './liveAccess';
+import { isXPage, loadXTrendingTokens, refreshXTrendingAccess, xTrendingOrigins, xTrendingSiteAllowed } from './xTrendingAccess';
 import {extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage} from '../../../shared/extension';
 
 const store:LocalStore={async get<T>(key:string){return (await chrome.storage.local.get(key))[key] as T|undefined;},async set(key,value){await chrome.storage.local.set({[key]:value});}};
 const live=new LiveGmgnAccess(chrome,config.localGmgnLive);
 const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}).then(()=>live.restore().catch(()=>{live.enabled=false;}));
 void ready.then(()=>live.recoverOpenTabs()).catch(()=>{});
+void refreshXTrendingAccess().catch(()=>{});
 const sync=new WorkspaceSync(config.apiOrigin,store),pages=new Map<number,ExtensionPage>(),selections=new Map<number,string>();
 const configuredPages=new Map<number,string>();
 const settingsVersions=new Map<number,string>();
@@ -37,6 +39,7 @@ function loadAuthOptions() {
 }
 chrome.runtime.onInstalled.addListener(({reason})=>{
   if(reason==='update')void ready.then(()=>live.enabled?live.setEnabled(true):undefined).catch(()=>{});
+  if(reason==='update')void refreshXTrendingAccess(true).catch(()=>{});
 });
 function gmgnSender(sender:any){
   if(sender.id!==chrome.runtime.id||!sender.tab||sender.frameId!==0||!live.enabled)return false;
@@ -144,6 +147,11 @@ function forgetPage(id:number) {
 chrome.tabs.onRemoved.addListener(forgetPage);
 chrome.tabs.onUpdated.addListener((id,info,tab)=>{
   if(info.status==='loading'||info.url&&pages.get(id)?.url!==info.url)forgetPage(id);
+  if(isXPage(info.url))void chrome.tabs.sendMessage(id,{kind:'x-trending/navigation'}).catch(async()=>{
+    if(isXPage(tab.url)&&await xTrendingSiteAllowed()){
+      await chrome.scripting.executeScript({target:{tabId:id,frameIds:[0]},world:'ISOLATED',files:['x-trending.js']});
+    }
+  }).catch(()=>{});
   if(info.url||info.status==='complete')void ready.then(()=>{
     if(live.enabled&&!pages.has(id))return live.recoverTab(tab);
   }).catch(()=>{});
@@ -154,6 +162,12 @@ chrome.tabs.onActivated.addListener(({tabId})=>{
   }).catch(()=>{});
 });
 chrome.permissions.onRemoved.addListener(()=>{void ready.then(async()=>{if(live.enabled&&!await chrome.permissions.contains({origins:gmgnOrigins})){await live.setEnabled(false);for(const [id,page]of pages)if(isBscTrenches(page.url))forgetPage(id);}}).catch(()=>{});});
+chrome.permissions.onAdded.addListener(({origins})=>{
+  if(origins?.some(origin=>xTrendingOrigins.includes(origin)))void refreshXTrendingAccess().catch(()=>{});
+});
+chrome.permissions.onRemoved.addListener(({origins})=>{
+  if(origins?.some(origin=>xTrendingOrigins.includes(origin)))void refreshXTrendingAccess().catch(()=>{});
+});
 chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unknown)=>void)=>{
   if(message?.kind==='audio/beep')return false;
   const canFocus=message?.kind==='focus'&&contentSender(sender)&&pages.get(sender.tab.id)?.groups.some(g=>g.id===message.groupId);
@@ -161,6 +175,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
   const opening=canFocus?chrome.action.openPopup({windowId:sender.tab.windowId}):null;
   if(opening)void opening.catch(()=>{});
   const work=async()=>{
+    if(message?.kind==='x-trending/tokens')return loadXTrendingTokens(message.window,sender);
     await ready;
     // A dormant script must survive an initial non-BSC route, then activate only
     // when the user navigates to BSC trenches. No non-BSC card data is accepted.
@@ -195,6 +210,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
     if(sender.id!==chrome.runtime.id||!uiUrls.has(sender.url?.split('?')[0]))throw new Error('Request context rejected');
     if(message.ownerId!==undefined&&message.ownerId!==(await sync.state()).ownerId)throw new Error('Account changed');
     switch(message.kind){
+      case 'x-trending/permission':await refreshXTrendingAccess();return{ok:true};
       case 'state':{
         // Storage and popup navigation stay available while a provider or the API is slow.
         void sync.sync();

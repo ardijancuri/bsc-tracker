@@ -18,6 +18,7 @@ import { FreshChartError,freshChartIntervals,freshChartPeriods,freshChartFrom,ty
 import {freshPublicPosition} from './publicPositions.js';
 import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
+import { registerFreshTrendingTokens } from './trendingTokens.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
 import {freshPositionWalletGapSql} from './balanceScheduling.js';
@@ -52,6 +53,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     webhook:alerts.webhook,botLoginStart:login.handleStart});
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
+  registerFreshTrendingTokens(app,db);
   if (process.env.KOLLENS_EXTENSION_ENABLED === 'true') {
     await ensureExtensionSchema(db);
     const extensionOrigins = (process.env.KOLLENS_EXTENSION_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean);
