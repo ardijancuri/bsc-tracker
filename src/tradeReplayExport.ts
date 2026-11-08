@@ -1,20 +1,25 @@
+import { createTradeReplayAudio, TRADE_REPLAY_AUDIO_CHANNELS, TRADE_REPLAY_AUDIO_SAMPLE_RATE, type ReplayAudioCue } from './tradeReplayAudio';
+
 export interface ReplayRecordingCanvas {
   canvas: HTMLCanvasElement;
   getDuration(): number;
   render(progress: number): void;
+  getAudioCues?(): readonly ReplayAudioCue[];
 }
 
 const formats = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+const audioFormats = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus'];
 const frameRate = 30;
 const bitrate = 8_000_000;
+const audioBitrate = 128_000;
 
 function hasIndexedEncoder() {
   return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
 }
 
-function recorderFormat(): string | null {
+function recorderFormat(withAudio = false): string | null {
   if (typeof MediaRecorder === 'undefined' || typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.captureStream) return null;
-  return formats.find(type => MediaRecorder.isTypeSupported(type)) ?? null;
+  return (withAudio ? audioFormats : formats).find(type => MediaRecorder.isTypeSupported(type)) ?? null;
 }
 
 class ReplayCodecUnavailable extends Error {
@@ -37,23 +42,25 @@ function cancelled() { return new DOMException('Video export cancelled.', 'Abort
 /** Encode every canvas frame at the handoff generator's fixed timestamps. */
 export async function recordTradeReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void, kind: 'trade' | 'token' = 'trade'): Promise<File> {
   if (signal.aborted) throw cancelled();
+  const cues = kind === 'trade' ? player.getAudioCues?.() : undefined;
   if (hasIndexedEncoder()) {
-    try { return await encodeIndexedReplay(player, name, signal, onProgress, kind); }
+    try { return await encodeIndexedReplay(player, name, signal, onProgress, kind, cues); }
     catch (problem) {
       // Some browsers expose WebCodecs but have no usable codec for this canvas.
       // Compatibility capture is safe only before encoding has begun; failures
       // after frames have been submitted must never produce a truncated replay.
       if (!(problem instanceof ReplayCodecUnavailable) || signal.aborted
-        || typeof document === 'undefined' || document.visibilityState === 'hidden' || !recorderFormat()) throw problem;
+        || typeof document === 'undefined' || document.visibilityState === 'hidden' || !recorderFormat(!!cues)) throw problem;
     }
   }
-  return recordLiveReplay(player, name, signal, onProgress, kind);
+  return recordLiveReplay(player, name, signal, onProgress, kind, cues);
 }
 
-async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token'): Promise<File> {
+async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', cues: readonly ReplayAudioCue[] | undefined): Promise<File> {
   type Bunny = typeof import('mediabunny');
   let output: InstanceType<Bunny['Output']> | undefined;
   let video: InstanceType<Bunny['CanvasSource']> | undefined;
+  let audio: InstanceType<Bunny['AudioBufferSource']> | undefined;
   let cancelOutput: Promise<void> | undefined;
   const lifecycle = new AbortController();
   const abort = () => lifecycle.abort(cancelled());
@@ -77,24 +84,39 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
   lifecycle.signal.addEventListener('abort', dispose, { once: true });
   try {
     if (signal.aborted) abort();
+    const media = await wait(import('mediabunny'));
     const { BufferTarget, CanvasSource, Mp4OutputFormat, Output, Quality,
-      WebMOutputFormat, getFirstEncodableVideoCodec } = await wait(import('mediabunny'));
+      WebMOutputFormat, getFirstEncodableVideoCodec } = media;
     const quality = new Quality({ bitrate });
     const options = { width: player.canvas.width, height: player.canvas.height, frameRate, quality };
+    const audioOptions = { numberOfChannels: TRADE_REPLAY_AUDIO_CHANNELS, sampleRate: TRADE_REPLAY_AUDIO_SAMPLE_RATE, bitrate: audioBitrate };
     let codec = await wait(getFirstEncodableVideoCodec(['avc'], options));
+    let audioCodec = codec && cues ? await wait(media.getFirstEncodableAudioCodec(['aac'], audioOptions)) : null;
     let format;
-    if (codec) format = new Mp4OutputFormat();
+    if (codec && (!cues || audioCodec)) format = new Mp4OutputFormat();
     else {
       codec = await wait(getFirstEncodableVideoCodec(['vp9', 'vp8'], options));
       if (!codec) throw new ReplayCodecUnavailable();
+      audioCodec = cues ? await wait(media.getFirstEncodableAudioCodec(['opus'], audioOptions)) : null;
+      if (cues && !audioCodec) throw new ReplayCodecUnavailable();
       format = new WebMOutputFormat();
     }
     const target = new BufferTarget();
     output = new Output({ format, target });
     video = new CanvasSource(player.canvas, { codec, quality });
     output.addVideoTrack(video, { frameRate });
-    await wait(output.start());
     const frameCount = Math.max(2, Math.round(player.getDuration() * frameRate));
+    if (audioCodec) {
+      audio = new media.AudioBufferSource({ codec: audioCodec, quality: new Quality({ bitrate: audioBitrate }) });
+      output.addAudioTrack(audio);
+    }
+    await wait(output.start());
+    if (audio && cues) {
+      // The last visual frame is held until the end of its frame interval.
+      const audioCues = cues.map(cue => ({ ...cue, progress: Math.ceil(cue.progress * (frameCount - 1) - 1e-9) / frameCount }));
+      await wait(audio.add(createTradeReplayAudio(frameCount / frameRate, audioCues)));
+      audio.close();
+    }
     for (let index = 0; index < frameCount; index += 1) {
       if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
       const progress = index / (frameCount - 1);
@@ -114,23 +136,52 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
     lifecycle.signal.removeEventListener('abort', dispose);
     dispose();
     try { video?.close(); } catch { /* A source that never started is disposed by output.cancel(). */ }
+    try { audio?.close(); } catch { /* A source that never started is disposed by output.cancel(). */ }
   }
 }
 
 /** Compatibility path for browsers without WebCodecs. */
-async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token'): Promise<File> {
-  const mime = recorderFormat();
+async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', cues: readonly ReplayAudioCue[] | undefined): Promise<File> {
+  const mime = recorderFormat(!!cues);
   if (!mime) throw new Error('Video recording is unavailable in this browser. Try Chrome, Edge, or Safari.');
   if (signal.aborted) throw cancelled();
-  if (document.visibilityState === 'hidden') throw new Error('Keep this tab visible while exporting the video.');
+  const tabHidden = () => document.visibilityState === 'hidden';
+  if (tabHidden()) throw new Error('Keep this tab visible while exporting the video.');
   let stream: MediaStream | null = null;
   let recorder: MediaRecorder | null = null;
+  let audioContext: AudioContext | undefined;
+  let soundtrack: AudioBufferSourceNode | undefined;
   let frame = 0, finishTimer: ReturnType<typeof setTimeout> | undefined, watchdog: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
   let visibilityListener: (() => void) | undefined;
   try {
     player.render(0);
     stream = player.canvas.captureStream(frameRate);
+    if (cues) {
+      if (typeof AudioContext === 'undefined') throw new ReplayCodecUnavailable();
+      const context = audioContext = new AudioContext({ sampleRate: TRADE_REPLAY_AUDIO_SAMPLE_RATE });
+      soundtrack = context.createBufferSource();
+      soundtrack.buffer = createTradeReplayAudio(player.getDuration(), cues);
+      const destination = context.createMediaStreamDestination();
+      soundtrack.connect(destination);
+      destination.stream.getAudioTracks().forEach(track => stream!.addTrack(track));
+      // Connect only to the recorder. Automatic export must stay silent in the modal.
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', abort);
+          if (error) reject(error);
+          else resolve();
+        };
+        const abort = () => finish(cancelled());
+        const timer = setTimeout(() => finish(new Error('Click Retry replay to enable audio and prepare the video.')), 3000);
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener('abort', abort, { once: true });
+        context.resume().then(() => finish(), finish);
+      });
+    }
+    if (signal.aborted) throw cancelled();
+    if (tabHidden()) throw new Error('Keep this tab visible while exporting the video.');
     recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
     const activeRecorder = recorder;
     const chunks: Blob[] = [];
@@ -153,6 +204,7 @@ async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, sig
       activeRecorder.onstop = () => { if (!failed) resolve(new Blob(chunks, { type: activeRecorder.mimeType.split(';')[0] || mime.split(';')[0] })); };
       activeRecorder.start(500);
       const started = performance.now();
+      soundtrack?.start();
       const duration = player.getDuration() * 1000;
       watchdog = setTimeout(() => fail(new Error('Video recording timed out. Keep this tab visible and try again.')), duration + 10_000);
       const draw = (now: number) => {
@@ -176,6 +228,8 @@ async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, sig
     if (visibilityListener) document.removeEventListener('visibilitychange', visibilityListener);
     if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch { /* Track cleanup is independent of recorder state. */ } }
     stream?.getTracks().forEach(track => track.stop());
+    soundtrack?.disconnect();
+    if (audioContext) void audioContext.close().catch(() => {});
   }
 }
 

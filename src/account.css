@@ -10,9 +10,9 @@
 .site-header .main-nav .mobile-social-link{border:0;color:#fff;padding-inline:10px;background:#1c2023;transition:background-color .15s}
 .site-header .main-nav .mobile-social-link:hover{background:#252b30}
 @media(min-width:801px){.site-header .header-social{gap:17px}}
-@media(min-width:801px) and (max-width:1250px){.header-right .chain-label{display:none}.header-right{gap:10px!important}.site-header .header-social{gap:10px}.header-inner{gap:15px!important}.main-nav{gap:15px!important}}
+@media(min-width:801px) and (max-width:1250px){.header-right .chain-label{display:none}.header-right{gap:10px!important}.site-header .header-social{gap:10px}.header-inner{gap:15px!important}}
 @media(min-width:801px) and (max-width:960px){
-  .site-header .main-nav{gap:10px!important}
+  .site-header .main-nav{gap:10px}
   .site-header .header-search{width:35px;justify-content:center;padding:0}
   .site-header .header-search :is(span,kbd){display:none}
   .site-header .account-name{max-width:68px}

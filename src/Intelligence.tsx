@@ -75,13 +75,6 @@ export function KolAlertButton({ address, label }: { address: string; label?: st
   const followed = watch.loaded && watch.data.items.some(item => item.kind === 'kol' && item.address === address.toLowerCase());
   return followed ? <TelegramKolBell address={address} label={label || shortAddress(address)} /> : null;
 }
-export function FeatureTabs({ page }: { page: 'trades' }) {
-  const [params] = useSearchParams();
-  const tabs = [['trades', 'Trades'], ['radar', 'Radar'], ['watchlist', 'Watchlist']];
-  const value = params.get('view');
-  const selected = tabs.some(([key]) => key === value) ? value : page;
-  return <nav className="feature-tabs" aria-label={t("Activity views")}>{tabs.map(([key, title]) => <Link key={key} className={selected === key ? 'selected' : ''} aria-current={selected === key ? 'page' : undefined} to={`/${page}${key === page ? '' : `?view=${key}`}`}>{t(title)}</Link>)}</nav>;
-}
 export function FeatureIdentity({ address, name, symbol, image, token = false }: { address: string; name: string | null; symbol?: string | null; image?: string | null; token?: boolean }) {
   return <span className="identity"><span className={token ? 'token-avatar' : 'avatar'}><span>{(symbol || name || '?').slice(0, 1).toUpperCase()}</span>{image && <img src={image} alt="" onError={event => { event.currentTarget.style.display = 'none'; }} />}</span>{token ? <TokenName token={{ address, symbol, name }} addressSubtitle /> : <span className="identity-copy"><strong>{name || shortAddress(address)}</strong><small>{shortAddress(address)}</small></span>}</span>;
 }

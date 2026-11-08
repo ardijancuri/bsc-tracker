@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2 } from 'lucide-react';
+import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
 import { downloadTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay } from './tradeReplaySharing';
@@ -32,6 +32,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const canvas = useRef<HTMLCanvasElement>(null);
   const content = useRef<HTMLElement>(null);
   const player = useRef<ReplayRecordingCanvas | null>(null);
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
   const progress = useRef(0);
   const frame = useRef(0);
   const alive = useRef(true);
@@ -39,6 +40,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const sharing = useRef(false);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [seek, setSeek] = useState(0);
   const [exportProgress, setExportProgress] = useState<number | null>(0);
   const [file, setFile] = useState<File | null>(null);
@@ -108,6 +110,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       alive.current = false;
       session.dispose();
       cancelAnimationFrame(frame.current);
+      previewAudio.current?.pause();
       if (player.current === renderer) player.current = null;
     };
   }, [definition, paintPreview, attempt]);
@@ -125,20 +128,66 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   }, []);
 
   useEffect(() => {
+    if (!file || definition.kind !== 'trade' || !player.current?.getAudioCues) return;
+    const url = URL.createObjectURL(file);
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    previewAudio.current = audio;
+    return () => {
+      previewAudio.current = null;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+      URL.revokeObjectURL(url);
+    };
+  }, [file, definition.kind]);
+
+  useEffect(() => {
     if (!playing || !ready || exporting || !player.current) return;
     const renderer = player.current;
+    const audio = previewAudio.current;
+    const duration = renderer.getDuration();
     if (progress.current >= 1) progress.current = 0;
-    const started = performance.now() - progress.current * renderer.getDuration() * 1000;
+    const started = performance.now() - progress.current * duration * 1000;
     const tick = (now: number) => {
-      const current = Math.min(1, (now - started) / (renderer.getDuration() * 1000));
+      // Use the encoded file as the playback clock so the preview hears the
+      // same mix on the same frames as the downloadable video.
+      const elapsed = audio?.ended ? duration : audio && !audio.paused && !audio.error ? audio.currentTime : (now - started) / 1000;
+      const current = Math.min(1, elapsed / duration);
       progress.current = current;
       renderer.render(current); paintPreview(renderer); setSeek(current);
       if (current < 1) frame.current = requestAnimationFrame(tick);
       else setPlaying(false);
     };
     frame.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame.current);
+    return () => { cancelAnimationFrame(frame.current); audio?.pause(); };
   }, [playing, ready, exporting, paintPreview]);
+
+  function pausePreview() {
+    previewAudio.current?.pause();
+    cancelAnimationFrame(frame.current);
+    setPlaying(false);
+  }
+
+  function togglePlayback() {
+    if (playing) { pausePreview(); return; }
+    const renderer = player.current;
+    if (!renderer || exporting) return;
+    if (progress.current >= 1) progress.current = 0;
+    const audio = previewAudio.current;
+    if (audio && !audio.error) {
+      audio.muted = muted;
+      audio.currentTime = progress.current * renderer.getDuration();
+      void audio.play().catch(() => {});
+    }
+    setPlaying(true);
+  }
+
+  function toggleMute() {
+    const next = !muted;
+    if (previewAudio.current) previewAudio.current.muted = next;
+    setMuted(next);
+  }
 
   async function share() {
     if (!file || sharing.current) return;
@@ -164,7 +213,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   function captureImage() {
     const renderer = player.current;
     if (!renderer || !canvas.current) return Promise.reject(new Error('The replay image could not be prepared.'));
-    setPlaying(false); cancelAnimationFrame(frame.current);
+    pausePreview();
     const selected = progress.current;
     renderer.render(1);
     return replayImage(renderer.canvas).finally(() => {
@@ -217,8 +266,12 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   return <section ref={content} className="trade-replay-content" aria-label={t(definition.title)} tabIndex={-1}>
         <div className="trade-replay-player">
           <div className="trade-replay-preview"><canvas ref={canvas} aria-label={t(definition.previewLabel)} />{!ready && <span>{t(error ? 'Preview unavailable' : definition.preparingLabel)}</span>}</div>
-          <div className="trade-replay-playback"><button type="button" disabled={!ready || exporting} aria-label={t(playing ? 'Pause replay' : 'Play replay')} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={13} /> : <Play size={13} />} {t(definition.playbackLabel)}</button><span>1x</span></div>
-          <input className="trade-replay-seek" aria-label={t('Replay position')} type="range" min="0" max="1000" value={Math.round(seek * 1000)} disabled={!ready || exporting} onChange={event => { const next = Number(event.target.value) / 1000; setPlaying(false); progress.current = next; setSeek(next); if (player.current) { player.current.render(next); paintPreview(player.current); } }} />
+          <div className="trade-replay-playback">
+            <button type="button" disabled={!ready || exporting} aria-label={t(playing ? 'Pause replay' : 'Play replay')} onClick={togglePlayback}>{playing ? <Pause size={13} /> : <Play size={13} />} {t(definition.playbackLabel)}</button>
+            {definition.kind === 'trade' && file && <button type="button" className="trade-replay-volume" aria-label={t(muted ? 'Unmute preview' : 'Mute preview')} onClick={toggleMute}>{muted ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>}
+            <span>1x</span>
+          </div>
+          <input className="trade-replay-seek" aria-label={t('Replay position')} type="range" min="0" max="1000" value={Math.round(seek * 1000)} disabled={!ready || exporting} onChange={event => { const next = Number(event.target.value) / 1000; pausePreview(); progress.current = next; setSeek(next); if (player.current) { player.current.render(next); paintPreview(player.current); } }} />
         </div>
         <div className="trade-replay-share-panel">
           <div className="trade-replay-heading"><span className="trade-replay-eyebrow">kollens</span><h2>{t(definition.title)}</h2><p>{definition.subtitle}</p></div>

@@ -1,6 +1,21 @@
 // Product copy only. Token symbols, wallet names, addresses and protocol names stay unchanged.
 import { creatorJournalChinese } from './creatorJournalChinese';
 export const chinese: Record<string, string> = {
+  'Kollens Companion and Google sign-in': 'Kollens Companion 与 Google 登录',
+  'If you choose Google sign-in from Kollens Companion, we use your Google account identifier and display name to recognize your Kollens account. After you approve the connection, the extension uses its own session to sync your saved tokens, private notes and alert preferences.': '如果您在 Kollens Companion 中使用 Google 登录，我们会使用您的 Google 账号标识符和显示名称识别您的 Kollens 账号。您批准连接后，扩展程序会通过自己的会话同步您收藏的代币、私人笔记和提醒偏好。',
+  'You can disconnect the extension from its Profile tab. Contact us to request deletion of your account data.': '您可以在扩展程序的个人资料标签页中断开连接。如需删除账号数据，请联系我们。',
+  'Extension': '扩展程序',
+  'Desktop Chrome extension': '桌面版 Chrome 扩展程序',
+  'Find related tokens in GMGN BNB Trenches, manage wallets, and trade from Chrome.': '在 GMGN BNB Trenches 中查找相关代币，并通过 Chrome 管理钱包和交易。',
+  'Download for Chrome': '下载 Chrome 扩展',
+  'How to install': '安装方法',
+  'Green Morning and SAFU in the Kollens Companion Saved tab': 'Kollens Companion 收藏标签页中的 Green Morning 和 SAFU',
+  'Download and extract the ZIP file.': '下载并解压 ZIP 文件。',
+  'In desktop Chrome, open chrome://extensions and turn on Developer mode.': '在桌面版 Chrome 中打开 chrome://extensions，然后开启开发者模式。',
+  'Click Load unpacked and select the extracted folder containing manifest.json.': '点击“加载已解压的扩展程序”，选择包含 manifest.json 的解压文件夹。',
+  'Open GMGN BNB Trenches, then select Tokens in Kollens Companion.': '打开 GMGN BNB Trenches，然后在 Kollens Companion 中选择“Tokens”。',
+  'Mute preview': '预览静音', 'Unmute preview': '取消预览静音',
+  'Click Retry replay to enable audio and prepare the video.': '点击重试回放以启用音频并准备视频。',
   '{matched} accounted movements · {pending} pending': '{matched} 笔已核算变动 · {pending} 笔待核对',
   'Estimated': '估算',
   'Missing costs excluded. Unknown proceeds and fees are excluded.': '未扣除缺失的成本，未知的卖出收入和费用不计入。',

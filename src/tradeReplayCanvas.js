@@ -726,6 +726,13 @@ export class ReplayCanvas {
     return this.eventProgresses[index] ?? 0;
   }
 
+  getAudioCues() {
+    return this.trades.flatMap((trade, index) => {
+      const progress = this.eventProgress(index);
+      return progress >= 0 && (trade.side === 'buy' || trade.side === 'sell') ? [{ progress, side: trade.side }] : [];
+    });
+  }
+
   chartCoordinateAtTime(timestamp) {
     if (!this.elapsedAxis) return this.openingStoryProgress(this.progressAtTime(timestamp));
     if (this.chartAxis.length) return this.chartAxisAt(this.storyProgressAtTime(timestamp));

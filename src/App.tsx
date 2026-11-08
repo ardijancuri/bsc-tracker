@@ -1,5 +1,6 @@
 import { CreatorProfile } from './CreatorProfile';
 import { ExtensionConnect } from './ExtensionConnect';
+import { ExtensionPromo } from './ExtensionPromo';
 import { PortfolioPage, CreatorProfilesPage } from './Journal';
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
@@ -22,7 +23,7 @@ import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLe
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
 import type { Kol, LeaderboardResponse, LeaderboardRow, Overview, Token, Trade } from './types';
 import { PrivacyPolicyPage, TermsOfUsePage } from './LegalPages';
-import { FeatureTabs, FollowButton, KolAlertButton, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
+import { FollowButton, KolAlertButton, PositionBadge, RadarFeed, usePositions, useWatchlist, WatchlistProvider, WatchlistView } from './Intelligence';
 import './watchlistBanner.css';
 import { TokenName, useTokenTranslation } from './TokenName';
 import { BRAND_HEADER_LOGO_SRC, BRAND_LOGO_SRC } from './brandAssets';
@@ -158,7 +159,7 @@ function Header({ overview }: { overview: Overview }) {
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
-      <NavLink to="/extension" onClick={() => setMobileOpen(false)}>{t("Extension")}</NavLink>
+      <NavLink to="/extension" end onClick={() => setMobileOpen(false)}>{t('Extension')}</NavLink>
       <a className="mobile-social-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
     <div className="header-social">
@@ -209,14 +210,16 @@ function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: 
 function TradesPage({ overview }: { overview: Overview }) {
   const [params] = useSearchParams();
   const view = params.get('view');
-  if (view === 'radar' || view === 'watchlist') return <div className="page trades-page"><SectionTitle eyebrow={t("THE LIVE TAPE")} title={view === 'radar' ? t("Radar") : t("Watchlist")} /><FeatureTabs page="trades" />{view === 'radar' ? <RadarFeed /> : <WatchlistView />}</div>;
+  if (view === 'radar' || view === 'watchlist') return <div className="page trades-page"><SectionTitle eyebrow={t("THE LIVE TAPE")} title={view === 'radar' ? t("Radar") : t("Watchlist")} />{view === 'radar' ? <RadarFeed /> : <WatchlistView />}</div>;
   return <TradeTape overview={overview} />;
 }
 function TradeTape({ overview }: { overview: Overview }) {
   const { data, loading, error } = useData<List<Trade>>('/api/trades?limit=10', { items: [], nextCursor: null }, 10000);
   const items = data.items.slice(0, 10);
-  return <div className="page trades-page"><SectionTitle eyebrow={t("THE LIVE TAPE")} title={t("Realtime trades")} right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.latestTradeAt ? t('Latest trade {time}', { time: relativeTime(overview.latestTradeAt) }) : t("Waiting for trades")}</span></div>} />
-    <FeatureTabs page="trades" /><div className="overview-strip"><Metric label={t("Tracked KOLs")} value={overview.trackedKols} /><Metric label={t("Trades · Today UTC")} value={compact(overview.trades24h)} /><Metric label={t("Tokens · Today UTC")} value={compact(overview.tokens24h)} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} /></div>
+  return <div className="page trades-page">
+    <ExtensionPromo />
+    <SectionTitle eyebrow={t("THE LIVE TAPE")} title={t("Realtime trades")} right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.latestTradeAt ? t('Latest trade {time}', { time: relativeTime(overview.latestTradeAt) }) : t("Waiting for trades")}</span></div>} />
+    <div className="overview-strip"><Metric label={t("Tracked KOLs")} value={overview.trackedKols} /><Metric label={t("Trades · Today UTC")} value={compact(overview.trades24h)} /><Metric label={t("Tokens · Today UTC")} value={compact(overview.tokens24h)} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} /></div>
     <div className="table-toolbar"><h2>{t("Recent activity")}</h2></div>
     <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} showSide={false} linkTimeToToken />)}{!items.length && !loading && <EmptyState title={error ? t("Live feed unavailable") : t("Watching for the next trade")} detail={error ? t("The API is reconnecting. Try again shortly.") : t("Trades from tracked KOL wallets will appear here automatically.")} />}</div>
     <section className="trades-faq" aria-labelledby="trades-faq-title">
@@ -408,12 +411,16 @@ function TokenPage() {
 export default function App() {
   const [language] = useLanguage();
   const { pathname, search, hash } = useLocation();
-  useEffect(() => { document.documentElement.lang = language; if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) document.title = t('kollens — BSC KOL tracker'); }, [language, pathname]);
+  useEffect(() => {
+    document.documentElement.lang = language;
+    if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) {
+      document.title = pathname === '/extension' ? 'Kollens Companion | Kollens' : t('kollens — BSC KOL tracker');
+    }
+  }, [language, pathname]);
   const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <AccountProvider><WatchlistProvider><TelegramNotificationsProvider>
     <Header overview={overview} />
     <WatchlistBanner />
-    {overview.trackingBoundary?.value.startTime && <div className="tracking-boundary">{t('Tracking new launches since {time} UTC', {time:new Date(overview.trackingBoundary.value.startTime).toISOString().replace('T',' ').slice(0,16)})}</div>}
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
       <Route path="/trades" element={<TradesPage overview={overview} />} />

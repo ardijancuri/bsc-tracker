@@ -11,3 +11,4 @@
 .trade-replay-content :focus-visible{outline:2px solid var(--yellow,#f0b90b);outline-offset:3px}.trade-replay-trigger:focus-visible{outline:2px solid var(--yellow,#f0b90b);outline-offset:2px}
 @media(max-width:800px){.trade-replay-content{height:auto;gap:30px;padding:20px 28px 35px}.trade-replay-heading h2{font-size:21px}.trade-replay-social{gap:8px}.trade-replay-social>a,.trade-replay-social>button{min-width:50px;font-size:9px}}
 @media(max-width:650px){.trade-replay-content{grid-template-columns:minmax(0,350px);gap:25px;padding:10px 18px 27px}.trade-replay-player{width:min(100%,285px);justify-self:center}.trade-replay-share-panel{padding-top:0}.trade-replay-heading{margin-bottom:18px}.trade-replay-heading h2{font-size:21px;margin:6px 0}.trade-replay-social{margin-top:22px}.trade-replay-social>a,.trade-replay-social>button{font-size:10px}.trade-replay-status{margin-top:18px}}
+.trade-replay-playback .trade-replay-volume{margin-inline-start:auto}
