@@ -233,6 +233,44 @@ async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, sig
   }
 }
 
+/** Copy the encoded frames into the same container with no audio track. */
+export async function muteTradeReplay(file: File, signal: AbortSignal): Promise<File> {
+  const { ALL_FORMATS, BlobSource, BufferTarget, EncodedPacketSink, EncodedVideoPacketSource,
+    Input, Mp4OutputFormat, Output, WebMOutputFormat } = await import('mediabunny');
+  signal.throwIfAborted();
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  const format = file.type.split(';')[0] === 'video/mp4' ? new Mp4OutputFormat() : new WebMOutputFormat();
+  const target = new BufferTarget();
+  const output = new Output({ format, target });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) throw new Error('The replay video track is missing.');
+    const codec = await track.getCodec();
+    if (!codec) throw new Error('The replay video format is unsupported.');
+    const decoderConfig = await track.getDecoderConfig();
+    // WebM uses the default frame duration to keep the last frame on screen.
+    // Leave variable-rate MediaRecorder timestamps alone.
+    const timing = format instanceof WebMOutputFormat ? await track.computeFrameRateMetrics({ targetPacketCount: Infinity }) : null;
+    const sourceFrameRate = timing?.frameRateIsConstant ? timing.underlyingFrameRate : null;
+    signal.throwIfAborted();
+    const video = new EncodedVideoPacketSource(codec);
+    output.addVideoTrack(video, sourceFrameRate ? { frameRate: sourceFrameRate } : undefined);
+    await output.start();
+    for await (const packet of new EncodedPacketSink(track).packets()) {
+      signal.throwIfAborted();
+      await video.add(packet, { decoderConfig: decoderConfig ?? undefined });
+    }
+    video.close();
+    await output.finalize();
+    signal.throwIfAborted();
+    if (!target.buffer?.byteLength) throw new Error('The muted replay file was empty.');
+    return new File([target.buffer], file.name, { type: format.mimeType });
+  } finally {
+    input.dispose();
+    if (output.state !== 'finalized' && output.state !== 'canceled') await output.cancel().catch(() => {});
+  }
+}
+
 export function downloadTradeReplay(file: File) {
   const url = URL.createObjectURL(file);
   const anchor = document.createElement('a');

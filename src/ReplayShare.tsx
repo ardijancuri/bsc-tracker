@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
-import { downloadTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
+import { downloadTradeReplay, muteTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay } from './tradeReplaySharing';
 import { t } from './i18n';
@@ -44,6 +44,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const [seek, setSeek] = useState(0);
   const [exportProgress, setExportProgress] = useState<number | null>(0);
   const [file, setFile] = useState<File | null>(null);
+  const [mutedReplay, setMutedReplay] = useState<{ source: File; file: File | null } | null>(null);
   const [error, setError] = useState('');
   const [canRetry, setCanRetry] = useState(true);
   const [sharePending, setSharePending] = useState(false);
@@ -54,6 +55,10 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const [retryAt, setRetryAt] = useState(0);
   const [retrySeconds, setRetrySeconds] = useState(0);
   const exporting = exportProgress !== null;
+  const canMute = definition.kind === 'trade' && !!player.current?.getAudioCues;
+  const mutedExport = canMute && muted;
+  const currentMutedReplay = mutedReplay?.source === file ? mutedReplay : null;
+  const exportFile = mutedExport ? currentMutedReplay?.file ?? null : file;
   const replayUrl = definition.url;
   const telegramUrl = `https://t.me/share/url?${new URLSearchParams({ url: replayUrl, text: definition.caption })}`;
 
@@ -69,6 +74,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     const currentGeneration = ++generation.current;
     alive.current = true;
     setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setCanRetry(true); setNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0); setImagePending(false); setCopied(false);
+    setMutedReplay(null);
     progress.current = 0;
     // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
     // encoder repaint or replace the file prepared by the next setup.
@@ -143,6 +149,16 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   }, [file, definition.kind]);
 
   useEffect(() => {
+    if (!file || !mutedExport || currentMutedReplay) return;
+    const controller = new AbortController();
+    void muteTradeReplay(file, controller.signal).then(
+      silent => { if (!controller.signal.aborted) setMutedReplay({ source: file, file: silent }); },
+      () => { if (!controller.signal.aborted) setMutedReplay({ source: file, file: null }); },
+    );
+    return () => controller.abort();
+  }, [file, mutedExport, currentMutedReplay]);
+
+  useEffect(() => {
     if (!playing || !ready || exporting || !player.current) return;
     const renderer = player.current;
     const audio = previewAudio.current;
@@ -186,15 +202,17 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   function toggleMute() {
     const next = !muted;
     if (previewAudio.current) previewAudio.current.muted = next;
+    if (next && currentMutedReplay && !currentMutedReplay.file) setMutedReplay(null);
     setMuted(next);
   }
 
   async function share() {
-    if (!file || sharing.current) return;
+    if (!exportFile || sharing.current) return;
+    const currentGeneration = generation.current;
     sharing.current = true; setSharePending(true); setError(''); setNotice('');
     try {
       await definition.validateAccess?.();
-      await definition.shareFile(file);
+      if (alive.current && generation.current === currentGeneration) await definition.shareFile(exportFile);
     } catch (problem) {
       if (alive.current && !(problem instanceof DOMException && problem.name === 'AbortError')) setError(t(problem instanceof Error && problem.message.startsWith('Replay ')
         ? problem.message : 'Sharing was unavailable. Download the video and attach it on X.'));
@@ -205,9 +223,19 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   }
 
   async function download() {
-    if (!file) return;
-    try { if (definition.validateAccess) await definition.validateAccess(); downloadTradeReplay(file); setNotice(t('Download started.')); }
-    catch (problem) { setError(t(problem instanceof Error ? problem.message : 'Video download failed. Try again.')); setFile(null); }
+    if (!exportFile) return;
+    const currentGeneration = generation.current;
+    try {
+      await definition.validateAccess?.();
+      if (!alive.current || generation.current !== currentGeneration) return;
+      downloadTradeReplay(exportFile);
+      setNotice(t('Download started.'));
+    } catch (problem) {
+      if (!alive.current || generation.current !== currentGeneration) return;
+      setError(t(problem instanceof Error ? problem.message : 'Video download failed. Try again.'));
+      setFile(null);
+      setMutedReplay(null);
+    }
   }
 
   function captureImage() {
@@ -268,7 +296,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
           <div className="trade-replay-preview"><canvas ref={canvas} aria-label={t(definition.previewLabel)} />{!ready && <span>{t(error ? 'Preview unavailable' : definition.preparingLabel)}</span>}</div>
           <div className="trade-replay-playback">
             <button type="button" disabled={!ready || exporting} aria-label={t(playing ? 'Pause replay' : 'Play replay')} onClick={togglePlayback}>{playing ? <Pause size={13} /> : <Play size={13} />} {t(definition.playbackLabel)}</button>
-            {definition.kind === 'trade' && file && <button type="button" className="trade-replay-volume" aria-label={t(muted ? 'Unmute preview' : 'Mute preview')} onClick={toggleMute}>{muted ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>}
+            {canMute && file && <button type="button" className="trade-replay-volume" aria-label={t(muted ? 'Unmute replay' : 'Mute replay')} onClick={toggleMute}>{muted ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>}
             <span>1x</span>
           </div>
           <input className="trade-replay-seek" aria-label={t('Replay position')} type="range" min="0" max="1000" value={Math.round(seek * 1000)} disabled={!ready || exporting} onChange={event => { const next = Number(event.target.value) / 1000; pausePreview(); progress.current = next; setSeek(next); if (player.current) { player.current.render(next); paintPreview(player.current); } }} />
@@ -278,7 +306,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
           {definition.controls}
           <div className="trade-replay-actions">
             <button type="button" disabled={!imageAvailable} onClick={() => void saveImage()}><ImageIcon size={16} /> {t('Save image')}</button>
-            <button type="button" disabled={!file || exporting} onClick={download}><Film size={16} /> {t('Save video')}</button>
+            <button type="button" disabled={!exportFile || exporting} onClick={download}><Film size={16} /> {t(mutedExport ? 'Save muted video' : 'Save video')}</button>
             <button type="button" className="trade-replay-copy-image" disabled={!imageAvailable} onClick={() => void copyImage()}><Copy size={16} /> {t('Copy image')}</button>
           </div>
           <div className="trade-replay-link"><Link2 size={16} /><input aria-label={t(definition.linkLabel)} value={replayUrl} readOnly onFocus={event => event.currentTarget.select()} /><button type="button" aria-label={t('Copy link')} onClick={() => void copyLink()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
@@ -286,10 +314,12 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
             <button type="button" onClick={() => void copyLink()}><span className="trade-replay-social-icon"><Link2 size={20} /></span><span>{t('Copy link')}</span></button>
             {file && mp4 && !exporting ? <a href={definition.xIntent} target="_blank" rel="noopener noreferrer" onClick={() => setNotice(t('Attach the saved video in your X post.'))}><span className="trade-replay-social-icon trade-replay-x">𝕏</span><span>{t('X (Twitter)')}</span></a> : <button type="button" disabled><span className="trade-replay-social-icon trade-replay-x">𝕏</span><span>{t('X (Twitter)')}</span></button>}
             <a href={telegramUrl} target="_blank" rel="noopener noreferrer"><span className="trade-replay-social-icon"><Send size={19} /></span><span>{t('Telegram')}</span></a>
-            {fileShareAvailable && <button type="button" disabled={sharePending || exporting} onClick={() => void share()}><span className="trade-replay-social-icon"><Share2 size={19} /></span><span>{t(sharePending ? 'Sharing…' : definition.title)}</span></button>}
+            {fileShareAvailable && <button type="button" disabled={!exportFile || sharePending || exporting} onClick={() => void share()}><span className="trade-replay-social-icon"><Share2 size={19} /></span><span>{t(sharePending ? 'Sharing…' : definition.title)}</span></button>}
           </div>
           <div className="trade-replay-status" aria-live="polite">
-            {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t(definition.preparingLabel)}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : file && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(file.size / 1024 / 1024).toFixed(1)} MB</p>}
+            {exporting ? <><p role="status">{ready ? t('Preparing video {progress}%', { progress: Math.round((exportProgress ?? 0) * 100) }) : retrySeconds > 0 ? t('Retry in {seconds}s', { seconds: retrySeconds }) : t(definition.preparingLabel)}</p><progress aria-label={t('Video preparation progress')} max="1" value={exportProgress ?? 0} /></> : exportFile && <p>{t('Ready to share')} <span>·</span> {mp4 ? 'MP4' : 'WebM'} <span>·</span> {(exportFile.size / 1024 / 1024).toFixed(1)} MB</p>}
+            {mutedExport && file && !currentMutedReplay && <p role="status">{t('Preparing muted video…')}</p>}
+            {mutedExport && currentMutedReplay && !currentMutedReplay.file && <p className="trade-replay-error" role="alert">{t('Could not mute the video. Toggle sound and try again.')}</p>}
             {file && !mp4 && <p>{t('Save the video, or use a browser with MP4 support to share on X.')}</p>}
             {notice && <p role="status">{notice}</p>}
             {error && <p className="trade-replay-error" role="alert">{error}</p>}

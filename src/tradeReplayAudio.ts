@@ -77,28 +77,33 @@ function musicBed(mix: Mix, duration: number) {
   }
 }
 
+function orderTone(note: number, length: number, decay: number, brightness: number) {
+  const angle = tau * hz(note);
+  return (time: number) => {
+    const phase = angle * time;
+    const fundamental = Math.sin(phase);
+    const edge = (Math.sin(2 * phase) + 0.38 * Math.sin(3 * phase)) * Math.exp(-time / 0.024);
+    return (fundamental + brightness * edge) * attack(time, 0.003) *
+      Math.exp(-time / decay) * attack(length - time, 0.02);
+  };
+}
+
 function tradeAccent(mix: Mix, time: number, side: ReplayAudioCue['side']) {
   if (side === 'buy') {
-    const snap = filteredNoise(650, 4200, 68353);
-    mix(time, 0.055, 0.48, -0.12, elapsed => {
-      const rim = Math.sin(tau * 925 * elapsed) + 0.32 * Math.sin(tau * 1440 * elapsed);
-      return attack(elapsed, 0.002) * Math.exp(-elapsed / 0.013) * (0.62 * rim + snap());
-    });
-    mix(time + 0.008, 0.18, 0.36, 0.06, elapsed => {
-      const phase = tau * (285 * elapsed + 1450 * elapsed ** 2);
-      const envelope = attack(elapsed, 0.028) * attack(0.18 - elapsed, 0.11);
-      return envelope * (Math.sin(phase) + 0.26 * Math.sin(2 * phase));
-    });
-  } else {
-    const release = filteredNoise(110, 1550, 22531);
-    mix(time, 0.23, 0.48, 0.08, elapsed => {
-      const phase = tau * (101 * elapsed + 224 * 0.047 * (1 - Math.exp(-elapsed / 0.047)));
-      const weight = Math.sin(phase) + 0.34 * Math.sin(2.02 * phase);
-      const tail = attack(0.23 - elapsed, 0.035);
-      return attack(elapsed, 0.003) * tail *
-        (weight * Math.exp(-elapsed / 0.055) + 0.65 * release() * Math.exp(-elapsed / 0.024));
-    });
+    // Two short, rising confirmation ticks.
+    const click = filteredNoise(1500, 6300, 68353);
+    mix(time, 0.022, 0.17, 0, elapsed => click() * attack(elapsed, 0.001) * Math.exp(-elapsed / 0.004));
+    mix(time, 0.048, 0.27, -0.08, orderTone(74, 0.048, 0.017, 0.48));
+    mix(time + 0.041, 0.1, 0.36, 0.08, orderTone(81, 0.1, 0.032, 0.32));
+    return;
   }
+
+  // A dry strike followed by a lower, heavier confirmation.
+  const strike = filteredNoise(450, 3300, 22531);
+  mix(time, 0.033, 0.33, 0, elapsed => strike() * attack(elapsed, 0.001) * Math.exp(-elapsed / 0.006));
+  mix(time, 0.044, 0.26, 0.07, orderTone(69, 0.044, 0.015, 0.34));
+  mix(time + 0.037, 0.125, 0.43, -0.07, orderTone(62, 0.125, 0.038, 0.52));
+  mix(time + 0.037, 0.095, 0.16, 0, orderTone(50, 0.095, 0.029, 0.12));
 }
 
 /** Render the soundtrack offline so its timing does not depend on playback, browser tabs or encoding speed. */
