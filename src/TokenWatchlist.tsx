@@ -6,6 +6,7 @@ import { loadWatchlist, watchlistIdentityChanged } from './watchlistClient';
 import { AccountWatchlistNotice, useAccount } from './Account';
 import { useTokenTranslation } from './TokenName';
 import { relativeTime, shortAddress } from './lib';
+import { IdentitySkeleton, LoadingStatus, SkeletonBlock, WatchRowsSkeleton } from './LoadingSkeleton';
 import { t } from './i18n';
 import { watchPeriods, type TokenChart, type WatchEntry, type Watchlist, type WatchPeriod } from '../shared/intelligence';
 import { PriceChange, WatchMarketValue, WatchSparkline } from './WatchTokenVisuals';
@@ -105,27 +106,33 @@ export function TokenWatchlistPage() {
   const visible = useMemo(() => tokens.map(item => { const chart = chartHistory[`${item.address}-${period}`]; const changes = marketChartChanges(chart);
     return chart?.points.length ? { ...item, priceHistory: chart.points, ...(changes || {}) } : item; })
     .filter(item => `${item.name || ''} ${item.symbol || ''} ${item.address}`.toLowerCase().includes(query.toLowerCase().trim())).sort((a, b) => compareWatchTokens(a, b, sort.key, sort.ascending)), [tokens, query, sort, chartHistory, period]);
+  const loading = !watch.loaded && !watch.error && !account.unavailable;
   const column = (key: WatchSortKey, label: string, className = '') => <th className={className} scope="col" aria-sort={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : 'none'}><button type="button" title={key === 'chart' ? t('Sort by chart price change') : undefined} onClick={() => setSort(current => ({ key, ascending: current.key === key ? !current.ascending : key === 'name' || key === 'address' }))}>
     {t(label)}{key === 'chart' && <> · {t(periodLabels[period])}</>}<WatchSortIcon direction={sort.key === key ? sort.ascending ? 'ascending' : 'descending' : undefined} /></button></th>;
   return <div className="page token-watchlist-page">
     <div className="token-watchlist-heading"><h1>{t('Watchlist')}</h1><AccountWatchlistNotice /></div>
     <div className="watchlist-kind-tabs" role="tablist" aria-label={t('Favorites')}>
-      {(['token', 'kol'] as const).map(value => <button type="button" key={value} role="tab" id={`watchlist-${value}-tab`} aria-selected={kind === value} aria-controls={`watchlist-${value}-panel`} onClick={() => setKind(value)}>{t(value === 'token' ? 'Tokens' : 'KOLs')}<span>{watch.data.items.filter(item => item.kind === value).length}</span></button>)}
+      {(['token', 'kol'] as const).map(value => <button type="button" key={value} role="tab" id={`watchlist-${value}-tab`} aria-selected={kind === value} aria-controls={`watchlist-${value}-panel`} onClick={() => setKind(value)}>{t(value === 'token' ? 'Tokens' : 'KOLs')}{loading ? <SkeletonBlock width={10} height={8} /> : <span>{watch.data.items.filter(item => item.kind === value).length}</span>}</button>)}
     </div>
     {kind === 'token' ? <section id="watchlist-token-panel" role="tabpanel" aria-labelledby="watchlist-token-tab">
     <div className="token-watchlist-toolbar"><div className="watch-search-actions"><label className="watch-token-search"><Search size={15} /><input aria-label={t('Search watched tokens')} placeholder={t('Search watched tokens')} value={query} onChange={event => setQuery(event.target.value)} /></label><Link className="feature-button" to="/tokens">{t('Add tokens')}</Link></div>
       <div className="watch-period-controls"><div className="watch-period-tabs feature-tabs" role="tablist" aria-label={t('Token time range')}>{watchPeriods.map(value => <button type="button" key={value} role="tab" aria-selected={period === value} aria-controls="watch-token-details" id={`watch-period-${value}`} onClick={() => setPeriod(value)}>{t(periodLabels[value])}</button>)}</div></div></div>
     {(watch.error || historyError) && <p className="profile-more-error" role="alert">{t(watch.error || 'Watchlist unavailable')}</p>}
-    <div id="watch-token-details" role="tabpanel" aria-labelledby={`watch-period-${period}`} aria-busy={loadingHistory} className="token-watchlist-table-wrap"><table className="token-watchlist-table"><thead><tr>
+    {loading && <LoadingStatus />}
+    <div id="watch-token-details" role="tabpanel" aria-labelledby={`watch-period-${period}`} aria-busy={loading || loadingHistory} className="token-watchlist-table-wrap"><table className="token-watchlist-table"><thead><tr>
       <th scope="col" className="watch-star" aria-label={t('Watchlist')} />{column('name', 'Name', 'watch-token-name')}{column('address', 'Contract address', 'watch-contract')}{column('change1h', '1h', 'watch-extra')}{column('periodChange', periodLabels[period])}{column('marketCapUsd', 'Market cap')}{column('periodVolumeUsd', period==='24h'?'Volume · Today UTC':'Tracked volume', 'watch-extra')}
       {column('periodKolCount', period==='24h'?'KOLs · Today UTC':'KOLs', 'watch-extra')}{column('lastTradeAt', 'Last trade', 'watch-last-trade')}{column('chart', 'Chart', 'watch-chart')}
-    </tr></thead><tbody>{visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
-    {!visible.length && <div className="watch-token-empty"><strong>{!watch.loaded ? t('Loading…') : query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
+    </tr></thead><tbody>{loading ? Array.from({ length: 5 }, (_, index) => <tr className="skeleton-row" aria-hidden="true" key={index}>
+      <td className="watch-star"><SkeletonBlock width={13} height={13} /></td><td className="watch-token-name"><IdentitySkeleton token width={index % 2 ? 74 : 95} /></td><td className="watch-contract"><SkeletonBlock width={76} height={10} /></td>
+      <td className="watch-extra"><SkeletonBlock width={33} height={10} /></td><td><SkeletonBlock width={42} height={10} /></td><td><SkeletonBlock width={49} height={10} /></td><td className="watch-extra"><SkeletonBlock width={52} height={10} /></td>
+      <td className="watch-extra"><SkeletonBlock width={20} height={10} /></td><td className="watch-last-trade"><SkeletonBlock width={42} height={10} /></td><td className="watch-chart"><SkeletonBlock width={65} height={12} /></td>
+    </tr>) : visible.map(token => <WatchTokenRow key={token.address} token={token} period={period} onChart={chartLoaded} />)}</tbody></table></div>
+    {watch.loaded && !visible.length && <div className="watch-token-empty"><strong>{query ? t('No matching tokens') : t('No followed tokens')}</strong>{watch.loaded && !query && <Link to="/tokens">{t('Star tokens to add them here')}</Link>}</div>}
     </section> : <section id="watchlist-kol-panel" className="watchlist-kol-layout" role="tabpanel" aria-labelledby="watchlist-kol-tab">
       <aside className="watchlist-kol-settings" aria-label={t('Telegram alerts')}><TelegramAlertsSettings /></aside>
       <div className="watchlist-kol-following"><div className="token-watchlist-toolbar"><h2>{t('KOLs')}</h2><Link className="feature-button" to="/leaderboard">{t('Add KOLs')}</Link></div>
-      <div className="data-table feature-table watch-kol-list">{watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><div className="telegram-kol-controls"><KolAlertButton address={item.address} label={item.name} /><FollowButton kind="kol" address={item.address} label={item.name} /></div></div>)}</div>
-      {!watch.data.items.some(item => item.kind === 'kol') && <div className="watch-token-empty"><strong>{t(watch.loaded ? 'No followed KOLs' : 'Loading…')}</strong>{watch.loaded && <Link to="/leaderboard">{t('Star KOLs to add them here')}</Link>}</div>}
+      <div className="data-table feature-table watch-kol-list" aria-busy={loading}>{loading ? <WatchRowsSkeleton /> : watch.data.items.filter(item => item.kind === 'kol').map(item => <div className="watch-row" key={item.address}><Link to={`/kol/${item.address}`}><FeatureIdentity address={item.address} name={item.name} image={item.avatarUrl} /></Link><div className="telegram-kol-controls"><KolAlertButton address={item.address} label={item.name} /><FollowButton kind="kol" address={item.address} label={item.name} /></div></div>)}</div>
+      {watch.loaded && !watch.data.items.some(item => item.kind === 'kol') && <div className="watch-token-empty"><strong>{t('No followed KOLs')}</strong><Link to="/leaderboard">{t('Star KOLs to add them here')}</Link></div>}
       </div>
     </section>}
   </div>;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { LoadingSkeleton, SkeletonBlock } from './LoadingSkeleton';
 import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
 import { downloadTradeReplay, muteTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
 import { startReplaySession } from './tradeReplaySession';
@@ -293,7 +294,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const imageAvailable = ready && !exporting && !imagePending;
   return <section ref={content} className="trade-replay-content" aria-label={t(definition.title)} tabIndex={-1}>
         <div className="trade-replay-player">
-          <div className="trade-replay-preview"><canvas ref={canvas} aria-label={t(definition.previewLabel)} />{!ready && <span>{t(error ? 'Preview unavailable' : definition.preparingLabel)}</span>}</div>
+          <div className="trade-replay-preview"><canvas ref={canvas} aria-label={t(definition.previewLabel)} />{!ready && (error ? <span className="replay-preview-unavailable">{t('Preview unavailable')}</span> : <LoadingSkeleton className="skeleton-replay-frame" label={definition.preparingLabel}><SkeletonBlock width="45%" height={17} /><SkeletonBlock width="32%" height={11} /><SkeletonBlock width="100%" height="65%" /><SkeletonBlock width="56%" height={13} /></LoadingSkeleton>)}</div>
           <div className="trade-replay-playback">
             <button type="button" disabled={!ready || exporting} aria-label={t(playing ? 'Pause replay' : 'Play replay')} onClick={togglePlayback}>{playing ? <Pause size={13} /> : <Play size={13} />} {t(definition.playbackLabel)}</button>
             {canMute && file && <button type="button" className="trade-replay-volume" aria-label={t(muted ? 'Unmute replay' : 'Mute replay')} onClick={toggleMute}>{muted ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>}

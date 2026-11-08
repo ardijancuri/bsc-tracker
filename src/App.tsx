@@ -4,7 +4,7 @@ import { ExtensionPromo } from './ExtensionPromo';
 import { PortfolioPage, CreatorProfilesPage } from './Journal';
 import { t, useLanguage, getLocale, localDate } from './i18n';
 import { TokenWatchlistPage } from './TokenWatchlist';
-import { AccountButton, AccountProvider } from './Account';
+import { AccountButton, AccountProvider, useAccount } from './Account';
 import { TelegramNotificationsProvider } from './TelegramNotifications';
 import { TelegramBotLogin } from './TelegramBotLogin';
 import { TokenMarketPanel } from './TokenMarketPanel';
@@ -35,6 +35,7 @@ import { groupTrackedTokens } from './trackedTokenGroups';
 import { leaderboardPresentation } from './leaderboardPresentation';
 import { RealizedEstimateLabel } from './RealizedEstimateLabel';
 import { nativeTradeDisplay } from './nativeTradeDisplay';
+import { IdentitySkeleton, LeaderboardSkeleton, LoadingStatus, SkeletonBlock, TokenCardsSkeleton, TradeRowsSkeleton, WatchRowsSkeleton } from './LoadingSkeleton';
 
 type List<T> = { items: T[]; nextCursor?: string | null };
 const ExtensionGuide = lazy(() => import('./ExtensionGuide'));
@@ -55,19 +56,14 @@ function TradeValue({trade}:{trade:Trade}) {
 }
 
 function useData<T>(url: string, initial: T, interval = 15000) {
-  const [data, setData] = useState(initial);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState({ url, data: initial, error: false, loading: true });
   const refresher = useRef<ReturnType<typeof createCoalescedRefresh> | null>(null);
   const refresh = useCallback(() => refresher.current?.refresh() ?? Promise.resolve(), []);
   useEffect(() => {
-    setData(initial);
-    setLoading(true);
-    setError(false);
+    setResult({ url, data: initial, error: false, loading: true });
     const current = createCoalescedRefresh(async signal => {
-      try { const value = await api<T>(url, { signal }); if (!signal.aborted) { setData(value); setError(false); } }
-      catch { if (!signal.aborted) setError(true); }
-      finally { if (!signal.aborted) setLoading(false); }
+      try { const data = await api<T>(url, { signal }); if (!signal.aborted) setResult({ url, data, error: false, loading: false }); }
+      catch { if (!signal.aborted) setResult(previous => ({ url, data: previous.url === url ? previous.data : initial, error: true, loading: false })); }
     });
     refresher.current = current;
     void current.refresh();
@@ -75,7 +71,7 @@ function useData<T>(url: string, initial: T, interval = 15000) {
     const unsubscribe = subscribeToUpdates(() => void current.refresh());
     return () => { current.dispose(); if (refresher.current === current) refresher.current = null; window.clearInterval(timer); unsubscribe(); };
   }, [url, interval]);
-  return { data, error, loading, refresh };
+  return { ...(result.url === url ? result : { data: initial, error: false, loading: true }), refresh };
 }
 
 function Identity({ name, address, avatar, subtitle = true }: { name: string | null; address: string; avatar?: string | null; twitter?: string | null; subtitle?: boolean }) {
@@ -172,6 +168,8 @@ function Header({ overview }: { overview: Overview }) {
 
 function WatchlistBanner() {
   const watch = useWatchlist();
+  const account = useAccount();
+  const loading = !watch.loaded && !watch.error && !account.unavailable;
   const tokens = watch.data.items.filter(item => item.kind === 'token');
   return <nav className="watchlist-banner" aria-label={t('Watchlist tokens')}>
     <div className="watchlist-banner-inner">
@@ -186,7 +184,7 @@ function WatchlistBanner() {
             <WatchSparkline address={token.address} priceUsd={token.priceUsd} period="7d" label="Token price chart · 1 week" />
           </Link>;
         })}
-        {!tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{!watch.loaded ? t('Loading…') : t('Star tokens to add them here')}</Link>}
+        {loading ? <span className="watchlist-banner-empty"><LoadingStatus /><SkeletonBlock width={100} height={9} /></span> : watch.loaded && !tokens.length && <Link className="watchlist-banner-empty" to="/tokens">{t('Star tokens to add them here')}</Link>}
       </WatchlistMarquee>
     </div>
   </nav>;
@@ -194,7 +192,9 @@ function WatchlistBanner() {
 
 function EmptyState({ title, detail }: { title: string; detail: string }) { return <div className="empty-state"><span className="empty-icon"><Activity size={22} /></span><strong>{title}</strong><p>{detail}</p></div>; }
 function SectionTitle({ eyebrow, title, description, right }: { eyebrow: string; title: string; description?: string; right?: React.ReactNode }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1>{description && <p>{description}</p>}</div>{right}</div>; }
-function Metric({ label, value, detail }: { label: string; value: string | number; detail?: ReactNode }) { return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>; }
+function Metric({ label, value, detail, loading = false }: { label: string; value: string | number; detail?: ReactNode; loading?: boolean }) {
+  return <div className="metric"><span>{label}</span><strong>{loading ? <SkeletonBlock width={68} height={16} /> : value}</strong>{!loading && detail && <small>{detail}</small>}</div>;
+}
 
 function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: Trade; showSide?: boolean; linkTimeToToken?: boolean }) {
   const sideIcon = trade.side === 'buy' ? <ArrowDownLeft size={14} /> : trade.side === 'sell' ? <ArrowUpRight size={14} /> : <ArrowLeftRight size={14} />;
@@ -207,21 +207,22 @@ function TradeRow({ trade, showSide = true, linkTimeToToken = false }: { trade: 
   </div>;
 }
 
-function TradesPage({ overview }: { overview: Overview }) {
+function TradesPage({ overview, overviewLoading }: { overview: Overview; overviewLoading: boolean }) {
   const [params] = useSearchParams();
   const view = params.get('view');
   if (view === 'radar' || view === 'watchlist') return <div className="page trades-page"><SectionTitle eyebrow={t("THE LIVE TAPE")} title={view === 'radar' ? t("Radar") : t("Watchlist")} />{view === 'radar' ? <RadarFeed /> : <WatchlistView />}</div>;
-  return <TradeTape overview={overview} />;
+  return <TradeTape overview={overview} overviewLoading={overviewLoading} />;
 }
-function TradeTape({ overview }: { overview: Overview }) {
+function TradeTape({ overview, overviewLoading }: { overview: Overview; overviewLoading: boolean }) {
   const { data, loading, error } = useData<List<Trade>>('/api/trades?limit=10', { items: [], nextCursor: null }, 10000);
   const items = data.items.slice(0, 10);
   return <div className="page trades-page">
     <ExtensionPromo />
-    <SectionTitle eyebrow={t("THE LIVE TAPE")} title={t("Realtime trades")} right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overview.latestTradeAt ? t('Latest trade {time}', { time: relativeTime(overview.latestTradeAt) }) : t("Waiting for trades")}</span></div>} />
-    <div className="overview-strip"><Metric label={t("Tracked KOLs")} value={overview.trackedKols} /><Metric label={t("Trades · Today UTC")} value={compact(overview.trades24h)} /><Metric label={t("Tokens · Today UTC")} value={compact(overview.tokens24h)} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} /></div>
+    <SectionTitle eyebrow={t("THE LIVE TAPE")} title={t("Realtime trades")} right={<div className="freshness"><i className={isFresh(overview.latestTradeAt, 15 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{overviewLoading ? <SkeletonBlock width={85} height={10} /> : overview.latestTradeAt ? t('Latest trade {time}', { time: relativeTime(overview.latestTradeAt) }) : t("Waiting for trades")}</span></div>} />
+    {overviewLoading && <LoadingStatus />}
+    <div className="overview-strip" aria-busy={overviewLoading}><Metric label={t("Tracked KOLs")} value={overview.trackedKols} loading={overviewLoading} /><Metric label={t("Trades · Today UTC")} value={compact(overview.trades24h)} loading={overviewLoading} /><Metric label={t("Tokens · Today UTC")} value={compact(overview.tokens24h)} loading={overviewLoading} /><Metric label={t("Last trade")} value={relativeTime(overview.latestTradeAt)} loading={overviewLoading} /></div>
     <div className="table-toolbar"><h2>{t("Recent activity")}</h2></div>
-    <div className="data-table trades-table">{items.map(trade => <TradeRow key={trade.id} trade={trade} showSide={false} linkTimeToToken />)}{!items.length && !loading && <EmptyState title={error ? t("Live feed unavailable") : t("Watching for the next trade")} detail={error ? t("The API is reconnecting. Try again shortly.") : t("Trades from tracked KOL wallets will appear here automatically.")} />}</div>
+    <div className="data-table trades-table" aria-busy={loading}>{loading ? <TradeRowsSkeleton count={10} showSide={false} /> : items.map(trade => <TradeRow key={trade.id} trade={trade} showSide={false} linkTimeToToken />)}{!items.length && !loading && <EmptyState title={error ? t("Live feed unavailable") : t("Watching for the next trade")} detail={error ? t("The API is reconnecting. Try again shortly.") : t("Trades from tracked KOL wallets will appear here automatically.")} />}</div>
     <section className="trades-faq" aria-labelledby="trades-faq-title">
       <h2 id="trades-faq-title">{t("FAQs")}</h2>
       <div className="faq-list">
@@ -253,14 +254,14 @@ function TokenCard({ token, recentTrades, marketCapInStats = false, walletAddres
 
 type LiveToken = Token & { recentTrades: Trade[] };
 function TokensPage() {
-  const { data, error } = useData<{ items: LiveToken[]; windowStart?: string; windowEnd?: string }>(`/api/tokens?limit=300&withTrades=1`, { items: [] }, 10000);
+  const { data, error, loading } = useData<{ items: LiveToken[]; windowStart?: string; windowEnd?: string }>(`/api/tokens?limit=300&withTrades=1`, { items: [] }, 10000);
   const groups = useMemo(() => groupTrackedTokens(data.items), [data.items]);
   return <div className="page tokens-page"><SectionTitle eyebrow={t("KOL CONVICTION")} title={t("Meme coin tracker")} description={t("Tokens traded by tracked KOLs in the last 8 hours.")} right={<div className="freshness"><i className={error ? 'status-dot' : 'status-dot live'} /><span>{error ? t("Live feed reconnecting") : t("Watching live trades")}</span></div>} />
     <div className="token-columns">{([
       { key: 'low', title: t("Low caps"), range: t("Under $100K") },
       { key: 'mid', title: t("$100K+"), range: t("$100K to $1M") },
       { key: 'high', title: t("$1M+"), range: t("$1M and above") },
-    ] as const).map(column => <section className="token-column" key={column.key}><div className="column-heading"><div><h2>{t(column.title)}</h2><p>{t(column.range)}</p></div></div><div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div></section>)}</div>
+    ] as const).map(column => <section className="token-column" key={column.key} aria-busy={loading}><div className="column-heading"><div><h2>{t(column.title)}</h2><p>{t(column.range)}</p></div></div>{loading ? <TokenCardsSkeleton className="token-list" recentTrades /> : <div className="token-list">{groups[column.key].map(token => <TokenCard key={token.address} token={token} recentTrades={token.recentTrades} marketCapInStats />)}</div>}</section>)}</div>
   </div>;
 }
 
@@ -268,8 +269,8 @@ function LeaderboardPage(_props: { overview: Overview }) {
   const { data, loading, error } = useData<LeaderboardResponse>('/api/leaderboard', { items: [] }, 60000);
   const updatedAt = data.items.reduce<string | null>((latest, row) => row.updatedAt && (!latest || row.updatedAt > latest) ? row.updatedAt : latest, null);
   return <div className="page leaderboard-page"><SectionTitle eyebrow={t("THE PERFORMANCE BOARD")} title={t("KOL Leaderboard")} description={t("Realized trading P&L · Last 24 hours · Sales minus FIFO costs and fees.")} right={<div className="freshness"><i className={isFresh(updatedAt, 5 * 60000) ? 'status-dot live' : 'status-dot'} /><span>{updatedAt ? t('Updated {time}', { time: relativeTime(updatedAt) }) : t("Stored totals")}</span></div>} />
-    <div className="table-toolbar leaderboard-toolbar"><span className="small-label" title={data.windowStart && data.windowEnd ? `${localDate(data.windowStart)} — ${localDate(data.windowEnd)}` : undefined}>{t("Last 24 hours")}</span><span className="coverage-note">{t('{active} active · {tracked} tracked KOLs', { active: data.items.filter(row => row.tradeCount24h > 0).length, tracked: data.items.length })}</span></div>
-    <div className="data-table leaderboard-table">{data.items.map((row, index) => {
+    <div className="table-toolbar leaderboard-toolbar"><span className="small-label" title={data.windowStart && data.windowEnd ? `${localDate(data.windowStart)} — ${localDate(data.windowEnd)}` : undefined}>{t("Last 24 hours")}</span><span className="coverage-note">{loading ? <SkeletonBlock width={132} height={10} /> : t('{active} active · {tracked} tracked KOLs', { active: data.items.filter(row => row.tradeCount24h > 0).length, tracked: data.items.length })}</span></div>
+    <div className="data-table leaderboard-table" aria-busy={loading}>{loading ? <LeaderboardSkeleton /> : data.items.map((row, index) => {
       const profit = leaderboardPresentation(row);
       const rank = profit.canRank ? row.rank ?? data.items.slice(0, index + 1).filter(item => leaderboardPresentation(item).canRank).length : null;
       const coverage = t('{matched} accounted movements · {pending} pending', { matched: profit.realizedCount, pending: profit.unavailableCount });
@@ -356,10 +357,10 @@ function KolPage() {
   const periodProfitDetail = periodProfit.estimated ? <RealizedEstimateLabel profit={periodProfit} /> : periodProfit.status !== 'ready' ? t(discoveryPending ? 'Token verification pending' : 'Costs or history pending')
     : `${t('{matched} accounted movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
   if (!loading && !data.kol) return <div className="page"><EmptyState title={t("KOL not found")} detail={t("This wallet is not in the supplied KOL roster.")} /></div>;
-  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header"><a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a><div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
-    <CreatorProfile wallet={address} onPublished={() => void refreshProfile()} />
-    <div className="profile-stats"><Metric label={t("Realized P&L · Last 24h")} value={signedMoney(periodProfit.value)} detail={periodProfitDetail} /><Metric label={t("Trades · last 24 hours")} value={discoveryPending && data.tradeCount24h === 0 ? t('Pending') : data.tradeCount24h} detail={discoveryPending && data.tradeCount24h === 0 ? t('Captured transactions are awaiting token verification.') : t('{buys} buys · {sells} sells', { buys: data.buyCount24h, sells: data.sellCount24h })} /><Metric label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
-    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t(discoveryPending ? "Token verification pending" : "No trades in the last 24 hours")} detail={t(discoveryPending ? "Captured transactions are awaiting token verification." : "New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
+  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton width={155} /></> : <a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a>}<div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
+    {!loading && <CreatorProfile wallet={address} onPublished={() => void refreshProfile()} />}
+    <div className="profile-stats" aria-busy={loading}><Metric loading={loading} label={t("Realized P&L · Last 24h")} value={signedMoney(periodProfit.value)} detail={periodProfitDetail} /><Metric loading={loading} label={t("Trades · last 24 hours")} value={discoveryPending && data.tradeCount24h === 0 ? t('Pending') : data.tradeCount24h} detail={discoveryPending && data.tradeCount24h === 0 ? t('Captured transactions are awaiting token verification.') : t('{buys} buys · {sells} sells', { buys: data.buyCount24h, sells: data.sellCount24h })} /><Metric loading={loading} label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
+    <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div aria-busy={loading}>{loading ? <TokenCardsSkeleton className="profile-token-list" /> : <div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades" aria-busy={loading}>{loading ? <TradeRowsSkeleton /> : visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t(discoveryPending ? "Token verification pending" : "No trades in the last 24 hours")} detail={t(discoveryPending ? "Captured transactions are awaiting token verification." : "New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
     {selectedToken && data.kol?.address.toLowerCase() === address.toLowerCase() && <TradeModalLoader key={`${address}:${selectedToken.address}`} kol={data.kol} token={selectedToken} kolIdentity={<Identity name={data.kol.name} address={address} avatar={data.kol.avatarUrl} subtitle={false} />} tokenIdentity={<TokenIdentity token={selectedToken} hideAddress />} tokenAddress={<CopyAddress address={selectedToken.address} label={t('Token contract address')} />} onClose={closeToken} />}
   </div>;
 }
@@ -405,7 +406,7 @@ function TokenPage() {
     }
   };
   if (!loading && !data.token) return <div className="page"><EmptyState title={t("Token not found")} detail={t("No tracked KOL has traded this contract yet.")} /></div>;
-  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title"><a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades">{visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list">{data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
+  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton token subtitle width={136} /></> : <a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>}{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades" aria-busy={loading}>{loading ? <TradeRowsSkeleton /> : visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list" aria-busy={loading}>{loading ? <WatchRowsSkeleton holder /> : data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
 }
 
 export default function App() {
@@ -417,13 +418,13 @@ export default function App() {
       document.title = pathname === '/extension' ? 'Kollens Companion | Kollens' : t('kollens — BSC KOL tracker');
     }
   }, [language, pathname]);
-  const { data: overview } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
+  const { data: overview, loading: overviewLoading } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <AccountProvider><WatchlistProvider><TelegramNotificationsProvider>
     <Header overview={overview} />
     <WatchlistBanner />
     <main><Routes>
       <Route path="/" element={<Navigate to="/trades" replace />} />
-      <Route path="/trades" element={<TradesPage overview={overview} />} />
+      <Route path="/trades" element={<TradesPage overview={overview} overviewLoading={overviewLoading} />} />
       <Route path="/tokens" element={<TokensPage />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />

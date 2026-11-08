@@ -4,6 +4,7 @@ import { api, relativeTime } from './lib';
 import { t } from './i18n';
 import { PriceChange, WatchMarketValue } from './WatchTokenVisuals';
 import { tokenChartIntent } from './tokenChartIntent';
+import { LoadingStatus, SkeletonBlock } from './LoadingSkeleton';
 import { TokenPriceChart } from './TokenPriceChart';
 import './tokenMarket.css';
 
@@ -27,16 +28,18 @@ export function TokenMarketPanel({ address, identity, chartEnabled = true }: { a
     const timer = window.setInterval(() => void refresh(), 20000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [address, period]);
+  const loading = market === null && !error;
   const token = market?.period === period && market.token?.address === address.toLowerCase() ? market.token : null;
   return <section className="token-market-panel" aria-label={t('Token market details')}>
     <div className="token-market-summary"><div className="token-market-identity">{identity}</div>
-      <div className="token-market-stats">
-        <div><span>{t('Market cap')}</span><strong><WatchMarketValue value={token?.marketCapUsd} /></strong></div>
-        <div><span>{t('1h')}</span><strong><PriceChange value={token?.change1h} /></strong></div>
-        <div><span>{t('24h')}</span><strong><PriceChange value={token?.periodChange} /></strong></div>
-        <div><span>{t('Tracked volume')} · {t('Today · UTC')}</span><strong><WatchMarketValue value={token?.periodVolumeUsd} /></strong></div>
-        <div><span>{t('KOLs')} · {t('Today · UTC')}</span><strong>{token?.periodKolCount ?? '—'}</strong></div>
-        <div><span>{t('Last trade')}</span><strong>{relativeTime(token?.lastTradeAt)}</strong></div>
+      {loading && <LoadingStatus />}
+      <div className="token-market-stats" aria-busy={loading}>
+        <div><span>{t('Market cap')}</span><strong>{loading ? <SkeletonBlock width={72} height={14} /> : <WatchMarketValue value={token?.marketCapUsd} />}</strong></div>
+        <div><span>{t('1h')}</span><strong>{loading ? <SkeletonBlock width={48} height={14} /> : <PriceChange value={token?.change1h} />}</strong></div>
+        <div><span>{t('24h')}</span><strong>{loading ? <SkeletonBlock width={48} height={14} /> : <PriceChange value={token?.periodChange} />}</strong></div>
+        <div><span>{t('Tracked volume')} · {t('Today · UTC')}</span><strong>{loading ? <SkeletonBlock width={66} height={14} /> : <WatchMarketValue value={token?.periodVolumeUsd} />}</strong></div>
+        <div><span>{t('KOLs')} · {t('Today · UTC')}</span><strong>{loading ? <SkeletonBlock width={22} height={14} /> : token?.periodKolCount ?? '—'}</strong></div>
+        <div><span>{t('Last trade')}</span><strong>{loading ? <SkeletonBlock width={55} height={14} /> : relativeTime(token?.lastTradeAt)}</strong></div>
       </div>
     </div>
     <div className="token-market-toolbar"><h2>{t('Chart')}</h2><div className="candle-interval-tabs" role="tablist" aria-label={t('Chart interval')}>

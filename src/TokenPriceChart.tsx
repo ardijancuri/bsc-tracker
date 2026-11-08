@@ -3,6 +3,7 @@ import { CandlestickSeries, ColorType, HistogramSeries, createChart, createSerie
 import type { CandleInterval, MarketCandle } from '../shared/intelligence';
 import { getLocale, t } from './i18n';
 import { compact } from './lib';
+import { LoadingSkeleton, SkeletonBlock } from './LoadingSkeleton';
 import { marketCapCandles } from './tokenChartData';
 import { useTokenChart } from './useTokenChart';
 import { tokenChartContextKey, type TokenChartRequestContext } from './privateTokenCharts';
@@ -100,6 +101,8 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
     : data.candles.length && !marketCandles.length && !hasSupply ? 'Market cap data unavailable'
     : data.loadStatus === 'queued' ? 'Waiting for market data…'
     : data.pending ? 'Loading candles…' : 'Candle data unavailable';
+
+  const loading = enabled && !marketCandles.length && !refreshFailed && (!data || data.pending || data.loadStatus === 'queued' || (data.candles.length > 0 && data.supplyPending === true));
 
   useEffect(() => {
     if (!container.current) return;
@@ -210,12 +213,17 @@ export function TokenPriceChart({ address, interval, trades, focusTrades = false
 
   return <div className="token-price-chart">
     <div className="price-chart-legend" aria-live="off" title={t(hasSupply?'Calculated using current token supply':'Market cap unavailable; showing token price')}>
-      {last ? <><span>{t(axisLabel)} <b>{formatPrice(last.close)}</b></span><span>O <b>{formatPrice(last.open)}</b></span><span>H <b>{formatPrice(last.high)}</b></span><span>L <b>{formatPrice(last.low)}</b></span><span>C <b>{formatPrice(last.close)}</b></span>{showVolume && <span>{t('Volume')} <b>{compact(last.volume, true)}</b></span>}</> : <span>{t(axisLabel)} —</span>}
+      {last ? <><span>{t(axisLabel)} <b>{formatPrice(last.close)}</b></span><span>O <b>{formatPrice(last.open)}</b></span><span>H <b>{formatPrice(last.high)}</b></span><span>L <b>{formatPrice(last.low)}</b></span><span>C <b>{formatPrice(last.close)}</b></span>{showVolume && <span>{t('Volume')} <b>{compact(last.volume, true)}</b></span>}</> : loading ? <span className="skeleton-chart-legend">{t(axisLabel)} <SkeletonBlock width={65} height={10} /></span> : <span>{t(axisLabel)} —</span>}
       {data?.stale && <span>{t('Cached')}</span>}
       {hover && <span>{new Date(hover.time * 1000).toLocaleString(getLocale(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</span>}
     </div>
-    <div className="price-chart-canvas" ref={container} onPointerDownCapture={() => { userAdjustedViewport.current = true; }} onWheelCapture={() => { userAdjustedViewport.current = true; }} role="img" aria-busy={!marketCandles.length && !refreshFailed && data?.pending !== false} aria-label={`${t(hasSupply?'Token market cap chart':'Token price chart')}: ${marketCandles.length} ${t('candles')}`} />
-    {!marketCandles.length && <div className="price-chart-status" role="status"><span>{t(status)}</span><div className="price-chart-recovery"><button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button><a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a></div></div>}
-    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : t(status)}{limitedHistory && marketCandles.length > 0 && ` · ${t('Limited history')}`}{observationGaps.length > 0 && <span title={`${t('Gaps in available observations')}\n${gapDescription}`}> · {t('Gaps in available observations')}: {observationGaps.length}</span>}{historyStatus && marketCandles.length > 0 && <span role="status"> · {t(historyStatus)}</span>}{refreshFailed && marketCandles.length > 0 && <span role="status"> · {t(status)}</span>}{(refreshFailed || historyFailed) && marketCandles.length > 0 && <button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button>}</span><span>{data?.source === 'geckoterminal' && data.poolAddress && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}{data?.source === 'gmgn' && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">GMGN</a>}{data?.source === 'coinmarketcap' && <span>CoinMarketCap</span>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
+    <div className="price-chart-plot" aria-busy={loading}>
+      <div className="price-chart-canvas" ref={container} onPointerDownCapture={() => { userAdjustedViewport.current = true; }} onWheelCapture={() => { userAdjustedViewport.current = true; }} role="img" aria-label={`${t(hasSupply?'Token market cap chart':'Token price chart')}: ${marketCandles.length} ${t('candles')}`} />
+      {loading && <LoadingSkeleton className="skeleton-price-plot" label={status}>
+        {[27, 35, 24, 40, 45, 30, 38, 53, 33, 47, 42, 50, 37, 49, 40, 34].map((height, index) => <SkeletonBlock key={index} height={`${height}%`} />)}
+      </LoadingSkeleton>}
+    </div>
+    {enabled && !marketCandles.length && (!loading || data) && <div className="price-chart-status" role="status"><span>{t(status)}</span><div className="price-chart-recovery"><button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button><a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">{t('Open live chart')}</a></div></div>}
+    <div className="price-chart-footer"><span>{marketCandles.length ? `${marketCandles.length} ${t('candles')} · UTC` : loading ? <SkeletonBlock width={110} height={8} /> : t(status)}{limitedHistory && marketCandles.length > 0 && ` · ${t('Limited history')}`}{observationGaps.length > 0 && <span title={`${t('Gaps in available observations')}\n${gapDescription}`}> · {t('Gaps in available observations')}: {observationGaps.length}</span>}{historyStatus && marketCandles.length > 0 && <span role="status"> · {t(historyStatus)}</span>}{refreshFailed && marketCandles.length > 0 && <span role="status"> · {t(status)}</span>}{(refreshFailed || historyFailed) && marketCandles.length > 0 && <button type="button" onClick={() => retry?.()} disabled={coolingDown}>{t('Try again')}</button>}</span><span>{data?.source === 'geckoterminal' && data.poolAddress && <a href={`https://www.geckoterminal.com/bsc/pools/${data.poolAddress}`} target="_blank" rel="noopener noreferrer">GeckoTerminal</a>}{data?.source === 'gmgn' && <a href={`https://gmgn.ai/bsc/token/${address}`} target="_blank" rel="noopener noreferrer">GMGN</a>}{data?.source === 'coinmarketcap' && <span>CoinMarketCap</span>}<a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></span></div>
   </div>;
 }

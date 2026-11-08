@@ -3,6 +3,7 @@ import type { KolTokenActivity } from '../shared/kolTokenTrades';
 import type { NodeAccountingSummary } from '../shared/nodeAccounting';
 import { requestNodePnlSummary, nodeSummaryDisplay, validNodeSummaryIdentity } from './nodePnlSummaryRequest';
 import { getLocale, t } from './i18n';
+import { SkeletonBlock } from './LoadingSkeleton';
 import { capturedPositionDescription, isCapturedPosition } from './nodeAccountingScope';
 import{validNodeCostEstimate,nodeCostEstimateNote}from'../shared/nodeCostEstimate';
 import { displayedTokenPnl, historicalAccountingMismatchNotice, terminalTokenInventoryFailure, tokenPnlMayRetainDuringProviderRetry, tokenPnlMovementsMatch, tokenPositionPnlDelayedNotice, tokenPositionPnlDescription, tokenPositionPnlLabel, tokenPositionPnlLoadingNotice, tokenPositionPnlPriceTime, tokenPositionPnlUnavailableNotice, type KolTokenPnlResult } from './kolTokenPnlRequest';
@@ -19,6 +20,7 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
   walletAddress: string; tokenAddress: string; lastTradeAt: string | null; eager?: boolean; initialSummary?: NodeAccountingSummary;
 }) {
   const [summary, setSummary] = useState(initialSummary);
+  const [requestFailed, setRequestFailed] = useState(false);
   const [, refreshClock] = useState(0);
   useEffect(() => {
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
@@ -26,12 +28,16 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
       let delay = 20_000;
       try {
         const value = await requestNodePnlSummary(walletAddress, tokenAddress, controller.signal);
-        if (!controller.signal.aborted) setSummary(value);
+        if (!controller.signal.aborted) { setSummary(value); setRequestFailed(false); }
         delay = nodeSummaryRefreshDelay(value);
-      } catch { delay = 5000; }
+      } catch {
+        if (!controller.signal.aborted) setRequestFailed(true);
+        delay = 5000;
+      }
       if (!controller.signal.aborted) timer = setTimeout(() => void refresh(), delay);
     };
     setSummary(initialSummary);
+    setRequestFailed(false);
     const recent = validNodeSummaryIdentity(initialSummary, walletAddress, tokenAddress)
       && (initialSummary?.tracking?.source === 'fresh' && initialSummary.position === 'closed' && initialSummary.realizedStatus === 'ready'
         || initialSummary?.snapshot && Date.now() - Date.parse(initialSummary.snapshot.asOf) < 20_000);
@@ -60,7 +66,7 @@ function NodeTokenSummary({ walletAddress, tokenAddress, lastTradeAt, initialSum
     <span>{t(validNodeCostEstimate(summary?.snapshot)?'Estimated realized P&L':fresh || display.kind === 'realized' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : summary?.position === 'open' ? tracked ? 'Tracked est. profit' : 'Est. profit' : summary?.position === 'closed' ? tracked ? 'Tracked realized P&L' : 'Realized P&L' : 'P&L')}{retained ? ` · ${t('Saved')}` : ''}</span>
     <strong className={valid ? value > 0 ? 'positive' : value < 0 ? 'negative' : '' : ''}>{valid ? new Intl.NumberFormat(getLocale(), {
       style: 'currency', currency: 'USD', notation: Math.abs(value) >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 2, signDisplay: 'exceptZero',
-    }).format(value) : contradictory ? t('Unverified') : summary ? t(unavailable) : '…'}</strong>
+    }).format(value) : contradictory ? t('Unverified') : summary || requestFailed ? t(unavailable) : <SkeletonBlock width={52} height={12} />}</strong>
   </span>;
 }
 
