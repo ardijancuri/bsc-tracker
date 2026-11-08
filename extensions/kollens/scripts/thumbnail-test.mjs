@@ -8,10 +8,16 @@ const html=await readFile(resolve(root,'fixtures-gmgn-bsc.html'),'utf8'),picture
 const readerBundle=await build({entryPoints:[resolve(root,'src/gmgnReader.ts')],bundle:true,format:'esm',write:false});
 const{readRenderedGmgnTrenches}=await import('data:text/javascript;base64,'+Buffer.from(readerBundle.outputFiles[0].text).toString('base64'));
 const out=resolve(root,'dist-gmgn-qa'),context=await chromium.launchPersistentContext(resolve(repo,'.cache/extension/chrome-thumbnail-'+Date.now()),{channel:'chromium',headless:true,viewport:{width:1400,height:1000},args:[`--disable-extensions-except=${out}`,`--load-extension=${out}`]});
-let checks=0;const imageRequests=[],errors=[];
+let checks=0;const imageRequests=[],fallbackRequests=[],errors=[];
 try{
  await context.route('https://gmgn.ai/**',route=>route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'"}}));
  await context.route('https://cdn.gmgn.ai/kollens-fixture/**',route=>{imageRequests.push(route.request().url());return route.fulfill(route.request().url().includes('missing')?{status:404,body:''}:{contentType:'image/png',body:picture,headers:{'Cache-Control':'public,max-age=3600'}});});
+ const recoveredAddress='0x'+'d'.repeat(40);
+ await context.route('http://127.0.0.1:3360/api/token-image/**',route=>{
+   const url=new URL(route.request().url());fallbackRequests.push(url.pathname);
+   return route.fulfill(url.pathname==='/api/token-image/'+recoveredAddress&&url.searchParams.get('fallback')==='extension'
+     ?{contentType:'image/png',body:picture,headers:{'Cache-Control':'public,max-age=3600'}}:{status:404,body:''});
+ });
  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker'),id=new URL(worker.url()).hostname,gmgn=await context.newPage();
  await gmgn.goto('https://gmgn.ai/?chain=bsc');
  await gmgn.evaluate(()=>{const style=document.createElement('style');style.textContent='body{background:#0c1011;color:white}section{width:30%;display:inline-block;vertical-align:top}[data-testid="trench-token-card"]{padding:8px;min-height:90px}';document.head.append(style);
@@ -70,8 +76,17 @@ try{
  await gmgn.evaluate(()=>{const card=document.querySelector('[data-testid="trench-token-card"]').cloneNode(true);card.setAttribute('data-trenches-token-address','0x'+'d'.repeat(40));card.setAttribute('href','/bsc/token/0x'+'d'.repeat(40));card.querySelector('img[alt="logo"]').src='https://cdn.gmgn.ai/kollens-fixture/restored.webp';card.querySelector('[class~="group/token-translation"] > span').textContent='RED';document.querySelector('[data-testid^="trenches"]').prepend(card);});
  await until(s=>s.page.groups.some(g=>g.addresses.length===2&&g.key==='2117053489755140401'));await panel.getByRole('button',{name:/^Matches/}).click();await panel.waitForFunction(()=>document.querySelectorAll('.token-thumbnail img').length===2&&[...document.querySelectorAll('.token-thumbnail img')].every(i=>i.complete&&i.naturalWidth>0));await panel.screenshot({path:resolve(artifacts,'token-thumbnails.png'),clip:{x:0,y:0,width:360,height:600}});checks++;
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.src='https://cdn.gmgn.ai/kollens-fixture/missing.webp');await until(s=>s.page.cards.some(c=>c.logoUrl?.endsWith('/missing.webp')));
- await panel.waitForFunction(()=>document.querySelectorAll('.token-thumbnail img').length===1);const failedRequests=imageRequests.filter(u=>u.includes('/missing.webp')).length;await panel.waitForTimeout(2200);assert.equal(imageRequests.filter(u=>u.includes('/missing.webp')).length,failedRequests);assert.equal(failedRequests,1);checks++;
+ const recovered=panel.locator('.token-thumbnail img[src*="'+recoveredAddress+'"]');
+ await recovered.waitFor();await recovered.evaluate(img=>img.decode());
+ assert.equal(await recovered.count(),1);
+ const failedRequests=imageRequests.filter(u=>u.includes('/missing.webp')).length;await panel.waitForTimeout(2200);
+ assert.equal(imageRequests.filter(u=>u.includes('/missing.webp')).length,failedRequests);assert.equal(failedRequests,1);
+ assert.equal(fallbackRequests.filter(url=>url.endsWith(recoveredAddress)).length,1);checks++;
  await gmgn.locator('img[alt="logo"]').first().evaluate(e=>e.src='javascript:alert(1)');await until(s=>s.page.cards.some(c=>c.address==='0x'+'d'.repeat(40)&&c.logoUrl===null));checks++;
+ await gmgn.locator('img[alt="logo"]').nth(1).evaluate(e=>e.src='https://cdn.gmgn.ai/kollens-fixture/also-missing.webp');
+ await panel.waitForFunction(()=>document.querySelectorAll('.token-thumbnail img').length===1);
+ assert.equal(await recovered.count(),1);
+ assert.ok(fallbackRequests.includes('/api/token-image/0x'+'c'.repeat(40)));checks++;
  assert.deepEqual(errors,[]);assert.ok(imageRequests.every(url=>!url.includes('fake-thumbnail-token')));checks++;
  const report={ok:true,checks,actualUnpackedChrome:true,automaticImages:true,manualReader:true,lazyImageUpdates:true,recycledIdentity:true,savedImagesWithoutRenderedCard:true,noPollReloads:true,brokenImageFallback:true,extraHostPermissions:false,gmgnApiCalls:0,realAccountsUsed:0,realMessages:0,size:width,errors};await writeFile(resolve(artifacts,'token-thumbnails-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
 }finally{await context.close();}

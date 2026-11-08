@@ -1,8 +1,8 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import {CircleCheck, Copy, ExternalLink, Globe, History, Pencil, Settings, Star, Tag, Trash2, UserRound, WalletCards, X, Zap} from 'lucide-react';
-import {defaultExtensionPreferences,extensionMatchTypes,extensionLabels,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage,type ExtensionWorkspace,type ExtensionPreferences,type TokenCard,type ExtensionTokenIdentity} from '../../../shared/extension';
-import {requestBackground,isExtension,browserApi} from './platform';
+import {defaultExtensionPreferences,extensionAddress,extensionMatchTypes,extensionLabels,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage,type ExtensionWorkspace,type ExtensionPreferences,type TokenCard,type ExtensionTokenIdentity} from '../../../shared/extension';
+import {requestBackground,isExtension,browserApi,config} from './platform';
 import {gmgnOrigins} from './liveAccess';
 import {cardMetricColor} from './cardMetrics';
 import {AccountView,type AccountPending} from './AccountView';
@@ -65,8 +65,16 @@ function Icon({name}:{name:keyof typeof rowIcons}) {
   return <RowIcon className="ui-icon" size={18} strokeWidth={1.7} aria-hidden="true"/>;
 }
 function TokenThumbnail({card}:{card:ExtensionTokenIdentity}){
-  const [failed,setFailed]=useState<string|null>(null),[loaded,setLoaded]=useState<string|null>(null),src=extensionTokenImageUrl(card.logoUrl),show=Boolean(src&&failed!==src);
-  return <span className="token-monogram token-thumbnail"><span aria-hidden="true" style={{visibility:show&&loaded===src?'hidden':'visible'}}>{Array.from(card.symbol||card.name||'?')[0]}</span>{show&&<img src={src!} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={()=>setLoaded(src)} onError={()=>setFailed(src)}/>}</span>;
+  const [failed,setFailed]=useState<string[]>([]);
+  const [loaded,setLoaded]=useState<string|null>(null);
+  const observed=extensionTokenImageUrl(card.logoUrl);
+  const fallback=extensionAddress(card.address) ? config.apiOrigin+'/api/token-image/'+card.address+'?fallback=extension' : null;
+  const src=[observed,fallback].find(url=>url&&!failed.includes(url));
+  return <span className="token-monogram token-thumbnail">
+    <span aria-hidden="true" style={{visibility:src&&loaded===src?'hidden':'visible'}}>{Array.from(card.symbol||card.name||'?')[0]}</span>
+    {src&&<img key={src} src={src} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer"
+      onLoad={()=>setLoaded(src)} onError={()=>setFailed(previous=>[...previous.slice(-5),src])}/>}
+  </span>;
 }
 function TokenRow({card,metrics,favorite,actions,onCopyError,onBuy,buyAmount,buyReady}:{card:ExtensionTokenIdentity;metrics?:Pick<TokenCard,'marketCap'|'volume'>;favorite?:React.ReactNode;actions?:React.ReactNode;onCopyError:()=>void;onBuy?:()=>void;buyAmount?:string;buyReady:boolean}){
   const hasDistinctName = card.name && card.symbol && card.name.trim().toLowerCase() !== card.symbol.trim().toLowerCase();
@@ -81,7 +89,7 @@ function TokenRow({card,metrics,favorite,actions,onCopyError,onBuy,buyAmount,buy
     </span>
   </span>;
   return <div className="token-row">
-    <TokenThumbnail card={card}/>
+    <TokenThumbnail key={card.address} card={card}/>
     <div className="token-identity">
       <strong>{card.symbol || card.name || short(card.address)}</strong>
       {hasDistinctName && <span>{card.name}</span>}

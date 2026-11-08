@@ -19,6 +19,7 @@ import {freshPublicPosition} from './publicPositions.js';
 import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
 import { registerFreshTrendingTokens } from './trendingTokens.js';
+import { registerFreshTokenImage } from './tokenImageRoute.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
 import {freshPositionWalletGapSql} from './balanceScheduling.js';
@@ -172,8 +173,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
       loadStatus:error.reason==='provider_cooldown'?'rate_limited':'provider_error',retryAfterMs:error.retryAfterMs||5000});}
     finally{req.raw.removeListener('aborted',abort);reply.raw.removeListener('close',closed);}
   });
-  app.get<{Params:{address:string}}>('/api/token-image/:address',async(req,reply)=>{const row=(await db.query(`SELECT logo_data,logo_mime FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[address(req.params.address)??'invalid'])).rows[0];
-    return row?.logo_data?reply.header('Cache-Control','public,max-age=3600').type(row.logo_mime??'image/webp').send(row.logo_data):reply.code(404).send();});
+  registerFreshTokenImage(app, async key => (await db.query(`SELECT logo_data,logo_mime FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0]);
   for(const kind of ['website','translation']as const)app.get<{Params:{address:string}}>(`/api/tokens/:address/${kind}`,async req=>{
     const key=address(req.params.address),row=(await db.query(`SELECT website_url FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
     return kind==='website'?{tokenAddress:key,websiteUrl:row?.website_url??null}:{tokenAddress:key,englishName:null};});
