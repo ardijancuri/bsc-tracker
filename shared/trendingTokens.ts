@@ -4,6 +4,12 @@ export const defaultTrendingWindow: TrendingWindow = '6h';
 export const isTrendingWindow = (value: unknown): value is TrendingWindow =>
   typeof value === 'string' && Object.hasOwn(trendingWindows, value);
 
+export interface TrendingKol {
+  walletAddress: string;
+  name: string;
+  twitter: string | null;
+}
+
 export interface TrendingToken {
   address: string;
   name: string | null;
@@ -17,6 +23,8 @@ export interface TrendingToken {
   buyCount: number;
   sellCount: number;
   recentKols: string[];
+  // All public KOLs with qualifying trades in this window, most recent first.
+  kols?: TrendingKol[];
 }
 
 export interface TrendingTokens {

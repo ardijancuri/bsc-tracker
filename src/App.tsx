@@ -16,7 +16,7 @@ import { kolProfileTokenPageSize, kolProfileTradePageSize } from '../shared/kolP
 import { WatchlistMarquee } from './WatchlistMarquee';
 import { WatchMarketValue, WatchSparkline, WatchTokenChange } from './WatchTokenVisuals';
 import { LanguageSelect } from './LanguageSelect';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Activity, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, ChevronLeft, Copy, ExternalLink, Globe, Menu, Search, Star, X } from 'lucide-react';
 import { api, compact, relativeTime, shortAddress, signedMoney } from './lib';
@@ -36,6 +36,7 @@ import { RealizedEstimateLabel } from './RealizedEstimateLabel';
 import { nativeTradeDisplay } from './nativeTradeDisplay';
 
 type List<T> = { items: T[]; nextCursor?: string | null };
+const ExtensionGuide = lazy(() => import('./ExtensionGuide'));
 const EMPTY_OVERVIEW: Overview = { trackedKols: 0, trades24h: 0, tokens24h: 0, latestTradeAt: null, lastTokenPriceAt: null, lastNodeBlock: null, nodeLagBlocks: null, lastNodeAt: null, bnbPriceUsd: null, bnbPriceAt: null, lastLeaderboardAt: null, leaderboardSource: 'node_fifo' };
 const gmgnTokenUrl = (address: string) => `https://gmgn.ai/bsc/token/${address}`;
 const gmgnWalletUrl = (address: string) => `https://gmgn.ai/bsc/address/${address}`;
@@ -157,6 +158,7 @@ function Header({ overview }: { overview: Overview }) {
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
       <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
+      <NavLink to="/extension" onClick={() => setMobileOpen(false)}>{t("Extension")}</NavLink>
       <a className="mobile-social-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
     <div className="header-social">
@@ -418,6 +420,7 @@ export default function App() {
       <Route path="/tokens" element={<TokensPage />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
+      <Route path="/extension" element={<Suspense fallback={<div className="page" role="status">{t('Loading…')}</div>}><ExtensionGuide /></Suspense>} />
       <Route path="/extension/connect" element={<ExtensionConnect />} />
       <Route path="/portfolio" element={<PortfolioPage />} />
       <Route path="/journal" element={<Navigate to={{ pathname: '/portfolio', search, hash }} replace />} />

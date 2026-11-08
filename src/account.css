@@ -11,6 +11,12 @@
 .site-header .main-nav .mobile-social-link:hover{background:#252b30}
 @media(min-width:801px){.site-header .header-social{gap:17px}}
 @media(min-width:801px) and (max-width:1250px){.header-right .chain-label{display:none}.header-right{gap:10px!important}.site-header .header-social{gap:10px}.header-inner{gap:15px!important}.main-nav{gap:15px!important}}
+@media(min-width:801px) and (max-width:960px){
+  .site-header .main-nav{gap:10px!important}
+  .site-header .header-search{width:35px;justify-content:center;padding:0}
+  .site-header .header-search :is(span,kbd){display:none}
+  .site-header .account-name{max-width:68px}
+}
 
 @media(max-width:800px){
   header.site-header{height:52px}

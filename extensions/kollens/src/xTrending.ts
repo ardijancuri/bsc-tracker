@@ -1,6 +1,7 @@
-import { defaultTrendingWindow, trendingWindows, type TrendingWindow } from '../../../shared/trendingTokens';
-import { extensionAddress } from '../../../shared/extension';
+import { defaultTrendingWindow, trendingWindows, type TrendingToken, type TrendingWindow } from '../../../shared/trendingTokens';
+import { extensionAddress, type SocialLink } from '../../../shared/extension';
 import { cardMetricColor } from './cardMetrics';
+import { normalizeSocialLink } from './matching';
 import { browserApi as chrome } from './platform';
 import { isXPage, type XTrendingResponse } from './xTrendingAccess';
 import { xTrendingStyles } from './xTrendingStyles';
@@ -9,6 +10,8 @@ declare const __LOCAL_FIXTURE__: boolean;
 declare const __KOLLENS_ICON__: string;
 declare const __BNB_ICON__: string;
 const mountId = 'kollens-x-trending';
+const svgNamespace = 'http://www.w3.org/2000/svg';
+const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 const lifecycle = globalThis as typeof globalThis & { kollensXTrendingCleanup?: () => void };
 lifecycle.kollensXTrendingCleanup?.();
 
@@ -68,6 +71,87 @@ function dollarMetric(label: string, usd: string | null | undefined, description
   return metric;
 }
 
+type KolProfile = { identity: string; name: string; social: SocialLink | null };
+
+function tokenProfiles(item: TrendingToken) {
+  if (!Array.isArray(item.kols) || item.kols.length !== item.kolCount) return null;
+  const profiles = new Map<string, KolProfile>();
+  for (const kol of item.kols) {
+    if (!extensionAddress(kol?.walletAddress) || typeof kol.name !== 'string' || !kol.name.trim()) return null;
+    const link = typeof kol.twitter === 'string' ? normalizeSocialLink(`https://x.com/${kol.twitter}`) : null;
+    const social = link?.type === 'x_profile' ? link : null;
+    const identity = social ? `x:${social.key}` : `wallet:${kol.walletAddress}`;
+    if (!profiles.has(identity)) profiles.set(identity, { identity, name: kol.name, social });
+  }
+  return [...profiles.values()];
+}
+
+function kolPill(name: string, social: SocialLink | null = null) {
+  const entry = element('li', '');
+  const label = element('span', 'kol-name', name);
+  if (!social) {
+    const pill = element('span', 'kol-pill');
+    pill.title = name;
+    pill.append(label);
+    entry.append(pill);
+    return entry;
+  }
+
+  const profile = external(social.url, 'kol-pill');
+  profile.title = `${name} · @${social.key}`;
+  profile.setAttribute('aria-label', `${name} on X (@${social.key})`);
+  const icon = document.createElementNS(svgNamespace, 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('fill', 'currentColor');
+  icon.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(svgNamespace, 'path');
+  path.setAttribute('d', 'M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.64 7.584H.47l8.6-9.829L0 1.154h7.594l5.243 6.932 6.064-6.933Zm-1.29 19.491h2.039L6.486 3.24H4.299l13.312 17.404Z');
+  icon.append(path);
+  profile.append(label, icon);
+  entry.append(profile);
+  return entry;
+}
+
+function kolDropdown(profiles: KolProfile[] | null, recent: string[]) {
+  if (!profiles?.length && !recent.length) return null;
+
+  const dropdown = element('div', 'kol-dropdown');
+  const names = element('ul', 'kol-names');
+  names.setAttribute('aria-label', profiles ? 'KOLs in this time window' : 'Recent KOLs');
+  if (profiles) {
+    for (const profile of profiles) {
+      const entry = kolPill(profile.name, profile.social);
+      entry.dataset.kol = profile.identity;
+      names.append(entry);
+    }
+  } else {
+    dropdown.append(element('p', 'kol-dropdown-label', 'Recent KOLs'));
+    for (const name of recent) names.append(kolPill(name));
+  }
+  dropdown.append(names);
+  return dropdown;
+}
+
+function kolToggle(name: string, dropdownId: string) {
+  const button = element('button', 'kol-toggle', 'KOLs');
+  button.type = 'button';
+  button.setAttribute('aria-label', `KOLs for ${name}`);
+  button.setAttribute('aria-controls', dropdownId);
+  const chevron = document.createElementNS(svgNamespace, 'svg');
+  chevron.setAttribute('viewBox', '0 0 10 10');
+  chevron.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(svgNamespace, 'path');
+  path.setAttribute('d', 'M2 3.5 5 6.5 8 3.5');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.25');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  chevron.append(path);
+  button.append(chevron);
+  return button;
+}
+
 function createPanel() {
   const host = element('div', '');
   host.id = mountId;
@@ -86,6 +170,7 @@ function createPanel() {
   header.append(element('h2', '', 'Trending Tokens'), brand);
 
   let selected: TrendingWindow = defaultTrendingWindow;
+  const expandedTokens = new Set<string>();
   let timer: number | undefined;
   let request = 0;
   const windows = Object.keys(trendingWindows) as TrendingWindow[];
@@ -100,6 +185,7 @@ function createPanel() {
     button.addEventListener('click', () => {
       if (window === selected) return;
       selected = window;
+      expandedTokens.clear();
       for (const [index, item] of buttons.entries()) item.setAttribute('aria-pressed', String(windows[index] === selected));
       void refresh(true);
     });
@@ -113,9 +199,96 @@ function createPanel() {
   tools.append(filters, chain);
   const loadingLabel = element('span', 'loading-label');
   loadingLabel.setAttribute('role', 'status');
+  const copyStatus = element('span', 'loading-label');
+  copyStatus.setAttribute('role', 'status');
   const content = element('div', 'results');
-  panel.append(header, tools, loadingLabel, content);
+  const artwork = element('div', 'artwork-preview');
+  artwork.setAttribute('popover', 'manual');
+  artwork.setAttribute('aria-hidden', 'true');
+  const preview = element('img', '');
+  preview.alt = '';
+  preview.referrerPolicy = 'no-referrer';
+  artwork.append(preview);
+  panel.append(header, tools, loadingLabel, copyStatus, content, artwork);
   shadow.append(panel);
+
+  function addressButton(address: string, name: string) {
+    const label = shortAddress(address);
+    const button = element('button', 'token-address');
+    const text = element('span', '', label);
+    const icon = document.createElementNS(svgNamespace, 'svg');
+    icon.setAttribute('viewBox', '0 0 12 12');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-linecap', 'round');
+    const back = document.createElementNS(svgNamespace, 'path');
+    back.setAttribute('d', 'M2.5 7.5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1');
+    const front = document.createElementNS(svgNamespace, 'rect');
+    front.setAttribute('x', '4.5');
+    front.setAttribute('y', '4.5');
+    front.setAttribute('width', '6');
+    front.setAttribute('height', '6');
+    front.setAttribute('rx', '1');
+    icon.append(back, front);
+    button.append(text, icon);
+    button.type = 'button';
+    button.title = address;
+    button.setAttribute('aria-label', `Copy token address for ${name}`);
+    let feedback: number | undefined;
+    button.addEventListener('click', async () => {
+      copyStatus.textContent = '';
+      try {
+        await navigator.clipboard.writeText(address);
+        text.textContent = 'Copied';
+        copyStatus.textContent = 'Token address copied';
+      } catch {
+        text.textContent = 'Copy failed';
+        copyStatus.textContent = 'Could not copy the token address';
+      }
+      clearTimeout(feedback);
+      feedback = window.setTimeout(() => { text.textContent = label; }, 1400);
+    });
+    return button;
+  }
+
+  function hideArtwork() {
+    if (!artwork.matches(':popover-open')) return;
+    artwork.hidePopover();
+    window.removeEventListener('scroll', hideArtwork, true);
+    window.removeEventListener('resize', hideArtwork);
+    window.removeEventListener('keydown', dismissArtwork);
+  }
+
+  function dismissArtwork(event: KeyboardEvent) {
+    if (event.key === 'Escape') hideArtwork();
+  }
+
+  function showArtwork(avatar: HTMLElement, image: HTMLImageElement) {
+    if (!image.naturalWidth || !avatar.isConnected) return;
+    const bounds = avatar.getBoundingClientRect();
+    const gap = 6, inset = 8;
+    const viewportWidth = document.documentElement.clientWidth;
+    const roomBelow = window.innerHeight - bounds.bottom - gap - inset;
+    const roomAbove = bounds.top - gap - inset;
+    const below = roomBelow >= 160 || roomBelow >= roomAbove;
+    const size = Math.min(196, viewportWidth - inset * 2, below ? roomBelow : roomAbove);
+    if (size <= bounds.width) return;
+    artwork.style.width = artwork.style.height = `${size}px`;
+    artwork.style.left = `${Math.max(inset, Math.min(bounds.left, viewportWidth - size - inset))}px`;
+    artwork.style.top = `${below ? bounds.bottom + gap : bounds.top - gap - size}px`;
+    preview.src = image.src;
+    if (!artwork.matches(':popover-open')) artwork.showPopover();
+    window.addEventListener('scroll', hideArtwork, { capture: true, passive: true });
+    window.addEventListener('resize', hideArtwork);
+    window.addEventListener('keydown', dismissArtwork);
+  }
+
+  content.addEventListener('scroll', hideArtwork, { capture: true, passive: true });
+  function replaceResults(next: HTMLElement) {
+    hideArtwork();
+    content.replaceChildren(next);
+  }
 
   function showSkeleton() {
     const visibleRows = Math.min(content.querySelectorAll('.list > li').length || 4, 5);
@@ -128,7 +301,7 @@ function createPanel() {
       const activity = element('span', 'activity');
       const metrics = element('span', 'metrics');
       identity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      activity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
+      activity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       metrics.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       placeholder.append(element('span', 'avatar'), identity, activity, metrics);
       row.append(placeholder);
@@ -136,7 +309,7 @@ function createPanel() {
     }
     loadingLabel.textContent = 'Loading trending tokens…';
     content.setAttribute('aria-busy', 'true');
-    content.replaceChildren(list);
+    replaceResults(list);
   }
 
   function status(message: string, retry = false) {
@@ -148,18 +321,21 @@ function createPanel() {
       button.addEventListener('click', () => void refresh(true));
       label.append(document.createTextNode(' '), button);
     }
-    content.replaceChildren(label);
+    replaceResults(label);
   }
 
   function render(data: XTrendingResponse) {
     const items = data.items.filter(item => item && extensionAddress(item.address) && Number.isInteger(item.kolCount) && item.kolCount >= 2);
+    for (const address of expandedTokens) {
+      if (!items.some(item => item.address === address)) expandedTokens.delete(address);
+    }
     if (!items.length) {
       status('No tokens traded by multiple KOLs in this window.');
       return;
     }
     const list = element('ol', 'list');
     for (const item of items) {
-      const name = item.name || item.symbol || `${item.address.slice(0, 6)}…${item.address.slice(-4)}`;
+      const name = item.name || item.symbol || shortAddress(item.address);
       const link = external(`https://kollens.com/token/${item.address}`, 'token');
       link.title = item.symbol && item.symbol !== name ? `${name} · ${item.symbol}` : name;
       const fallback = element('span', '', Array.from(item.symbol || name)[0]?.toUpperCase() ?? '?');
@@ -170,20 +346,35 @@ function createPanel() {
         const image = element('img', '');
         image.alt = '';
         image.referrerPolicy = 'no-referrer';
-        image.addEventListener('load', () => avatar.replaceChildren(image), { once: true });
+        image.addEventListener('load', () => {
+          avatar.replaceChildren(image);
+          if (avatar.matches(':hover') && matchMedia('(any-hover: hover)').matches) showArtwork(avatar, image);
+        }, { once: true });
+        avatar.addEventListener('pointerenter', event => {
+          if (event.pointerType !== 'touch') showArtwork(avatar, image);
+        });
+        avatar.addEventListener('pointerleave', hideArtwork);
         image.src = item.thumbnail;
       }
       const identity = element('span', 'identity');
-      const traders = Array.isArray(item.recentKols) ? item.recentKols.filter(value => typeof value === 'string').slice(0, 3) : [];
-      const remaining = item.kolCount - traders.length;
-      identity.append(element('strong', '', name), element('span', 'kols', traders.join(' · ') + (traders.length && remaining > 0 ? ` +${remaining}` : '')));
+      identity.append(element('strong', '', name));
+      const profiles = tokenProfiles(item);
+      const kolCount = profiles?.length ?? item.kolCount;
+      const recent = !profiles && Array.isArray(item.recentKols)
+        ? [...new Set(item.recentKols.filter(value => typeof value === 'string').slice(0, 3))]
+        : [];
       const activity = element('span', 'activity');
       const counts = element('span', 'counts');
+      const dot = element('span', 'counts-dot');
+      dot.setAttribute('aria-hidden', 'true');
       counts.append(
         element('span', 'buy', `${item.buyCount} ${item.buyCount === 1 ? 'buy' : 'buys'}`),
+        dot,
         element('span', 'sell', `${item.sellCount} ${item.sellCount === 1 ? 'sell' : 'sells'}`),
       );
-      activity.append(element('strong', '', `${item.kolCount} KOLs`), counts);
+      const kolTotal = element('strong', '', `${kolCount} ${kolCount === 1 ? 'KOL' : 'KOLs'}`);
+      if (kolCount !== item.kolCount) kolTotal.title = `${item.kolCount} tracked wallets`;
+      activity.append(kolTotal, counts);
       const metrics = element('span', 'metrics');
       metrics.append(
         dollarMetric('MC', item.marketCapUsd, 'Market cap'),
@@ -191,12 +382,50 @@ function createPanel() {
       );
       link.append(avatar, identity, activity, metrics);
       const row = element('li', '');
-      row.append(link);
+      const summary = element('div', 'token-row');
+      summary.append(link, addressButton(item.address, name));
+      row.append(summary);
+      const dropdown = kolDropdown(profiles, recent);
+      if (dropdown) {
+        dropdown.id = `kollens-kols-${item.address}`;
+        const toggle = kolToggle(name, dropdown.id);
+        const setExpanded = (expanded: boolean) => {
+          toggle.setAttribute('aria-expanded', String(expanded));
+          dropdown.hidden = !expanded;
+        };
+        setExpanded(expandedTokens.has(item.address));
+        toggle.addEventListener('click', () => {
+          const expanded = dropdown.hidden;
+          if (expanded) expandedTokens.add(item.address);
+          else expandedTokens.delete(item.address);
+          setExpanded(expanded);
+          if (expanded) {
+            const bounds = list.getBoundingClientRect();
+            const reveal = Math.min(dropdown.getBoundingClientRect().bottom - bounds.bottom, summary.getBoundingClientRect().top - bounds.top);
+            if (reveal > 0) list.scrollTop += reveal;
+          }
+        });
+        summary.append(toggle);
+        row.append(dropdown);
+      }
       list.append(row);
     }
-    const focusedToken = shadow.activeElement instanceof HTMLAnchorElement ? shadow.activeElement.href : null;
-    content.replaceChildren(list);
-    if (focusedToken) Array.from(list.querySelectorAll('a')).find(link => link.href === focusedToken)?.focus({ preventScroll: true });
+    const activeElement = shadow.activeElement;
+    const activeToken = activeElement?.closest('.list > li')?.querySelector<HTMLAnchorElement>('a.token');
+    const focusedKol = activeElement?.closest<HTMLElement>('.kol-names > li')?.dataset.kol;
+    const scrollTop = content.querySelector('.list')?.scrollTop ?? 0;
+    replaceResults(list);
+    const tokenLink = Array.from(list.querySelectorAll<HTMLAnchorElement>('a.token')).find(link => link.href === activeToken?.href);
+    const row = tokenLink?.closest('.list > li');
+    const toggle = row?.querySelector<HTMLButtonElement>('.kol-toggle');
+    const address = activeElement?.matches('.token-address') && row?.querySelector<HTMLButtonElement>('.token-address');
+    const profileLink = focusedKol && row
+      ? Array.from(row.querySelectorAll<HTMLElement>('.kol-dropdown:not([hidden]) .kol-names > li'))
+        .find(entry => entry.dataset.kol === focusedKol)?.querySelector('a')
+      : null;
+    const focus = profileLink || address || ((focusedKol || activeElement?.matches('.kol-toggle')) && toggle) || tokenLink;
+    focus?.focus({ preventScroll: true });
+    list.scrollTop = scrollTop;
   }
 
   async function refresh(showLoading = false) {
@@ -224,7 +453,7 @@ function createPanel() {
     }
   }
 
-  return { host, refresh, stop: () => { ++request; clearTimeout(timer); host.remove(); } };
+  return { host, refresh, stop: () => { ++request; clearTimeout(timer); hideArtwork(); host.remove(); } };
 }
 
 let sidebar: HTMLElement | null = null;
