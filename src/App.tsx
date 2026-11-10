@@ -36,6 +36,9 @@ import { leaderboardPresentation } from './leaderboardPresentation';
 import { RealizedEstimateLabel } from './RealizedEstimateLabel';
 import { nativeTradeDisplay } from './nativeTradeDisplay';
 import { IdentitySkeleton, LeaderboardSkeleton, LoadingStatus, SkeletonBlock, TokenCardsSkeleton, TradeRowsSkeleton, WatchRowsSkeleton } from './LoadingSkeleton';
+import { getSiteRoute } from '../shared/pageSeo';
+import { AnalyticsNotice, useAnalyticsPreferences, usePageView } from './PageAnalytics';
+import { usePageSeo } from './usePageSeo';
 
 type List<T> = { items: T[]; nextCursor?: string | null };
 const ExtensionGuide = lazy(() => import('./ExtensionGuide'));
@@ -151,10 +154,10 @@ function Header({ overview }: { overview: Overview }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === '/' && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); setSearchOpen(true); } }; document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, []);
   return <><header className="site-header"><div className="header-inner">
-    <Link className="brand" to="/trades"><img className="brand-logo" src={BRAND_HEADER_LOGO_SRC} alt="kollens" width="105" height="22" /></Link>
+    <Link className="brand" to="/"><img className="brand-logo" src={BRAND_HEADER_LOGO_SRC} alt="kollens" width="105" height="22" /></Link>
     <span className="header-divider" />
     <nav className={mobileOpen ? 'main-nav open' : 'main-nav'} aria-label={t("Main navigation")}>
-      <NavLink to="/trades" onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
+      <NavLink to="/" end onClick={() => setMobileOpen(false)}>{t("Trades")}</NavLink><NavLink to="/tokens" onClick={() => setMobileOpen(false)}>{t("Tokens")}</NavLink><NavLink to="/leaderboard" onClick={() => setMobileOpen(false)}>{t("Leaderboard")}</NavLink><NavLink to="/watchlist" onClick={() => setMobileOpen(false)}>{t("Watchlist")}</NavLink>
       <NavLink to="/extension" end onClick={() => setMobileOpen(false)}>{t('Extension')}</NavLink>
       <a className="mobile-social-link" href="https://x.com/kollens" target="_blank" rel="noopener noreferrer"><XBrandIcon size={14} />{t('kollens on X')}</a>
     </nav>
@@ -284,8 +287,7 @@ function LeaderboardPage(_props: { overview: Overview }) {
   </div>;
 }
 
-function KolPage() {
-  const address = window.location.pathname.split('/').pop() || '';
+function KolPage({ address, analyticsAllowed }: { address: string; analyticsAllowed: boolean }) {
   const [selectedToken, setSelectedToken] = useState<Token | null>(null);
   const closeToken = useCallback(() => setSelectedToken(null), []);
   useEffect(() => { setSelectedToken(null); }, [address]);
@@ -294,7 +296,10 @@ function KolPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState(false);
   const [tokenPage, setTokenPage] = useState<{ address: string; items: Token[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false });
-  const { data, loading, refresh: refreshProfile } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; period?: '24h'; windowStart: string | null; windowEnd?: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
+  const { data, loading, error, refresh: refreshProfile } = useData<{ kol: Kol | null; stats: LeaderboardRow | null; trades: Trade[]; tradesNextCursor: string | null; tradeCount24h: number; buyCount24h: number; sellCount24h: number; unpricedSellCount24h: number; tokens: Token[]; tokensNextCursor: string | null; period?: '24h'; windowStart: string | null; windowEnd?: string | null }>(`/api/kols/${address}`, { kol: null, stats: null, trades: [], tradesNextCursor: null, tradeCount24h: 0, buyCount24h: 0, sellCount24h: 0, unpricedSellCount24h: 0, tokens: [], tokensNextCursor: null, windowStart: null }, 20000);
+  const path = `/kol/${address}`;
+  usePageSeo(path, loading || (error && !data.kol) ? undefined : data.kol);
+  usePageView(analyticsAllowed, data.kol ? path : null);
   useEffect(() => { setExtraTrades([]); setExtraCursor(undefined); setMoreError(false); }, [address]);
   useEffect(() => { setTokenPage({ address, items: [], visibleCount: kolProfileTokenPageSize, loading: false, error: false }); }, [address]);
   const currentTokenPage = tokenPage.address === address ? tokenPage : { address, items: [], cursor: undefined, visibleCount: kolProfileTokenPageSize, loading: false, error: false };
@@ -357,7 +362,7 @@ function KolPage() {
   const periodProfitDetail = periodProfit.estimated ? <RealizedEstimateLabel profit={periodProfit} /> : periodProfit.status !== 'ready' ? t(discoveryPending ? 'Token verification pending' : 'Costs or history pending')
     : `${t('{matched} accounted movements · {pending} pending', { matched: periodProfit.realizedCount, pending: periodProfit.unavailableCount })}${periodProfit.asOf && !isFresh(periodProfit.asOf, 5 * 60_000) ? ` · ${t('As of {time}', { time: relativeTime(periodProfit.asOf) })}` : ''}`;
   if (!loading && !data.kol) return <div className="page"><EmptyState title={t("KOL not found")} detail={t("This wallet is not in the supplied KOL roster.")} /></div>;
-  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton width={155} /></> : <a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></a>}<div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
+  return <div className="page profile-page kol-detail-page"><Link className="back-link" to="/leaderboard"><ChevronLeft size={15} aria-hidden="true" />{t("Back to leaderboard")}</Link><div className="profile-header" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton width={155} /></> : <a className="profile-title-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View KOL profile on GMGN")}><h1 className="profile-page-heading"><Identity name={data.kol?.name || null} address={address} avatar={data.kol?.avatarUrl} twitter={data.kol?.twitter} subtitle={false} /></h1></a>}<div className="profile-links"><FollowButton kind="kol" address={address} label={data.kol?.name} /><KolAlertButton address={address} label={data.kol?.name} /><CopyAddress key={address} address={address} label={t("KOL wallet address")} /><a className="profile-icon-link" href={`https://bscscan.com/address/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL wallet on BscScan")} title={t("View wallet on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnWalletUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL profile on GMGN")} title={t("View KOL profile on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{data.kol?.twitter && <a className="profile-icon-link" href={`https://x.com/${data.kol.twitter}`} target="_blank" rel="noopener noreferrer" aria-label={t("View KOL on X")} title={t("View KOL on X")}><XBrandIcon /></a>}</div></div>
     {!loading && <CreatorProfile wallet={address} onPublished={() => void refreshProfile()} />}
     <div className="profile-stats" aria-busy={loading}><Metric loading={loading} label={t("Realized P&L · Last 24h")} value={signedMoney(periodProfit.value)} detail={periodProfitDetail} /><Metric loading={loading} label={t("Trades · last 24 hours")} value={discoveryPending && data.tradeCount24h === 0 ? t('Pending') : data.tradeCount24h} detail={discoveryPending && data.tradeCount24h === 0 ? t('Captured transactions are awaiting token verification.') : t('{buys} buys · {sells} sells', { buys: data.buyCount24h, sells: data.sellCount24h })} /><Metric loading={loading} label={t("Last trade")} value={relativeTime(data.kol?.lastSeenAt)} /></div>
     <div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("Traded tokens")}</h2></div></div><div aria-busy={loading}>{loading ? <TokenCardsSkeleton className="profile-token-list" /> : <div className="profile-token-list">{visibleTokens.map((token, index) => <TokenCard key={token.address} token={token} marketCapInStats walletAddress={address} eagerPnl={index < kolProfileTokenPageSize} onOpen={() => setSelectedToken(token)} />)}{!visibleTokens.length && !loading && <EmptyState title={t("No tracked tokens yet")} detail={t("Tokens appear after a tracked swap.")} />}</div>}</div>{hasMoreTokens && <button className="profile-load-more" type="button" onClick={() => void loadMoreTokens()} disabled={currentTokenPage.loading}>{currentTokenPage.loading ? t("Loading tokens…") : t("Load more tokens")}</button>}{currentTokenPage.error && <p className="profile-more-error" role="alert">{t("Could not load more tokens. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("Trades · last 24 hours")}</h2></div></div><div className="data-table profile-trades" aria-busy={loading}>{loading ? <TradeRowsSkeleton /> : visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t(discoveryPending ? "Token verification pending" : "No trades in the last 24 hours")} detail={t(discoveryPending ? "Captured transactions are awaiting token verification." : "New swaps from this wallet will appear here automatically.")} />}</div>{nextCursor && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("Loading trades…") : t("Load more trades")}</button>}{moreError && <p className="profile-more-error">{t("Could not load more trades. Try again.")}</p>}</section></div>
@@ -365,8 +370,7 @@ function KolPage() {
   </div>;
 }
 
-function TokenPage() {
-  const address = window.location.pathname.split('/').pop() || '';
+function TokenPage({ address, analyticsAllowed }: { address: string; analyticsAllowed: boolean }) {
   const [sharingReplay, setSharingReplay] = useState(false);
   useEffect(() => { preloadTokenChart(address); }, [address]);
   const [kolPage, setKolPage] = useState({ address, visibleCount: 15 });
@@ -375,7 +379,10 @@ function TokenPage() {
   const { data: website } = useData<{ tokenAddress: string | null; websiteUrl: string | null }>(`/api/tokens/${address}/website`, { tokenAddress: null, websiteUrl: null }, 300000);
   const tokenWebsite = website.tokenAddress === address ? website.websiteUrl : null;
   const [tradePage, setTradePage] = useState<{ address: string; items: Trade[]; cursor?: string | null; visibleCount: number; loading: boolean; error: boolean }>({ address, items: [], visibleCount: 20, loading: false, error: false });
-  const { data, loading } = useData<{ token: Token | null; trades: Trade[]; tradesNextCursor: string | null; kols: Kol[] }>(`/api/tokens/${address}`, { token: null, trades: [], tradesNextCursor: null, kols: [] }, 20000);
+  const { data, loading, error } = useData<{ token: Token | null; trades: Trade[]; tradesNextCursor: string | null; kols: Kol[] }>(`/api/tokens/${address}`, { token: null, trades: [], tradesNextCursor: null, kols: [] }, 20000);
+  const path = `/token/${address}`;
+  usePageSeo(path, loading || (error && !data.token) ? undefined : data.token);
+  usePageView(analyticsAllowed, data.token ? path : null);
   const translatedToken = useTokenTranslation(data.token?.address === address.toLowerCase() ? data.token : { address });
   useEffect(() => {
     setSharingReplay(false);
@@ -406,25 +413,34 @@ function TokenPage() {
     }
   };
   if (!loading && !data.token) return <div className="page"><EmptyState title={t("Token not found")} detail={t("No tracked KOL has traded this contract yet.")} /></div>;
-  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton token subtitle width={136} /></> : <a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></a>}{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades" aria-busy={loading}>{loading ? <TradeRowsSkeleton /> : visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list" aria-busy={loading}>{loading ? <WatchRowsSkeleton holder /> : data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
+  return <div className="page profile-page token-detail-page"><div className="token-page-toolbar"><Link className="back-link" to="/tokens"><ChevronLeft size={15} aria-hidden="true" />{t("Back to tokens")}</Link><div className="profile-links"><FollowButton kind="token" address={address} label={data.token?.symbol} /><TokenReplayTrigger key={`replay:${address}`} token={data.token?.address === address.toLowerCase() ? data.token : null} onOpenChange={setSharingReplay} /><CopyAddress key={`contract:${address}`} address={address} label={t("Token contract address")} /><a className="profile-icon-link" href={`https://bscscan.com/token/${address}`} target="_blank" rel="noopener noreferrer" aria-label={t("View token contract on BscScan")} title={t("View contract on BscScan")}><img src="/bscscan-icon-light.svg" alt="" width="18" height="18" /></a><a className="profile-icon-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" aria-label={t("View token on GMGN")} title={t("View token on GMGN")}><img src="/gmgn-icon-transparent.png" alt="" width="24" height="24" /></a>{tokenWebsite && <a className="profile-icon-link" href={tokenWebsite} target="_blank" rel="noopener noreferrer" aria-label={t("Visit token website")} title={t("Visit token website")}><Globe size={18} /></a>}</div></div><TokenMarketPanel key={address} address={address} chartEnabled={!sharingReplay} identity={<div className="token-profile-title" aria-busy={loading}>{loading ? <><LoadingStatus /><IdentitySkeleton token subtitle width={136} /></> : <a className="profile-title-link" href={gmgnTokenUrl(address)} target="_blank" rel="noopener noreferrer" title={t("View token on GMGN")}><h1 className="profile-page-heading"><TokenIdentity token={data.token || { address, symbol: null, name: null, logoUrl: null }} /></h1></a>}{translatedToken?.sourceText && !translatedToken.englishName && <div className="token-translation-fallback" title={t('Automatic translation of {name}', { name: translatedToken.sourceText })}><a href={`https://translate.google.com/?sl=zh-CN&tl=en&text=${encodeURIComponent(translatedToken.sourceText)}&op=translate`} target="_blank" rel="noopener noreferrer">{t("Translate name")}<ExternalLink size={12} /></a></div>}</div>} /><div className="profile-grid"><section><div className="table-toolbar"><div><h2>{t("KOL trades")}</h2><span>{t("Recent activity in this token")}</span></div></div><div className="data-table profile-trades" aria-busy={loading}>{loading ? <TradeRowsSkeleton /> : visibleTrades.map(trade => <TradeRow key={trade.id} trade={trade} />)}{!visibleTrades.length && !loading && <EmptyState title={t("No tracked trades yet")} detail={t("New KOL trades in this token will appear here automatically.")} />}</div>{hasMoreTrades && <button className="profile-load-more" type="button" onClick={() => void loadMore()} disabled={currentTradePage.loading}>{currentTradePage.loading ? t("Loading trades…") : t("Load more trades")}</button>}{currentTradePage.error && <p className="profile-more-error" role="alert">{t("Could not load more trades. Try again.")}</p>}</section><section><div className="table-toolbar"><div><h2>{t("KOLs trading it")}</h2></div></div><div className="kol-list" aria-busy={loading}>{loading ? <WatchRowsSkeleton holder /> : data.kols.slice(0, visibleKolCount).map(kol => <div className="kol-holder-row" key={kol.address}><Link to={`/kol/${kol.address}`}><Identity name={kol.name} address={kol.address} avatar={kol.avatarUrl} twitter={kol.twitter} /></Link><PositionBadge position={positions.get(kol.address)} /></div>)}</div>{data.kols.length > visibleKolCount && <button className="profile-load-more" type="button" onClick={() => setKolPage({ address, visibleCount: visibleKolCount + 15 })}>{t("Load more KOLs")}</button>}</section></div></div>;
+}
+
+function NotFoundPage() {
+  return <div className="page">
+    <h1>{t('Page not found')}</h1>
+    <Link className="back-link" to="/"><ChevronLeft size={15} aria-hidden="true" />{t('Back to kollens')}</Link>
+  </div>;
 }
 
 export default function App() {
   const [language] = useLanguage();
   const { pathname, search, hash } = useLocation();
-  useEffect(() => {
-    document.documentElement.lang = language;
-    if (!['/privacy-policy', '/terms-of-use'].includes(pathname)) {
-      document.title = pathname === '/extension' ? 'Kollens Companion | Kollens' : t('kollens — BSC KOL tracker');
-    }
-  }, [language, pathname]);
+  const route = getSiteRoute(pathname);
+  const detail = route.kind === 'kol' || route.kind === 'token';
+  const legacyWatchlist = route.kind === 'public' && route.path === '/' && new URLSearchParams(search).get('view') === 'watchlist';
+  const analytics = useAnalyticsPreferences();
+  usePageSeo(detail ? null : legacyWatchlist ? '/watchlist' : pathname);
+  usePageView(analytics.allowed, route.kind === 'public' && pathname === route.path && !legacyWatchlist ? pathname : null);
+  useEffect(() => { document.documentElement.lang = language; }, [language]);
   const { data: overview, loading: overviewLoading } = useData<Overview>('/api/overview', EMPTY_OVERVIEW, 10000);
   return <AccountProvider><WatchlistProvider><TelegramNotificationsProvider>
     <Header overview={overview} />
     <WatchlistBanner />
     <main><Routes>
-      <Route path="/" element={<Navigate to="/trades" replace />} />
-      <Route path="/trades" element={<TradesPage overview={overview} overviewLoading={overviewLoading} />} />
+      <Route path="/" element={<TradesPage overview={overview} overviewLoading={overviewLoading} />} />
+      <Route path="/trades" element={<Navigate to={{ pathname: '/', search, hash }} replace />} />
+      <Route path="/index.html" element={<Navigate to={{ pathname: '/', search, hash }} replace />} />
       <Route path="/tokens" element={<TokensPage />} />
       <Route path="/watchlist" element={<TokenWatchlistPage />} />
       <Route path="/auth/telegram/finish" element={<TelegramBotLogin />} />
@@ -434,15 +450,16 @@ export default function App() {
       <Route path="/journal" element={<Navigate to={{ pathname: '/portfolio', search, hash }} replace />} />
       <Route path="/creator" element={<CreatorProfilesPage />} />
       <Route path="/leaderboard" element={<LeaderboardPage overview={overview} />} />
-      <Route path="/kol/:address" element={<KolPage />} />
-      <Route path="/token/:address" element={<TokenPage />} />
-      <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+      <Route path="/kol/:address" element={route.kind === 'kol' ? <KolPage address={route.address} analyticsAllowed={analytics.allowed} /> : <NotFoundPage />} />
+      <Route path="/token/:address" element={route.kind === 'token' ? <TokenPage address={route.address} analyticsAllowed={analytics.allowed} /> : <NotFoundPage />} />
+      <Route path="/privacy-policy" element={<PrivacyPolicyPage analytics={analytics} />} />
       <Route path="/terms-of-use" element={<TermsOfUsePage />} />
-      <Route path="*" element={<Navigate to="/trades" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes></main>
     <footer className="footer">
       <div><span className="footer-brand"><img className="footer-logo" src={BRAND_LOGO_SRC} alt="kollens" width="57" height="12" /></span><span>{t("BNB Smart Chain KOL analytics.")}</span></div>
       <nav className="footer-legal" aria-label={t("Legal")}><span aria-hidden="true">|</span><Link to="/privacy-policy">{t("Privacy Policy")}</Link><span aria-hidden="true">|</span><Link to="/terms-of-use">{t("Terms of Use")}</Link></nav>
     </footer>
+    {(route.kind === 'public' || detail) && !legacyWatchlist && route.path !== '/privacy-policy' && <AnalyticsNotice preferences={analytics} />}
   </TelegramNotificationsProvider></WatchlistProvider></AccountProvider>;
 }

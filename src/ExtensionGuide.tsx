@@ -50,10 +50,7 @@ export default function ExtensionGuide() {
     ?? guideTopics[0];
 
   useEffect(() => {
-    const previousTitle = document.title;
-    document.title = 'Kollens Companion Guide — kollens';
     if (!window.location.hash) window.scrollTo(0, 0);
-    return () => { document.title = previousTitle; };
   }, []);
 
   useEffect(() => {

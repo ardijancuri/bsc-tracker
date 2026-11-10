@@ -390,3 +390,5 @@ main { min-height: 0; flex: 1; }
   .bnb-price span { display: none; }
   .header-x-link { width: 32px; }
 }
+
+.profile-page-heading { margin: 0; min-width: 0; font: inherit; }

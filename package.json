@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx --watch server/index.ts",
     "dev:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --env-file-if-exists=.env.x.local --import tsx --watch server/worker.ts",
-    "build": "npm run brand:export && npm run extension:download && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts server/freshGangHistoryImport.ts server/freshWpcRecovery.ts server/freshPnlEvidenceRepair.ts server/freshRealizedPolicyReproject.ts server/xTokenPostCli.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
+    "build": "npm run brand:export && npm run extension:download && vite build && esbuild server/index.ts server/worker.ts server/freshInit.ts server/freshStorage.ts server/freshCutover.ts server/freshGangHistoryImport.ts server/freshWpcRecovery.ts server/freshPnlEvidenceRepair.ts server/freshRealizedPolicyReproject.ts server/xTokenPostCli.ts server/analyticsReport.ts --bundle --platform=node --format=esm --packages=external --outdir=dist-server",
     "import:charts": "node --env-file-if-exists=.env --import tsx server/importSavedTokenCharts.ts",
     "start": "node dist-server/index.js",
     "worker": "node dist-server/worker.js",
@@ -35,7 +35,8 @@
     "fresh:trial": "node --env-file=.env --import tsx server/freshTrial.ts",
     "fresh:trial:review": "node --env-file=.env --import tsx server/freshTrialReview.ts",
     "x-posts": "node --env-file-if-exists=.env --env-file-if-exists=.env.x.local --import tsx server/xTokenPostCli.ts",
-    "test:integration:x-posts": "node --env-file-if-exists=.env --env-file-if-exists=.env.x.local --import tsx server/xTokenPosts.integration.ts"
+    "test:integration:x-posts": "node --env-file-if-exists=.env --env-file-if-exists=.env.x.local --import tsx server/xTokenPosts.integration.ts",
+    "analytics:report": "node --env-file-if-exists=.env dist-server/analyticsReport.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

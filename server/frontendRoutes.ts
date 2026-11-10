@@ -1,8 +1,10 @@
 import fastifyStatic from '@fastify/static';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { constants } from 'node:fs';
-import { copyFile, mkdir, readdir, stat, unlink, utimes } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, stat, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
+import { getPageSeo, getSiteRoute, type PageSeoIdentity } from '../shared/pageSeo.js';
+import { renderSiteDocument, robotsTxt, type SiteSeo } from './siteSeo.js';
 
 const revalidate = 'no-cache, max-age=0, must-revalidate';
 const immutable = 'public, max-age=31536000, immutable';
@@ -43,12 +45,22 @@ async function retainFrontendAssets(publicDir: string, cacheDir: string) {
   await pruneAssets(cacheDir);
 }
 
-export async function registerFrontendRoutes(app: FastifyInstance, publicDir: string, assetCacheDir?: string) {
+export async function registerFrontendRoutes(app: FastifyInstance, publicDir: string, assetCacheDir?: string,
+  options: { seo?: SiteSeo; analyticsEnabled?: boolean } = {}) {
+  const { seo, analyticsEnabled = false } = options;
+  const shell = seo ? await readFile(path.join(publicDir, 'index.html'), 'utf8').catch(error => {
+    if (error.code === 'ENOENT' && process.env.NODE_ENV !== 'production') return null;
+    throw error;
+  }) : null;
+  if (shell !== null && (!shell.includes('<!-- kollens:seo:start -->') || !shell.includes('<!-- kollens:seo:end -->'))) {
+    throw new Error('Frontend build is missing its SEO metadata slot');
+  }
   if (assetCacheDir) await retainFrontendAssets(publicDir, assetCacheDir);
   app.register(fastifyStatic, {
     root: publicDir,
     prefix: '/',
     wildcard: false,
+    globIgnore: shell !== null ? ['index.html'] : undefined,
     cacheControl: false,
     setHeaders(reply, filename) {
       const relativePath = path.relative(publicDir, filename).split(path.sep).join('/');
@@ -70,20 +82,66 @@ export async function registerFrontendRoutes(app: FastifyInstance, publicDir: st
     },
   });
 
-  app.setNotFoundHandler((request, reply) => {
+  if (seo) {
+    app.get('/robots.txt', (_, reply) => reply.type('text/plain; charset=utf-8').header('Cache-Control', 'public, max-age=300').send(robotsTxt));
+    const sitemapDocument = async (document: string | undefined, reply: FastifyReply) => {
+      try {
+        const sitemap = await seo.sitemap(document);
+        if (sitemap === null) return reply.code(404).header('Cache-Control', 'no-store').send({ error: 'Sitemap not found' });
+        return reply.type('application/xml; charset=utf-8').header('Cache-Control', 'public, max-age=300').send(sitemap);
+      } catch {
+        return unavailable(reply);
+      }
+    };
+    app.get('/sitemap.xml', (_, reply) => sitemapDocument(undefined, reply));
+    app.get<{ Params: { document: string } }>('/sitemaps/:document', (request, reply) => sitemapDocument(request.params.document, reply));
+  }
+
+  app.setNotFoundHandler(async (request, reply) => {
     let pathname: string;
-    try { pathname = decodeURIComponent(request.url.split('?')[0]).replace(/\\/g, '/'); }
+    const rawPath = request.url.split('?')[0];
+    try { pathname = decodeURIComponent(rawPath).replace(/\\/g, '/'); }
     catch { pathname = ''; }
     const documentRoute = pathname && !/^\/(?:api|assets)(?:\/|$)/.test(pathname)
-      && !pathname.split('/').some(segment => segment.includes('.'));
+      && ((seo && pathname.toLowerCase() === '/index.html') || !pathname.split('/').some(segment => segment.includes('.')));
     if ((request.method !== 'GET' && request.method !== 'HEAD') || !documentRoute) {
       return reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff')
         .code(404).send({ error: 'Not found' });
     }
-    if (pathname === '/auth/telegram/finish') return reply.header('Cache-Control', 'no-store')
-      .header('Referrer-Policy', 'no-referrer').header('X-Frame-Options', 'DENY')
-      .header('Content-Security-Policy', "frame-ancestors 'none'").type('text/html').sendFile('index.html');
-    // Deep links need the SPA shell; missing lazy chunks must remain genuine 404s.
-    return reply.header('Cache-Control', revalidate).type('text/html').sendFile('index.html');
+    if (!seo || shell === null) {
+      if (pathname === '/auth/telegram/finish') secureTelegramFinish(reply);
+      else reply.header('Cache-Control', revalidate);
+      return reply.type('text/html').sendFile('index.html');
+    }
+    const route = getSiteRoute(pathname);
+    if (route.kind !== 'missing' && route.path !== rawPath) {
+      return reply.redirect(route.path + request.url.slice(rawPath.length), 301);
+    }
+    let identity: PageSeoIdentity | null | undefined;
+    if (route.kind === 'kol' || route.kind === 'token') {
+      try { identity = await seo.identity(route.kind, route.address); }
+      catch { return unavailable(reply); }
+    }
+    const missing = route.kind === 'missing' || identity === null;
+    const watchlistView = route.kind === 'public' && route.path === '/'
+      && new URLSearchParams(request.url.slice(rawPath.length)).get('view') === 'watchlist';
+    const metadata = getPageSeo(watchlistView ? '/watchlist' : pathname, identity);
+    if (pathname === '/auth/telegram/finish') secureTelegramFinish(reply);
+    const document = renderSiteDocument(shell, metadata, analyticsEnabled);
+    return reply.code(missing ? 404 : 200)
+      .header('Cache-Control', route.kind === 'private' || watchlistView || missing ? 'no-store' : revalidate)
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Length', String(Buffer.byteLength(document)))
+      .type('text/html; charset=utf-8')
+      .send(request.method === 'HEAD' ? undefined : document);
   });
+}
+
+function secureTelegramFinish(reply: FastifyReply) {
+  reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer')
+    .header('X-Frame-Options', 'DENY').header('Content-Security-Policy', "frame-ancestors 'none'");
+}
+
+function unavailable(reply: FastifyReply) {
+  return reply.code(503).header('Retry-After', '5').header('Cache-Control', 'no-store').send({ error: 'Data is temporarily unavailable.' });
 }

@@ -4,10 +4,13 @@ import {pool,ensureSchema} from './db.js';
 import {createFreshApp} from './fresh/app.js';
 import {registerFrontendRoutes} from './frontendRoutes.js';
 import {freshRuntimeDigest} from './fresh/runtime.js';
+import {createSiteSeo} from './siteSeo.js';
 await ensureSchema();
 if(process.env.FRESH_LOCAL_ONLY==='true')await pool.query(`INSERT INTO fresh.checkpoints(key,value) VALUES('runtime:api',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[JSON.stringify({pid:process.pid,startedAt:new Date().toISOString(),sourceDigest:await freshRuntimeDigest()})]);
 const {app}=await createFreshApp(pool,{logger:true});
-await registerFrontendRoutes(app,path.join(path.dirname(fileURLToPath(import.meta.url)),'..','dist'),process.env.FRONTEND_ASSET_CACHE_DIR);
+await registerFrontendRoutes(app,path.join(path.dirname(fileURLToPath(import.meta.url)),'..','dist'),process.env.FRONTEND_ASSET_CACHE_DIR,{
+  seo:createSiteSeo(pool),analyticsEnabled:process.env.KOLLENS_ANALYTICS_ENABLED==='true',
+});
 app.addHook('onClose',()=>pool.end());
 await app.listen({host:process.env.HOST??(process.env.NODE_ENV==='production'?'0.0.0.0':'127.0.0.1'),port:Number(process.env.PORT??3302)});
 for(const signal of ['SIGINT','SIGTERM']as const)process.once(signal,()=>void app.close());

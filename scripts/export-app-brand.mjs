@@ -75,12 +75,15 @@ for(const url of ['/favicon.ico','/favicon-32x32.png','/kollens-icon.png','/favi
 }
 // Social crawlers may cache an image URL beyond our HTTP cache lifetime.
 // Fingerprint the pathname from the actual PNG, independently of app icons.
-const title = 'Kollens — KOL tracking on BNB Chain';
-const description = 'Track KOL trades, tokens and wallet activity on BNB Chain.';
+const managedSeo = html.includes('<!-- kollens:seo:start -->');
+const title = managedSeo ? 'Live BNB Chain KOL Trades &amp; Wallet Tracker | Kollens' : 'Kollens — KOL tracking on BNB Chain';
+const description = managedSeo
+  ? 'Track BNB Chain KOL wallet trades as they happen. Explore buys, sells, token activity and trade replays from tracked wallets.'
+  : 'Track KOL trades, tokens and wallet activity on BNB Chain.';
 function setMeta(attribute,key,value) {
-  const tag = `    <meta ${attribute}="${key}" content="${value}" />`;
+  const tag = `    <meta ${managedSeo ? 'data-kollens-seo ' : ''}${attribute}="${key}" content="${value}" />`;
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const pattern = new RegExp(`^[ \\t]*<meta ${attribute}="${escaped}"[^>]*\\/>`, 'm');
+  const pattern = new RegExp(`^[ \\t]*<meta(?: data-kollens-seo)? ${attribute}="${escaped}"[^>]*\\/>`, 'm');
   html = pattern.test(html) ? html.replace(pattern,tag) : html.replace('  </head>',tag+'\n  </head>');
 }
 setMeta('name','description',description);
@@ -93,12 +96,12 @@ setMeta('property','og:image:secure_url',socialUrl);
 setMeta('property','og:image:type','image/png');
 setMeta('property','og:image:width',String(socialWidth));
 setMeta('property','og:image:height',String(socialHeight));
-setMeta('property','og:image:alt','Kollens — current gold K icon and white wordmark on a dark background');
+setMeta('property','og:image:alt',managedSeo ? 'Kollens logo on a dark background' : 'Kollens — current gold K icon and white wordmark on a dark background');
 setMeta('name','twitter:card','summary_large_image');
 setMeta('name','twitter:title',title);
 setMeta('name','twitter:description',description);
 setMeta('name','twitter:image',socialUrl);
-setMeta('name','twitter:image:alt','Kollens — current gold K icon and white wordmark on a dark background');
+setMeta('name','twitter:image:alt',managedSeo ? 'Kollens logo on a dark background' : 'Kollens — current gold K icon and white wordmark on a dark background');
 html = html.replace(/<title>[^<]*<\/title>/,`<title>${title}</title>`);
 await writeFile(file('index.html'),html);
 // Canvas fallbacks use the same native paths when an image has not loaded.

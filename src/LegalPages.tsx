@@ -1,30 +1,38 @@
-import { t, useLanguage } from './i18n';
+import { t } from './i18n';
 import { useEffect, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
+import { AnalyticsPreferenceControl, type AnalyticsPreferences } from './PageAnalytics';
 
 function LegalLayout({ title, children, updated = 'Last updated October 4, 2026' }: { title: string; children: ReactNode; updated?: string }) {
-  const [language] = useLanguage();
+  const { hash } = useLocation();
   useEffect(() => {
-    window.scrollTo(0, 0);
-    document.title = `${t(title)} — kollens`;
-    return () => { document.title = t('kollens — BSC KOL tracker'); };
-  }, [title, language]);
+    const section = hash === '#website-analytics' ? document.getElementById('website-analytics') : null;
+    if (section) section.scrollIntoView();
+    else window.scrollTo(0, 0);
+  }, [title, hash]);
 
   return <article className="page legal-page">
-    <Link className="back-link" to="/trades"><ChevronLeft size={15} aria-hidden="true" />{t("Back to kollens")}</Link>
+    <Link className="back-link" to="/"><ChevronLeft size={15} aria-hidden="true" />{t("Back to kollens")}</Link>
     <header className="legal-header"><span>{t("LEGAL")}</span><h1>{t(title)}</h1><p>{t(updated)}</p></header>
     <div className="legal-content">{children}</div>
   </article>;
 }
 
-export function PrivacyPolicyPage() {
-  return <LegalLayout title={t("Privacy Policy")} updated="Last updated October 18, 2026">
+export function PrivacyPolicyPage({ analytics }: { analytics: AnalyticsPreferences }) {
+  return <LegalLayout title={t("Privacy Policy")} updated="Last updated November 10, 2026">
     <p>{t("kollens is a public, read-only BNB Smart Chain analytics site. You can browse it without creating an account or connecting a wallet.")}</p>
 
     <section><h2>{t("Information shown on kollens")}</h2><p>{t("We display public wallet addresses, blockchain transactions, token data, and analytics derived from them. The tracked wallet roster also contains KOL names and X handles supplied to kollens, and may include publicly available profile images. A name or handle shown beside a wallet is not independent proof of who owns it.")}</p></section>
 
     <section><h2>{t("Information from your visit")}</h2><p>{t("When you use the site, normal web requests send your IP address, browser information, requested pages, and any search terms you enter to our server. Basic request and error logs may contain this information. Browsing does not require an account. If you save a watchlist, we set an essential, secure HttpOnly cookie to recognize that browser. We do not use a third-party analytics script.")}</p></section>
+
+    <section id="website-analytics">
+      <h2>{t('Website analytics')}</h2>
+      <p>{t('If you allow analytics, Kollens stores a random identifier in this browser for each Skopje calendar day. We use it to count unique browsers and page views on public pages. Private pages, account identifiers, search terms and full URLs are excluded from analytics.')}</p>
+      <p>{t('Kollens keeps hashed identifiers for the current day and the previous two days to prevent double counting. Daily totals contain only counts. You can turn analytics off here at any time. We honor Do Not Track and Global Privacy Control.')}</p>
+      <AnalyticsPreferenceControl preferences={analytics} />
+    </section>
 
     <section><h2>{t('Language preference')}</h2><p>{t('Your language choice is saved in this browser’s local storage.')}</p></section>
 

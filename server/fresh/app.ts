@@ -32,6 +32,7 @@ import { googleAuthConfig, registerGoogleAuthRoutes } from '../googleAuth.js';
 import { emailAuthConfig, registerEmailAuthRoutes } from '../emailAuth.js';
 import { telegramExtensionIdentity } from '../extensionTelegramIdentity.js';
 import { xExtensionIdentity } from '../extensionXIdentity.js';
+import { ensureAnalyticsSchema, registerAnalytics } from '../analytics.js';
 
 const address=(s:string)=>/^0x[0-9a-f]{40}$/i.test(s)?s.toLowerCase():null;
 const num=(s:unknown,defaultValue=50,max=100)=>Number.isInteger(Number(s))&&Number(s)>0?Math.min(Number(s),max):defaultValue;
@@ -42,6 +43,10 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   const app=Fastify({logger:options.logger?{redact:['req.headers.cookie','req.headers.authorization','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie'],
     serializers:{req(request){const url=request.url?.split('?')[0]??'';return{method:request.method,url:url.startsWith('/api/journal')?'/api/journal/[private]':url.startsWith('/api/auth')?'/api/auth/[private]':url};}}}:false,
     trustProxy:process.env.NODE_ENV==='production'});
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url.startsWith('/api/')) reply.header('X-Robots-Tag', 'noindex');
+    return payload;
+  });
   const services=options.services??createFreshServices(db),{reads,charts,replay}=services;
   const cfg=telegramBotConfig(),bot=cfg?.webhookSecret?createTelegramBot(cfg):null;
   const alerts=createTelegramNotifications({db,config:cfg,bot,stateTable:'fresh.checkpoints'});
@@ -55,6 +60,13 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
   registerFreshTrendingTokens(app,db);
+  if (process.env.KOLLENS_ANALYTICS_ENABLED === 'true') {
+    await ensureAnalyticsSchema(db);
+    registerAnalytics(app, db, {
+      origin: process.env.PUBLIC_APP_URL,
+      development: process.env.NODE_ENV !== 'production',
+    });
+  }
   if (process.env.KOLLENS_EXTENSION_ENABLED === 'true') {
     await ensureExtensionSchema(db);
     const extensionOrigins = (process.env.KOLLENS_EXTENSION_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean);

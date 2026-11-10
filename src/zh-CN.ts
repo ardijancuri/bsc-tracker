@@ -1,6 +1,18 @@
 // Product copy only. Token symbols, wallet names, addresses and protocol names stay unchanged.
 import { creatorJournalChinese } from './creatorJournalChinese';
 export const chinese: Record<string, string> = {
+  'Website analytics': '网站访问统计',
+  'Help us measure visits and page views. Analytics is optional.': '帮助我们统计访客和页面浏览量。您可以选择是否开启统计。',
+  'Decline': '拒绝',
+  'Allow analytics': '允许统计',
+  'Turn off analytics': '关闭统计',
+  'Analytics is on in this browser.': '此浏览器已开启访问统计。',
+  'Analytics is off in this browser.': '此浏览器已关闭访问统计。',
+  'Your browser’s privacy setting keeps analytics off.': '您的浏览器隐私设置已关闭访问统计。',
+  'If you allow analytics, Kollens stores a random identifier in this browser for each Skopje calendar day. We use it to count unique browsers and page views on public pages. Private pages, account identifiers, search terms and full URLs are excluded from analytics.': '如果您允许统计，Kollens 会按斯科普里时区的自然日在浏览器中保存一个随机标识符，用于统计公开页面的独立浏览器数量和页面浏览量。统计不包含私人页面、账号标识符、搜索词或完整网址。',
+  'Kollens keeps hashed identifiers for the current day and the previous two days to prevent double counting. Daily totals contain only counts. You can turn analytics off here at any time. We honor Do Not Track and Global Privacy Control.': '为避免重复计数，Kollens 会保留当天和前两天的哈希标识符。每日汇总仅包含数量。您可以随时在此关闭统计。我们遵循“请勿跟踪”（DNT）和“全球隐私控制”（GPC）信号。',
+  'Last updated November 10, 2026': '更新日期：2026 年 11 月 10 日',
+  'Page not found': '找不到页面',
   'Kollens Companion and Google sign-in': 'Kollens Companion 与 Google 登录',
   'If you choose Google sign-in from Kollens Companion, we use your Google account identifier and display name to recognize your Kollens account. After you approve the connection, the extension uses its own session to sync your saved tokens, private notes and alert preferences.': '如果您在 Kollens Companion 中使用 Google 登录，我们会使用您的 Google 账号标识符和显示名称识别您的 Kollens 账号。您批准连接后，扩展程序会通过自己的会话同步您收藏的代币、私人笔记和提醒偏好。',
   'You can disconnect the extension from its Profile tab. Contact us to request deletion of your account data.': '您可以在扩展程序的个人资料标签页中断开连接。如需删除账号数据，请联系我们。',
