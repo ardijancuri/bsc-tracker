@@ -105,12 +105,12 @@ export function usePageView(allowed: boolean, pathname: string | null) {
 
 export function AnalyticsNotice({ preferences }: { preferences: AnalyticsPreferences }) {
   if (!preferences.enabled || preferences.signal || preferences.choice !== null) return null;
-  return <aside className="analytics-notice" aria-label={t('Website analytics')}>
-    <strong>{t('Website analytics')}</strong>
-    <p>{t('Help us measure visits and page views. Analytics is optional.')} <Link to="/privacy-policy#website-analytics">{t('Privacy Policy')}</Link></p>
+  return <aside className="analytics-notice" aria-labelledby="analytics-notice-title">
+    <strong id="analytics-notice-title">{t('Cookie preferences')}</strong>
+    <p>{t('Allow optional browser storage to help Kollens measure visits and page views.')} <Link to="/privacy-policy#website-analytics">{t('Privacy Policy')}</Link></p>
     <div className="analytics-actions">
       <button type="button" onClick={() => preferences.choose('decline')}>{t('Decline')}</button>
-      <button type="button" onClick={() => preferences.choose('allow')}>{t('Allow analytics')}</button>
+      <button className="analytics-allow" type="button" onClick={() => preferences.choose('allow')}>{t('Allow cookies')}</button>
     </div>
   </aside>;
 }

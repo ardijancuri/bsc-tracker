@@ -2,7 +2,9 @@
 import { creatorJournalChinese } from './creatorJournalChinese';
 export const chinese: Record<string, string> = {
   'Website analytics': '网站访问统计',
-  'Help us measure visits and page views. Analytics is optional.': '帮助我们统计访客和页面浏览量。您可以选择是否开启统计。',
+  'Cookie preferences': 'Cookie 设置',
+  'Allow optional browser storage to help Kollens measure visits and page views.': '您可以允许 Kollens 使用可选的浏览器存储来统计访客和页面浏览量。',
+  'Allow cookies': '允许 Cookie',
   'Decline': '拒绝',
   'Allow analytics': '允许统计',
   'Turn off analytics': '关闭统计',
