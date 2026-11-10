@@ -289,6 +289,7 @@ html[data-surface] .group,.saved-stack {
   border-radius: 10px;
 }
 html[data-surface] .group{border:1px solid var(--group-color);animation:none}
+.group-header:has(.group-narrative){position:relative}
 .group-header {
   display: grid;
   grid-template-columns: minmax(0,1fr) auto;
@@ -297,6 +298,7 @@ html[data-surface] .group{border:1px solid var(--group-color);animation:none}
   padding: 4px 8px 4px 10px;
 }
 .group-actions{display:flex;align-items:center;gap:4px}
+.group-actions>.group-narrative{margin-inline-end:-4px}
 html[data-surface] .group-heading{min-width:0;min-height:28px;margin:0;gap:7px}
 html[data-surface] .group-heading strong{font-size:13px}
 html[data-surface] .group-heading>span:last-child{font-size:11px;white-space:nowrap;color:var(--muted)}
@@ -357,6 +359,44 @@ html[data-surface] .source-link {
 }
 html[data-surface] .source-link:hover{color:var(--yellow)}
 html[data-surface] .source-link .ui-icon{width:15px;height:15px}
+html[data-surface] .group-actions :is(.group-narrative>.source-link,.group-narrative+.source-link){width:26px}
+.group-narrative summary{cursor:pointer;list-style:none}
+.group-narrative summary::-webkit-details-marker{display:none}
+.group-narrative[open] summary{color:var(--yellow)}
+.group-narrative-popover{
+  position:absolute;
+  z-index:5;
+  inset:100% 7px auto;
+  display:grid;
+  gap:8px;
+  padding:12px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:9px;
+  box-shadow:0 8px 24px #0008;
+  font-size:12px;
+  line-height:1.5;
+}
+.group-narrative-title{display:flex;align-items:center;gap:6px;font-size:13px}
+.group-narrative-title .ui-icon{color:var(--muted)}
+.group-narrative-popover .group-narrative-text{
+  max-height:160px;
+  overflow:auto;
+  color:inherit;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+.group-narrative-popover .group-narrative-credit{font-size:10px;margin-top:5px}
+.standalone-narrative{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:10px;
+  background:var(--surface);
+}
 html[data-surface] .token-identity{gap:1px;line-height:1.25}
 html[data-surface] .token-identity strong{font-size:13px}
 html[data-surface] .token-identity>span{font-size:11px;color:var(--muted)}

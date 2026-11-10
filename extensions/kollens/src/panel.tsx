@@ -9,6 +9,8 @@ import {AccountView,type AccountPending} from './AccountView';
 import {WalletsView} from './WalletsView';
 import {WalletBuyAmountSettings} from './WalletBuyAmountSettings';
 import { XTrendingSettings } from './XTrendingSettings';
+import { GroupNarrative } from './GroupNarrative';
+import { isBscTrenches } from './adapter';
 import {WalletBuyView,loadWalletBuyContext,requestWalletBuyPermission,type WalletBuyContext,type WalletBuyRequest} from './WalletBuyView';
 import type {WalletBuyMode} from './walletBuyDefaults';
 import {captureWalletBuyTab} from './walletBuyNavigation';
@@ -20,7 +22,9 @@ import './panel.css';
 import './popup.css';
 import './matchPause.css';
 
-interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;syncError?:string;tabId?:number;pagePending?:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean}
+declare const __GMGN_NARRATIVE_LOCAL__: boolean;
+
+interface State{connected:boolean;workspace:ExtensionWorkspace|null;drafts:Draft[];preferenceDraft?:{conflict?:boolean};preferences:ExtensionPreferences;soundActivated?:boolean;saved:string[];page:ExtensionPage|null;selected:string|null;pending?:AccountPending|null;authOptions?:ExtensionAuthOptions;demoAccount?:boolean;syncError?:string;tabId?:number;pagePending?:boolean;ownerId?:string;ui?:PopupUi;focusRequested?:boolean;canScanPage?:boolean;localLiveAvailable?:boolean;liveEnabled?:boolean;gmgnNarrativeToken?:string;gmgnNarrativePermission?:'https://www.gmgn.ai/*'}
 const accountReturnKey='popupAccountReturnUntil';
 const empty:State={connected:false,workspace:null,drafts:[],preferences:defaultExtensionPreferences,saved:[],page:null,selected:null};
 const short=(address:string)=>`${address.slice(0,6)}…${address.slice(-4)}`;
@@ -331,7 +335,8 @@ function Panel(){
       displayedTab.current=undefined;
       setCheckingTab(true);
       scanActiveTab.current=true;
-      setState(current=>({...current,page:null,selected:null,canScanPage:false}));
+      setState(current=>({...current,page:null,selected:null,canScanPage:false,
+        ...(__GMGN_NARRATIVE_LOCAL__ ? {gmgnNarrativeToken:undefined,gmgnNarrativePermission:undefined} : {})}));
       void refresh();
     };
     const activated=(tab:chrome.tabs.OnActivatedInfo)=>{
@@ -410,6 +415,9 @@ function Panel(){
     ? matchPause : null;
   // Hold the entire layout so changes to a group above the pointer cannot move the intended Buy button.
   const matchesPage = activeMatchPause?.page ?? state.page;
+  const showNarrative = __GMGN_NARRATIVE_LOCAL__ && isExtension && isBscTrenches(matchesPage?.url ?? '');
+  const narrativeToken = __GMGN_NARRATIVE_LOCAL__ && isExtension && extensionAddress(state.gmgnNarrativeToken)
+    ? state.gmgnNarrativeToken : null;
   const cards=matchesPage?.cards??[],groups=matchesPage?.groups??[],unique=new Map<string,TokenCard>();
   useEffect(()=>{
     if (matchPause && !activeMatchPause) setMatchPause(null);
@@ -602,6 +610,8 @@ function Panel(){
               </span>
             </button>
             <div className="group-actions">
+              {__GMGN_NARRATIVE_LOCAL__&&showNarrative&&group.type!=='telegram'&&unique.has(group.addresses[0])&&
+                <GroupNarrative key={group.addresses[0]} groupId={group.id} address={group.addresses[0]} origin={state.gmgnNarrativePermission} windowId={windowId}/>}
               <a className="source-link" href={group.url} target="_blank" rel="noopener noreferrer" title="Open source link" aria-label={`Open source link for ${extensionLabels[group.type]}`}><Icon name="external"/></a>
               {isExtension&&group.addresses.every(address=>unique.has(address))&&
                 <button type="button" className="token-buy" disabled={!buyContext} title={groupBuyAmount
@@ -624,7 +634,10 @@ function Panel(){
               }/>;
             })}
           </div>
-        </section>):showTrenchesLink?<a className="trenches-empty" href="https://gmgn.ai/?chain=bsc" target="_blank" rel="noopener noreferrer">
+        </section>):__GMGN_NARRATIVE_LOCAL__&&narrativeToken?<div className="group-header standalone-narrative" key={narrativeToken}>
+          <span>Current token · {short(narrativeToken)}</span>
+          <GroupNarrative address={narrativeToken} origin={state.gmgnNarrativePermission} windowId={windowId}/>
+        </div>:showTrenchesLink?<a className="trenches-empty" href="https://gmgn.ai/?chain=bsc" target="_blank" rel="noopener noreferrer">
           <img src="assets/gmgn.png" alt=""/>
           <span>Open GMGN BNB trenches to find matches</span>
         </a>:canEnableLive&&!state.page?null:<div className="empty"><h2>{checkingTab?'Loading token matches…':emptyMatches(state,unique.size>0)}</h2></div>}

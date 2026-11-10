@@ -7,16 +7,20 @@ import {fileURLToPath} from 'node:url';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..'),repo=resolve(root,'../..');
 const local=process.argv.includes('--local'),qa=process.argv.includes('--gmgn-qa');
 const localGmgn=process.argv.includes('--local-gmgn');
+const narrativeFrameLocalTest=process.argv.includes('--gmgn-narrative-frame-test');
 const download=process.argv.includes('--download');
 if(local&&localGmgn)throw Error('Choose either the local fixture or the local GMGN build');
 if(qa&&!local&&!localGmgn)throw Error('GMGN QA requires an isolated local build');
 if(download&&(local||localGmgn||qa))throw Error('Only the standard extension build can be packaged for download.');
+if(narrativeFrameLocalTest&&(!localGmgn||qa))throw Error('Narrative frame testing requires the local GMGN build.');
 const out=resolve(root,qa?'dist-gmgn-qa':local?'dist-local':localGmgn?'dist-local-gmgn':'dist');
 const gates=JSON.parse(await readFile(resolve(root,'release-gates.json'),'utf8'));
 const developmentKey=JSON.parse(await readFile(resolve(root,'development-key.json'),'utf8')).publicKey;
 if(gates.gmgnAuthorized||gates.gmgnLayoutVerified)throw Error('GMGN gates require a separately reviewed activation build; initial package stays disabled.');
 const define={__API_ORIGIN__:JSON.stringify(local?'http://127.0.0.1:3360':'https://kollens.com'),__GMGN_AUTHORIZED__:'false',
-  __LOCAL_FIXTURE__:JSON.stringify(local),__LOCAL_GMGN_LIVE__:JSON.stringify(local||localGmgn)};
+  __LOCAL_FIXTURE__:JSON.stringify(local),__LOCAL_GMGN_LIVE__:JSON.stringify(local||localGmgn),
+  __GMGN_NARRATIVE_LOCAL__:JSON.stringify(local||localGmgn),
+  __GMGN_NARRATIVE_FRAME_TEST__:JSON.stringify(qa||narrativeFrameLocalTest)};
 const kollensIcon=resolve(repo,'public/kollens-icon.png');
 const bnbIcon=resolve(repo,'public/bnb-chain.svg');
 await mkdir(resolve(out,'assets'),{recursive:true});

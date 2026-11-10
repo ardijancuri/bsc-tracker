@@ -1,12 +1,13 @@
 import { browserApi as chrome, config } from './platform';
 import { WorkspaceSync, type LocalStore } from './sync';
-import { isBscTrenches } from './adapter';
+import { isBscTrenches, verifiedGmgnLayout } from './adapter';
 import { readRenderedGmgnTrenches } from './gmgnReader';
+import { gmgnNarrativeAddress, gmgnNarrativeOrigin, readRenderedGmgnNarrative, type GmgnNarrative } from './gmgnNarrative';
 import { normalizeCardMetric } from './cardMetrics';
 import { normalizeSocialLink, matchCards } from './matching';
 import {LiveGmgnAccess,gmgnOrigins} from './liveAccess';
 import { isXPage, loadXTrendingTokens, refreshXTrendingAccess, xTrendingOrigins, xTrendingSiteAllowed } from './xTrendingAccess';
-import {extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage} from '../../../shared/extension';
+import {extensionAddress,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage} from '../../../shared/extension';
 
 const store:LocalStore={async get<T>(key:string){return (await chrome.storage.local.get(key))[key] as T|undefined;},async set(key,value){await chrome.storage.local.set({[key]:value});}};
 const live=new LiveGmgnAccess(chrome,config.localGmgnLive);
@@ -22,6 +23,7 @@ const focusRequests=new Set<number>();
 const manualPages=new Set<number>();
 const manualScans=new Map<number,{url:string;promise:Promise<void>}>();
 const manualSnapshotReuseMs=750;
+let readingNarrative = false;
 let authOptions: ExtensionAuthOptions | undefined;
 let authOptionsRetryAt = 0;
 let socialError: {ownerId: string; message: string} | null = null;
@@ -51,6 +53,8 @@ function contentSender(sender:any){
     || __LOCAL_FIXTURE__&&url.origin==='http://127.0.0.1:3360'&&url.pathname==='/fixture';}catch{return false;}
 }
 declare const __LOCAL_FIXTURE__:boolean;
+declare const __GMGN_NARRATIVE_LOCAL__: boolean;
+declare const __GMGN_NARRATIVE_FRAME_TEST__: boolean;
 async function active(){return(await chrome.tabs.query({active:true,currentWindow:true}))[0]?.id as number|undefined;}
 async function activeUiTab(sender:chrome.runtime.MessageSender,windowId:unknown) {
   if (sender.url?.split('?')[0]!==sidePanelUrl) {
@@ -67,6 +71,42 @@ async function activeUiTab(sender:chrome.runtime.MessageSender,windowId:unknown)
   const owningWindow = context && context.windowId>=0?context.windowId:windowId;
   if (typeof owningWindow==='number'&&Number.isInteger(owningWindow)&&owningWindow>=0) {
     return (await chrome.tabs.query({active:true,windowId:owningWindow}))[0];
+  }
+}
+
+async function loadGroupNarrative(tab: chrome.tabs.Tab | undefined, groupId: unknown, address: unknown): Promise<GmgnNarrative> {
+  if (!tab || tab.id == null || !tab.url || !extensionAddress(address)) return { status: 'group_changed' };
+  const page = pages.get(tab.id);
+  const direct = groupId === undefined && gmgnNarrativeAddress(tab.url) === address;
+  if (!direct && (!page || page.url !== tab.url || !isBscTrenches(page.url)
+    || !page.groups.some(group => group.id === groupId && group.addresses.includes(address)))) {
+    return { status: 'group_changed' };
+  }
+  const origin = new URL(tab.url).hostname === 'www.gmgn.ai' ? 'https://www.gmgn.ai/*' : gmgnNarrativeOrigin;
+  if (!await chrome.permissions.contains({ origins: [origin] })) return { status: 'access_required' };
+  if (readingNarrative) return { status: 'busy' };
+  readingNarrative = true;
+
+  try {
+    // Only builds explicitly selected for local testing use the frame fallback.
+    const allowDetailFrame = __GMGN_NARRATIVE_FRAME_TEST__ && !direct;
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, frameIds: [0] },
+      world: 'ISOLATED',
+      func: readRenderedGmgnNarrative,
+      args: [address, tab.url, Date.now() + (direct ? 9000 : allowDetailFrame ? 14000 : 5000),
+        direct ? null : verifiedGmgnLayout, allowDetailFrame],
+    });
+    const current = await chrome.tabs.get(tab.id);
+    if (!current.active || current.url !== tab.url) return { status: 'group_changed' };
+    if (!direct && !pages.get(tab.id)?.groups.some(group => group.id === groupId && group.addresses.includes(address))) {
+      return { status: 'group_changed' };
+    }
+    return injection?.result ?? { status: 'page_unavailable' };
+  } catch {
+    return { status: 'page_unavailable' };
+  } finally {
+    readingNarrative = false;
   }
 }
 async function pushSettings(tabId:number){const settings=await sync.settings(),version=(pages.get(tabId)?.pageId??'')+JSON.stringify(settings);if(settingsVersions.get(tabId)===version)return;settingsVersions.set(tabId,version);if(manualPages.has(tabId)){const page=pages.get(tabId);if(page)page.groups=matchCards(page.cards,settings.preferences.matchTypes);return;}await chrome.tabs.sendMessage(tabId,{kind:'settings',...settings,preferences:{...settings.preferences,sound:settings.preferences.sound&&settings.soundActivated}}).catch(()=>{settingsVersions.delete(tabId);});}
@@ -209,6 +249,9 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
     }
     if(sender.id!==chrome.runtime.id||!uiUrls.has(sender.url?.split('?')[0]))throw new Error('Request context rejected');
     if(message.ownerId!==undefined&&message.ownerId!==(await sync.state()).ownerId)throw new Error('Account changed');
+    if (__GMGN_NARRATIVE_LOCAL__ && message.kind === 'gmgn/narrative') {
+      return loadGroupNarrative(await activeUiTab(sender, message.windowId), message.groupId, message.address);
+    }
     switch(message.kind){
       case 'x-trending/permission':await refreshXTrendingAccess();return{ok:true};
       case 'state':{
@@ -242,7 +285,13 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
         const selected=page&&tabId!=null?selections.get(tabId)??null:null;
         const focusRequested=Boolean(page&&sender.url?.split('?')[0]!==sidePanelUrl&&tabId!=null&&focusRequests.delete(tabId));
         const linkError = state.connected && socialError?.ownerId === state.ownerId ? socialError.message : null;
+        const narrativeToken = __GMGN_NARRATIVE_LOCAL__ ? gmgnNarrativeAddress(tabUrl) : undefined;
         return{...state,...settings,authOptions,demoAccount:__LOCAL_FIXTURE__,focusRequested,syncError:syncError??linkError??audioError,tabId,
+          ...(__GMGN_NARRATIVE_LOCAL__ ? {
+            gmgnNarrativeToken: narrativeToken,
+            gmgnNarrativePermission: (canScanPage || narrativeToken) && new URL(tabUrl).hostname === 'www.gmgn.ai'
+              ? 'https://www.gmgn.ai/*' : undefined,
+          } : {}),
           pagePending:tabId!=null&&manualScans.get(tabId)?.url===tabUrl,page,selected,gmgnAuthorized:config.gmgnAuthorized,
           canScanPage,manualPage:Boolean(page&&tabId!=null&&manualPages.has(tabId)),localLiveAvailable:config.localGmgnLive,liveEnabled:live.enabled};
       }

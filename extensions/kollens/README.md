@@ -22,6 +22,10 @@ Scripts run in Chrome's isolated world and read only rendered card identity/soci
 
 Browser permission is not GMGN authorization. GMGN's [Terms of Service, section 8.8](https://gmgn.ai/static/tos.html) restrict unauthorized automated access and extensions. This local test mode does not establish GMGN approval or terms compliance. Production activation remains disabled.
 
+## GMGN AI summary — local test
+
+In the local GMGN build, click **AI summary** beside a supported match to read the first token’s rendered GMGN narrative. The same control is available on an open BSC token detail page. Chrome may request optional GMGN site access. To test a missing Trenches trigger in a temporary frame within the same tab, build with `node extensions/kollens/scripts/build.mjs --local-gmgn --gmgn-narrative-frame-test`. The public download excludes the summary reader and worker command pending GMGN authorization and production verification.
+
 ## Try the local demo
 
 Open **http://127.0.0.1:3360/fixture** while the task-owned demo process is running. The page contains simulated tokens, not real trades. Add matching cards, sort, recycle or remove them, change chain, or add 200 cards. The panel and matching engine are the same modules used by the extension.
