@@ -66,10 +66,11 @@ export async function readRenderedGmgnNarrative(
     return '';
   };
 
-  const wait = () => new Promise<void>(resolve => setTimeout(resolve, 160));
+  const wait = () => new Promise<void>(resolve => setTimeout(resolve, 80));
   const challenged = (page: Document) => page.querySelector('#cf-challenge-running, #challenge-form')
     || /\| Cloudflare$/i.test(page.title);
-  const readTooltip = async (trigger: Element, ownerIsCurrent: () => boolean, card?: Element): Promise<GmgnNarrative> => {
+  const readTooltip = async (trigger: Element, ownerIsCurrent: () => boolean, until: number, card?: Element,
+    openWithinMs?: number): Promise<GmgnNarrative> => {
     const wrapper = trigger.parentElement;
     if (!wrapper) return { status: 'unavailable' };
     const isCurrent = () => ownerIsCurrent() && wrapper.isConnected && trigger.parentElement === wrapper;
@@ -82,6 +83,7 @@ export async function readRenderedGmgnNarrative(
     const iconRect = trigger.getBoundingClientRect();
     const rect = iconRect.width && iconRect.height ? iconRect : (card ?? wrapper).getBoundingClientRect();
     const point = { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 };
+    const openedBy = openWithinMs === undefined ? until : Math.min(until, Date.now() + openWithinMs);
     try {
       if (!alreadyOpen) {
         trigger.dispatchEvent(new PointerEvent('pointerover', { ...point, pointerType: 'mouse' }));
@@ -89,9 +91,11 @@ export async function readRenderedGmgnNarrative(
         trigger.dispatchEvent(new PointerEvent('pointermove', { ...point, pointerType: 'mouse' }));
         trigger.dispatchEvent(new MouseEvent('mousemove', point));
       }
-      while (Date.now() < deadline && isCurrent()) {
-        const text = readLinkedTooltip(trigger.ownerDocument, tooltipRef());
+      while (Date.now() < until && isCurrent()) {
+        const reference = tooltipRef();
+        const text = readLinkedTooltip(trigger.ownerDocument, reference);
         if (text) return { status: 'ready', text };
+        if (!reference && Date.now() >= openedBy) break;
         await wait();
       }
       return { status: isCurrent() ? 'unavailable' : 'group_changed' };
@@ -122,7 +126,7 @@ export async function readRenderedGmgnNarrative(
           const trigger = page.readyState === 'complete' ? [...page.querySelectorAll(detailIcon)].find(visible) : undefined;
           if (trigger) {
             const result = await readTooltip(trigger, () => isCurrent() && frame.contentDocument === page
-              && matchesTokenUrl(new URL(page.URL)));
+              && matchesTokenUrl(new URL(page.URL)), deadline);
             if (result.status !== 'group_changed') return result;
           }
         }
@@ -134,14 +138,16 @@ export async function readRenderedGmgnNarrative(
     }
   };
 
-  let trigger: Element | undefined;
-  let card: Element | undefined;
+  // Leave time for the same-tab fallback if the compact tooltip never opens.
+  const tooltipDeadline = layout && allowDetailFrame ? Math.min(deadline, Date.now() + 3500) : deadline;
   while (Date.now() < deadline && pageIsCurrent()) {
     if (challenged(document)) return { status: 'page_unavailable' };
+    let trigger: Element | undefined;
+    let card: Element | undefined;
+    let matchingCardRendered = false;
     if (layout) {
       const candidates = document.querySelector(layout.root)
         ?.querySelectorAll(`${layout.card}[${layout.addressAttribute}="${address}" i]`) ?? [];
-      let matchingCardRendered = false;
       for (const candidate of candidates) {
         if (!matchesCard(candidate) || !visible(candidate) || candidate.closest('[aria-hidden="true"]')) continue;
         matchingCardRendered = true;
@@ -152,16 +158,24 @@ export async function readRenderedGmgnNarrative(
         trigger = icon;
         break;
       }
-      if (!trigger && allowDetailFrame && matchingCardRendered) return readDetailInFrame();
     } else {
       trigger = [...document.querySelectorAll(detailIcon)].find(visible);
     }
-    if (trigger) break;
+    if (trigger && Date.now() < tooltipDeadline) {
+      const currentTrigger = trigger;
+      const result = await readTooltip(currentTrigger, () => pageIsCurrent()
+        && (!layout || (card !== undefined && matchesCard(card) && currentTrigger.closest(layout.card) === card)),
+      tooltipDeadline, card, layout && allowDetailFrame ? 900 : undefined);
+      if (result.status === 'ready') return result;
+      // GMGN can replace the glyph or the entire card when it mounts the tooltip.
+      if (result.status === 'group_changed') {
+        await wait();
+        continue;
+      }
+      if (!allowDetailFrame || !layout) return result;
+    }
+    if (matchingCardRendered && allowDetailFrame && pageIsCurrent()) return readDetailInFrame();
     await wait();
   }
-  if (!pageIsCurrent()) return { status: 'group_changed' };
-  if (!trigger) return { status: 'unavailable' };
-  const exactTrigger = trigger;
-  return readTooltip(exactTrigger, () => pageIsCurrent()
-    && (!layout || (card !== undefined && matchesCard(card) && exactTrigger.closest(layout.card) === card)), card);
+  return { status: pageIsCurrent() ? 'unavailable' : 'group_changed' };
 }

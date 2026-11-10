@@ -23,7 +23,7 @@ export function GroupNarrative({ groupId, address, windowId, origin = gmgnNarrat
   const [narrative, setNarrative] = useState<GmgnNarrative | null>(null);
 
   const load = async () => {
-    if (pending.current || narrative?.status === 'ready' || narrative?.status === 'unavailable') return;
+    if (pending.current) return;
     pending.current = true;
     setNarrative(null);
     try {

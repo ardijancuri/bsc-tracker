@@ -23,7 +23,13 @@ const focusRequests=new Set<number>();
 const manualPages=new Set<number>();
 const manualScans=new Map<number,{url:string;promise:Promise<void>}>();
 const manualSnapshotReuseMs=750;
-let readingNarrative = false;
+type ReadyNarrative = Extract<GmgnNarrative, { status: 'ready' }>;
+const narrativeCache = new Map<string, { value: ReadyNarrative; expires: number }>();
+let readingNarrative: {
+  key: string;
+  result: Promise<chrome.scripting.InjectionResult<GmgnNarrative>[]>;
+  invalidated: boolean;
+} | undefined;
 let authOptions: ExtensionAuthOptions | undefined;
 let authOptionsRetryAt = 0;
 let socialError: {ownerId: string; message: string} | null = null;
@@ -76,38 +82,70 @@ async function activeUiTab(sender:chrome.runtime.MessageSender,windowId:unknown)
 
 async function loadGroupNarrative(tab: chrome.tabs.Tab | undefined, groupId: unknown, address: unknown): Promise<GmgnNarrative> {
   if (!tab || tab.id == null || !tab.url || !extensionAddress(address)) return { status: 'group_changed' };
-  const page = pages.get(tab.id);
-  const direct = groupId === undefined && gmgnNarrativeAddress(tab.url) === address;
-  if (!direct && (!page || page.url !== tab.url || !isBscTrenches(page.url)
-    || !page.groups.some(group => group.id === groupId && group.addresses.includes(address)))) {
-    return { status: 'group_changed' };
-  }
-  const origin = new URL(tab.url).hostname === 'www.gmgn.ai' ? 'https://www.gmgn.ai/*' : gmgnNarrativeOrigin;
+  const { id: tabId, url } = tab;
+  const direct = groupId === undefined && gmgnNarrativeAddress(url) === address;
+  const groupIsCurrent = () => {
+    const page = pages.get(tabId);
+    return direct || (page?.url === url && isBscTrenches(url)
+      && page.groups.some(group => group.id === groupId && group.addresses.includes(address)));
+  };
+  if (!groupIsCurrent()) return { status: 'group_changed' };
+  const origin = new URL(url).hostname === 'www.gmgn.ai' ? 'https://www.gmgn.ai/*' : gmgnNarrativeOrigin;
   if (!await chrome.permissions.contains({ origins: [origin] })) return { status: 'access_required' };
-  if (readingNarrative) return { status: 'busy' };
-  readingNarrative = true;
 
+  const key = `${tabId}\n${url}\n${address}`;
+  const cached = narrativeCache.get(key);
+  const cachedValue = cached && cached.expires > Date.now() ? cached.value : undefined;
+  if (!cachedValue && readingNarrative && (readingNarrative.key !== key || readingNarrative.invalidated)) {
+    return { status: 'busy' };
+  }
+  let ownsRead = false;
+  let read: typeof readingNarrative;
   try {
-    // Only builds explicitly selected for local testing use the frame fallback.
-    const allowDetailFrame = __GMGN_NARRATIVE_FRAME_TEST__ && !direct;
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [0] },
-      world: 'ISOLATED',
-      func: readRenderedGmgnNarrative,
-      args: [address, tab.url, Date.now() + (direct ? 9000 : allowDetailFrame ? 14000 : 5000),
-        direct ? null : verifiedGmgnLayout, allowDetailFrame],
-    });
-    const current = await chrome.tabs.get(tab.id);
-    if (!current.active || current.url !== tab.url) return { status: 'group_changed' };
-    if (!direct && !pages.get(tab.id)?.groups.some(group => group.id === groupId && group.addresses.includes(address))) {
-      return { status: 'group_changed' };
+    let result: GmgnNarrative | undefined = cachedValue;
+    if (!result) {
+      if (!readingNarrative) {
+        // Only builds explicitly selected for local testing use the frame fallback.
+        const allowDetailFrame = __GMGN_NARRATIVE_FRAME_TEST__ && !direct;
+        readingNarrative = {
+          key,
+          invalidated: false,
+          result: chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: 'ISOLATED',
+            func: readRenderedGmgnNarrative,
+            args: [address, url, Date.now() + (direct ? 9000 : allowDetailFrame ? 14000 : 5000),
+              direct ? null : verifiedGmgnLayout, allowDetailFrame],
+          }),
+        };
+        ownsRead = true;
+      }
+      read = readingNarrative;
+      const [injection] = await read.result;
+      result = injection?.result;
     }
-    return injection?.result ?? { status: 'page_unavailable' };
+    const current = await chrome.tabs.get(tabId);
+    if (!current.active || current.url !== url || !groupIsCurrent() || read?.invalidated
+      || (cachedValue && narrativeCache.get(key) !== cached)) return { status: 'group_changed' };
+    if (!cachedValue && result?.status === 'ready' && narrativeCache.get(key)?.value !== result) {
+      narrativeCache.delete(key);
+      narrativeCache.set(key, { value: result, expires: Date.now() + 5 * 60_000 });
+      if (narrativeCache.size > 64) {
+        const oldest = narrativeCache.keys().next().value;
+        if (oldest !== undefined) narrativeCache.delete(oldest);
+      }
+    }
+    return result ?? { status: 'page_unavailable' };
   } catch {
     return { status: 'page_unavailable' };
   } finally {
-    readingNarrative = false;
+    if (ownsRead) readingNarrative = undefined;
   }
+}
+function invalidateNarratives(tabId?: number) {
+  const prefix = tabId === undefined ? '' : `${tabId}\n`;
+  for (const key of narrativeCache.keys()) if (key.startsWith(prefix)) narrativeCache.delete(key);
+  if (readingNarrative?.key.startsWith(prefix)) readingNarrative.invalidated = true;
 }
 async function pushSettings(tabId:number){const settings=await sync.settings(),version=(pages.get(tabId)?.pageId??'')+JSON.stringify(settings);if(settingsVersions.get(tabId)===version)return;settingsVersions.set(tabId,version);if(manualPages.has(tabId)){const page=pages.get(tabId);if(page)page.groups=matchCards(page.cards,settings.preferences.matchTypes);return;}await chrome.tabs.sendMessage(tabId,{kind:'settings',...settings,preferences:{...settings.preferences,sound:settings.preferences.sound&&settings.soundActivated}}).catch(()=>{settingsVersions.delete(tabId);});}
 async function refreshTabs(){await Promise.all([...pages.keys()].map(pushSettings));}
@@ -183,6 +221,7 @@ async function sound(){
 function forgetPage(id:number) {
   pages.delete(id);manualPages.delete(id);manualScans.delete(id);selections.delete(id);
   configuredPages.delete(id);settingsVersions.delete(id);focusRequests.delete(id);
+  if (__GMGN_NARRATIVE_LOCAL__) invalidateNarratives(id);
 }
 chrome.tabs.onRemoved.addListener(forgetPage);
 chrome.tabs.onUpdated.addListener((id,info,tab)=>{
@@ -207,6 +246,7 @@ chrome.permissions.onAdded.addListener(({origins})=>{
 });
 chrome.permissions.onRemoved.addListener(({origins})=>{
   if(origins?.some(origin=>xTrendingOrigins.includes(origin)))void refreshXTrendingAccess().catch(()=>{});
+  if (__GMGN_NARRATIVE_LOCAL__ && origins?.some(origin => gmgnOrigins.includes(origin))) invalidateNarratives();
 });
 chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unknown)=>void)=>{
   if(message?.kind==='audio/beep')return false;
