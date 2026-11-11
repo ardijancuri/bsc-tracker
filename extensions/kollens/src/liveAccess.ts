@@ -10,11 +10,11 @@ export class LiveGmgnAccess {
   private operations = Promise.resolve();
   private recovering = new Map<number, { url: string; ticket: symbol; work: Promise<void> }>();
 
-  constructor(private api: typeof chrome, private localBuild: boolean) {}
+  constructor(private api: typeof chrome, private available: boolean) {}
 
   async restore() {
     const stored = await this.api.storage.local.get('gmgnLiveEnabled');
-    this.enabled = this.localBuild && stored.gmgnLiveEnabled === true &&
+    this.enabled = this.available && stored.gmgnLiveEnabled === true &&
       await this.api.permissions.contains({ origins: gmgnOrigins });
     try {
       await this.registration();
@@ -67,10 +67,10 @@ export class LiveGmgnAccess {
 
   setEnabled(wanted: boolean) {
     const next = this.operations.then(async () => {
-      if (wanted && (!this.localBuild || !await this.api.permissions.contains({ origins: gmgnOrigins }))) {
+      if (wanted && (!this.available || !await this.api.permissions.contains({ origins: gmgnOrigins }))) {
         throw Error('Allow GMGN site access first');
       }
-      this.enabled = wanted && this.localBuild;
+      this.enabled = wanted && this.available;
       if (!this.enabled) this.recovering.clear();
       try {
         await this.registration();

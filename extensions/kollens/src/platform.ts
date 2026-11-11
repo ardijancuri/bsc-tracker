@@ -7,10 +7,9 @@ if(!isExtension&&typeof window!=='undefined')window.addEventListener('message',e
   if(event.data?.kind==='fixture/page'){demoPage=event.data.page;window.dispatchEvent(new CustomEvent('kollens:live-page',{detail:demoPage}));}
   if(event.data?.kind==='fixture/focus'){demoSelected=event.data.groupId;window.dispatchEvent(new CustomEvent('kollens:live-focus',{detail:demoSelected}));}
 });
-export const config = { apiOrigin: __API_ORIGIN__, gmgnAuthorized: __GMGN_AUTHORIZED__,localGmgnLive:__LOCAL_GMGN_LIVE__ };
+export const config = { apiOrigin: __API_ORIGIN__, gmgnLiveAvailable: __GMGN_LIVE_AVAILABLE__ };
 declare const __API_ORIGIN__: string;
-declare const __GMGN_AUTHORIZED__: boolean;
-declare const __LOCAL_GMGN_LIVE__:boolean;
+declare const __GMGN_LIVE_AVAILABLE__: boolean;
 export async function requestBackground<T>(message: unknown): Promise<T> {
   if (isExtension) {
     const response = await browserApi.runtime.sendMessage(message);

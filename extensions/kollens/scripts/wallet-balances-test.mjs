@@ -30,7 +30,7 @@ try {
   await build({
     bundle: true,
     outfile: join(extension, 'test.js'),
-    define: {__API_ORIGIN__: '"https://example.test"', __GMGN_AUTHORIZED__: 'false', __LOCAL_GMGN_LIVE__: 'false'},
+    define: {__API_ORIGIN__: '"https://example.test"', __GMGN_LIVE_AVAILABLE__: 'false'},
     stdin: {loader: 'jsx', resolveDir: extensionRoot, contents: `
       import React, {useState} from 'react';
       import {createRoot} from 'react-dom/client';

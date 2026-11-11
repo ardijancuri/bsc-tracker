@@ -46,7 +46,7 @@ export const guideTopics: GuideTopic[] = [
         title: 'Open your workspace',
         paragraphs: [
           'Open Companion from the Chrome toolbar. The bottom bar switches between Wallets, Tokens, Settings and Profile. The Open side panel icon keeps the same workspace visible beside your tab.',
-          'In Tokens, use Matches to compare token groups, Saved for your favorites and notes, and Activity to review match alerts when using the local test build.',
+          'In Tokens, use Matches to compare token groups, Saved for your favorites and notes, and Activity to review match alerts.',
         ],
       },
     ],
@@ -100,8 +100,7 @@ export const guideTopics: GuideTopic[] = [
         title: 'Find matching tokens',
         steps: [
           'Open GMGN Trenches and select BNB Chain, or open gmgn.ai/?chain=bsc directly.',
-          'With that tab active, open Kollens Companion and select Tokens → Matches. The public download scans the token cards currently rendered in that tab.',
-          'Reopen the workspace to scan again after the Trenches list changes.',
+          'With that tab active, open Kollens Companion and select Tokens → Matches to scan the rendered cards in that tab.',
         ],
         image: { file: 'matches.webp', alt: 'Companion Matches showing GREEN MORNING and SAFU token groups', caption: 'Related tokens grouped by shared social links.', width: 720, height: 968 },
       },
@@ -137,27 +136,27 @@ export const guideTopics: GuideTopic[] = [
       },
       {
         id: 'live-matching',
-        title: 'Automatic matching in the local test build',
+        title: 'Enable automatic matching',
         steps: [
-          'Open BNB Chain Trenches, select Enable on GMGN in Companion and approve Chrome’s site access prompt.',
-          'The test build refreshes groups as the rendered cards change. Use Settings → Matches to control outlines on matching cards.',
+          'On BNB Chain Trenches, open Tokens → Matches, select Enable on GMGN and approve Chrome’s site access prompt.',
+          'Companion updates groups as the rendered cards change and outlines matching cards and social links. Use Settings → Matches to control the outlines.',
         ],
-        note: { title: 'Public download', text: 'The public build scans the current tab on demand. Automatic matching, outlines and live alerts are available in the local test build.' },
+        paragraphs: ['Groups are scoped to each Trenches tab. To stop automatic matching, remove GMGN site access in Chrome’s extension settings.'],
       },
       {
         id: 'ai-summary',
-        title: 'Read an AI summary in the local test build',
+        title: 'Read an AI summary',
         paragraphs: [
-          'Click the sparkles icon beside a supported group’s source link. Companion opens the first token’s available AI summary inside the panel. The same control can appear when a BNB Chain token page is active.',
-          'Grant GMGN site access if Chrome asks. Summary availability depends on what Companion can read from the GMGN page. Verify any claims before using the summary.',
+          'Click the sparkles icon beside a matching X group’s source link to read the first token’s AI summary in Companion. The same control can appear when a BNB Chain token page is active.',
+          'Grant GMGN site access if Chrome asks. If the summary is missing in Trenches, turn on AI Narrative in GMGN under Customize → Data and reopen the summary. Availability varies by token. Verify any claims before using them.',
         ],
-        image: { file: 'ai-summary.webp', alt: 'Companion AI summary popover showing a sample narrative and a reminder to verify claims', caption: 'Example narrative in the local test build.', width: 720, height: 640 },
+        image: { file: 'ai-summary.webp', alt: 'Companion AI summary popover showing a sample narrative and a reminder to verify claims', caption: 'The AI summary panel with an example narrative.', width: 720, height: 640 },
       },
       {
         id: 'alerts',
         title: 'Manage match alerts',
-        paragraphs: ['In the local test build, open Settings → Alerts to flag new groups or tokens joining a group. You can limit alerts to groups with a saved token and enable sound. See recent alerts under Tokens → Activity.'],
-        image: { file: 'alerts.webp', alt: 'Companion Page alerts settings with group, saved-token, and sound options', caption: 'Live match alert settings in the test build.', width: 720, height: 740 },
+        paragraphs: ['With automatic matching enabled, open Settings → Alerts to flag new groups or tokens joining a group. You can limit alerts to groups with a saved token and enable sound. See recent alerts under Tokens → Activity.'],
+        image: { file: 'alerts.webp', alt: 'Companion Page alerts settings with group, saved-token, and sound options', caption: 'Live match alert settings.', width: 720, height: 740 },
       },
     ],
   },
@@ -280,7 +279,7 @@ export const guideTopics: GuideTopic[] = [
         title: 'What each permission is for',
         bullets: [
           'kollens.com provides the trending feed, account sign-in, and workspace sync.',
-          'The active GMGN tab supplies rendered token cards and social links when you open the matching workspace. Automatic matching and AI summaries in the local test build use optional GMGN access.',
+          'The active GMGN tab supplies rendered token cards and social links when you open the matching workspace. Optional GMGN site access lets Companion follow card changes, highlight matches, and read AI summaries from the page.',
           'Optional x.com access lets Companion place Trending Tokens in the X sidebar. Manage it from Settings → About or the extension’s Details page in Chrome.',
           'The BNB Chain RPC looks up public wallet balances, checks quotes and fees, and broadcasts transactions your wallet signs.',
         ],
@@ -305,7 +304,7 @@ export const guideTopics: GuideTopic[] = [
       {
         id: 'gmgn-missing',
         title: 'GMGN matches are missing',
-        paragraphs: ['Make the BNB Chain Trenches tab active and reopen Tokens → Matches. Check Settings → Matches for your enabled match types. The scan needs two distinct contracts rendered on the page that share a supported link.'],
+        paragraphs: ['Make the BNB Chain Trenches tab active and reopen Tokens → Matches. For live updates, select Enable on GMGN and check Chrome’s site access. Check Settings → Matches for your enabled match types. A group needs two distinct contracts rendered on the page that share a supported link.'],
       },
       {
         id: 'x-missing',

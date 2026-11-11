@@ -10,7 +10,7 @@ import { isXPage, loadXTrendingTokens, refreshXTrendingAccess, xTrendingOrigins,
 import {extensionAddress,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage} from '../../../shared/extension';
 
 const store:LocalStore={async get<T>(key:string){return (await chrome.storage.local.get(key))[key] as T|undefined;},async set(key,value){await chrome.storage.local.set({[key]:value});}};
-const live=new LiveGmgnAccess(chrome,config.localGmgnLive);
+const live=new LiveGmgnAccess(chrome,config.gmgnLiveAvailable);
 const ready=chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}).then(()=>live.restore().catch(()=>{live.enabled=false;}));
 void ready.then(()=>live.recoverOpenTabs()).catch(()=>{});
 void refreshXTrendingAccess().catch(()=>{});
@@ -55,11 +55,11 @@ function gmgnSender(sender:any){
 }
 function contentSender(sender:any){
   if(sender.id!==chrome.runtime.id||!sender.tab||sender.frameId!==0)return false;
-  try{const url=new URL(sender.url);return gmgnSender(sender)||config.gmgnAuthorized&&isBscTrenches(url.href)
-    || __LOCAL_FIXTURE__&&url.origin==='http://127.0.0.1:3360'&&url.pathname==='/fixture';}catch{return false;}
+  if(gmgnSender(sender))return true;
+  try{const url=new URL(sender.url);return __LOCAL_FIXTURE__&&url.origin==='http://127.0.0.1:3360'&&url.pathname==='/fixture';}catch{return false;}
 }
 declare const __LOCAL_FIXTURE__:boolean;
-declare const __GMGN_NARRATIVE_LOCAL__: boolean;
+declare const __GMGN_NARRATIVE_ENABLED__: boolean;
 declare const __GMGN_NARRATIVE_FRAME_TEST__: boolean;
 async function active(){return(await chrome.tabs.query({active:true,currentWindow:true}))[0]?.id as number|undefined;}
 async function activeUiTab(sender:chrome.runtime.MessageSender,windowId:unknown) {
@@ -105,8 +105,6 @@ async function loadGroupNarrative(tab: chrome.tabs.Tab | undefined, groupId: unk
     let result: GmgnNarrative | undefined = cachedValue;
     if (!result) {
       if (!readingNarrative) {
-        // Only builds explicitly selected for local testing use the frame fallback.
-        const allowDetailFrame = __GMGN_NARRATIVE_FRAME_TEST__ && !direct;
         readingNarrative = {
           key,
           invalidated: false,
@@ -114,8 +112,8 @@ async function loadGroupNarrative(tab: chrome.tabs.Tab | undefined, groupId: unk
             target: { tabId, frameIds: [0] },
             world: 'ISOLATED',
             func: readRenderedGmgnNarrative,
-            args: [address, url, Date.now() + (direct ? 9000 : allowDetailFrame ? 14000 : 5000),
-              direct ? null : verifiedGmgnLayout, allowDetailFrame],
+            args: [address, url, Date.now() + (direct ? 9000 : __GMGN_NARRATIVE_FRAME_TEST__ ? 14000 : 5000),
+              direct ? null : verifiedGmgnLayout],
           }),
         };
         ownsRead = true;
@@ -221,7 +219,7 @@ async function sound(){
 function forgetPage(id:number) {
   pages.delete(id);manualPages.delete(id);manualScans.delete(id);selections.delete(id);
   configuredPages.delete(id);settingsVersions.delete(id);focusRequests.delete(id);
-  if (__GMGN_NARRATIVE_LOCAL__) invalidateNarratives(id);
+  if (__GMGN_NARRATIVE_ENABLED__) invalidateNarratives(id);
 }
 chrome.tabs.onRemoved.addListener(forgetPage);
 chrome.tabs.onUpdated.addListener((id,info,tab)=>{
@@ -246,7 +244,7 @@ chrome.permissions.onAdded.addListener(({origins})=>{
 });
 chrome.permissions.onRemoved.addListener(({origins})=>{
   if(origins?.some(origin=>xTrendingOrigins.includes(origin)))void refreshXTrendingAccess().catch(()=>{});
-  if (__GMGN_NARRATIVE_LOCAL__ && origins?.some(origin => gmgnOrigins.includes(origin))) invalidateNarratives();
+  if (__GMGN_NARRATIVE_ENABLED__ && origins?.some(origin => gmgnOrigins.includes(origin))) invalidateNarratives();
 });
 chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unknown)=>void)=>{
   if(message?.kind==='audio/beep')return false;
@@ -259,7 +257,6 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
     await ready;
     // A dormant script must survive an initial non-BSC route, then activate only
     // when the user navigates to BSC trenches. No non-BSC card data is accepted.
-    if(gmgnSender(sender)&&message.kind==='content-settings'){const settings=await sync.settings();return{...settings,preferences:{...settings.preferences,sound:settings.preferences.sound&&settings.soundActivated}};}
     if(contentSender(sender)){
       const tabId=sender.tab.id;
       if(message.kind==='content-settings'){const settings=await sync.settings();return{...settings,preferences:{...settings.preferences,sound:settings.preferences.sound&&settings.soundActivated}};}
@@ -289,7 +286,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
     }
     if(sender.id!==chrome.runtime.id||!uiUrls.has(sender.url?.split('?')[0]))throw new Error('Request context rejected');
     if(message.ownerId!==undefined&&message.ownerId!==(await sync.state()).ownerId)throw new Error('Account changed');
-    if (__GMGN_NARRATIVE_LOCAL__ && message.kind === 'gmgn/narrative') {
+    if (__GMGN_NARRATIVE_ENABLED__ && message.kind === 'gmgn/narrative') {
       return loadGroupNarrative(await activeUiTab(sender, message.windowId), message.groupId, message.address);
     }
     switch(message.kind){
@@ -306,7 +303,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
         if(tabId!=null){
           const candidate=pages.get(tabId);
           const cached=candidate?.url===tabUrl?candidate:undefined;
-          if(message.scanActiveTab===true&&canScanPage&&!live.enabled&&!config.gmgnAuthorized){
+          if(message.scanActiveTab===true&&canScanPage&&!live.enabled){
             if(cached?.status!=='ready'||Date.now()-cached.updatedAt>manualSnapshotReuseMs){
               // Return a usable cached snapshot immediately. Completion is pushed
               // independently so a refresh cannot blank or block a ready group.
@@ -315,7 +312,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
             }
           }else if(!cached){
             if(tab&&live.enabled)void live.recoverTab(tab).catch(()=>{});
-            else if(__LOCAL_FIXTURE__||config.gmgnAuthorized)void chrome.tabs.sendMessage(tabId,{kind:'request-page'}).catch(()=>{});
+            else if(__LOCAL_FIXTURE__)void chrome.tabs.sendMessage(tabId,{kind:'request-page'}).catch(()=>{});
           }
         }
         const [{error:syncError,...state},settings]=await Promise.all([sync.state(),sync.settings()]);
@@ -325,15 +322,15 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
         const selected=page&&tabId!=null?selections.get(tabId)??null:null;
         const focusRequested=Boolean(page&&sender.url?.split('?')[0]!==sidePanelUrl&&tabId!=null&&focusRequests.delete(tabId));
         const linkError = state.connected && socialError?.ownerId === state.ownerId ? socialError.message : null;
-        const narrativeToken = __GMGN_NARRATIVE_LOCAL__ ? gmgnNarrativeAddress(tabUrl) : undefined;
+        const narrativeToken = __GMGN_NARRATIVE_ENABLED__ ? gmgnNarrativeAddress(tabUrl) : undefined;
         return{...state,...settings,authOptions,demoAccount:__LOCAL_FIXTURE__,focusRequested,syncError:syncError??linkError??audioError,tabId,
-          ...(__GMGN_NARRATIVE_LOCAL__ ? {
+          ...(__GMGN_NARRATIVE_ENABLED__ ? {
             gmgnNarrativeToken: narrativeToken,
             gmgnNarrativePermission: (canScanPage || narrativeToken) && new URL(tabUrl).hostname === 'www.gmgn.ai'
               ? 'https://www.gmgn.ai/*' : undefined,
           } : {}),
-          pagePending:tabId!=null&&manualScans.get(tabId)?.url===tabUrl,page,selected,gmgnAuthorized:config.gmgnAuthorized,
-          canScanPage,manualPage:Boolean(page&&tabId!=null&&manualPages.has(tabId)),localLiveAvailable:config.localGmgnLive,liveEnabled:live.enabled};
+          pagePending:tabId!=null&&manualScans.get(tabId)?.url===tabUrl,page,selected,
+          canScanPage,manualPage:Boolean(page&&tabId!=null&&manualPages.has(tabId)),gmgnLiveAvailable:config.gmgnLiveAvailable,liveEnabled:live.enabled};
       }
       case 'enable-live':await live.setEnabled(true);for(const tabId of manualPages)forgetPage(tabId);break;
       case 'connect':await sync.connect(async url=>{await chrome.tabs.create({url});});break;

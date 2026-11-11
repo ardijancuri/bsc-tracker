@@ -1,5 +1,7 @@
 import type { Layout } from './adapter';
 
+declare const __GMGN_NARRATIVE_FRAME_TEST__: boolean;
+
 export type GmgnNarrative = {
   status: 'ready';
   text: string;
@@ -25,7 +27,6 @@ export async function readRenderedGmgnNarrative(
   expectedUrl: string,
   deadline: number,
   layout: Pick<Layout, 'root' | 'card' | 'cardContainer' | 'addressAttribute' | 'chainAttribute'> | null,
-  allowDetailFrame: boolean,
 ): Promise<GmgnNarrative> {
   const gmgnOrigins = ['https://gmgn.ai', 'https://www.gmgn.ai'];
   const tokenPath = `/bsc/token/${address}`;
@@ -107,7 +108,7 @@ export async function readRenderedGmgnNarrative(
     }
   };
 
-  const readDetailInFrame = async (): Promise<GmgnNarrative> => {
+  const readDetailInFrame = __GMGN_NARRATIVE_FRAME_TEST__ && layout ? async (): Promise<GmgnNarrative> => {
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
     frame.setAttribute('aria-hidden', 'true');
@@ -136,10 +137,10 @@ export async function readRenderedGmgnNarrative(
     } finally {
       frame.remove();
     }
-  };
+  } : undefined;
 
   // Leave time for the same-tab fallback if the compact tooltip never opens.
-  const tooltipDeadline = layout && allowDetailFrame ? Math.min(deadline, Date.now() + 3500) : deadline;
+  const tooltipDeadline = readDetailInFrame ? Math.min(deadline, Date.now() + 3500) : deadline;
   while (Date.now() < deadline && pageIsCurrent()) {
     if (challenged(document)) return { status: 'page_unavailable' };
     let trigger: Element | undefined;
@@ -165,16 +166,16 @@ export async function readRenderedGmgnNarrative(
       const currentTrigger = trigger;
       const result = await readTooltip(currentTrigger, () => pageIsCurrent()
         && (!layout || (card !== undefined && matchesCard(card) && currentTrigger.closest(layout.card) === card)),
-      tooltipDeadline, card, layout && allowDetailFrame ? 900 : undefined);
+      tooltipDeadline, card, readDetailInFrame ? 900 : undefined);
       if (result.status === 'ready') return result;
       // GMGN can replace the glyph or the entire card when it mounts the tooltip.
       if (result.status === 'group_changed') {
         await wait();
         continue;
       }
-      if (!allowDetailFrame || !layout) return result;
+      if (!readDetailInFrame) return result;
     }
-    if (matchingCardRendered && allowDetailFrame && pageIsCurrent()) return readDetailInFrame();
+    if (matchingCardRendered && readDetailInFrame && pageIsCurrent()) return readDetailInFrame();
     await wait();
   }
   return { status: pageIsCurrent() ? 'unavailable' : 'group_changed' };

@@ -6,8 +6,8 @@ const sol = { id: 2, url: 'https://gmgn.ai/?chain=sol' };
 const other = { id: 3, url: 'https://elsewhere.example/' };
 const registrationId = 'kollens-gmgn-local-live';
 
-function setup({ allowed = true, stored = false, local = true, registeredAt }: {
-  allowed?: boolean; stored?: boolean; local?: boolean; registeredAt?: chrome.scripting.RegisteredContentScript['runAt'];
+function setup({ allowed = true, stored = false, available = true, registeredAt }: {
+  allowed?: boolean; stored?: boolean; available?: boolean; registeredAt?: chrome.scripting.RegisteredContentScript['runAt'];
 } = {}) {
   const memory = new Map<string, unknown>([['gmgnLiveEnabled', stored]]);
   let registered: chrome.scripting.RegisteredContentScript[] = registeredAt
@@ -33,10 +33,10 @@ function setup({ allowed = true, stored = false, local = true, registeredAt }: {
       sendMessage: vi.fn(async (_id: number, _message: unknown): Promise<{ ok: boolean } | null> => null),
     },
   };
-  return { api, memory, access: new LiveGmgnAccess(api as unknown as typeof chrome, local) };
+  return { api, memory, access: new LiveGmgnAccess(api as unknown as typeof chrome, available) };
 }
 
-describe('local GMGN live access', () => {
+describe('GMGN live access', () => {
   it('starts disabled without a saved opt-in', async () => {
     const { access, api } = setup();
     await access.restore();
@@ -44,7 +44,7 @@ describe('local GMGN live access', () => {
     expect(api.scripting.registerContentScripts).not.toHaveBeenCalled();
   });
 
-  it.each([{ allowed: false }, { local: false }])('rejects activation without the local gate and browser grant', async flags => {
+  it.each([{ allowed: false }, { available: false }])('requires build availability and a browser grant to activate', async flags => {
     const { access, api } = setup(flags);
     await expect(access.setEnabled(true)).rejects.toThrow('Allow GMGN');
     expect(api.scripting.registerContentScripts).not.toHaveBeenCalled();

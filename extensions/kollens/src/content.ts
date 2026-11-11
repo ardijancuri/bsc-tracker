@@ -62,7 +62,7 @@ function focus(groupId:string){
 function route(republish=false){
   if(!running||suspended||isExtension&&!extensionId())return;
   const url=location.href;
-  const layout=fixture?fixtureLayout:(config.localGmgnLive||config.gmgnAuthorized)&&isBscTrenches(url)?verifiedGmgnLayout:null;
+  const layout=fixture?fixtureLayout:config.gmgnLiveAvailable&&isBscTrenches(url)?verifiedGmgnLayout:null;
   let root=layout?document.querySelector<HTMLElement>(layout.root):null;
   if(root&&layout?.cardContainer&&!root.querySelector(layout.cardContainer))root=null;
   if(root!==currentRoot||currentUrl!==url){

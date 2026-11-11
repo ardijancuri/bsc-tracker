@@ -9,7 +9,7 @@ beforeAll(async () => {
   const result = await build({
     entryPoints: [fileURLToPath(new URL('./content.ts', import.meta.url))],
     bundle: true, platform: 'browser', format: 'iife', write: false,
-    define: {__API_ORIGIN__: '""', __GMGN_AUTHORIZED__: 'false', __LOCAL_GMGN_LIVE__: 'true'},
+    define: {__API_ORIGIN__: '""', __GMGN_LIVE_AVAILABLE__: 'true'},
   });
   content = result.outputFiles[0].text;
 });
@@ -57,7 +57,7 @@ it.each(['synchronous throw', 'promise rejection', 'missing runtime'])(
   },
 );
 
-it('retries a transient settings startup failure and only decorates after an authorized response', async () => {
+it('retries a transient settings startup failure and waits for settings before decorating', async () => {
   const readySettings = {preferences:defaultExtensionPreferences,saved:[]};
   const runtime = {
     id:'kollens',

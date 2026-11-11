@@ -15,11 +15,13 @@ if(download&&(local||localGmgn||qa))throw Error('Only the standard extension bui
 if(narrativeFrameLocalTest&&(!localGmgn||qa))throw Error('Narrative frame testing requires the local GMGN build.');
 const out=resolve(root,qa?'dist-gmgn-qa':local?'dist-local':localGmgn?'dist-local-gmgn':'dist');
 const gates=JSON.parse(await readFile(resolve(root,'release-gates.json'),'utf8'));
+const {version}=JSON.parse(await readFile(resolve(root,'package.json'),'utf8'));
 const developmentKey=JSON.parse(await readFile(resolve(root,'development-key.json'),'utf8')).publicKey;
-if(gates.gmgnAuthorized||gates.gmgnLayoutVerified)throw Error('GMGN gates require a separately reviewed activation build; initial package stays disabled.');
-const define={__API_ORIGIN__:JSON.stringify(local?'http://127.0.0.1:3360':'https://kollens.com'),__GMGN_AUTHORIZED__:'false',
-  __LOCAL_FIXTURE__:JSON.stringify(local),__LOCAL_GMGN_LIVE__:JSON.stringify(local||localGmgn),
-  __GMGN_NARRATIVE_LOCAL__:JSON.stringify(local||localGmgn),
+const gmgnLiveAvailable=local||localGmgn||gates.publicGmgnAutomaticMatching===true;
+const gmgnNarrativeEnabled=local||localGmgn||gates.publicGmgnAiSummary===true;
+const define={__API_ORIGIN__:JSON.stringify(local?'http://127.0.0.1:3360':'https://kollens.com'),
+  __LOCAL_FIXTURE__:JSON.stringify(local),__GMGN_LIVE_AVAILABLE__:JSON.stringify(gmgnLiveAvailable),
+  __GMGN_NARRATIVE_ENABLED__:JSON.stringify(gmgnNarrativeEnabled),
   __GMGN_NARRATIVE_FRAME_TEST__:JSON.stringify(qa||narrativeFrameLocalTest)};
 const kollensIcon=resolve(repo,'public/kollens-icon.png');
 const bnbIcon=resolve(repo,'public/bnb-chain.svg');
@@ -33,7 +35,7 @@ await build({absWorkingDir:root,entryPoints:['src/content.ts'],bundle:true,forma
 await build({absWorkingDir:root,entryPoints:['src/xTrending.ts'],bundle:true,format:'iife',platform:'browser',target:'chrome116',outfile:resolve(out,'x-trending.js'),sourcemap:local,minify:!local,
   define:{...define,__KOLLENS_ICON__:JSON.stringify(`data:image/png;base64,${await readFile(kollensIcon,'base64')}`),
     __BNB_ICON__:JSON.stringify(`data:image/svg+xml;base64,${await readFile(bnbIcon,'base64')}`)}});
-const manifest={manifest_version:3,name:'Kollens Companion',version:'0.1.0',minimum_chrome_version:'127',description:'Find tokens sharing social links, with a private Kollens watch desk.',
+const manifest={manifest_version:3,name:'Kollens Companion',version,minimum_chrome_version:'127',description:'Find tokens sharing social links, with a private Kollens watch desk.',
   key:developmentKey,
   permissions:['storage','offscreen','activeTab','scripting','identity','sidePanel'],host_permissions:[local?'http://127.0.0.1:3360/*':'https://kollens.com/*',...(qa?['https://gmgn.ai/*','https://www.gmgn.ai/*']:[])],
   optional_host_permissions:['https://gmgn.ai/*','https://www.gmgn.ai/*','https://bsc-dataseed.bnbchain.org/*','https://x.com/*'],background:{service_worker:'background.js',type:'module'},
@@ -78,4 +80,4 @@ if(download){
     await rm(temporary,{force:true});
   }
 }
-console.log(JSON.stringify({output:out,gmgnAuthorized:false,gmgnLayoutVerified:false,localFixture:local,localGmgnLive:local||localGmgn}));
+console.log(JSON.stringify({output:out,gmgnLiveAvailable,gmgnNarrativeEnabled,localFixture:local}));

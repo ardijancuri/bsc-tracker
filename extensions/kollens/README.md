@@ -2,29 +2,29 @@
 
 Chrome Manifest V3 extension for matching the social links of distinct BSC token contracts. Includes matching outlines/badges, related-token groups, an account-synced saved-token workspace and private notes, conflict resolution, page alerts and opted-in audio. Its main UI is a **360 × 600 Chrome toolbar popup**, opened beneath the Kollens extension icon. Chrome 127 or newer is required for programmatic opening from a matching badge.
 
-The local test build supports opt-in automatic BSC Trenches detection and matching highlights. Selectors were inspected in regular Chrome and tested with 23 captured GMGN cards, dynamic mutations and 230-card loads in isolated Chrome extension QA. GMGN authorization for automatic matching remains pending.
+Companion 0.2.0 adds opt-in automatic BNB Trenches matching and on-demand GMGN AI summaries to the public ZIP.
 
 ## Install the v1.5 download
 
 1. Download and extract the [Kollens Companion ZIP](https://kollens.com/downloads/kollens-companion.zip).
-2. Open `chrome://extensions`, turn on **Developer mode**, then choose **Load unpacked** and select the extracted folder containing `manifest.json`. To update an existing unpacked copy, extract the new files into its current folder and click **Reload** on its extension card.
+2. Open `chrome://extensions`, turn on **Developer mode**, then choose **Load unpacked** and select the extracted folder containing `manifest.json`. To update an existing unpacked copy, extract the new files into its current folder and click **Reload** on its extension card. Check that the extension shows version **0.2.0**.
 3. In the Companion popup, open **Settings → About → Show trending BNB tokens** and approve the optional X site access in Chrome. **Trending Tokens** appears above **Today’s News** on X pages that show that sidebar card.
 
 Build the same archive from source with `npm ci` followed by `npm run extension:download` in the repository root.
 
-## Automatic GMGN matching — local test
+## Automatic GMGN matching
 
-Reload **dist-local**, open `https://gmgn.ai/?chain=bsc`, click the Kollens toolbar icon and choose **Enable on GMGN**. Accept Chrome's optional GMGN site-access prompt yourself. This is a one-time browser opt-in: new cards, social-link edits, recycling and sorting update automatically, including after reloads and in newly opened trenches tabs. Each tab matches only its own currently rendered cards. Changing chain or leaving trenches removes its decorations. Removing Chrome's GMGN site permission unregisters the script and clears existing highlights. The opt-in survives background-worker suspension and browser restart.
+Open GMGN BNB Trenches, click the Kollens toolbar icon, then choose **Tokens → Matches → Enable on GMGN**. Approve Chrome's optional GMGN site access. New cards, social-link edits, recycling and sorting then update automatically, including after reloads and in newly opened Trenches tabs. Each tab matches its own currently rendered cards. Changing chains or leaving Trenches clears its highlights. Remove the GMGN site permission in Chrome to stop automatic matching and clear existing highlights. The toolbar can still take a snapshot of the active Trenches tab. [GMGN BNB Trenches](https://gmgn.ai/?chain=bsc)
 
-Matching cards receive colored outlines; matching social links receive small outlines in the corresponding colors. All reasons appear in the popup. No extra badge is inserted into GMGN cards because a badge slot clear of its trading controls has not been verified. Card dimensions, original links and trade controls are preserved. The initial scan is quiet; future group changes use the existing bounded activity and opted-in sound settings. Unsupported layouts fail explicitly.
+Matching cards and shared social links receive colored outlines. The popup lists why the tokens match. The initial scan is quiet. Later changes appear in Activity and can play a sound if enabled. Unsupported layouts show an error.
 
-Scripts run in Chrome's isolated world and read only rendered card identity/social links. They make no GMGN API requests and access no account sessions, wallet objects, application stores or private notes. No page scans or matching graphs are uploaded. There is no cross-tab or historical matching pool. The production-origin build retains its manual snapshot reader and cannot enable this local automatic mode.
+Matching and summary scripts run in Chrome's isolated world. They read rendered token cards and GMGN's rendered narrative tooltip, with page data kept in extension memory.
 
-Browser permission is not GMGN authorization. GMGN's [Terms of Service, section 8.8](https://gmgn.ai/static/tos.html) restrict unauthorized automated access and extensions. This local test mode does not establish GMGN approval or terms compliance. Production activation remains disabled.
+Chrome grants browser site access. GMGN authorization is unconfirmed. Section 8.8 of GMGN's terms restricts unauthorized browser extensions and automated access. [GMGN Terms of Service](https://gmgn.ai/static/tos.html)
 
-## GMGN AI summary — local test
+## GMGN AI summary
 
-In the local GMGN build, click **AI summary** beside a supported match to read the first token’s rendered GMGN narrative. The same control is available on an open BSC token detail page. Chrome may request optional GMGN site access. To test a missing Trenches trigger in a temporary frame within the same tab, build with `node extensions/kollens/scripts/build.mjs --local-gmgn --gmgn-narrative-frame-test`. The public download excludes the summary reader and worker command pending GMGN authorization and production verification.
+Click **AI summary** beside a supported match to read the first token's rendered GMGN narrative. On an open GMGN BNB token page, open **Tokens → Matches → AI summary**. Chrome may request optional GMGN site access. If a Trenches summary is missing, turn on **AI Narrative** under **Customize → Data** in GMGN and reopen the summary. Availability varies by token.
 
 ## Try the local demo
 
@@ -64,7 +64,7 @@ An explicitly saved token retains its optional public `logoUrl` along with its i
 
 The development extension ID is **ghfjmmhnnleieehnffpdaodgbbcloghf**. `development-key.json` contains a public development identity only; no signing private key or API credential is included. A future store build needs its own registered extension identity.
 
-The production-origin build outputs `dist` and keeps automatic GMGN activation disabled. Only `dist-local` offers optional automatic mode. Persistent GMGN site access is requested by the popup's user click, then a narrowly scoped content script is registered. **Do not distribute `dist-gmgn-qa`**: it is an ignored QA-only build with up-front GMGN host access so isolated tests can exercise one-time activation without accepting a real permission prompt. Account endpoints require a later app deployment.
+The production-origin build outputs `dist` and packages it with `npm run extension:download`. The popup requests optional GMGN site access before it can register the matching script. Use `dist-gmgn-qa` only for isolated QA with pre-granted GMGN host access. The local command `node extensions/kollens/scripts/build.mjs --local-gmgn --gmgn-narrative-frame-test` builds the experimental summary reader that uses a temporary frame to test missing Trenches triggers.
 
 ## Behavior and boundaries
 
@@ -133,12 +133,4 @@ Browser scripts resolve paths from their own location and write reports/screensh
 
 Tests cover URL normalization/unsafe links, independent groups, duplicate pools, quiet baselines/cooldowns, sorting/recycling/hidden cards, offline drafts, stale revisions, account changes, private storage restrictions, one-use pairing, concurrent capacity limits and actual unpacked-Chrome audio and panel opening. The fixture benchmark uses 200+ rendered cards and includes the 40 ms debounce in its reported highlight latency.
 
-## Remaining production GMGN acceptance work
-
-1. Retain the GMGN team’s response covering both card reading and highlights.
-2. Repeat hands-on inspection on the latest GMGN page after the user enables Chrome site access. A sanitized rendered-card fixture and its proven selectors are already retained.
-3. Verify a safe badge anchor before adding any badge to GMGN; the local build currently uses outlines only. Unsupported layouts must continue to fail closed.
-4. Complete a real-page smoke test with new arrivals and actual current layouts. Captured-DOM QA already covers SPA chain changes, virtualized-card identity changes, trading controls, worker restart and 230-card performance.
-5. Review a separate activation change registering only the authorized hosts/routes. Commit, deployment and Chrome Web Store publication require a later release request.
-
-No previous eight-hour validation automation is restarted by this work.
+Chrome tests replay 23 captured GMGN BNB Trenches cards and scale to 230 cards. The tests cover route changes, recycled cards, trade-control clickability and service-worker restart. A Cloudflare challenge blocked verification against the current live layout.
