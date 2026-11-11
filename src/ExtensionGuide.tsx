@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
-import { ArrowLeftRight, BookOpen, ChevronDown, CircleHelp, Download, Info, ScanSearch, ShieldCheck, TrendingUp, Wallet, type LucideIcon } from 'lucide-react';
+import { ArrowLeftRight, BookOpen, ChevronDown, CircleHelp, Download, Info, ScanSearch, ShieldCheck, TrendingUp, UserRound, Wallet, type LucideIcon } from 'lucide-react';
 import { guideTopics, type GuideSection } from './extensionGuideContent';
 import './extensionGuide.css';
 
 const topicIcons: Record<string, LucideIcon> = {
   start: BookOpen,
+  account: UserRound,
   gmgn: ScanSearch,
   x: TrendingUp,
   wallets: Wallet,
