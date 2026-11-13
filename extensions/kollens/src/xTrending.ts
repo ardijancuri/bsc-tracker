@@ -98,15 +98,9 @@ function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'qu
   const tax = element('span', 'token-tax');
   tax.dataset.known = String(known);
   tax.title = `Buy tax: ${buy === '—' ? 'unavailable' : buy} · Sell tax: ${sell === '—' ? 'unavailable' : sell}`;
-  const icon = document.createElementNS(svgNamespace, 'svg');
-  icon.setAttribute('viewBox', '0 0 16 16');
-  icon.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS(svgNamespace, 'path');
-  path.setAttribute('d', 'M4 2.5h8v11l-2-1.25L8 13.5l-2-1.25L4 13.5v-11Zm2.25 3.25h3.5m-3.5 2.5h3.5');
-  icon.append(path);
   const rates = element('span', '', known ? `Tax ${buy}/${sell}` : 'Tax —');
   rates.setAttribute('aria-hidden', 'true');
-  tax.append(icon, rates, element('span', 'loading-label', tax.title));
+  tax.append(rates, element('span', 'loading-label', tax.title));
   details.append(pairLabel, tax);
   return details;
 }
@@ -190,10 +184,17 @@ function kolDropdown(profiles: KolProfile[] | null, recent: string[]) {
   return dropdown;
 }
 
-function kolToggle(name: string, dropdownId: string) {
-  const button = element('button', 'kol-toggle', 'KOLs');
+function kolToggle(name: string, count: number, trackedWallets: number, dropdownId?: string) {
+  const label = `${count} ${count === 1 ? 'KOL' : 'KOLs'}`;
+  const button = element('button', 'kol-toggle', label);
   button.type = 'button';
-  button.setAttribute('aria-label', `KOLs for ${name}`);
+  button.setAttribute('aria-label', `${label} for ${name}`);
+  if (!dropdownId) {
+    button.disabled = true;
+    button.title = 'KOL names unavailable';
+    return button;
+  }
+  if (count !== trackedWallets) button.title = `${trackedWallets} tracked wallets`;
   button.setAttribute('aria-controls', dropdownId);
   const chevron = document.createElementNS(svgNamespace, 'svg');
   chevron.setAttribute('viewBox', '0 0 10 10');
@@ -485,14 +486,14 @@ function createPanel() {
       const row = element('li', '');
       const placeholder = element('div', 'token skeleton-row tracked-row');
       const identity = element('span', 'identity');
-      const activity = element('span', 'activity');
+      const footer = element('span', 'tracked-footer');
       const details = element('span', 'market-details');
       const buy = element('span', 'token-buy');
       identity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      activity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
+      footer.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       details.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       buy.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      placeholder.append(element('span', 'avatar'), identity, activity, details, buy);
+      placeholder.append(element('span', 'avatar'), identity, details, footer, buy);
       row.append(placeholder);
       list.append(row);
     }
@@ -592,20 +593,19 @@ function createPanel() {
       const recent = !profiles && Array.isArray(item.recentKols)
         ? [...new Set(item.recentKols.filter(value => typeof value === 'string').slice(0, 3))]
         : [];
-      const activity = element('span', 'activity');
-      const counts = tradeCounts(item.buyCount, item.sellCount);
-      const kolTotal = element('strong', '', `${kolCount} ${kolCount === 1 ? 'KOL' : 'KOLs'}`);
-      if (kolCount !== item.kolCount) kolTotal.title = `${item.kolCount} tracked wallets`;
-      activity.append(kolTotal, counts);
+      const footer = element('div', 'tracked-footer');
+      footer.append(tradeCounts(item.buyCount, item.sellCount));
       link.append(avatar, identity);
       const row = element('li', '');
       const summary = element('div', 'token-row tracked-row');
-      summary.append(link, addressButton(item.address, name), tokenMarketDetails(item), activity, buyButton(item, name, data.window));
+      summary.append(link, addressButton(item.address, name), tokenMarketDetails(item), footer, buyButton(item, name, data.window));
       row.append(summary);
       const dropdown = kolDropdown(profiles, recent);
-      if (dropdown) {
-        dropdown.id = `kollens-kols-${item.address}`;
-        const toggle = kolToggle(name, dropdown.id);
+      const dropdownId = dropdown ? `kollens-kols-${item.address}` : undefined;
+      const toggle = kolToggle(name, kolCount, item.kolCount, dropdownId);
+      footer.append(toggle);
+      if (dropdown && dropdownId) {
+        dropdown.id = dropdownId;
         const setExpanded = (expanded: boolean) => {
           toggle.setAttribute('aria-expanded', String(expanded));
           dropdown.hidden = !expanded;
@@ -622,7 +622,6 @@ function createPanel() {
             if (reveal > 0) feed.scrollTop += reveal;
           }
         });
-        summary.append(toggle);
         row.append(dropdown);
       }
       list.append(row);
