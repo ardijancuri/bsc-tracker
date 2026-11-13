@@ -19,7 +19,16 @@ button { border:0; background:transparent; color:var(--muted); font:inherit; cur
 .filters button:hover { color:var(--text); }
 .filters [aria-pressed=true] { background:rgb(128 128 128 / 34%); color:var(--text); font-weight:750; }
 .chain { display:block; width:15px; height:15px; flex:none; }
-.list { list-style:none; padding:0; margin:0; max-height:min(520px,65vh); overflow:auto; scrollbar-width:none; }
+.feed,.skeleton-list { max-height:min(520px,65vh); overflow:auto; scrollbar-width:none; }
+.list { list-style:none; padding:0; margin:0; }
+.market-header,.tracked-heading { margin:0; padding:7px var(--gutter) 3px; }
+.market-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.market-header h3,.tracked-heading { margin:0; font-size:12px; font-weight:700; }
+.market-source { color:var(--muted); font-size:10px; }
+.tracked-heading { padding-top:12px; border-top:1px solid var(--line); }
+.market-change { color:#62d4a1; font-weight:700; font-variant-numeric:tabular-nums; }
+.market-row .counts { flex-wrap:wrap; }
+.market-row .metrics { margin-top:4px; }
 .token-row,.skeleton-row { --avatar-size:42px; position:relative; display:grid;
   grid-template-columns:var(--avatar-size) minmax(0,1fr) auto; grid-template-rows:21px 21px auto;
   column-gap:10px; padding:8px var(--gutter); }

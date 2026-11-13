@@ -19,6 +19,7 @@ import {freshPublicPosition} from './publicPositions.js';
 import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
 import { registerFreshTrendingTokens } from './trendingTokens.js';
+import { readNodeMomentumSnapshot } from './nodeMomentumStore.js';
 import { registerFreshTokenImage } from './tokenImageRoute.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
@@ -59,7 +60,8 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     webhook:alerts.webhook,botLoginStart:login.handleStart});
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
-  registerFreshTrendingTokens(app,db);
+  registerFreshTrendingTokens(app,db,process.env.KOLLENS_NODE_MARKET_MOMENTUM==='true'
+    ? window=>readNodeMomentumSnapshot(db,window) : undefined);
   if (process.env.KOLLENS_ANALYTICS_ENABLED === 'true') {
     await ensureAnalyticsSchema(db);
     registerAnalytics(app, db, {

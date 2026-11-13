@@ -3,7 +3,7 @@ import type {Pool} from 'pg';
 import {freshEventInScope,type FreshFinancialEvent,type FreshScope} from './accounting.js';
 import {createFreshServices} from './services.js';
 import type {FreshReplayManifest} from './replay.js';
-import {GREEN_MORNING_HISTORY_POLICY,GREEN_MORNING_985ETH_HISTORY_POLICY,GREEN_MORNING_MIRRO_HISTORY_POLICY,GREEN_MORNING_HISTORY_WALLETS,GREEN_MORNING_TOKEN_ADDRESS as token,greenMorningHistoryKey,readFreshGreenMorningHistoryAdmission} from './tracking.js';
+import {GREEN_MORNING_HISTORY_POLICY,GREEN_MORNING_985ETH_HISTORY_POLICY,GREEN_MORNING_MIRRO_HISTORY_POLICY,GREEN_MORNING_LESLIE_HISTORY_POLICY,GREEN_MORNING_HISTORY_WALLETS,GREEN_MORNING_TOKEN_ADDRESS as token,greenMorningHistoryKey,readFreshGreenMorningHistoryAdmission} from './tracking.js';
 
 const [wallet,other]=Object.keys(GREEN_MORNING_HISTORY_WALLETS) as (keyof typeof GREEN_MORNING_HISTORY_WALLETS)[];
 const origin=GREEN_MORNING_HISTORY_WALLETS[wallet],startBlock=129627586,startHash='0x'+'a'.repeat(64),startTime='2026-10-25T02:42:03.000Z';
@@ -54,6 +54,22 @@ describe('wallet-specific GREEN MORNING history',()=>{
     const e={walletAddress:selected,tokenAddress:token,blockNumber:'131649723',occurredAt:'2026-11-04T15:34:57.000Z'} as FreshFinancialEvent;
     expect(freshEventInScope(scope,e)).toBe(true);
     expect(freshEventInScope(scope,{...e,tokenAddress:'0x'+'b'.repeat(40)})).toBe(false);
+    f.changeRegistrationHash();
+    expect(await readFreshGreenMorningHistoryAdmission(f.db,selected)).toBeNull();
+  });
+  it('allows Leslie’s pre-cutover GM history only through her public registration',async()=>{
+    const selected='0x7942262a7a5637e6eb0eec9b91b55ec232141f87',f=fixture(selected);
+    const first=GREEN_MORNING_HISTORY_WALLETS[selected];
+    f.update({policy:GREEN_MORNING_LESLIE_HISTORY_POLICY,throughBlock:132018964,throughHash:startHash});
+    expect(await readFreshGreenMorningHistoryAdmission(f.db,selected)).toBeNull();
+    f.update({throughBlock:132018965});
+    const history=await readFreshGreenMorningHistoryAdmission(f.db,selected);
+    expect(history).toMatchObject({policy:GREEN_MORNING_LESLIE_HISTORY_POLICY,startsBlock:String(first.block)});
+    const scope:FreshScope={id:'kol:'+selected,kind:'kol',accountId:null,walletAddresses:[selected],startsBlock:'132018966',startsAt:'2026-11-06T13:44:56.000Z',revision:'1',tokenHistoryStarts:{[token]:history!}};
+    const event={walletAddress:selected,tokenAddress:token,blockNumber:String(first.block),occurredAt:first.time} as FreshFinancialEvent;
+    expect(freshEventInScope(scope,event)).toBe(true);
+    expect(freshEventInScope(scope,{...event,tokenAddress:'0x'+'b'.repeat(40)})).toBe(false);
+    expect(freshEventInScope({...scope,id:'private',kind:'portfolio_wallet',accountId:'private'},event)).toBe(false);
     f.changeRegistrationHash();
     expect(await readFreshGreenMorningHistoryAdmission(f.db,selected)).toBeNull();
   });

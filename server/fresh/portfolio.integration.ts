@@ -12,6 +12,7 @@ import type { FreshFinancialEvent } from '../../shared/freshAccounting.js';
 import type { Rpc } from '../rpc.js';
 import { refreshFreshBalances } from './balances.js';
 import { refreshFreshRollingKolTotals } from './rolling.js';
+import { FRESH_REALIZED_POLICY, FRESH_REALIZED_POLICY_KEY } from './realizedPolicy.js';
 const source=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].includes(source.hostname)||!/fresh/.test(source.pathname))throw new Error('Use an isolated local fresh database');
 const name=`bscan_fresh_portfolio_test_${Date.now()}`,adminUrl=new URL(source);adminUrl.pathname='/postgres';const admin=new Pool({connectionString:adminUrl.toString(),max:1});
 await admin.query(`CREATE DATABASE ${name}`);const url=new URL(source);url.pathname=`/${name}`;const db=new Pool({connectionString:url.toString(),max:8});
@@ -26,6 +27,8 @@ try{
   await ensureFreshSchema(db);
   await db.query(`INSERT INTO public.auth_users(id,issuer,subject,name) VALUES($1::uuid,'test',$1::text,'Test A'),($2::uuid,'test',$2::text,'Test B')`,[user,otherUser]);
   await db.query(`INSERT INTO fresh.checkpoints(key,block_number,block_hash,value) VALUES('start',100,$1,'{}'),('capture',100,$1,'{}'),('decode',100,$1,'{}')`,[`0x${'f'.repeat(64)}`]);
+  await db.query('INSERT INTO fresh.checkpoints(key,value) VALUES($1,$2)',
+    [FRESH_REALIZED_POLICY_KEY, { version: 1, policy: FRESH_REALIZED_POLICY, state: 'complete' }]);
   const initial=await service.add(user,a,'Secret private label');assert.equal(initial.wallets.length,1);assert.equal(initial.wallets[0].preparation.status,'pending');
   await db.query("INSERT INTO fresh.jobs(id,kind,reference) VALUES($1,'registration_capture',$2)",[`registration:${a}`,a]);await db.query("UPDATE fresh.checkpoints SET block_number=1000 WHERE key='decode'");
   assert.equal((await service.list(user)).wallets[0].preparation.status,'pending');assert.equal((await service.summary(user)).preparing,true,'Registration repair remains explicit even before the first position exists');
@@ -94,7 +97,17 @@ try{
     if(method==='eth_call'){stateCalls++;assert.deepEqual(params[1],{blockHash:proofHash,requireCanonical:true});const input=params[0] as {data:string};const selected=String(balanceAbi.decodeFunctionData('balanceOf',input.data)[0]).toLowerCase();return balanceAbi.encodeFunctionResult('balanceOf',[selected===d?3n*10n**18n:0n]) as T;}throw new Error('No provider or unconfirmed latest-state request is allowed');};
   await refreshFreshBalances(db,fakeRpc);assert.ok(stateCalls>0);assert.equal((await reads.summaries(d,[token]))[token].status,'ready','Balance checks use the committed capture block rather than a newer head');
   const rawTx=`0x${'8'.repeat(64)}`;await db.query(`INSERT INTO fresh.recent_evidence(tx_hash,block_hash,block_number,transaction_index,payload,expires_at,wallet_addresses) VALUES($1,$2,126,0,$3,$4,$5)`,[rawTx,proofHash,Buffer.from('unused fixture'),new Date(clock+10000),[d]]);
-  assert.equal((await reads.summaries(d,[token]))[token].status,'pending');assert.equal((await reads.activity(d,token,`kol:${d}`,true))?.inventory?.coverage.reconciled,false,'Undecoded wallet evidence cannot authorize a replay');
+  assert.equal((await reads.summaries(d,[token]))[token].status,'pending');
+  const pendingActivity = await reads.activity(d, token, `kol:${d}`, true);
+  assert.ok(pendingActivity);
+  assert.equal(pendingActivity.inventory, undefined);
+  assert.equal(pendingActivity.replayAccounting?.coverage.balanceMatched, false);
+  assert.equal(pendingActivity.replayAccounting?.coverage.reason, 'decoding_pending');
+  assert.equal(pendingActivity.replayAccounting?.final, null);
+  const pendingReplay = await replay.prepare(pendingActivity);
+  assert.equal(pendingReplay.status, 'pending', 'Undecoded wallet evidence cannot authorize a replay');
+  assert.equal(pendingReplay.manifest, undefined);
+  assert.equal(upstream, 0, 'Undecoded evidence blocks replay before any chart request');
   await db.query('DELETE FROM fresh.recent_evidence WHERE tx_hash=$1',[rawTx]);await db.query("UPDATE fresh.wallets SET decode_gap_from_block=126,decode_gap_reason='fixture' WHERE address=$1",[d]);
   assert.ok((await reads.summaries(d,[token]))[token].snapshot?.reasons.includes('wallet_decode_gap'));assert.equal((await reads.leaderboard()).items.find(item=>item.address===d)?.accounting.complete,false);
   await db.query('UPDATE fresh.wallets SET decode_gap_from_block=NULL,decode_gap_reason=NULL WHERE address=$1',[d]);

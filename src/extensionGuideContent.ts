@@ -163,7 +163,7 @@ export const guideTopics: GuideTopic[] = [
   {
     id: 'x',
     label: 'Trending on X',
-    intro: 'See recent BNB Chain activity from wallets Kollens tracks, directly in X’s sidebar.',
+    intro: 'See recent BNB Chain market activity and trades from wallets Kollens tracks in X’s sidebar.',
     sections: [
       {
         id: 'enable',
@@ -180,8 +180,9 @@ export const guideTopics: GuideTopic[] = [
         id: 'activity',
         title: 'Read the activity',
         paragraphs: [
-          'Pick a window from 5m to 24h. Kollens ranks tokens by the number of tracked wallets that bought or sold during that window. The card shows the buy and sell counts alongside market cap and tracked volume.',
-          'MC shows market cap when available. V shows the dollar value of known buys and sells from tracked wallets in your selected window. A ≥ prefix means some trade values were unavailable.',
+          'Pick a window from 5m to 24h. Tracked KOL activity ranks tokens using recent traders, trading volume and price movement when enough trades are priced.',
+          'When available, Market momentum includes older tokens with rising prices and active trading in supported PancakeSwap V3 pools. Its volume and trade counts come from the selected pool.',
+          'MC shows market cap when available. V shows dollar volume in the selected window. A ≥ prefix on tracked KOL volume means some trade values were unavailable.',
         ],
       },
       {

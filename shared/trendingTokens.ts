@@ -31,4 +31,17 @@ export interface TrendingTokens {
   window: TrendingWindow;
   asOf: string;
   items: TrendingToken[];
+  marketMomentum?: MarketMomentumToken[];
+}
+
+/** Activity of one BSC DEX pool in the selected window. No KOL attribution. */
+export interface MarketMomentumToken {
+  address: string;
+  name: string;
+  symbol: string;
+  marketCapUsd: string | null;
+  volumeUsd: string;
+  priceChangePct: number;
+  buyCount: number;
+  sellCount: number;
 }

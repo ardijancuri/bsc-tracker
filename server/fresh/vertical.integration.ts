@@ -20,8 +20,10 @@ import { createFreshCharts } from './charts.js';
 import { ChartDiskCache } from './cache.js';
 import { createFreshReplay } from './replay.js';
 import { createFreshApp } from './app.js';
+import { createFreshServices } from './services.js';
 import { createGmgnRequester } from '../gmgnTransport.js';
 import { refreshFreshBalances } from './balances.js';
+import { FRESH_REALIZED_POLICY, FRESH_REALIZED_POLICY_KEY } from './realizedPolicy.js';
 
 const base = new URL(process.env.DATABASE_URL ?? '');
 if (!['127.0.0.1', 'localhost'].includes(base.hostname) || base.port !== '5436' || !/^\/kollens_fresh/.test(base.pathname)) throw new Error('Vertical fixtures require the separate local fresh PostgreSQL on port 5436');
@@ -81,6 +83,8 @@ try {
   await db.query(`INSERT INTO fresh.kols(wallet_address,display_name) VALUES($1,'Vertical .ai fixture')`, [wallet]);
   await db.query(`INSERT INTO fresh.accounting_scopes(id,kind,wallet_addresses,starts_at,starts_block) VALUES($1,'kol',$2,$3,101)`, [scope, [wallet], new Date(from - 60_000)]);
   for (const key of ['start', 'capture', 'decode']) await db.query(`INSERT INTO fresh.checkpoints(key,block_number,block_hash,value,updated_at) VALUES($1,100,$2,$3::jsonb,$4)`, [key, hash(100), JSON.stringify({ startBlock: 100, startHash: hash(100) }), new Date(frozen)]);
+  await db.query('INSERT INTO fresh.checkpoints(key,value) VALUES($1,$2)',
+    [FRESH_REALIZED_POLICY_KEY, { version: 1, policy: FRESH_REALIZED_POLICY, state: 'complete' }]);
   const checkpoint = { blockNumber: 100, blockHash: hash(100), revision: 1, startBlock: 100 };
   const page = await collectFreshPage({ rpc, checkpoint, wallets: [{ address: wallet, fromBlock: 101 }], now: new Date(frozen) });
   assert.equal(page.blocks.length, 2); assert.equal(page.receipts.length, 2); assert.equal(page.launches.length, 1);
@@ -115,12 +119,23 @@ try {
       return Response.json({ code: 0, data: { list: marketFixture.chart.bars.filter(bar => Date.parse(bar.timestamp) >= lower && Date.parse(bar.timestamp) <= upper).map(bar => ({
         time: Date.parse(bar.timestamp) / 1000, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volumeUsd })) } }); } });
   const cache = new ChartDiskCache(path.join(output, 'cache-' + name), { now: () => frozen }), charts = createFreshCharts({ cache, request: (url, options) => transport(url, { ...options, apiKey: 'vertical-fake-no-network-key' }), now: () => frozen });
-  const validateRevision = async () => true, replay = createFreshReplay({ charts, secret: 'local-vertical-fixture-secret-at-least-32-bytes', validateRevision, now: () => frozen });
-  const prepared = await replay.prepare(activity); assert.equal(prepared.status, 'ready'); assert.equal(prepared.activity!.replayAccounting!.final!.reportedProfitUsd, '49.88');
-  assert.equal((await replay.validate(prepared.manifest!)).valid, true); assert.equal(upstream, 1);
+  const { validateRevision } = createFreshServices(db);
+  const replay = createFreshReplay({ charts, secret: 'local-vertical-fixture-secret-at-least-32-bytes', validateRevision, now: () => frozen });
   const api = await createFreshApp(db, { services: { reads, charts, replay, cache, validateRevision } }); app = api.app;
-  const profile = await app.inject(`/api/kols/${wallet}`), leaderboard = await app.inject('/api/leaderboard');
-  assert.equal(profile.statusCode, 200); assert.equal(profile.json().kol.realizedProfitUsd, leaderboard.json().items[0].realizedProfitUsd);
+  const preparation = await app.inject(`/api/kols/${wallet}/tokens/${token}/replay-preparation`);
+  assert.equal(preparation.statusCode, 200);
+  const prepared = preparation.json<Awaited<ReturnType<typeof replay.prepare>>>();
+  assert.equal(prepared.status, 'ready');
+  assert.equal(prepared.activity?.replayAccounting?.final?.reportedProfitUsd, '49.88');
+  assert.equal(upstream, 1);
+  const profile = await app.inject(`/api/kols/${wallet}`), leaderboard = await app.inject('/api/leaderboard'), trades = await app.inject(`/api/trades?kol=${wallet}&token=${token}`);
+  assert.equal(profile.statusCode, 200); assert.equal(leaderboard.statusCode, 200);
+  assert.equal(profile.json().kol.realizedProfitUsd, '49.88');
+  assert.equal(profile.json().kol.realizedProfitUsd, leaderboard.json().items[0].realizedProfitUsd);
+  assert.equal(trades.statusCode, 200); assert.equal(trades.json().items.length, 2);
+  const validateManifest = () => app!.inject({ method: 'POST', url: '/api/replays/validate', payload: { manifest: prepared.manifest } });
+  const approved = await validateManifest();
+  assert.equal(approved.statusCode, 200); assert.equal(approved.json().valid, true);
   // Airdrops are retained for accounting, but do not become public traded
   // tokens until a monitored public KOL actually buys or sells them.
   const airdrop='0x'+'d'.repeat(40),recipient='0x'+'e'.repeat(40),recipientScope=publicScope(recipient);
@@ -155,11 +170,14 @@ try {
   await db.query(`UPDATE fresh.tokens SET today_utc=$2::date-1 WHERE address=$1`,[token,today]);
   const past=(await app.inject({url:'/api/watchlist',headers:{cookie}})).json().items[0];
   assert.equal(past.periodVolumeUsd,'0');assert.equal(past.periodKolCount,0);
+  await db.query('UPDATE fresh.accounting_scopes SET correction_epoch=correction_epoch+1 WHERE id=$1', [scope]);
+  const revoked = await validateManifest();
+  assert.equal(revoked.statusCode, 410); assert.equal(revoked.json().valid, false);
   const metrics = { mode: 'synthetic financial execution + unchanged genuine candle fixture + fake GMGN transport', confirmedBlocks: page.blocks.length,
     capturedReceipts: page.receipts.length, financialEvents: normalized.length, storedRealizedProfitUsd: board.items[0].realizedProfitUsd,
     modalProfitUsd: prepared.activity!.replayAccounting!.final!.reportedProfitUsd, modalRoi: prepared.activity!.replayAccounting!.final!.reportedRoi,
     chartCandles: prepared.chart!.candles.length, chartPoints: prepared.chart!.points.length, upstreamRequests: upstream,
-    cache: await charts.diagnostics(), prepared: replay.diagnostics(), profileMatchesLeaderboard: true, airdropsExcludedFromTradedTokens:true, isolation: 'temporary fresh database; removed after fixture test' };
+    cache: await charts.diagnostics(), prepared: replay.diagnostics(), profileMatchesLeaderboard: true, signedManifestRevokedOnCorrection: true, airdropsExcludedFromTradedTokens:true, isolation: 'temporary fresh database; removed after fixture test' };
   await writeFile(path.join(output, 'prepared.json'), JSON.stringify(prepared, null, 2));
   await writeFile(path.join(output, 'metrics.json'), JSON.stringify(metrics, null, 2));
   await writeFile(path.join(output, 'preview.html'), preview());

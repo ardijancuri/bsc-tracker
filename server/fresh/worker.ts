@@ -29,6 +29,8 @@ import{readFreshQuoteRefreshStates,readFreshQuoteRefreshAnchor,observeFreshQuote
 import{runFreshTokenBirthCapture}from'./tokenBirthCapture.js';
 import{runFreshSyntheticBatchAnchorCapture}from'./syntheticBatchAnchorCapture.js';
 import{runFreshAdmissionRecheck}from'./admissionRecheck.js';
+import { createNodeMomentumWorker, nodeMomentumPollMs } from './nodeMomentumWorker.js';
+import { createNodeMomentumRpc } from './nodeMomentumRpc.js';
 
 const pause=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve();};const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});if(signal.aborted)finish();});
 const category=(error:unknown)=>error instanceof Error?error.message.replace(/https?:\/\/\S+/g,'[endpoint]').slice(0,140):'unavailable';
@@ -75,6 +77,8 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   const localSsh=process.env.FRESH_LOCAL_ONLY==='true'&&process.env.FRESH_TRACE_SSH==='1';
   const trace=localSsh?createFreshSshTrace():process.env.BSC_TRACE_IPC?createFreshIpcTrace():undefined;
   let captureHealth:FreshRecoveryCaptureHealth|undefined;
+  const momentumEnabled = process.env.KOLLENS_NODE_MARKET_MOMENTUM === 'true';
+  let nodeMomentum: ReturnType<typeof createNodeMomentumWorker> | undefined;
   const urgentEvidence=createFreshUrgentEvidenceCapture(db,rpc),recoveryBatch=createFreshRecoveryBatch(db,rpc,{captureHealth:()=>captureHealth});
   const urgentTrace=trace?createFreshUrgentTraceCapture(db,rpc,localSsh?createFreshSshTrace({maxQueued:0}):createFreshIpcTrace({maxQueued:0})):undefined;
   const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000,creationTraces:true});
@@ -132,6 +136,10 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}),
     loop('registration',250,()=>runFreshRegistrationRepair(db,rpc,{limitBlocks:16})),
     loop('market_discovery',1000,()=>runFreshV4MarketDiscovery(db,rpc,{signal})),
+    ...(momentumEnabled ? [loop('node_market_momentum', nodeMomentumPollMs, () => {
+      nodeMomentum ??= createNodeMomentumWorker(db, createNodeMomentumRpc(process.env.BSC_RPC_HTTP));
+      return nodeMomentum(() => captureHealth, signal);
+    })] : []),
     loop('artwork',5000,async()=>{
       // Optional media yields to capture/decoding. No image request or decoder
       // can hold a financial transaction or prevent the node loops progressing.

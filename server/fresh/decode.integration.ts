@@ -10,6 +10,7 @@ import { WBNB } from '../launchpad.js';
 import {decodeFreshEvidence,encodeFreshEvidence,type FreshCapturedReceipt} from './capture.js';
 import {createFreshStateEvidenceRpc} from './stateEvidence.js';
 import {createFreshReads} from './reads.js';
+import { FRESH_REALIZED_POLICY, FRESH_REALIZED_POLICY_KEY } from './realizedPolicy.js';
 import {transferTopic} from '../swap.js';
 import type {Rpc} from '../rpc.js';
 const url = new URL(process.env.DATABASE_URL ?? '');
@@ -117,6 +118,8 @@ try {
   assert.equal((await client.query('SELECT amount_usd FROM fresh.financial_events WHERE id=$1',[unvalued.events[0].id])).rows[0].amount_usd,null);
   await client.query('CREATE TEMP TABLE fresh_decode_test_checkpoints(LIKE fresh.checkpoints INCLUDING DEFAULTS) ON COMMIT DROP');
   await client.query(`INSERT INTO fresh_decode_test_checkpoints(key,block_number,block_hash,updated_at,value) VALUES('capture',$1,$2,$3,'{}'),('decode',$1,$2,$3,'{}')`,[dropNumber,dropHash,dropTime]);
+  await client.query('INSERT INTO fresh_decode_test_checkpoints(key,value) VALUES($1,$2)',
+    [FRESH_REALIZED_POLICY_KEY, { version: 1, policy: FRESH_REALIZED_POLICY, state: 'complete' }]);
   await client.query(`UPDATE fresh.positions SET balance_status='matched',balance_quantity=quantity_q,balance_block=$2,balance_hash=$3,balance_checked_at=$4 WHERE scope_id=$1`,[scope,dropNumber,dropHash,dropTime]);
   await client.query(`UPDATE fresh.tokens SET price_usd='2',observed_at=$2,observed_block=$3,observed_hash=$4,valuation_status='ready' WHERE address=$1`,[token,dropTime,dropNumber,dropHash]);
   const readDb={query:(sql:string,values?:unknown[])=>selectionDb.query(sql.replaceAll('fresh.checkpoints','fresh_decode_test_checkpoints'),values)} as unknown as Pool;

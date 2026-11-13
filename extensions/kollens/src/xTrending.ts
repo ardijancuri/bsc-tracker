@@ -1,9 +1,9 @@
-import { defaultTrendingWindow, trendingWindows, type TrendingToken, type TrendingWindow } from '../../../shared/trendingTokens';
+import { defaultTrendingWindow, trendingWindows, type MarketMomentumToken, type TrendingToken, type TrendingWindow } from '../../../shared/trendingTokens';
 import { extensionAddress, type SocialLink } from '../../../shared/extension';
 import { cardMetricColor } from './cardMetrics';
 import { normalizeSocialLink } from './matching';
 import { browserApi as chrome } from './platform';
-import { isXPage, type XTrendingResponse } from './xTrendingAccess';
+import { isDisplayableXTrendingToken, isXPage, selectXMarketMomentum, type XTrendingResponse } from './xTrendingAccess';
 import { xTrendingStyles } from './xTrendingStyles';
 
 declare const __LOCAL_FIXTURE__: boolean;
@@ -19,6 +19,7 @@ const dollarOptions = { style: 'currency', currency: 'USD', notation: 'compact',
 const lowerBoundOptions = { ...dollarOptions, roundingMode: 'floor' } as const;
 const compactDollars = new Intl.NumberFormat('en', dollarOptions);
 const lowerBoundDollars = new Intl.NumberFormat('en', lowerBoundOptions);
+const percentChange = new Intl.NumberFormat('en', { style: 'percent', signDisplay: 'always', maximumFractionDigits: 1 });
 const isPage = () => isXPage(location.href) || __LOCAL_FIXTURE__ &&
   location.origin === 'http://127.0.0.1:3360' && location.pathname === '/x-fixture';
 
@@ -69,6 +70,24 @@ function dollarMetric(label: string, usd: string | null | undefined, description
   metric.title = formatted && incomplete ? `${description} (known amounts only)` : description;
   metric.append(value);
   return metric;
+}
+
+function tradeCounts(buys: number, sells: number) {
+  const counts = element('span', 'counts');
+  const dot = element('span', 'counts-dot');
+  dot.setAttribute('aria-hidden', 'true');
+  counts.append(
+    element('span', 'buy', `${buys} ${buys === 1 ? 'buy' : 'buys'}`),
+    dot,
+    element('span', 'sell', `${sells} ${sells === 1 ? 'sell' : 'sells'}`),
+  );
+  return counts;
+}
+
+function fallbackAvatar(symbol: string) {
+  const avatar = element('span', 'avatar', Array.from(symbol)[0]?.toUpperCase() ?? '?');
+  avatar.setAttribute('aria-hidden', 'true');
+  return avatar;
 }
 
 type KolProfile = { identity: string; name: string; social: SocialLink | null };
@@ -324,24 +343,64 @@ function createPanel() {
     replaceResults(label);
   }
 
+  function marketSection(items: MarketMomentumToken[], window: TrendingWindow) {
+    const section = element('section', 'market-section');
+    const header = element('div', 'market-header');
+    const title = element('h3', '', 'Market momentum');
+    title.id = 'kollens-x-market-momentum-title';
+    section.setAttribute('aria-labelledby', title.id);
+    const source = element('span', 'market-source', 'PancakeSwap V3');
+    source.title = 'Confirmed PancakeSwap V3 swaps on BNB Chain';
+    header.append(title, source);
+    const list = element('ol', 'list');
+    for (const item of items) {
+      const row = element('li', '');
+      const summary = element('div', 'token-row market-row');
+      const link = external(`https://gmgn.ai/bsc/token/${item.address}`, 'token');
+      link.title = `${item.name} · ${item.symbol} on GMGN`;
+      const identity = element('span', 'identity');
+      identity.append(element('strong', '', item.name));
+      link.append(fallbackAvatar(item.symbol), identity);
+
+      const activity = element('span', 'activity');
+      const change = element('span', 'market-change', percentChange.format(item.priceChangePct / 100));
+      change.title = `Pool trading price change over ${window}`;
+      const counts = tradeCounts(item.buyCount, item.sellCount);
+      counts.title = `DEX pool swaps over ${window}`;
+      activity.append(change, counts);
+
+      const metrics = element('span', 'metrics');
+      metrics.append(
+        dollarMetric('MC', item.marketCapUsd, 'Market cap'),
+        dollarMetric('V', item.volumeUsd, `DEX pool volume over ${window}`),
+      );
+      link.append(activity, metrics);
+      summary.append(link, addressButton(item.address, item.name));
+      row.append(summary);
+      list.append(row);
+    }
+    section.append(header, list);
+    return section;
+  }
+
   function render(data: XTrendingResponse) {
-    const items = data.items.filter(item => item && extensionAddress(item.address) && Number.isInteger(item.kolCount) && item.kolCount >= 2);
+    const items = data.items.filter(isDisplayableXTrendingToken);
+    const marketItems = selectXMarketMomentum(data);
     for (const address of expandedTokens) {
       if (!items.some(item => item.address === address)) expandedTokens.delete(address);
     }
-    if (!items.length) {
+    if (!items.length && !marketItems.length) {
       status('No tokens traded by multiple KOLs in this window.');
       return;
     }
+    const feed = element('div', 'feed');
+    if (marketItems.length) feed.append(marketSection(marketItems, data.window));
     const list = element('ol', 'list');
     for (const item of items) {
       const name = item.name || item.symbol || shortAddress(item.address);
       const link = external(`https://kollens.com/token/${item.address}`, 'token');
       link.title = item.symbol && item.symbol !== name ? `${name} · ${item.symbol}` : name;
-      const fallback = element('span', '', Array.from(item.symbol || name)[0]?.toUpperCase() ?? '?');
-      const avatar = element('span', 'avatar');
-      avatar.setAttribute('aria-hidden', 'true');
-      avatar.append(fallback);
+      const avatar = fallbackAvatar(item.symbol || name);
       if (item.thumbnail && /^data:image\/(?:png|jpeg|webp|avif);base64,/.test(item.thumbnail)) {
         const image = element('img', '');
         image.alt = '';
@@ -364,14 +423,7 @@ function createPanel() {
         ? [...new Set(item.recentKols.filter(value => typeof value === 'string').slice(0, 3))]
         : [];
       const activity = element('span', 'activity');
-      const counts = element('span', 'counts');
-      const dot = element('span', 'counts-dot');
-      dot.setAttribute('aria-hidden', 'true');
-      counts.append(
-        element('span', 'buy', `${item.buyCount} ${item.buyCount === 1 ? 'buy' : 'buys'}`),
-        dot,
-        element('span', 'sell', `${item.sellCount} ${item.sellCount === 1 ? 'sell' : 'sells'}`),
-      );
+      const counts = tradeCounts(item.buyCount, item.sellCount);
       const kolTotal = element('strong', '', `${kolCount} ${kolCount === 1 ? 'KOL' : 'KOLs'}`);
       if (kolCount !== item.kolCount) kolTotal.title = `${item.kolCount} tracked wallets`;
       activity.append(kolTotal, counts);
@@ -400,9 +452,9 @@ function createPanel() {
           else expandedTokens.delete(item.address);
           setExpanded(expanded);
           if (expanded) {
-            const bounds = list.getBoundingClientRect();
+            const bounds = feed.getBoundingClientRect();
             const reveal = Math.min(dropdown.getBoundingClientRect().bottom - bounds.bottom, summary.getBoundingClientRect().top - bounds.top);
-            if (reveal > 0) list.scrollTop += reveal;
+            if (reveal > 0) feed.scrollTop += reveal;
           }
         });
         summary.append(toggle);
@@ -410,12 +462,16 @@ function createPanel() {
       }
       list.append(row);
     }
+    if (items.length) {
+      if (marketItems.length) feed.append(element('h3', 'tracked-heading', 'Tracked KOL activity'));
+      feed.append(list);
+    }
     const activeElement = shadow.activeElement;
     const activeToken = activeElement?.closest('.list > li')?.querySelector<HTMLAnchorElement>('a.token');
     const focusedKol = activeElement?.closest<HTMLElement>('.kol-names > li')?.dataset.kol;
-    const scrollTop = content.querySelector('.list')?.scrollTop ?? 0;
-    replaceResults(list);
-    const tokenLink = Array.from(list.querySelectorAll<HTMLAnchorElement>('a.token')).find(link => link.href === activeToken?.href);
+    const scrollTop = content.querySelector('.feed')?.scrollTop ?? 0;
+    replaceResults(feed);
+    const tokenLink = Array.from(feed.querySelectorAll<HTMLAnchorElement>('a.token')).find(link => link.href === activeToken?.href);
     const row = tokenLink?.closest('.list > li');
     const toggle = row?.querySelector<HTMLButtonElement>('.kol-toggle');
     const address = activeElement?.matches('.token-address') && row?.querySelector<HTMLButtonElement>('.token-address');
@@ -425,7 +481,7 @@ function createPanel() {
       : null;
     const focus = profileLink || address || ((focusedKol || activeElement?.matches('.kol-toggle')) && toggle) || tokenLink;
     focus?.focus({ preventScroll: true });
-    list.scrollTop = scrollTop;
+    feed.scrollTop = scrollTop;
   }
 
   async function refresh(showLoading = false) {

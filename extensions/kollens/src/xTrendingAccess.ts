@@ -1,4 +1,4 @@
-import { isTrendingWindow, type TrendingToken, type TrendingTokens, type TrendingWindow } from '../../../shared/trendingTokens';
+import { isTrendingWindow, type MarketMomentumToken, type TrendingToken, type TrendingTokens, type TrendingWindow } from '../../../shared/trendingTokens';
 import { extensionAddress } from '../../../shared/extension';
 import { browserApi as chrome, config } from './platform';
 
@@ -16,6 +16,30 @@ export function isXPage(url: string | undefined) {
     const page = new URL(url);
     return page.protocol === 'https:' && page.origin === 'https://x.com';
   } catch { return false; }
+}
+
+export function isDisplayableXTrendingToken(item: TrendingToken | null | undefined): item is TrendingToken {
+  return !!item && extensionAddress(item.address) && Number.isInteger(item.kolCount) && item.kolCount >= 2;
+}
+
+export function selectXMarketMomentum(data: TrendingTokens): MarketMomentumToken[] {
+  if (!Array.isArray(data.marketMomentum) || data.marketMomentum.length > 4) return [];
+  const seen = new Set(data.items.filter(isDisplayableXTrendingToken).map(item => item.address));
+  const results: MarketMomentumToken[] = [];
+  const validUsd = (value: unknown) => typeof value === 'string' && value.length <= 48 &&
+    /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0;
+  for (const item of data.marketMomentum) {
+    if (!item || !extensionAddress(item.address) || seen.has(item.address) ||
+        typeof item.name !== 'string' || !item.name.trim() || item.name.length > 100 ||
+        typeof item.symbol !== 'string' || !item.symbol.trim() || item.symbol.length > 32 ||
+        !validUsd(item.volumeUsd) || (item.marketCapUsd !== null && !validUsd(item.marketCapUsd)) ||
+        !Number.isFinite(item.priceChangePct) || item.priceChangePct <= 0 ||
+        !Number.isSafeInteger(item.buyCount) || item.buyCount < 0 ||
+        !Number.isSafeInteger(item.sellCount) || item.sellCount < 0) continue;
+    seen.add(item.address);
+    results.push(item);
+  }
+  return results;
 }
 
 export function xTrendingSiteAllowed() {
@@ -103,7 +127,7 @@ export async function loadXTrendingTokens(window: unknown, sender: chrome.runtim
   }
   const previous = cache.get(window);
   if (previous && previous.expires > Date.now()) return previous.result;
-  const result = fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}`, {
+  const result = fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}&momentum=1`, {
     credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(8_000),
   }).then(async response => {
     if (!response.ok) throw Error('Trending tokens are unavailable');
