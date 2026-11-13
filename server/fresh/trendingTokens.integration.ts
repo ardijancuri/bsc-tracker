@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { Pool } from 'pg';
 import { WBNB } from '../launchpad.js';
+import { nodeMomentumCheckpoint, readNodeMomentumSnapshot } from './nodeMomentumStore.js';
 import { readFreshTrendingTokens } from './trendingTokens.js';
 
 const url = new URL(process.env.TRENDING_TEST_DATABASE_URL ?? '');
@@ -11,8 +12,9 @@ const client = await db.connect();
 const now = Date.parse('2026-11-13T12:00:00.000Z');
 const minute = 60_000;
 const address = (n: number) => '0x' + n.toString(16).padStart(40, '0');
+const hash = (n: number) => '0x' + n.toString(16).padStart(64, '0');
 const fixtureDb = {
-  query: (sql: string, values: string[]) =>
+  query: (sql: string, values: unknown[]) =>
     client.query(sql.replaceAll('fresh.', 'pg_temp.').replaceAll('published_kols', 'pg_temp.published_kols'), values),
 };
 
@@ -152,6 +154,22 @@ try {
   assert.equal(enriched.find(item => item.address === flat)?.sellTaxBps, undefined);
   assert.equal(enriched.find(item => item.address === down)?.quoteSymbol, undefined);
   assert.equal(enriched.find(item => item.address === weak)?.quoteSymbol, undefined);
+  await client.query(`UPDATE markets SET identity='{"market":{"canonicalIdentityInvalid":true}}' WHERE token_address=$1`, [weak]);
+  assert.equal((await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === weak)?.quoteSymbol, undefined);
+  await client.query(`UPDATE tokens SET valuation_status='quote_unavailable' WHERE address=$1`, [rising]);
+  await client.query(`UPDATE markets SET quote_address=$2,identity='{"quoteSymbol":"FXIon","tokenTax":{"buyTaxBps":100}}'
+    WHERE token_address=$1`, [rising, address(77)]);
+  const retained = (await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === rising);
+  assert.equal(retained?.quoteSymbol, 'FXIon', 'A verified pair survives a temporary USD quote failure');
+  assert.equal(retained?.buyTaxBps, undefined, 'A failed refresh does not renew the tax');
+  await client.query(`UPDATE tokens SET valuation_status='ready' WHERE address=$1`, [rising]);
+  await client.query(`UPDATE markets SET identity=jsonb_set(identity,'{tokenTax,expiresAtSeconds}',$2::jsonb)
+    WHERE token_address=$1`, [rising, String(now / 1_000 - 1)]);
+  assert.equal((await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === rising)?.buyTaxBps, undefined);
+  await client.query(`UPDATE markets SET identity=jsonb_set(identity,'{tokenTax,expiresAtSeconds}',$2::jsonb)
+    WHERE token_address=$1`, [rising, String(now / 1_000 + 15)]);
+  assert.equal((await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === rising)?.buyTaxBps, undefined,
+    'The cached feed cannot carry a tax past its verified expiry');
 
   for (let i = 0; i < 14; i++) {
     const other = await token(200 + i);
@@ -161,6 +179,34 @@ try {
   const limited = await readFreshTrendingTokens(fixtureDb, '6h', now);
   assert.equal(limited.items.length, 12);
   assert.equal(limited.items[0]?.address, rising, 'Top-12 is chosen after momentum ranking');
+  await client.query(`ALTER TABLE checkpoints ADD COLUMN revision bigint DEFAULT 1;
+    ALTER TABLE markets ADD COLUMN address text, ADD COLUMN protocol text;`);
+  const item = {
+    address: rising, name: 'Meme token', symbol: 'MEME', quoteSymbol: 'WBNB',
+    poolAddress: address(111), quoteAddress: WBNB, marketCapUsd: null,
+    volumeUsd: '900', priceChangePct: 12, buyCount: 10, sellCount: 3,
+  };
+  await client.query('INSERT INTO recent_blocks VALUES (600,$1,$2)', [hash(600), new Date(now)]);
+  await client.query('INSERT INTO checkpoints(key,block_number,block_hash,value) VALUES ($1,600,$2,$3)', [
+    nodeMomentumCheckpoint, hash(600), JSON.stringify({
+      version: 1, source: 'bnb_node', blockNumber: 600, blockHash: hash(600),
+      observedAtMs: now, asOfMs: now, coveredFromMs: now - 6 * minute,
+      captureRevision: '1', windows: { '5m': [item] },
+    }),
+  ]);
+  await client.query('UPDATE tokens SET observed_at=$2,observed_block=600,observed_hash=$3 WHERE address=$1',
+    [rising, new Date(now), hash(600)]);
+  await client.query(`UPDATE markets SET observed_at=$2,observed_block=600,observed_hash=$3,address=$4,
+    protocol='pcs_v3',quote_address=$5,identity='{"tokenTax":{"buyTaxBps":0,"sellTaxBps":100}}'
+    WHERE token_address=$1`, [rising, new Date(now), hash(600), address(112), WBNB]);
+  const momentumFixtureDb = fixtureDb as unknown as Pick<Pool, 'query'>;
+  assert.equal((await readNodeMomentumSnapshot(momentumFixtureDb, '5m', now))[0]?.sellTaxBps, undefined,
+    'Evidence for a different pool does not apply to the tracked momentum pool');
+  await client.query('UPDATE markets SET address=$2 WHERE token_address=$1', [rising, item.poolAddress]);
+  const { poolAddress, quoteAddress, ...publicItem } = item;
+  assert.deepEqual(await readNodeMomentumSnapshot(momentumFixtureDb, '5m', now), [
+    { ...publicItem, buyTaxBps: 0, sellTaxBps: 100 },
+  ]);
   console.log('Trending token PostgreSQL ranking, evidence, privacy, limits and response shape passed.');
 } finally {
   await client.query('ROLLBACK');

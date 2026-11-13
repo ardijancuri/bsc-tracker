@@ -12,8 +12,22 @@ export const FRESH_WRAPPED_STOCK_SETTLEMENT_SYMBOLS:Readonly<Record<string,strin
 export const isFreshSettlementQuote=(address:string)=>typeof address==='string'&&/^[0-9a-f]{40}$/.test(address.slice(2))&&address.startsWith('0x')&&(Object.hasOwn(TRUSTED_QUOTE_FEEDS,address)||Object.hasOwn(FRESH_NATIVE_SETTLEMENT_SYMBOLS,address)||Object.hasOwn(FRESH_WRAPPED_STOCK_SETTLEMENT_SYMBOLS,address)||isStockToken(address));
 export const freshSettlementQuoteSymbol=(address:string)=>address===WBNB?'WBNB':Object.hasOwn(TRUSTED_QUOTE_FEEDS,address)?TRUSTED_QUOTE_FEEDS[address].description.split(' / ')[0]:Object.hasOwn(FRESH_NATIVE_SETTLEMENT_SYMBOLS,address)?FRESH_NATIVE_SETTLEMENT_SYMBOLS[address]:Object.hasOwn(FRESH_WRAPPED_STOCK_SETTLEMENT_SYMBOLS,address)?FRESH_WRAPPED_STOCK_SETTLEMENT_SYMBOLS[address]:(isStockToken(address)?'ERC20':null);
 
-export function trendingQuoteSymbol(address: unknown): string | undefined {
+export function verifiedMarketQuoteSymbol(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,23}$/u.test(value) ? value : undefined;
+}
+
+export function trendingQuoteSymbol(address: unknown, observedSymbol?: unknown): string | undefined {
   if (typeof address !== 'string' || !/^0x[0-9a-f]{40}$/.test(address)) return undefined;
   const symbol = freshSettlementQuoteSymbol(address);
-  return symbol && symbol !== 'ERC20' ? symbol : undefined;
+  return symbol && symbol !== 'ERC20' ? symbol : verifiedMarketQuoteSymbol(observedSymbol);
+}
+
+export function readTrendingMarketTax(value: unknown, now: number): { buyTaxBps?: number; sellTaxBps?: number } {
+  if (!value || typeof value !== 'object') return {};
+  const { buyTaxBps, sellTaxBps, expiresAtSeconds } = value as Record<string, unknown>;
+  if (expiresAtSeconds !== undefined && (typeof expiresAtSeconds !== 'number'
+    || !Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds < Math.floor(now / 1_000))) return {};
+  const valid = (rate: unknown): rate is number => typeof rate === 'number'
+    && Number.isInteger(rate) && rate >= 0 && rate <= 10_000;
+  return { ...(valid(buyTaxBps) ? { buyTaxBps } : {}), ...(valid(sellTaxBps) ? { sellTaxBps } : {}) };
 }

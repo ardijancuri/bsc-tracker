@@ -26,6 +26,14 @@ const formatTax = (bps: number | undefined) =>
     ? taxPercent.format(bps / 10_000) : '—';
 const isPage = () => isXPage(location.href) || __LOCAL_FIXTURE__ &&
   location.origin === 'http://127.0.0.1:3360' && location.pathname === '/x-fixture';
+const canUseBuy = () => isPage() && document.visibilityState === 'visible' && document.hasFocus();
+
+type BuyResponse = { ok: true } | { ok: false; error: string };
+const buyStatusIcons = {
+  pending: 'M8 4.5V8l2 1.5',
+  error: 'm6 6 4 4m0-4-4 4',
+};
+type BuyStatus = keyof typeof buyStatusIcons;
 
 function findNewsCard(sidebar: HTMLElement) {
   const heading = Array.from(sidebar.querySelectorAll('h1,h2,h3,[role="heading"]')).find(element =>
@@ -80,10 +88,9 @@ function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'qu
   const details = element('span', 'market-details');
   const symbol = typeof item.symbol === 'string' && item.symbol.trim() || shortAddress(item.address);
   const quote = typeof item.quoteSymbol === 'string' ? item.quoteSymbol.trim() : '';
-  const pair = quote ? `${symbol}/${quote}` : '—';
   const pairLabel = element('span', 'token-pair');
-  pairLabel.append(document.createTextNode('Pair '), element('strong', '', pair));
-  pairLabel.title = quote ? `Trading pair: ${pair}` : 'Trading pair unavailable';
+  pairLabel.append(document.createTextNode('Pair '), element('strong', '', quote || '—'));
+  pairLabel.title = quote ? `Trading pair: ${symbol}/${quote}` : 'Trading pair unavailable';
 
   const buy = formatTax(item.buyTaxBps);
   const sell = formatTax(item.sellTaxBps);
@@ -206,7 +213,7 @@ function kolToggle(name: string, dropdownId: string) {
 function createPanel() {
   const host = element('div', '');
   host.id = mountId;
-  const shadow = host.attachShadow({ mode: 'open' });
+  const shadow = host.attachShadow({ mode: __LOCAL_FIXTURE__ ? 'open' : 'closed' });
   const styles = new CSSStyleSheet();
   styles.replaceSync(xTrendingStyles);
   shadow.adoptedStyleSheets = [styles];
@@ -222,6 +229,13 @@ function createPanel() {
 
   let selected: TrendingWindow = defaultTrendingWindow;
   const expandedTokens = new Set<string>();
+  let pendingBuy: {
+    address: string;
+    window: TrendingWindow;
+    url: string | null;
+    parent: HTMLElement | null;
+    button: HTMLButtonElement;
+  } | null = null;
   let timer: number | undefined;
   let request = 0;
   const windows = Object.keys(trendingWindows) as TrendingWindow[];
@@ -234,7 +248,8 @@ function createPanel() {
     button.type = 'button';
     button.setAttribute('aria-pressed', String(window === selected));
     button.addEventListener('click', () => {
-      if (window === selected) return;
+      if (window === selected || pendingBuy) return;
+      hideBuyStatus();
       selected = window;
       expandedTokens.clear();
       for (const [index, item] of buttons.entries()) item.setAttribute('aria-pressed', String(windows[index] === selected));
@@ -252,6 +267,24 @@ function createPanel() {
   loadingLabel.setAttribute('role', 'status');
   const copyStatus = element('span', 'loading-label');
   copyStatus.setAttribute('role', 'status');
+  const buyAnnouncement = element('span', 'loading-label');
+  buyAnnouncement.setAttribute('role', 'status');
+  const buyStatusAnchor = element('div', 'buy-status-anchor');
+  buyStatusAnchor.setAttribute('aria-hidden', 'true');
+  const buyStatus = element('div', 'buy-status');
+  buyStatus.hidden = true;
+  const buyStatusIcon = document.createElementNS(svgNamespace, 'svg');
+  buyStatusIcon.setAttribute('viewBox', '0 0 16 16');
+  const buyStatusCircle = document.createElementNS(svgNamespace, 'circle');
+  buyStatusCircle.setAttribute('cx', '8');
+  buyStatusCircle.setAttribute('cy', '8');
+  buyStatusCircle.setAttribute('r', '6.5');
+  const buyStatusMark = document.createElementNS(svgNamespace, 'path');
+  const buyStatusText = element('span', '');
+  buyStatusIcon.append(buyStatusCircle, buyStatusMark);
+  buyStatus.append(buyStatusIcon, buyStatusText);
+  buyStatusAnchor.append(buyStatus);
+  let buyStatusTimer: number | undefined;
   const content = element('div', 'results');
   const artwork = element('div', 'artwork-preview');
   artwork.setAttribute('popover', 'manual');
@@ -260,8 +293,25 @@ function createPanel() {
   preview.alt = '';
   preview.referrerPolicy = 'no-referrer';
   artwork.append(preview);
-  panel.append(header, tools, loadingLabel, copyStatus, content, artwork);
+  panel.append(header, tools, loadingLabel, copyStatus, buyAnnouncement, buyStatusAnchor, content, artwork);
   shadow.append(panel);
+
+  function hideBuyStatus() {
+    clearTimeout(buyStatusTimer);
+    buyStatus.hidden = true;
+    buyAnnouncement.textContent = '';
+  }
+
+  function showBuyStatus(state: BuyStatus, message: string) {
+    if (!host.isConnected) return;
+    clearTimeout(buyStatusTimer);
+    buyStatus.dataset.state = state;
+    buyStatusMark.setAttribute('d', buyStatusIcons[state]);
+    buyStatusText.textContent = message;
+    buyStatus.hidden = false;
+    buyAnnouncement.textContent = message;
+    if (state !== 'pending') buyStatusTimer = window.setTimeout(hideBuyStatus, 5_000);
+  }
 
   function addressButton(address: string, name: string) {
     const label = shortAddress(address);
@@ -299,6 +349,92 @@ function createPanel() {
       }
       clearTimeout(feedback);
       feedback = window.setTimeout(() => { text.textContent = label; }, 1400);
+    });
+    return button;
+  }
+
+  function buyButton(item: TrendingToken, name: string, tradeWindow: TrendingWindow) {
+    const button = element('button', 'token-buy');
+    button.type = 'button';
+    button.title = 'Review this buy in Kollens Companion';
+    const addressLabel = shortAddress(item.address);
+    const buyName = name === addressLabel ? name : `${name} (${addressLabel})`;
+    button.setAttribute('aria-label', `Buy ${buyName}`);
+
+    const metrics = element('span', 'metrics');
+    const marketCap = dollarMetric('MC', item.marketCapUsd, 'Market cap');
+    const volume = dollarMetric('V', item.volumeUsd, 'Tracked KOL volume for this time window', item.volumeIncomplete);
+    metrics.append(marketCap, volume);
+    button.setAttribute('aria-description', `${marketCap.title}, ${volume.title}`);
+    const label = element('span', 'buy-label');
+    const icon = document.createElementNS(svgNamespace, 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(svgNamespace, 'path');
+    path.setAttribute('d', 'M13 2 3 14h8l-1 8 11-12h-8l1-8z');
+    icon.append(path);
+    const buyLabel = document.createTextNode('Buy');
+    label.append(icon, buyLabel);
+    button.append(metrics, label);
+
+    const hitButton = (x: number, y: number) => document.elementFromPoint(x, y) === host &&
+      button.contains(shadow.elementFromPoint(x, y));
+    const stillPositioned = (bounds: DOMRect) => {
+      const now = button.getBoundingClientRect();
+      return Math.abs(now.left - bounds.left) < 1 && Math.abs(now.top - bounds.top) < 1 &&
+        Math.abs(now.width - bounds.width) < 1 && Math.abs(now.height - bounds.height) < 1;
+    };
+    let press: { id: number; bounds: DOMRect; parent: HTMLElement | null; released: boolean } | undefined;
+    button.addEventListener('pointerdown', event => {
+      press = event.isTrusted && event.isPrimary && event.button === 0 && !pendingBuy &&
+        canUseBuy() && hitButton(event.clientX, event.clientY)
+        ? { id: event.pointerId, bounds: button.getBoundingClientRect(), parent: host.parentElement, released: false }
+        : undefined;
+    });
+    button.addEventListener('pointerup', event => {
+      if (press && event.isTrusted && event.isPrimary && event.button === 0 && event.pointerId === press.id &&
+          hitButton(event.clientX, event.clientY) && stillPositioned(press.bounds)) press.released = true;
+      else press = undefined;
+    });
+    button.addEventListener('pointercancel', () => { press = undefined; });
+    button.addEventListener('keydown', event => {
+      if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+    });
+    button.addEventListener('click', async event => {
+      const pointer = press;
+      press = undefined;
+      if (!event.isTrusted || event.button !== 0 || event.detail > 1 || pendingBuy || !canUseBuy() || tradeWindow !== selected ||
+          !content.contains(button) || !button.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return;
+      if (event.detail === 0) {
+        // Keyboard and assistive activation must come from the actual focused control.
+        const bounds = button.getBoundingClientRect();
+        if (shadow.activeElement !== button || !hitButton(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)) return;
+      } else if (!pointer?.released || pointer.parent !== host.parentElement || !stillPositioned(pointer.bounds) ||
+          !hitButton(event.clientX, event.clientY)) return;
+
+      pendingBuy = { address: item.address, window: tradeWindow, url: location.href, parent: host.parentElement, button };
+      ++request;
+      clearTimeout(timer);
+      button.setAttribute('aria-busy', 'true');
+      buyLabel.textContent = 'Opening…';
+      showBuyStatus('pending', `Opening buy review for ${buyName}…`);
+      const disabled = [...buttons, ...content.querySelectorAll<HTMLButtonElement>('button.token-buy')];
+      for (const control of disabled) control.setAttribute('aria-disabled', 'true');
+      try {
+        const response = await chrome.runtime.sendMessage({
+          kind: 'x-trending/buy', address: item.address, window: tradeWindow,
+        }) as BuyResponse | undefined;
+        if (response?.ok === true) hideBuyStatus();
+        else showBuyStatus('error', response?.error || 'Could not open the Kollens buy review. Try again.');
+      } catch {
+        showBuyStatus('error', 'Could not open the Kollens buy review. Try again.');
+      } finally {
+        pendingBuy = null;
+        button.removeAttribute('aria-busy');
+        buyLabel.textContent = 'Buy';
+        for (const control of disabled) control.removeAttribute('aria-disabled');
+        if (host.isConnected) timer = window.setTimeout(() => void refresh(), 45_000);
+      }
     });
     return button;
   }
@@ -347,16 +483,16 @@ function createPanel() {
     list.setAttribute('aria-hidden', 'true');
     for (let index = 0; index < visibleRows; index++) {
       const row = element('li', '');
-      const placeholder = element('div', 'token skeleton-row');
+      const placeholder = element('div', 'token skeleton-row tracked-row');
       const identity = element('span', 'identity');
       const activity = element('span', 'activity');
-      const metrics = element('span', 'metrics');
       const details = element('span', 'market-details');
+      const buy = element('span', 'token-buy');
       identity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       activity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      metrics.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       details.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      placeholder.append(element('span', 'avatar'), identity, activity, details, metrics);
+      buy.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
+      placeholder.append(element('span', 'avatar'), identity, activity, details, buy);
       row.append(placeholder);
       list.append(row);
     }
@@ -461,15 +597,10 @@ function createPanel() {
       const kolTotal = element('strong', '', `${kolCount} ${kolCount === 1 ? 'KOL' : 'KOLs'}`);
       if (kolCount !== item.kolCount) kolTotal.title = `${item.kolCount} tracked wallets`;
       activity.append(kolTotal, counts);
-      const metrics = element('span', 'metrics');
-      metrics.append(
-        dollarMetric('MC', item.marketCapUsd, 'Market cap'),
-        dollarMetric('V', item.volumeUsd, 'Tracked KOL volume for this time window', item.volumeIncomplete),
-      );
-      link.append(avatar, identity, activity, tokenMarketDetails(item), metrics);
+      link.append(avatar, identity);
       const row = element('li', '');
-      const summary = element('div', 'token-row');
-      summary.append(link, addressButton(item.address, name));
+      const summary = element('div', 'token-row tracked-row');
+      summary.append(link, addressButton(item.address, name), tokenMarketDetails(item), activity, buyButton(item, name, data.window));
       row.append(summary);
       const dropdown = kolDropdown(profiles, recent);
       if (dropdown) {
@@ -513,12 +644,14 @@ function createPanel() {
       ? Array.from(row.querySelectorAll<HTMLElement>('.kol-dropdown:not([hidden]) .kol-names > li'))
         .find(entry => entry.dataset.kol === focusedKol)?.querySelector('a')
       : null;
-    const focus = profileLink || address || ((focusedKol || activeElement?.matches('.kol-toggle')) && toggle) || tokenLink;
+    const buy = activeElement?.matches('.token-buy') && row?.querySelector<HTMLButtonElement>('.token-buy');
+    const focus = profileLink || address || buy || ((focusedKol || activeElement?.matches('.kol-toggle')) && toggle) || tokenLink;
     focus?.focus({ preventScroll: true });
     feed.scrollTop = scrollTop;
   }
 
   async function refresh(showLoading = false) {
+    if (pendingBuy) return;
     clearTimeout(timer);
     const current = ++request;
     if (!host.isConnected || !isPage() || document.hidden) return;
@@ -543,7 +676,18 @@ function createPanel() {
     }
   }
 
-  return { host, refresh, stop: () => { ++request; clearTimeout(timer); hideArtwork(); host.remove(); } };
+  return {
+    host,
+    refresh,
+    isBuySource(address: unknown, window: unknown) {
+      const buy = pendingBuy;
+      return buy && buy.address === address && buy.window === window && buy.url === location.href &&
+        canUseBuy() && host.isConnected && buy.parent === host.parentElement && content.contains(buy.button) &&
+        buy.button.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    },
+    invalidateBuySource() { if (pendingBuy) pendingBuy.url = null; },
+    stop: () => { ++request; clearTimeout(timer); hideBuyStatus(); hideArtwork(); host.remove(); },
+  };
 }
 
 let sidebar: HTMLElement | null = null;
@@ -585,8 +729,18 @@ const onVisibility = () => {
     void widget?.refresh();
   }
 };
-const onMessage = (message: { kind?: string }) => {
-  if (message?.kind === 'x-trending/navigation') schedule();
+const onRoute = () => {
+  widget?.invalidateBuySource();
+  schedule();
+};
+const onMessage = (message: { kind?: string; address?: unknown; window?: unknown }, sender: chrome.runtime.MessageSender,
+  respond: (response: unknown) => void) => {
+  if (sender.id !== chrome.runtime.id || sender.tab) return false;
+  if (message?.kind === 'x-trending/buy-source') {
+    if (widget?.isBuySource(message.address, message.window)) respond({ ok: true });
+    return false;
+  }
+  if (message?.kind === 'x-trending/navigation') onRoute();
   if (message?.kind === 'x-trending/stop') lifecycle.kollensXTrendingCleanup?.();
 };
 lifecycle.kollensXTrendingCleanup = () => {
@@ -594,14 +748,14 @@ lifecycle.kollensXTrendingCleanup = () => {
   clearTimeout(scheduled);
   widget?.stop();
   document.removeEventListener('visibilitychange', onVisibility);
-  window.removeEventListener('popstate', schedule);
+  window.removeEventListener('popstate', onRoute);
   window.removeEventListener('resize', schedule);
   try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
   delete lifecycle.kollensXTrendingCleanup;
 };
 observer.observe(document.body, { childList: true, subtree: true });
 document.addEventListener('visibilitychange', onVisibility);
-window.addEventListener('popstate', schedule);
+window.addEventListener('popstate', onRoute);
 window.addEventListener('resize', schedule);
 chrome.runtime.onMessage.addListener(onMessage);
 schedule();

@@ -16,6 +16,7 @@ import type {WalletBuyMode} from './walletBuyDefaults';
 import {captureWalletBuyTab} from './walletBuyNavigation';
 import {walletSelectionKey} from './walletSelection';
 import {maxWalletBuyTrades} from './walletSwap';
+import type {XTrendingBuyReview} from './xTrendingBuy';
 import type {Draft,PopupUi} from './sync';
 import '@fontsource-variable/inter';
 import './panel.css';
@@ -692,4 +693,39 @@ function Panel(){
     }}).then(success=>{if(success)changeNote(null);});}}>Save note</button></div></div>}
   </div>;
 }
-createRoot(document.getElementById('root')!).render(<Panel/>);
+function XBuyReview({ id }: { id: string }) {
+  const [request, setRequest] = useState<WalletBuyRequest>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    void requestBackground<{ review: XTrendingBuyReview }>({ kind: 'x-trending/buy-review', id })
+      .then(async ({ review }) => {
+        const context = await loadWalletBuyContext();
+        if (!context.wallets.length) throw Error('Select one or more wallets in Companion before buying.');
+        if (!context.settings.amounts.single) throw Error('Set a single-token amount in Companion → Settings → Buy.');
+        if (context.wallets.length > maxWalletBuyTrades) throw Error(`Select up to ${maxWalletBuyTrades} wallets per buy.`);
+        if (active) setRequest({ ...context, mode: 'single', tokens: [review.token],
+          originTab: Promise.resolve(review.source), requireConfirmation: true });
+      }).catch((failure: unknown) => {
+        if (active) setError(failure instanceof Error ? failure.message : 'Could not load the Kollens buy review.');
+      });
+    return () => { active = false; };
+  }, [id]);
+
+  return <div className="workspace review-workspace">
+    <header className="popup-header"><img className="brand-mark" src="assets/icon.png" alt=""/><h1>Kollens Companion</h1></header>
+    <main>
+      {request
+        ? <WalletBuyView request={request} onClose={()=>window.close()}/>
+        : <section className="wallet-card wallet-editor wallet-buy" aria-label="Buy review">
+          <h2>Buy review</h2>
+          {error ? <p className="wallet-error" role="alert">{error}</p> : <p role="status">Loading buy review…</p>}
+          <button className="popup-action secondary" type="button" onClick={()=>window.close()}>Close</button>
+        </section>}
+    </main>
+  </div>;
+}
+
+const reviewId = isExtension && location.pathname === '/panel.html' && new URLSearchParams(location.search).get('xBuy');
+if (reviewId) document.documentElement.dataset.surface = 'side-panel';
+createRoot(document.getElementById('root')!).render(reviewId ? <XBuyReview id={reviewId}/> : <Panel/>);

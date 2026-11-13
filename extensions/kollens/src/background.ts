@@ -7,6 +7,7 @@ import { normalizeCardMetric } from './cardMetrics';
 import { normalizeSocialLink, matchCards } from './matching';
 import {LiveGmgnAccess,gmgnOrigins} from './liveAccess';
 import { isXPage, loadXTrendingTokens, refreshXTrendingAccess, xTrendingOrigins, xTrendingSiteAllowed } from './xTrendingAccess';
+import { XTrendingBuy } from './xTrendingBuy';
 import {extensionAddress,extensionTokenImageUrl,type ExtensionAuthOptions,type ExtensionPage} from '../../../shared/extension';
 
 const store:LocalStore={async get<T>(key:string){return (await chrome.storage.local.get(key))[key] as T|undefined;},async set(key,value){await chrome.storage.local.set({[key]:value});}};
@@ -23,6 +24,7 @@ const focusRequests=new Set<number>();
 const manualPages=new Set<number>();
 const manualScans=new Map<number,{url:string;promise:Promise<void>}>();
 const manualSnapshotReuseMs=750;
+const trendingBuy = new XTrendingBuy();
 type ReadyNarrative = Extract<GmgnNarrative, { status: 'ready' }>;
 const narrativeCache = new Map<string, { value: ReadyNarrative; expires: number }>();
 let readingNarrative: {
@@ -221,8 +223,12 @@ function forgetPage(id:number) {
   configuredPages.delete(id);settingsVersions.delete(id);focusRequests.delete(id);
   if (__GMGN_NARRATIVE_ENABLED__) invalidateNarratives(id);
 }
-chrome.tabs.onRemoved.addListener(forgetPage);
+chrome.tabs.onRemoved.addListener(id => {
+  forgetPage(id);
+  trendingBuy.invalidateTab(id);
+});
 chrome.tabs.onUpdated.addListener((id,info,tab)=>{
+  if (info.url || info.status === 'loading') trendingBuy.invalidateTab(id);
   if(info.status==='loading'||info.url&&pages.get(id)?.url!==info.url)forgetPage(id);
   if(isXPage(info.url))void chrome.tabs.sendMessage(id,{kind:'x-trending/navigation'}).catch(async()=>{
     if(isXPage(tab.url)&&await xTrendingSiteAllowed()){
@@ -255,6 +261,8 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
   const work=async()=>{
     if(message?.kind==='x-trending/tokens')return loadXTrendingTokens(message.window,sender);
     await ready;
+    if (message?.kind === 'x-trending/buy') return trendingBuy.openReview(message.address, message.window, sender);
+    if (message?.kind === 'x-trending/buy-review') return trendingBuy.readReview(message.id, sender);
     // A dormant script must survive an initial non-BSC route, then activate only
     // when the user navigates to BSC trenches. No non-BSC card data is accepted.
     if(contentSender(sender)){

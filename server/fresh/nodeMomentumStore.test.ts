@@ -50,6 +50,7 @@ describe('node momentum store', () => {
     appendSeries(store, entries, [address(1)]);
     expect(store.snapshot()?.windows[window]).toEqual([{
       address: jacket, name: 'Just a jacket', symbol: 'Jacket', volumeUsd: '100000', marketCapUsd: '42000',
+      poolAddress: address(1), quoteAddress: address(50),
       priceChangePct: 100, buyCount: 98, sellCount: 2,
     }]);
     const lateStart = createNodeMomentumStore({ coverageStartMs: start });
@@ -77,6 +78,7 @@ describe('node momentum store', () => {
     appendSeries(store, [...series('1h'), ...preferred]);
     const item = store.snapshot()?.windows['1h']?.[0];
     expect(item?.quoteSymbol).toBe('WBNB');
+    expect(item?.poolAddress).toBe(address(2));
     expect(item).not.toHaveProperty('buyTaxBps');
     expect(item).not.toHaveProperty('sellTaxBps');
   });
@@ -163,17 +165,24 @@ describe('node momentum store', () => {
     const store = createNodeMomentumStore({ coverageStartMs: now - 5 * minute - 1 });
     appendSeries(store, series('5m', { txs: 7 }));
     const snapshot = store.snapshot()!;
-    const query = vi.fn(async () => ({ rowCount: 1, rows: [{
+    const query = vi.fn(async (sql: string) => sql.includes('FROM unnest')
+      ? { rowCount: 1, rows: [{ token_address: jacket, tax: { buyTaxBps: 0, sellTaxBps: 100 } }] }
+      : { rowCount: 1, rows: [{
       value: { ...snapshot, captureRevision: '4' }, block_number: snapshot.blockNumber, block_hash: snapshot.blockHash,
-      occurred_at: new Date(snapshot.observedAtMs),
-    }] }));
+      occurred_at: new Date(snapshot.observedAtMs), capture_revision: '4',
+    }] });
     const db = { query } as unknown as Pick<Pool, 'query'>;
     expect(await persistNodeMomentumSnapshot(db, snapshot, '4')).toBe(true);
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
     expect(sql).toContain('FOR SHARE OF c');
     expect(params[0]).toBe(nodeMomentumCheckpoint);
     expect(JSON.parse(params[5] as string)).toEqual({ ...snapshot, captureRevision: '4' });
-    expect(await readNodeMomentumSnapshot(db, '5m', now + minute)).toEqual(snapshot.windows['5m']);
+    const { poolAddress, quoteAddress, ...publicItem } = snapshot.windows['5m']![0];
+    expect(await readNodeMomentumSnapshot(db, '5m', now + minute)).toEqual([
+      { ...publicItem, buyTaxBps: 0, sellTaxBps: 100 },
+    ]);
+    expect(query.mock.lastCall?.[0]).toContain('m.address=candidate.pool_address');
+    expect(query.mock.lastCall?.[0]).toContain('m.quote_address=candidate.quote_address');
     expect(await readNodeMomentumSnapshot(db, '5m', now + 3 * minute + 1)).toEqual([]);
     expect(await readNodeMomentumSnapshot(db, '5m', now - 1)).toEqual([]);
     expect(await readNodeMomentumSnapshot(db, '6h', now + minute)).toEqual([]);

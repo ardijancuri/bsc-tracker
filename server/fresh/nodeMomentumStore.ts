@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 import { trendingWindows, type MarketMomentumToken, type TrendingWindow } from '../../shared/trendingTokens.js';
-import { trendingQuoteSymbol } from './settlementQuote.js';
+import { readTrendingMarketTax, trendingQuoteSymbol } from './settlementQuote.js';
 
 const minute = 60_000;
 const day = 24 * 60 * minute;
@@ -51,6 +51,12 @@ export interface NodeMomentumRange {
   coveredPools?: readonly string[];
 }
 
+type NodeMomentumSnapshotItem = MarketMomentumToken & {
+  // Optional for snapshots written by an older worker.
+  poolAddress?: string;
+  quoteAddress?: string;
+};
+
 export interface NodeMomentumSnapshot {
   version: 1;
   source: 'bnb_node';
@@ -60,7 +66,7 @@ export interface NodeMomentumSnapshot {
   asOfMs: number;
   /** All blocks after this baseline are covered for the selected pools. */
   coveredFromMs: number;
-  windows: Partial<Record<TrendingWindow, MarketMomentumToken[]>>;
+  windows: Partial<Record<TrendingWindow, NodeMomentumSnapshotItem[]>>;
 }
 
 interface MomentumBucket {
@@ -257,7 +263,7 @@ export function createNodeMomentumStore({ coverageStartMs, maxMarkets = maxMarke
 function rankNodeMomentum(markets: Map<string, MomentumMarket>, window: TrendingWindow, from: number, asOf: number) {
   const minimum = activity[window];
   const bandMs = Math.max(minute, (asOf - from) / 3);
-  const ranked = new Map<string, { item: MarketMomentumToken; score: number; volume: number; pool: string }>();
+  const ranked = new Map<string, { item: NodeMomentumSnapshotItem; score: number; volume: number; pool: string }>();
   for (const [pool, market] of markets) {
     if (market.from >= from || market.lastAt < asOf - Math.min(15 * minute, asOf - from)) continue;
     let volume = 0, buyCount = 0, sellCount = 0, transactions = 0;
@@ -291,6 +297,7 @@ function rankNodeMomentum(markets: Map<string, MomentumMarket>, window: Trending
     const quoteSymbol = trendingQuoteSymbol(market.quote);
     const item = {
       address: market.address, name: market.name || market.symbol, symbol: market.symbol || market.name.slice(0, 30),
+      poolAddress: pool, quoteAddress: market.quote,
       marketCapUsd: marketCapUsd === null || marketCapUsd < 0.000000000001 ? null : decimalUsd.format(marketCapUsd),
       volumeUsd: decimalUsd.format(volume), priceChangePct, buyCount, sellCount,
       ...(quoteSymbol === undefined ? {} : { quoteSymbol }),
@@ -342,11 +349,14 @@ function validSnapshot(value: NodeMomentumSnapshot | null | undefined): value is
   });
 }
 
-function validSnapshotItem(item: MarketMomentumToken) {
+function validSnapshotItem(item: NodeMomentumSnapshotItem) {
   return item && typeof item.address === 'string' && addressPattern.test(item.address)
     && typeof item.name === 'string' && item.name === safeIdentity(item.name, 80)
     && item.name.length > 0 && typeof item.symbol === 'string' && item.symbol === safeIdentity(item.symbol, 30)
     && (item.quoteSymbol === undefined || (typeof item.quoteSymbol === 'string' && /^[A-Za-z0-9]{1,16}$/.test(item.quoteSymbol)))
+    && (item.poolAddress === undefined && item.quoteAddress === undefined
+      || typeof item.poolAddress === 'string' && addressPattern.test(item.poolAddress)
+      && typeof item.quoteAddress === 'string' && addressPattern.test(item.quoteAddress) && item.quoteAddress !== item.address)
     && positiveUsd(item.volumeUsd) && (item.marketCapUsd === null || positiveUsd(item.marketCapUsd))
     && Number.isFinite(item.priceChangePct) && item.priceChangePct >= 2 && validIndex(item.buyCount) && validIndex(item.sellCount);
 }
@@ -357,7 +367,7 @@ function positiveUsd(value: unknown) {
 
 export async function readNodeMomentumSnapshot(db: Pick<Pool, 'query'>, window: TrendingWindow, now = Date.now()): Promise<MarketMomentumToken[]> {
   if (!validTime(now)) return [];
-  const { rows } = await db.query(`SELECT s.value,s.block_number,s.block_hash,h.occurred_at
+  const { rows } = await db.query(`SELECT s.value,s.block_number,s.block_hash,h.occurred_at,c.revision::text AS capture_revision
     FROM fresh.checkpoints s JOIN fresh.recent_blocks h ON h.block_number=s.block_number AND h.block_hash=s.block_hash
     JOIN fresh.checkpoints c ON c.key='capture' AND c.block_number>=s.block_number AND c.revision::text=s.value->>'captureRevision'
     WHERE s.key=$1 AND h.occurred_at BETWEEN $2 AND $3`,
@@ -366,5 +376,31 @@ export async function readNodeMomentumSnapshot(db: Pick<Pool, 'query'>, window: 
   const snapshot = row?.value as NodeMomentumSnapshot | undefined;
   if (!validSnapshot(snapshot) || snapshot.blockNumber !== Number(row.block_number) || snapshot.blockHash !== row.block_hash
     || snapshot.observedAtMs !== new Date(row.occurred_at).getTime() || snapshot.asOfMs > now || now - snapshot.asOfMs > maxSnapshotAge) return [];
-  return snapshot.windows[window] ?? [];
+  const items = snapshot.windows[window] ?? [];
+  const markets = items.filter(item => item.poolAddress !== undefined);
+  const taxes = new Map<string, unknown>();
+  if (markets.length) {
+    // Only use fresh evidence for the exact pool represented in the feed.
+    // Another pool with the same token and quote may enforce a different tax.
+    const observations = await db.query(`
+      SELECT m.token_address,m.identity->'tokenTax' AS tax
+      FROM unnest($1::text[],$2::text[],$3::text[]) candidate(token_address,pool_address,quote_address)
+      JOIN fresh.tokens t ON t.address=candidate.token_address AND t.valuation_status='ready'
+      JOIN fresh.markets m ON m.token_address=t.address AND m.address=candidate.pool_address
+        AND m.quote_address=candidate.quote_address AND m.protocol='pcs_v3' AND m.status='ready'
+        AND m.observed_block=t.observed_block AND m.observed_hash=t.observed_hash AND m.observed_at=t.observed_at
+      JOIN fresh.checkpoints c ON c.key='capture' AND c.revision::text=$6
+      JOIN fresh.recent_blocks h ON h.block_number=m.observed_block AND h.block_hash=m.observed_hash
+        AND h.occurred_at=m.observed_at AND c.block_number>=h.block_number
+      WHERE m.observed_at BETWEEN $4 AND $5 AND m.identity ? 'tokenTax'
+        AND m.identity->'canonicalIdentityInvalid' IS DISTINCT FROM 'true'::jsonb
+        AND m.identity#>'{market,canonicalIdentityInvalid}' IS DISTINCT FROM 'true'::jsonb`,
+    [markets.map(item => item.address), markets.map(item => item.poolAddress), markets.map(item => item.quoteAddress),
+      new Date(now - 2 * minute), new Date(now), row.capture_revision]).catch(() => null);
+    for (const observation of observations?.rows ?? []) taxes.set(observation.token_address, observation.tax);
+  }
+  return items.map(({ poolAddress, quoteAddress, buyTaxBps, sellTaxBps, ...item }) => ({
+    ...item,
+    ...readTrendingMarketTax(taxes.get(item.address), now),
+  }));
 }

@@ -22,6 +22,7 @@ export interface WalletBuyRequest extends WalletBuyContext {
   tokens: readonly ExtensionTokenIdentity[];
   mode: WalletBuyMode;
   permission?: Promise<boolean>;
+  requireConfirmation?: boolean;
   originTab?: ReturnType<typeof captureWalletBuyTab>;
 }
 
@@ -56,7 +57,8 @@ function sameWalletSelection(left: LocalWallet[], right: LocalWallet[]) {
 function buySettingsMatch(request: WalletBuyRequest, current: WalletBuySettings) {
   const { mode, settings } = request;
   return settings.amounts[mode] === current.amounts[mode] &&
-    settings.slippageBps[mode] === current.slippageBps[mode] && settings.maxFeeBnb === current.maxFeeBnb;
+    settings.slippageBps[mode] === current.slippageBps[mode] && settings.maxFeeBnb === current.maxFeeBnb &&
+    (mode !== 'single' || settings.singleTokenDestination === current.singleTokenDestination);
 }
 
 async function pendingBuys() {
@@ -114,7 +116,7 @@ export function WalletBuyView({ request, onClose }: { request: WalletBuyRequest 
       }).catch(() => {
         if (!lifetime.signal.aborted) setError('Could not load pending buys.');
       });
-    } else if (request.permission) {
+    } else if (request.permission && !request.requireConfirmation) {
       const permission = request.permission;
       queueMicrotask(() => {
         // A view remount must never replay the user's click.
@@ -241,12 +243,16 @@ export function WalletBuyView({ request, onClose }: { request: WalletBuyRequest 
 
   return <section ref={sectionRef} className="wallet-card wallet-editor wallet-buy" aria-label={heading}>
     <h2>{heading}</h2>
+    {request?.requireConfirmation && <div className="buy-contract">
+      <small>BNB Chain contract</small>
+      <code>{tokens[0].address}</code>
+    </div>}
     {error && <p className="wallet-error" role="alert">{error}</p>}
     {activity && pending?.length === 0 && <p>No pending buys.</p>}
     {request && <p><strong>{totalAmount} BNB</strong> + network fees · {orderCount} {orderCount === 1 ? 'order' : 'orders'}</p>}
     {lockedWallets.length > 0 && results.length === 0 && <form autoComplete="off" onSubmit={event => {
       event.preventDefault();
-      unlockAndBuy(event.currentTarget);
+      if (!request?.requireConfirmation || event.nativeEvent.isTrusted) unlockAndBuy(event.currentTarget);
     }}>
       {lockedWallets.map(wallet =>
         <label key={wallet.address}>Password for {wallet.alias ? `${wallet.alias} (${short(wallet.address)})` : short(wallet.address)}
@@ -255,6 +261,11 @@ export function WalletBuyView({ request, onClose }: { request: WalletBuyRequest 
         </label>)}
       <button className="popup-action buy-submit" type="submit" disabled={busy}>Unlock and buy</button>
     </form>}
+    {request?.requireConfirmation && lockedWallets.length === 0 && results.length === 0 &&
+      <button className="popup-action buy-submit" type="button" disabled={busy}
+        onClick={event => {
+          if (event.nativeEvent.isTrusted && !busyRef.current) buy(request, requestWalletBuyPermission(), new Map());
+        }}>Buy</button>}
     {displayedResults.length > 0 && <BuyResults results={displayedResults} tokens={tokens}/>}
     {navigationError && <p role="status">Buy submitted. Could not open GMGN automatically.</p>}
     {busy && <p role="status">{activity ? 'Checking pending buys…' : 'Submitting buys… Keep this window open.'}</p>}

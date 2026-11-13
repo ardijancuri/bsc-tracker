@@ -20,6 +20,9 @@ import{readFreshPoolStableV3Conversion}from'./currentV3Quote.js';
 import{createFreshCurrentMarketCanonicalHash,freshMarketIdentityInvalid,freshMarketLaunchDigest}from'./currentMarketAnchor.js';
 import{freshHistoricalValuation,type FreshValuationReadOptions}from'./valuationContext.js';
 import{readFreshTokenAdmission}from'./tracking.js';
+import { trendingQuoteSymbol, verifiedMarketQuoteSymbol } from './settlementQuote.js';
+import { readFreshFlapDexTax } from './flapDexTax.js';
+import { readFreshFourMemeMarketTax } from './fourMemeMarketTax.js';
 
 const tokenAbi = new Interface(['function decimals() view returns(uint8)', 'function totalSupply() view returns(uint256)', 'function name() view returns(string)', 'function symbol() view returns(string)', 'function balanceOf(address) view returns(uint256)']);
 const bytesTokenAbi = new Interface(['function name() view returns(bytes32)', 'function symbol() view returns(bytes32)']);
@@ -29,6 +32,8 @@ export interface FreshQuote { tokenAddress: string; priceUsd: string; marketCapU
 export interface FreshPriceOptions extends FreshValuationReadOptions {
   launchFact?: unknown;
   canonicalHash?: (number: number) => Promise<string | null>;
+  /** Optional display data belongs to the current quote worker. */
+  includeMarketDisplayMetadata?: boolean;
   /** Previously authenticated canonical Initialize identities from the worker.
    * Ordinary quote/API reads never discover pools by scanning history. */
   marketIdentities?: readonly unknown[];
@@ -263,7 +268,8 @@ interface LaunchObservation {
   emptyQuote?: string;
   marketQuote?: string;
   nativeCurve?: boolean;
-  tax?: { marketAddress: string; buyTaxBps: number; sellTaxBps: number };
+  tax?: { marketAddress: string; buyTaxBps: number; sellTaxBps: number; verifyFlapDex?: boolean };
+  fourMemeTaxSource?: { manager: string; version: bigint; helperQuoteAddress: string; liquidityAdded: boolean };
 }
 function directFlapPool(token: FreshTokenMetadata, options: FreshPriceOptions) {
   const fact = options.launchFact as Record<string, unknown> | null | undefined;
@@ -282,10 +288,13 @@ async function launchPrice(token: FreshTokenMetadata, options: FreshPriceOptions
   if (token.decimals !== 18) return null;
   try {
     const info = await freshCall(options, FOUR_HELPER, fourInterface, 'getTokenInfo', [token.address]);
-    if ([1n, 2n].includes(BigInt(info.version)) && FOUR_MANAGERS.includes(String(info.tokenManager).toLowerCase())) {
-      observed.proof = { platform: 'fourmeme', stage: info.liquidityAdded ? 'graduated' : 'bonding', helper: FOUR_HELPER, controller: String(info.tokenManager).toLowerCase(), blockNumber: options.block.number, blockHash: options.block.hash };
-      observed.nativeCurve = !info.liquidityAdded && String(info.quote).toLowerCase() === ZeroAddress;
-      const quote = String(info.quote).toLowerCase() === ZeroAddress ? WBNB : String(info.quote).toLowerCase();
+    const version = BigInt(info.version), manager = String(info.tokenManager).toLowerCase();
+    if ([1n, 2n].includes(version) && FOUR_MANAGERS.includes(manager)) {
+      const helperQuoteAddress = String(info.quote).toLowerCase(), liquidityAdded = Boolean(info.liquidityAdded);
+      observed.proof = { platform: 'fourmeme', stage: liquidityAdded ? 'graduated' : 'bonding', helper: FOUR_HELPER, controller: manager, blockNumber: options.block.number, blockHash: options.block.hash };
+      observed.fourMemeTaxSource = { manager, version, helperQuoteAddress, liquidityAdded };
+      observed.nativeCurve = !liquidityAdded && helperQuoteAddress === ZeroAddress;
+      const quote = helperQuoteAddress === ZeroAddress ? WBNB : helperQuoteAddress;
       if(freshAddress(quote))observed.marketQuote=quote;
       if (info.liquidityAdded || BigInt(info.lastPrice) <= 0n) return null;
       if(!TRUSTED_QUOTE_FEEDS[quote]){
@@ -318,11 +327,12 @@ async function launchPrice(token: FreshTokenMetadata, options: FreshPriceOptions
           const marketAddress = status === 1n ? FLAP_PORTAL : freshAddress(state.pool);
           // Flap V8 reports separate rates in basis points. A graduated tax
           // token may retain its configured rates after enforcement expires.
+          const verifyFlapDex = status === 4n && version === 6n && options.includeMarketDisplayMetadata === true;
           const known = nonTaxed ? buy === 0n && sell === 0n
-            : status === 1n && (version === 6n || ([4n, 5n].includes(version) && buy === sell))
+            : (verifyFlapDex || status === 1n && (version === 6n || ([4n, 5n].includes(version) && buy === sell)))
               && buy <= 10_000n && sell <= 10_000n;
           if (marketAddress && marketAddress !== ZeroAddress && known) {
-            observed.tax = { marketAddress, buyTaxBps: Number(buy), sellTaxBps: Number(sell) };
+            observed.tax = { marketAddress, buyTaxBps: Number(buy), sellTaxBps: Number(sell), verifyFlapDex };
           }
         }
       }
@@ -414,11 +424,30 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   const { candidate, price } = choices[0];
   if (price.n <= 0n) throw new Error('current_price_invalid');
   const quoteAddress = candidate.marketQuote ?? candidate.quote;
+  // Read the symbol on the same block as the verified winning pool. Quote
+  // metadata is optional and cannot change the selected pool or USD valuation.
+  const enrichDisplay = !historical && options.includeMarketDisplayMetadata;
+  const flapTax = launch.tax?.marketAddress === candidate.address && launch.marketQuote === quoteAddress
+    ? launch.tax : undefined;
+  const tokenTaxRead = flapTax
+    ? flapTax.verifyFlapDex
+      ? readFreshFlapDexTax(options.rpc, options.block, token.address, candidate.address, flapTax)
+      : { buyTaxBps: flapTax.buyTaxBps, sellTaxBps: flapTax.sellTaxBps }
+    : enrichDisplay && launch.fourMemeTaxSource
+    ? readFreshFourMemeMarketTax({
+        ...launch.fourMemeTaxSource, tokenAddress: token.address,
+        market: { address: candidate.address, protocol: candidate.protocol, quoteAddress },
+      }, freshCall.bind(null, options))
+    : undefined;
+  const quoteSymbolRead = enrichDisplay && !trendingQuoteSymbol(quoteAddress)
+    ? optionalIdentity(quoteAddress, 'symbol', options).then(verifiedMarketQuoteSymbol) : undefined;
+  const [observedQuoteSymbol, tokenTax] = await Promise.all([
+    quoteSymbolRead, tokenTaxRead,
+  ]);
   const launchMarketDetails = {
+    ...(observedQuoteSymbol === undefined ? {} : { quoteSymbol: observedQuoteSymbol }),
     ...(launch.nativeCurve && (candidate.protocol === 'flap' || candidate.protocol === 'fourmeme') ? { nativeQuote: true } : {}),
-    ...(launch.tax?.marketAddress === candidate.address && launch.marketQuote === quoteAddress ? {
-      tokenTax: { buyTaxBps: launch.tax.buyTaxBps, sellTaxBps: launch.tax.sellTaxBps },
-    } : {}),
+    ...(tokenTax ? { tokenTax } : {}),
   };
   return { tokenAddress: token.address, priceUsd: price.text(), marketCapUsd: MarketDecimal.raw(BigInt(token.supplyRaw), token.decimals).mul(price).text(), metadata: token,
     market: { id: candidate.id, address: candidate.address, protocol: candidate.protocol, quoteAddress, identity: { ...candidate.identity, ...launchMarketDetails, ...(launch.proof ? { launch: launch.proof } : {}) }, state: candidate.state },
@@ -433,6 +462,7 @@ export async function persistFreshQuote(database: Pick<Pool, 'query'>, quote: Fr
     quote.priceUsd, quote.marketCapUsd, quote.blockNumber, quote.blockHash, quote.observedAt]);
   await database.query(`INSERT INTO fresh.markets(id,token_address,address,protocol,quote_address,identity,state,observed_block,observed_hash,observed_at,status)
     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,'ready') ON CONFLICT(id) DO UPDATE SET state=EXCLUDED.state,identity=EXCLUDED.identity,
+    quote_address=EXCLUDED.quote_address,
     observed_block=EXCLUDED.observed_block,observed_hash=EXCLUDED.observed_hash,observed_at=EXCLUDED.observed_at,status='ready'
     WHERE fresh.markets.observed_block IS NULL OR fresh.markets.observed_block<=EXCLUDED.observed_block`, [quote.market.id, quote.tokenAddress, ['uniswap_v4','infinity_cl'].includes(quote.market.protocol)?null:quote.market.address, quote.market.protocol,
     quote.market.quoteAddress, JSON.stringify(quote.market.identity), JSON.stringify(quote.market.state), quote.blockNumber, quote.blockHash, quote.observedAt]);

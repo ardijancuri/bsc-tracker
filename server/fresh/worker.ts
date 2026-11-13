@@ -122,7 +122,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
       let ready=0,failed=0;const unavailableReasons:Record<string,number>={};
       // Bounded concurrency, no price response is copied into every holder's position.
       for(let i=0;i<selected.length&&!signal.aborted;i+=4){const{block,captureRevision,canonicalHash}=await readFreshQuoteRefreshAnchor(db);
-        await Promise.all(selected.slice(i,i+4).map(async row=>{const evidence=observeFreshQuoteRefresh(rpc,block);try{await commitFreshCurrentQuote(db,await freshCurrentQuote(row.address,{rpc:evidence.rpc,block,launchFact:row.launch_fact,
+      await Promise.all(selected.slice(i,i+4).map(async row=>{const evidence=observeFreshQuoteRefresh(rpc,block);try{await commitFreshCurrentQuote(db,await freshCurrentQuote(row.address,{rpc:evidence.rpc,block,launchFact:row.launch_fact,includeMarketDisplayMetadata:true,
         canonicalHash:createFreshCurrentMarketCanonicalHash(db,{token:row.address,block,recentHash:canonicalHash}),marketIdentities:marketIdentities.get(row.address)}),{captureRevision});ready++;await db.query(`DELETE FROM fresh.jobs WHERE kind='quote' AND reference=$1`,[row.address]);}catch(error){failed++;const status=freshQuoteFailureStatus(error),reason=category(error);unavailableReasons[reason]=(unavailableReasons[reason]??0)+1;
           await commitFreshQuoteRefreshFailure(db,row.address,error,{captureRevision,block,prior:priorQuotes.get(row.address),evidence});await deferFreshQuoteRetry(db,row.address,status);}}));}
       const{block}=await readFreshQuoteRefreshAnchor(db);

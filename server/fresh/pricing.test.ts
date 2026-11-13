@@ -11,6 +11,7 @@ import { factoryCode,pairCode } from './currentQuote.fixture.js';
 import {FRESH_CURRENT_STABLE_BRIDGE,freshPoolNativePair,freshPoolQuotePair} from './currentPoolQuote.js';
 import{FRESH_PCS_V3_DEPLOYER,freshPoolStableV3}from'./currentV3Quote.js';
 import { FRESH_FLAP_POOL_PORTAL } from './flapPoolLaunch.js';
+import { freshConstantCloneRuntime } from './constantMetadataRecovery.js';
 
 const token = `0x${'7'.repeat(40)}`, pool = `0x${'2'.repeat(40)}`, block = { number: 101, hash: `0x${'a'.repeat(64)}`, timestamp: '2026-10-21T18:00:00.000Z' };
 const tokenAbi = new Interface(['function decimals() view returns(uint8)', 'function totalSupply() view returns(uint256)', 'function name() view returns(string)', 'function symbol() view returns(string)']);
@@ -138,11 +139,13 @@ const migratedQuotes=[
   {quote:FRESH_SPCXB_QUOTE,nativePair:FRESH_SPCXB_NATIVE_PAIR},
 ];
 function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;quoteDecimals?:number;staleFeed?:boolean;badMarketFactory?:boolean;badNativeCode?:boolean;emptyMarket?:boolean;failedDiscovery?:boolean;bonding?:boolean;fourmeme?:boolean;
-  rates?: [number, number]; version?: number; legacyLens?: boolean; flapPool?: string}={}){
-  const currentBlock={...block,timestamp:new Date().toISOString()},precision=options.quoteDecimals??18;
+  rates?: [number, number]; version?: number; legacyLens?: boolean; flapPool?: string; quoteSymbol?: string; dexTaxExpiry?: number}={}){
+  const currentBlock={...block,timestamp:new Date(Math.floor(Date.now()/1000)*1000).toISOString()},precision=options.quoteDecimals??18;
   const assets=[token,route.quote].sort(),nativeAssets=[route.quote,WBNB].sort();
   const contractAbi=new Interface([...tokenAbi.fragments,'function factory() view returns(address)','function token0() view returns(address)',
-    'function token1() view returns(address)','function getReserves() view returns(uint112,uint112,uint32)']);
+    'function token1() view returns(address)','function getReserves() view returns(uint112,uint112,uint32)',
+    'function mainPool() view returns(address)',
+    'function getPoolStateData() view returns(uint8,uint16,uint16,uint256,uint256,uint256)']);
   const rpc=vi.fn(async(method:string,params:any[])=>{
     if(method==='eth_chainId')return '0x38';
     expect(params[1]).toEqual({blockHash:currentBlock.hash,requireCanonical:true});
@@ -151,6 +154,7 @@ function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;
       if(to===PCS_V2_FACTORY)return factoryCode;
       if(to===route.nativePair)return options.badNativeCode?'0x00':pairCode;
       if(to===route.quote)return '0x6000';
+      if(to===token&&options.dexTaxExpiry!==undefined)return freshConstantCloneRuntime('flap');
       throw Error('unexpected_code_read');
     }
     expect(method).toBe('eth_call');const call=params[0];
@@ -197,6 +201,12 @@ function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;
     if(to===token&&name==='totalSupply')return contractAbi.encodeFunctionResult(name,[1_000_000n*10n**18n]);
     if(to===token&&name==='name')return contractAbi.encodeFunctionResult(name,['Graduated token']);
     if(to===token&&name==='symbol')return contractAbi.encodeFunctionResult(name,['GRAD']);
+    if(to===route.quote&&name==='symbol'&&options.quoteSymbol)return contractAbi.encodeFunctionResult(name,[options.quoteSymbol]);
+    if(to===token&&name==='mainPool')return contractAbi.encodeFunctionResult(name,[pool]);
+    if(to===token&&name==='getPoolStateData'&&options.dexTaxExpiry!==undefined){
+      const [buy,sell]=options.rates??[0,0];
+      return contractAbi.encodeFunctionResult(name,[2,buy,sell,0,options.dexTaxExpiry,0]);
+    }
     throw Error('unexpected_canonical_read');
   }) as Rpc&ReturnType<typeof vi.fn>;
   return{rpc,block:currentBlock};
@@ -251,6 +261,19 @@ describe('graduated Flap current-market discovery',()=>{
     const quoteAddress='0x'+'9'.repeat(40),route={quote:quoteAddress,nativePair:freshPoolNativePair(quoteAddress)};
     const fixture=graduatedFlapFixture(route),quote=await freshCurrentQuote(token,fixture);
     expect(quote).toMatchObject({priceUsd:'600',market:{quoteAddress,protocol:'pcs_v2',identity:{quoteConversion:{kind:'authenticated_current_pcs_v2_native',pair:route.nativePair}}}});
+  });
+  it('enriches the winning graduated market with its verified tax and exact custom quote symbol', async () => {
+    const quoteAddress='0x'+'9'.repeat(40),route={quote:quoteAddress,nativePair:freshPoolNativePair(quoteAddress)};
+    const dexTaxExpiry=Math.floor(Date.now()/1000)+600;
+    const fixture=graduatedFlapFixture(route,{quoteSymbol:'FXIon',rates:[0,100],dexTaxExpiry});
+    const quote=await freshCurrentQuote(token,{...fixture,includeMarketDisplayMetadata:true});
+    expect(quote).toMatchObject({priceUsd:'600',market:{quoteAddress,identity:{
+      quoteSymbol:'FXIon',tokenTax:{buyTaxBps:0,sellTaxBps:100,expiresAtSeconds:dexTaxExpiry},
+    }}});
+    const ordinary=await freshCurrentQuote(token,fixture);
+    expect(ordinary.priceUsd).toBe(quote.priceUsd);
+    expect(ordinary.market.identity).not.toHaveProperty('tokenTax');
+    expect(ordinary.market.identity).not.toHaveProperty('quoteSymbol');
   });
   it.each([6,18])('uses exact %i-decimal custom-quote conversion for both bonding launchpads',async precision=>{
     const quoteAddress='0x'+'9'.repeat(40),route={quote:quoteAddress,nativePair:freshPoolNativePair(quoteAddress)};

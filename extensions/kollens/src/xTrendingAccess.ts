@@ -6,7 +6,8 @@ export const xTrendingOrigins = ['https://x.com/*'];
 const registrationId = 'kollens-x-trending';
 let permissionWork = Promise.resolve();
 export type XTrendingResponse = Omit<TrendingTokens,'items'> & { items: (TrendingToken & { thumbnail: string | null })[] };
-const cache = new Map<TrendingWindow, { expires: number; result: Promise<XTrendingResponse> }>();
+const cache = new Map<TrendingWindow, { expires: number; result: Promise<TrendingTokens> }>();
+const panelCache = new Map<TrendingWindow, { expires: number; result: Promise<XTrendingResponse> }>();
 const thumbnails = new Map<string, { expires: number; data: Promise<string | null> }>();
 const thumbnailLimit = 64 * 1024;
 
@@ -125,9 +126,18 @@ export async function loadXTrendingTokens(window: unknown, sender: chrome.runtim
   if (!local && (!isXPage(tab.url) || !isXPage(sender.url) || !await xTrendingSiteAllowed())) {
     throw Error('Trending request context rejected');
   }
-  const previous = cache.get(window);
+  const previous = panelCache.get(window);
   if (previous && previous.expires > Date.now()) return previous.result;
-  const result = fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}&momentum=1`, {
+  const result = requestXTrendingTokens(window, true).then(async data => ({
+    ...data, items: await Promise.all(data.items.map(async item => ({ ...item, thumbnail: await thumbnail(item) }))),
+  }));
+  panelCache.set(window, { result, expires: Date.now() + 30_000 });
+  void result.catch(() => { if (panelCache.get(window)?.result === result) panelCache.delete(window); });
+  return result;
+}
+
+function requestXTrendingTokens(window: TrendingWindow, momentum: boolean) {
+  return fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}${momentum ? '&momentum=1' : ''}`, {
     credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(8_000),
   }).then(async response => {
     if (!response.ok) throw Error('Trending tokens are unavailable');
@@ -135,8 +145,14 @@ export async function loadXTrendingTokens(window: unknown, sender: chrome.runtim
     if (data.window !== window || !Array.isArray(data.items) || data.items.length > 12) {
       throw Error('Invalid trending token response');
     }
-    return { ...data, items: await Promise.all(data.items.map(async item => ({ ...item, thumbnail: await thumbnail(item) }))) };
+    return data;
   });
+}
+
+export function getXTrendingTokens(window: TrendingWindow) {
+  const previous = cache.get(window);
+  if (previous && previous.expires > Date.now()) return previous.result;
+  const result = requestXTrendingTokens(window, false);
   cache.set(window, { result, expires: Date.now() + 30_000 });
   void result.catch(() => { if (cache.get(window)?.result === result) cache.delete(window); });
   return result;

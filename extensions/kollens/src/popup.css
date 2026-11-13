@@ -263,6 +263,9 @@ html[data-surface] .settings-view{padding:14px 16px;scrollbar-gutter:auto}
 }
 .wallet-buy small{font-size:10px;color:var(--muted)}
 .wallet-buy h2{overflow-wrap:anywhere}
+.review-workspace{max-width:450px;margin-inline:auto}
+.buy-contract{display:grid;gap:4px;margin-block:8px}
+.buy-contract code{font-size:12px;overflow-wrap:anywhere}
 .wallet-buy .wallet-error{margin-block:8px}
 html[data-surface] h1{font-size:19px}
 html[data-surface] .section-intro{margin-bottom:21px}
