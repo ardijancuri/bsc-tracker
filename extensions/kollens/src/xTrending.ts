@@ -20,6 +20,10 @@ const lowerBoundOptions = { ...dollarOptions, roundingMode: 'floor' } as const;
 const compactDollars = new Intl.NumberFormat('en', dollarOptions);
 const lowerBoundDollars = new Intl.NumberFormat('en', lowerBoundOptions);
 const percentChange = new Intl.NumberFormat('en', { style: 'percent', signDisplay: 'always', maximumFractionDigits: 1 });
+const taxPercent = new Intl.NumberFormat('en', { style: 'percent', maximumFractionDigits: 2 });
+const formatTax = (bps: number | undefined) =>
+  typeof bps === 'number' && Number.isInteger(bps) && bps >= 0 && bps <= 10_000
+    ? taxPercent.format(bps / 10_000) : '—';
 const isPage = () => isXPage(location.href) || __LOCAL_FIXTURE__ &&
   location.origin === 'http://127.0.0.1:3360' && location.pathname === '/x-fixture';
 
@@ -70,6 +74,34 @@ function dollarMetric(label: string, usd: string | null | undefined, description
   metric.title = formatted && incomplete ? `${description} (known amounts only)` : description;
   metric.append(value);
   return metric;
+}
+
+function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps'>) {
+  const details = element('span', 'market-details');
+  const symbol = typeof item.symbol === 'string' && item.symbol.trim() || shortAddress(item.address);
+  const quote = typeof item.quoteSymbol === 'string' ? item.quoteSymbol.trim() : '';
+  const pair = quote ? `${symbol}/${quote}` : '—';
+  const pairLabel = element('span', 'token-pair');
+  pairLabel.append(document.createTextNode('Pair '), element('strong', '', pair));
+  pairLabel.title = quote ? `Trading pair: ${pair}` : 'Trading pair unavailable';
+
+  const buy = formatTax(item.buyTaxBps);
+  const sell = formatTax(item.sellTaxBps);
+  const known = buy !== '—' || sell !== '—';
+  const tax = element('span', 'token-tax');
+  tax.dataset.known = String(known);
+  tax.title = `Buy tax: ${buy === '—' ? 'unavailable' : buy} · Sell tax: ${sell === '—' ? 'unavailable' : sell}`;
+  const icon = document.createElementNS(svgNamespace, 'svg');
+  icon.setAttribute('viewBox', '0 0 16 16');
+  icon.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(svgNamespace, 'path');
+  path.setAttribute('d', 'M4 2.5h8v11l-2-1.25L8 13.5l-2-1.25L4 13.5v-11Zm2.25 3.25h3.5m-3.5 2.5h3.5');
+  icon.append(path);
+  const rates = element('span', '', known ? `Tax ${buy}/${sell}` : 'Tax —');
+  rates.setAttribute('aria-hidden', 'true');
+  tax.append(icon, rates, element('span', 'loading-label', tax.title));
+  details.append(pairLabel, tax);
+  return details;
 }
 
 function tradeCounts(buys: number, sells: number) {
@@ -319,10 +351,12 @@ function createPanel() {
       const identity = element('span', 'identity');
       const activity = element('span', 'activity');
       const metrics = element('span', 'metrics');
+      const details = element('span', 'market-details');
       identity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       activity.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
       metrics.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
-      placeholder.append(element('span', 'avatar'), identity, activity, metrics);
+      details.append(element('span', 'skeleton-bar'), element('span', 'skeleton-bar'));
+      placeholder.append(element('span', 'avatar'), identity, activity, details, metrics);
       row.append(placeholder);
       list.append(row);
     }
@@ -374,7 +408,7 @@ function createPanel() {
         dollarMetric('MC', item.marketCapUsd, 'Market cap'),
         dollarMetric('V', item.volumeUsd, `DEX pool volume over ${window}`),
       );
-      link.append(activity, metrics);
+      link.append(activity, tokenMarketDetails(item), metrics);
       summary.append(link, addressButton(item.address, item.name));
       row.append(summary);
       list.append(row);
@@ -432,7 +466,7 @@ function createPanel() {
         dollarMetric('MC', item.marketCapUsd, 'Market cap'),
         dollarMetric('V', item.volumeUsd, 'Tracked KOL volume for this time window', item.volumeIncomplete),
       );
-      link.append(avatar, identity, activity, metrics);
+      link.append(avatar, identity, activity, tokenMarketDetails(item), metrics);
       const row = element('li', '');
       const summary = element('div', 'token-row');
       summary.append(link, addressButton(item.address, name));

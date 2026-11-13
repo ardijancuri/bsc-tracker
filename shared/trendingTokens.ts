@@ -10,7 +10,14 @@ export interface TrendingKol {
   twitter: string | null;
 }
 
-export interface TrendingToken {
+export interface TrendingMarketDetails {
+  quoteSymbol?: string;
+  // Basis points, present only for a verified tax on the represented market.
+  buyTaxBps?: number;
+  sellTaxBps?: number;
+}
+
+export interface TrendingToken extends TrendingMarketDetails {
   address: string;
   name: string | null;
   symbol: string | null;
@@ -35,7 +42,7 @@ export interface TrendingTokens {
 }
 
 /** Activity of one BSC DEX pool in the selected window. No KOL attribution. */
-export interface MarketMomentumToken {
+export interface MarketMomentumToken extends TrendingMarketDetails {
   address: string;
   name: string;
   symbol: string;

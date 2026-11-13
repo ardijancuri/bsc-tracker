@@ -258,7 +258,13 @@ async function discoverPool(token: FreshTokenMetadata, quote: string, options: F
     complete:v3.every(value=>value.status==='fulfilled')&&candidates.every(value=>value.status==='fulfilled')};
 }
 
-interface LaunchObservation {proof:Record<string,unknown>|null;emptyQuote?:string;marketQuote?:string}
+interface LaunchObservation {
+  proof: Record<string, unknown> | null;
+  emptyQuote?: string;
+  marketQuote?: string;
+  nativeCurve?: boolean;
+  tax?: { marketAddress: string; buyTaxBps: number; sellTaxBps: number };
+}
 function directFlapPool(token: FreshTokenMetadata, options: FreshPriceOptions) {
   const fact = options.launchFact as Record<string, unknown> | null | undefined;
   const proof = fact?.proof as Record<string, unknown> | null | undefined;
@@ -278,6 +284,7 @@ async function launchPrice(token: FreshTokenMetadata, options: FreshPriceOptions
     const info = await freshCall(options, FOUR_HELPER, fourInterface, 'getTokenInfo', [token.address]);
     if ([1n, 2n].includes(BigInt(info.version)) && FOUR_MANAGERS.includes(String(info.tokenManager).toLowerCase())) {
       observed.proof = { platform: 'fourmeme', stage: info.liquidityAdded ? 'graduated' : 'bonding', helper: FOUR_HELPER, controller: String(info.tokenManager).toLowerCase(), blockNumber: options.block.number, blockHash: options.block.hash };
+      observed.nativeCurve = !info.liquidityAdded && String(info.quote).toLowerCase() === ZeroAddress;
       const quote = String(info.quote).toLowerCase() === ZeroAddress ? WBNB : String(info.quote).toLowerCase();
       if(freshAddress(quote))observed.marketQuote=quote;
       if (info.liquidityAdded || BigInt(info.lastPrice) <= 0n) return null;
@@ -299,11 +306,29 @@ async function launchPrice(token: FreshTokenMetadata, options: FreshPriceOptions
   for (const method of ['getTokenV8Safe', 'getTokenV7'] as const) {
     try {
       const state = (await freshCall(options, FLAP_PORTAL, flapInterface, method, [token.address]))[0];
-      if ([1n, 4n].includes(BigInt(state.status))) observed.proof = { platform: 'flap', stage: BigInt(state.status) === 4n ? 'graduated' : 'bonding', controller: FLAP_PORTAL, method, blockNumber: options.block.number, blockHash: options.block.hash };
+      const status = BigInt(state.status);
+      const quote = String(state.quoteTokenAddress).toLowerCase() === ZeroAddress ? WBNB : String(state.quoteTokenAddress).toLowerCase();
+      if ([1n, 4n].includes(status)) {
+        observed.proof = { platform: 'flap', stage: status === 4n ? 'graduated' : 'bonding', controller: FLAP_PORTAL, method, blockNumber: options.block.number, blockHash: options.block.hash };
+        observed.nativeCurve = status === 1n && String(state.quoteTokenAddress).toLowerCase() === ZeroAddress;
+        if (method === 'getTokenV8Safe' && !freshHistoricalValuation(options)) {
+          const version = BigInt(state.tokenVersion);
+          const nonTaxed = [0n, 1n, 2n, 7n].includes(version);
+          const buy = BigInt(state.buyTaxRate), sell = BigInt(state.sellTaxRate);
+          const marketAddress = status === 1n ? FLAP_PORTAL : freshAddress(state.pool);
+          // Flap V8 reports separate rates in basis points. A graduated tax
+          // token may retain its configured rates after enforcement expires.
+          const known = nonTaxed ? buy === 0n && sell === 0n
+            : status === 1n && (version === 6n || ([4n, 5n].includes(version) && buy === sell))
+              && buy <= 10_000n && sell <= 10_000n;
+          if (marketAddress && marketAddress !== ZeroAddress && known) {
+            observed.tax = { marketAddress, buyTaxBps: Number(buy), sellTaxBps: Number(sell) };
+          }
+        }
+      }
       // Graduation empties the curve, but its authenticated quote still names
       // the migrated market. Retain only a valid, supported quote for bounded
       // factory discovery; unknown portal states/quote routes grant no trust.
-      const quote = String(state.quoteTokenAddress).toLowerCase() === ZeroAddress ? WBNB : String(state.quoteTokenAddress).toLowerCase();
       if ([1n,4n].includes(BigInt(state.status)) && freshAddress(quote)) observed.marketQuote=quote;
       if (BigInt(state.status) === 4n) return null;
       if (BigInt(state.status) !== 1n) continue;
@@ -388,8 +413,15 @@ export async function freshCurrentQuote(tokenAddress: string, options: FreshPric
   }
   const { candidate, price } = choices[0];
   if (price.n <= 0n) throw new Error('current_price_invalid');
+  const quoteAddress = candidate.marketQuote ?? candidate.quote;
+  const launchMarketDetails = {
+    ...(launch.nativeCurve && (candidate.protocol === 'flap' || candidate.protocol === 'fourmeme') ? { nativeQuote: true } : {}),
+    ...(launch.tax?.marketAddress === candidate.address && launch.marketQuote === quoteAddress ? {
+      tokenTax: { buyTaxBps: launch.tax.buyTaxBps, sellTaxBps: launch.tax.sellTaxBps },
+    } : {}),
+  };
   return { tokenAddress: token.address, priceUsd: price.text(), marketCapUsd: MarketDecimal.raw(BigInt(token.supplyRaw), token.decimals).mul(price).text(), metadata: token,
-    market: { id: candidate.id, address: candidate.address, protocol: candidate.protocol, quoteAddress: candidate.marketQuote ?? candidate.quote, identity: { ...candidate.identity, ...(launch.proof ? { launch: launch.proof } : {}) }, state: candidate.state },
+    market: { id: candidate.id, address: candidate.address, protocol: candidate.protocol, quoteAddress, identity: { ...candidate.identity, ...launchMarketDetails, ...(launch.proof ? { launch: launch.proof } : {}) }, state: candidate.state },
     observedAt: candidate.observedAt ?? options.block.timestamp, blockNumber: options.block.number, blockHash: options.block.hash,...(historical?{observationContext:'historical_block' as const}:{}) };
 }
 

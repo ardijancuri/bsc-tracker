@@ -1,6 +1,7 @@
 /** PostgreSQL fixture using session-local tables. No application data is written. */
 import assert from 'node:assert/strict';
 import { Pool } from 'pg';
+import { WBNB } from '../launchpad.js';
 import { readFreshTrendingTokens } from './trendingTokens.js';
 
 const url = new URL(process.env.TRENDING_TEST_DATABASE_URL ?? '');
@@ -41,7 +42,10 @@ try {
   await client.query('BEGIN');
   await client.query(`
     CREATE TEMP TABLE tokens(address text, name text, symbol text, launch_status text, valuation_status text,
-      logo_url text, logo_data bytea, market_cap_usd numeric, price_usd numeric, observed_at timestamptz);
+      logo_url text, logo_data bytea, market_cap_usd numeric, price_usd numeric, observed_at timestamptz,
+      observed_block bigint, observed_hash text);
+    CREATE TEMP TABLE markets(token_address text, quote_address text, identity jsonb, status text,
+      observed_at timestamptz, observed_block bigint, observed_hash text);
     CREATE TEMP TABLE financial_events(token_address text, wallet_address text, transaction_hash text, kind text,
       occurred_at timestamptz, quantity text, amount_usd text, canonical boolean, observed_live boolean,
       provenance jsonb, block_number bigint);
@@ -127,6 +131,27 @@ try {
   assert.equal(feed.items.find(item => item.address === pending)?.volumeUsd, null);
   assert.equal(feed.items.find(item => item.address === pending)?.volumeIncomplete, true);
   assert(!(await readFreshTrendingTokens(fixtureDb, '5m', now)).items.some(item => item.address === ancient));
+
+  const recent = new Date(now - minute);
+  const expired = new Date(now - 3 * minute);
+  for (const [key, time] of [[rising, recent], [flat, expired], [down, recent], [weak, recent]] as const) {
+    await client.query(`UPDATE tokens SET observed_at=$2, observed_block=500, observed_hash='canonical', valuation_status='ready'
+      WHERE address=$1`, [key, time]);
+  }
+  await client.query(`INSERT INTO markets VALUES
+    ($1,$5,'{"nativeQuote":true,"tokenTax":{"buyTaxBps":0,"sellTaxBps":325}}','ready',$6,500,'canonical'),
+    ($2,$5,'{"tokenTax":{"buyTaxBps":400,"sellTaxBps":500}}','ready',$7,500,'canonical'),
+    ($3,$5,'{"tokenTax":{"buyTaxBps":300}}','ready',$6,500,'orphaned'),
+    ($4,$5,'{}','ready',$6,500,'canonical'),($4,$5,'{}','ready',$6,500,'canonical')`,
+  [rising, flat, down, weak, WBNB, recent, expired]);
+  const enriched = (await readFreshTrendingTokens(fixtureDb, '6h', now)).items;
+  assert.equal(enriched.find(item => item.address === rising)?.quoteSymbol, 'BNB');
+  assert.equal(enriched.find(item => item.address === rising)?.buyTaxBps, 0);
+  assert.equal(enriched.find(item => item.address === rising)?.sellTaxBps, 325);
+  assert.equal(enriched.find(item => item.address === flat)?.quoteSymbol, 'WBNB');
+  assert.equal(enriched.find(item => item.address === flat)?.sellTaxBps, undefined);
+  assert.equal(enriched.find(item => item.address === down)?.quoteSymbol, undefined);
+  assert.equal(enriched.find(item => item.address === weak)?.quoteSymbol, undefined);
 
   for (let i = 0; i < 14; i++) {
     const other = await token(200 + i);

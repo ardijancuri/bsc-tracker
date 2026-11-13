@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import { trendingWindows, type MarketMomentumToken, type TrendingWindow } from '../../shared/trendingTokens.js';
+import { trendingQuoteSymbol } from './settlementQuote.js';
 
 const minute = 60_000;
 const day = 24 * 60 * minute;
@@ -287,10 +288,12 @@ function rankNodeMomentum(markets: Map<string, MomentumMarket>, window: Trending
     if (!Number.isFinite(priceChangePct) || priceChangePct < 2) continue;
     const score = Math.log1p(Math.min(transactions / minimum.transactions, 100))
       + Math.log1p(Math.min(volume / minimum.volume, 100)) + Math.log1p(Math.min(priceChangePct, 200) / 10);
+    const quoteSymbol = trendingQuoteSymbol(market.quote);
     const item = {
       address: market.address, name: market.name || market.symbol, symbol: market.symbol || market.name.slice(0, 30),
       marketCapUsd: marketCapUsd === null || marketCapUsd < 0.000000000001 ? null : decimalUsd.format(marketCapUsd),
       volumeUsd: decimalUsd.format(volume), priceChangePct, buyCount, sellCount,
+      ...(quoteSymbol === undefined ? {} : { quoteSymbol }),
     };
     if (!item.name) continue;
     const prior = ranked.get(item.address);
@@ -343,6 +346,7 @@ function validSnapshotItem(item: MarketMomentumToken) {
   return item && typeof item.address === 'string' && addressPattern.test(item.address)
     && typeof item.name === 'string' && item.name === safeIdentity(item.name, 80)
     && item.name.length > 0 && typeof item.symbol === 'string' && item.symbol === safeIdentity(item.symbol, 30)
+    && (item.quoteSymbol === undefined || (typeof item.quoteSymbol === 'string' && /^[A-Za-z0-9]{1,16}$/.test(item.quoteSymbol)))
     && positiveUsd(item.volumeUsd) && (item.marketCapUsd === null || positiveUsd(item.marketCapUsd))
     && Number.isFinite(item.priceChangePct) && item.priceChangePct >= 2 && validIndex(item.buyCount) && validIndex(item.sellCount);
 }

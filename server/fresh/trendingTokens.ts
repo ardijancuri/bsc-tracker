@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { QueryResultRow } from 'pg';
 import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumToken, type TrendingKol, type TrendingTokens, type TrendingWindow } from '../../shared/trendingTokens.js';
 import { kolProfileTokenSql } from '../kolProfileToken.js';
+import { trendingQuoteSymbol } from './settlementQuote.js';
 import { freshPublicTradeScopeSql } from './publicTokens.js';
 import { freshTokenDirectoryIdentity } from './tokenDirectory.js';
 import { freshTrackedEventSql } from './tracking.js';
@@ -76,6 +77,9 @@ const trendingSql = `WITH eligible_trades AS MATERIALIZED (
 )
 SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_data,
   t.market_cap_usd,t.price_usd,t.observed_at,t.valuation_status,ranked.*,
+  market.quote_address AS market_quote_address,market.identity->'nativeQuote' AS native_market_quote,
+  CASE WHEN t.observed_at BETWEEN $2::timestamptz - interval '2 minutes' AND $2::timestamptz
+    THEN market.identity->'tokenTax' END AS market_tax,
   (SELECT jsonb_agg(jsonb_build_object(
       'walletAddress',p.wallet_address,
       'name',coalesce(nullif(k.display_name,''),left(p.wallet_address,6)||'…'||right(p.wallet_address,4)),
@@ -84,7 +88,18 @@ SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_da
     FROM participation p JOIN published_kols k ON k.address=p.wallet_address
     WHERE p.token_address=ranked.token_address) AS kols
 FROM ranked JOIN fresh.tokens t ON t.address=ranked.token_address
+LEFT JOIN LATERAL (
+  SELECT min(m.quote_address) AS quote_address,jsonb_agg(m.identity)->0 AS identity
+  FROM fresh.markets m
+  WHERE m.token_address=t.address AND m.status='ready' AND t.valuation_status='ready'
+    AND m.observed_block=t.observed_block AND m.observed_hash=t.observed_hash AND m.observed_at=t.observed_at
+  HAVING count(*)=1
+) market ON true
 ORDER BY score DESC,kol_count DESC,buy_count+sell_count DESC,last_public_trade_at DESC,t.address`;
+
+function readTaxBps(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 10_000 ? value : undefined;
+}
 
 export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWindow, now = Date.now()): Promise<TrendingTokens> {
   const asOf = new Date(now).toISOString();
@@ -95,6 +110,10 @@ export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWi
     window, asOf,
     items: rows.map(row => {
       const { address, symbol, name, logoUrl, marketCapUsd } = freshTokenDirectoryIdentity(row, now);
+      const quoteAsset = trendingQuoteSymbol(row.market_quote_address);
+      const quoteSymbol = quoteAsset === 'WBNB' && row.native_market_quote === true ? 'BNB' : quoteAsset;
+      const buyTaxBps = readTaxBps(row.market_tax?.buyTaxBps);
+      const sellTaxBps = readTaxBps(row.market_tax?.sellTaxBps);
       const kols = ((row.kols ?? []) as TrendingKol[]).map(kol => {
         const profile = kol.twitter?.trim().replace(/^https:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i, '');
         const handle = profile?.match(/^@?([A-Za-z0-9_]{1,15})\/?$/)?.[1];
@@ -103,7 +122,10 @@ export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWi
       });
       return { address, symbol, name, logoUrl, marketCapUsd, kolCount: row.kol_count,
         volumeUsd: row.display_volume_usd, volumeIncomplete: row.volume_incomplete,
-        buyCount: row.buy_count, sellCount: row.sell_count, kols, recentKols: kols.slice(0, 3).map(kol => kol.name) };
+        buyCount: row.buy_count, sellCount: row.sell_count, kols, recentKols: kols.slice(0, 3).map(kol => kol.name),
+        ...(quoteSymbol === undefined ? {} : { quoteSymbol }),
+        ...(buyTaxBps === undefined ? {} : { buyTaxBps }),
+        ...(sellTaxBps === undefined ? {} : { sellTaxBps }) };
     }),
   };
 }

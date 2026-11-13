@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WBNB } from '../launchpad.js';
 import type { Pool } from 'pg';
 import { trendingWindows, type TrendingWindow } from '../../shared/trendingTokens.js';
 import { createNodeMomentumStore, nodeMomentumCheckpoint, persistNodeMomentumSnapshot, readNodeMomentumSnapshot,
@@ -68,6 +69,16 @@ describe('node momentum store', () => {
     expect(store.snapshot()?.windows['1h']).toHaveLength(1);
     expect(store.snapshot()?.windows['1h']?.[0]).toMatchObject({ address: jacket, volumeUsd: '1000000' });
     expect(store.snapshot()?.windows['5m']).toEqual([]);
+  });
+
+  it('reports the quote of the selected representative pool without assuming a token tax', () => {
+    const store = createNodeMomentumStore({ coverageStartMs: now - 60 * minute - 1 });
+    const preferred = series('1h', { pool: 2, volume: 10_000 }).map(entry => ({ ...entry, quoteAddress: WBNB }));
+    appendSeries(store, [...series('1h'), ...preferred]);
+    const item = store.snapshot()?.windows['1h']?.[0];
+    expect(item?.quoteSymbol).toBe('WBNB');
+    expect(item).not.toHaveProperty('buyTaxBps');
+    expect(item).not.toHaveProperty('sellTaxBps');
   });
 
   it('ignores unsettled current minutes and expires the oldest aggregate buckets', () => {

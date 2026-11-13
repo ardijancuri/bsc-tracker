@@ -137,7 +137,8 @@ const migratedQuotes=[
   {quote:FRESH_BNCB_QUOTE,nativePair:FRESH_BNCB_NATIVE_PAIR},
   {quote:FRESH_SPCXB_QUOTE,nativePair:FRESH_SPCXB_NATIVE_PAIR},
 ];
-function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;quoteDecimals?:number;staleFeed?:boolean;badMarketFactory?:boolean;badNativeCode?:boolean;emptyMarket?:boolean;failedDiscovery?:boolean;bonding?:boolean;fourmeme?:boolean}={}){
+function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;quoteDecimals?:number;staleFeed?:boolean;badMarketFactory?:boolean;badNativeCode?:boolean;emptyMarket?:boolean;failedDiscovery?:boolean;bonding?:boolean;fourmeme?:boolean;
+  rates?: [number, number]; version?: number; legacyLens?: boolean; flapPool?: string}={}){
   const currentBlock={...block,timestamp:new Date().toISOString()},precision=options.quoteDecimals??18;
   const assets=[token,route.quote].sort(),nativeAssets=[route.quote,WBNB].sort();
   const contractAbi=new Interface([...tokenAbi.fragments,'function factory() view returns(address)','function token0() view returns(address)',
@@ -159,8 +160,11 @@ function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;
     }
     if(to===FLAP_PORTAL){
       const name=flapInterface.parseTransaction(call)!.name;
-      const common=[options.status??(options.bonding?1:4),options.bonding?10n*10n**BigInt(precision):0n,5n*10n**25n,options.bonding?10n**14n:0n,6,0n,0n,0n,0n,route.quote,true,currentBlock.hash];
-      return flapInterface.encodeFunctionResult(name,[[...common,...(name==='getTokenV7'?[0,pool,100,0,0]:[0,0,pool,100,0,0])]]);
+      if (options.legacyLens && name === 'getTokenV8Safe') throw Error('unsupported_portal_lens');
+      const common=[options.status??(options.bonding?1:4),options.bonding?10n*10n**BigInt(precision):0n,5n*10n**25n,options.bonding?10n**14n:0n,options.version??6,0n,0n,0n,0n,route.quote,true,currentBlock.hash];
+      const [buyTax, sellTax] = options.rates ?? [0, 0];
+      const rates = name === 'getTokenV7' ? [Math.max(buyTax, sellTax)] : [buyTax, sellTax];
+      return flapInterface.encodeFunctionResult(name,[[...common,...rates,options.flapPool??pool,100,0,0]]);
     }
     if(to===PCS_V2_FACTORY||to===PCS_V3_FACTORY){
       const parsed=poolMarketAbi.parseTransaction(call)!;
@@ -199,6 +203,27 @@ function graduatedFlapFixture(route= migratedQuotes[0], options:{status?:number;
 }
 
 describe('graduated Flap current-market discovery',()=>{
+  it('stores separate verified bonding taxes from the existing pinned Portal state read', async () => {
+    const fixture = graduatedFlapFixture(migratedQuotes[0], { bonding: true, rates: [0, 325] });
+    const quote = await freshCurrentQuote(token, fixture);
+    expect(quote.market.identity.tokenTax).toEqual({ buyTaxBps: 0, sellTaxBps: 325 });
+    expect(fixture.rpc.mock.calls.filter(([, params]) => params[0]?.to === FLAP_PORTAL)).toHaveLength(1);
+  });
+
+  it('keeps migrated non-tax token rates distinct from unverified settings or another pool', async () => {
+    const untaxed = await freshCurrentQuote(token, graduatedFlapFixture(migratedQuotes[0], { version: 7 }));
+    expect(untaxed.market.identity.tokenTax).toEqual({ buyTaxBps: 0, sellTaxBps: 0 });
+    for (const options of [
+      { rates: [100, 250] as [number, number] },
+      { version: 7, flapPool: '0x' + 'f'.repeat(40) },
+      { bonding: true, legacyLens: true, rates: [100, 250] as [number, number] },
+      { bonding: true, version: 8 },
+    ]) {
+      const quote = await freshCurrentQuote(token, graduatedFlapFixture(migratedQuotes[0], options));
+      expect(quote.market.identity).not.toHaveProperty('tokenTax');
+    }
+  });
+
   it.each(migratedQuotes)('retains authenticated $quote launch quote after graduation and prices the genuine migrated pair',async route=>{
     const fixture=graduatedFlapFixture(route),quote=await freshCurrentQuote(token,fixture);
     expect(quote).toMatchObject({priceUsd:'600',marketCapUsd:'600000000',observedAt:fixture.block.timestamp,
