@@ -1,5 +1,5 @@
 import type { Pool } from 'pg';
-import { trendingWindows, type MarketMomentumToken, type TrendingWindow } from '../../shared/trendingTokens.js';
+import { trendingWindows, type MarketMomentumCoverage, type MarketMomentumToken, type TrendingWindow } from '../../shared/trendingTokens.js';
 import { readTrendingMarketTax, trendingQuoteSymbol } from './settlementQuote.js';
 
 const minute = 60_000;
@@ -366,7 +366,13 @@ function positiveUsd(value: unknown) {
 }
 
 export async function readNodeMomentumSnapshot(db: Pick<Pool, 'query'>, window: TrendingWindow, now = Date.now()): Promise<MarketMomentumToken[]> {
-  if (!validTime(now)) return [];
+  return (await readNodeMomentumFeed(db, window, now, false)).items;
+}
+
+export async function readNodeMomentumFeed(db: Pick<Pool, 'query'>, window: TrendingWindow, now = Date.now(), includeShorter = true):
+  Promise<{items:MarketMomentumToken[]; coverage:MarketMomentumCoverage}> {
+  const unavailable = {items:[],coverage:{status:'unavailable'}} as const;
+  if (!validTime(now)) return { ...unavailable, items: [] };
   const { rows } = await db.query(`SELECT s.value,s.block_number,s.block_hash,h.occurred_at,c.revision::text AS capture_revision
     FROM fresh.checkpoints s JOIN fresh.recent_blocks h ON h.block_number=s.block_number AND h.block_hash=s.block_hash
     JOIN fresh.checkpoints c ON c.key='capture' AND c.block_number>=s.block_number AND c.revision::text=s.value->>'captureRevision'
@@ -375,8 +381,16 @@ export async function readNodeMomentumSnapshot(db: Pick<Pool, 'query'>, window: 
   const row = rows[0];
   const snapshot = row?.value as NodeMomentumSnapshot | undefined;
   if (!validSnapshot(snapshot) || snapshot.blockNumber !== Number(row.block_number) || snapshot.blockHash !== row.block_hash
-    || snapshot.observedAtMs !== new Date(row.occurred_at).getTime() || snapshot.asOfMs > now || now - snapshot.asOfMs > maxSnapshotAge) return [];
-  const items = snapshot.windows[window] ?? [];
+    || snapshot.observedAtMs !== new Date(row.occurred_at).getTime() || snapshot.asOfMs > now || now - snapshot.asOfMs > maxSnapshotAge) return { ...unavailable, items: [] };
+  const requested = snapshot.windows[window];
+  const coverage: MarketMomentumCoverage = {status:requested === undefined ? 'warming_up' : 'ready'};
+  // Prefer the exact timeframe whenever it has candidates. Use a complete
+  // shorter result to fill an empty view without relabeling its metrics.
+  const shorter = includeShorter && !requested?.length
+    ? [...windowKeys].reverse().find(candidate => trendingWindows[candidate] < trendingWindows[window] && snapshot.windows[candidate]?.length)
+    : undefined;
+  if (shorter) coverage.resultsWindow = shorter;
+  const items = (shorter ? snapshot.windows[shorter] : requested) ?? [];
   const markets = items.filter(item => item.poolAddress !== undefined);
   const taxes = new Map<string, unknown>();
   if (markets.length) {
@@ -399,8 +413,8 @@ export async function readNodeMomentumSnapshot(db: Pick<Pool, 'query'>, window: 
       new Date(now - 2 * minute), new Date(now), row.capture_revision]).catch(() => null);
     for (const observation of observations?.rows ?? []) taxes.set(observation.token_address, observation.tax);
   }
-  return items.map(({ poolAddress, quoteAddress, buyTaxBps, sellTaxBps, ...item }) => ({
+  return { coverage, items: items.map(({ poolAddress, quoteAddress, buyTaxBps, sellTaxBps, ...item }) => ({
     ...item,
     ...readTrendingMarketTax(taxes.get(item.address), now),
-  }));
+  })) };
 }

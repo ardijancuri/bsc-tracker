@@ -28,8 +28,9 @@ button { border:0; background:transparent; color:var(--muted); font:inherit; cur
 .chain { display:block; width:15px; height:15px; flex:none; }
 .feed,.skeleton-list { max-height:min(520px,65vh); overflow:auto; scrollbar-width:none; }
 .list { list-style:none; padding:0; margin:0; }
-.market-header { padding:0 var(--gutter) 3px; text-align:end; }
-.market-source { color:var(--muted); font-size:10px; }
+.market-header { display:flex; align-items:center; gap:4px 8px; flex-wrap:wrap; padding:0 var(--gutter) 3px; }
+.market-source,.market-coverage { color:var(--muted); font-size:10px; }
+.market-source { margin-inline-start:auto; }
 .market-change { color:#62d4a1; font-weight:700; font-variant-numeric:tabular-nums; }
 .market-row .counts { flex-wrap:wrap; }
 .token-row,.skeleton-row { --avatar-size:42px; position:relative; display:grid;

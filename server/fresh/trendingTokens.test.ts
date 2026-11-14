@@ -54,4 +54,18 @@ describe('Fresh X trending endpoint', () => {
       await app.close();
     }
   });
+
+  it('returns the real fallback timeframe for the separate momentum tab without loading the tracked feed', async () => {
+    const app=Fastify();
+    const query=vi.fn(async()=>({rows:trackedRows}));
+    const read=vi.fn(async()=>({items:[market(1)],coverage:{status:'warming_up',resultsWindow:'1h'} as const}));
+    registerFreshTrendingTokens(app,{query},undefined,undefined,read);
+    try {
+      const response=await app.inject({method:'GET',url:endpoint+'?window=6h&view=market'});
+      expect(response.json()).toMatchObject({window:'6h',items:[],marketMomentum:[market(1)],
+        marketMomentumCoverage:{status:'warming_up',resultsWindow:'1h'}});
+      expect(read).toHaveBeenCalledExactlyOnceWith('6h');
+      expect(query).not.toHaveBeenCalled();
+    }finally{await app.close();}
+  });
 });

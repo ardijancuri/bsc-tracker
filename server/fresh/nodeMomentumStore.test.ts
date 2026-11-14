@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { WBNB } from '../launchpad.js';
 import type { Pool } from 'pg';
 import { trendingWindows, type TrendingWindow } from '../../shared/trendingTokens.js';
-import { createNodeMomentumStore, nodeMomentumCheckpoint, persistNodeMomentumSnapshot, readNodeMomentumSnapshot,
+import { createNodeMomentumStore, nodeMomentumCheckpoint, persistNodeMomentumSnapshot, readNodeMomentumFeed, readNodeMomentumSnapshot,
   type NodeMomentumSwap } from './nodeMomentumStore.js';
 
 const minute = 60_000;
@@ -190,5 +190,35 @@ describe('node momentum store', () => {
       .rejects.toThrow('invalid_node_momentum_snapshot');
     const malformedCap = { ...snapshot, windows: { '5m': [{ ...snapshot.windows['5m']![0], marketCapUsd: '0xff' }] } };
     await expect(persistNodeMomentumSnapshot(db, malformedCap, '4')).rejects.toThrow('invalid_node_momentum_snapshot');
+  });
+
+  it('labels a shorter result during warm-up and when a completed window has no qualifiers', async () => {
+    const store = createNodeMomentumStore({coverageStartMs: now - 120 * minute});
+    appendSeries(store, series('1h'));
+    const snapshot = store.snapshot()!;
+    const query = vi.fn(async (sql:string) => sql.includes('FROM unnest') ? {rows:[]} : {
+      rows:[{value:snapshot,block_number:snapshot.blockNumber,block_hash:snapshot.blockHash,
+        occurred_at:new Date(snapshot.observedAtMs),capture_revision:'4'}],
+    });
+    const db={query} as unknown as Pick<Pool,'query'>;
+    const hour=await readNodeMomentumFeed(db,'1h',now+minute);
+    expect(hour.coverage).toEqual({status:'ready'});
+    expect(hour.items).toHaveLength(1);
+    expect(await readNodeMomentumFeed(db,'6h',now+minute)).toEqual({
+      items:hour.items,coverage:{status:'warming_up',resultsWindow:'1h'},
+    });
+    expect(await readNodeMomentumSnapshot(db,'6h',now+minute)).toEqual([]);
+    snapshot.coveredFromMs=now-361*minute;
+    snapshot.windows['6h']=[];
+    expect(await readNodeMomentumFeed(db,'6h',now+minute)).toEqual({
+      items:hour.items,coverage:{status:'ready',resultsWindow:'1h'},
+    });
+    snapshot.windows['6h']=[{...snapshot.windows['1h']![0],priceChangePct:20}];
+    expect(await readNodeMomentumFeed(db,'6h',now+minute)).toEqual({
+      items:[{...hour.items[0],priceChangePct:20}],coverage:{status:'ready'},
+    });
+    expect(await readNodeMomentumFeed(db,'6h',now+4*minute)).toEqual({
+      items:[],coverage:{status:'unavailable'},
+    });
   });
 });

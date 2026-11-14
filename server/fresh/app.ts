@@ -19,7 +19,7 @@ import {freshPublicPosition} from './publicPositions.js';
 import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
 import { registerFreshTrendingTokens } from './trendingTokens.js';
-import { readNodeMomentumSnapshot } from './nodeMomentumStore.js';
+import { readNodeMomentumFeed,readNodeMomentumSnapshot } from './nodeMomentumStore.js';
 import { createNodeMomentumDetails } from './nodeMomentumDetails.js';
 import { registerFreshTokenImage } from './tokenImageRoute.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
@@ -62,7 +62,8 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
   const momentumDetails=process.env.KOLLENS_NODE_MARKET_MOMENTUM==='true'?createNodeMomentumDetails():undefined;
-  registerFreshTrendingTokens(app,db,momentumDetails?window=>readNodeMomentumSnapshot(db,window):undefined,momentumDetails?.enrich);
+  registerFreshTrendingTokens(app,db,momentumDetails?window=>readNodeMomentumSnapshot(db,window):undefined,
+    momentumDetails?.enrich,momentumDetails?window=>readNodeMomentumFeed(db,window):undefined);
   if (process.env.KOLLENS_ANALYTICS_ENABLED === 'true') {
     await ensureAnalyticsSchema(db);
     registerAnalytics(app, db, {

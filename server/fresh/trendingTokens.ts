@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { QueryResultRow } from 'pg';
-import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumToken, type TrendingKol, type TrendingTokens, type TrendingWindow } from '../../shared/trendingTokens.js';
+import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumCoverage, type MarketMomentumToken, type TrendingKol, type TrendingTokens, type TrendingWindow } from '../../shared/trendingTokens.js';
 import { kolProfileTokenSql } from '../kolProfileToken.js';
 import { readTrendingMarketTax, trendingQuoteSymbol } from './settlementQuote.js';
 import { freshPublicTradeScopeSql } from './publicTokens.js';
@@ -134,6 +134,7 @@ export function registerFreshTrendingTokens(
   db: TrendingDb,
   readMarketMomentum?: (window: TrendingWindow) => Promise<MarketMomentumToken[]>,
   enrichMarketMomentum?: (items: MarketMomentumToken[]) => Promise<MarketMomentumToken[]>,
+  readMarketFeed?: (window: TrendingWindow) => Promise<{items:MarketMomentumToken[];coverage:MarketMomentumCoverage}>,
 ) {
   const cache = new Map<TrendingWindow, { expiresAt: number; data: Promise<TrendingTokens> }>();
   app.get<{ Querystring: { window?: string; momentum?: string; view?: string } }>('/api/extension/trending-tokens', async (request, reply) => {
@@ -143,6 +144,11 @@ export function registerFreshTrendingTokens(
     const enrich=async(items:MarketMomentumToken[])=>enrichMarketMomentum
       ?enrichMarketMomentum(items).catch(()=>items):items;
     if(request.query.view==='market'){
+      if (readMarketFeed) {
+        const result = await readMarketFeed(window).catch(() => ({items:[],coverage:{status:'unavailable'} as const}));
+        reply.header('Cache-Control','no-store');
+        return {window,asOf:new Date(now).toISOString(),items:[],marketMomentum:await enrich(result.items.slice(0,4)),marketMomentumCoverage:result.coverage};
+      }
       const momentum=readMarketMomentum?await Promise.resolve().then(()=>readMarketMomentum(window)).catch(()=>[]):[];
       reply.header('Cache-Control','no-store');
       return {window,asOf:new Date(now).toISOString(),items:[],marketMomentum:await enrich(momentum.slice(0,4))};

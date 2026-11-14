@@ -1,4 +1,4 @@
-import { defaultTrendingWindow, trendingWindows, type MarketMomentumToken, type TrendingToken, type TrendingWindow } from '../../../shared/trendingTokens';
+import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumToken, type TrendingToken, type TrendingWindow } from '../../../shared/trendingTokens';
 import { extensionAddress, type SocialLink } from '../../../shared/extension';
 import { cardMetricColor } from './cardMetrics';
 import { normalizeSocialLink } from './matching';
@@ -552,12 +552,13 @@ function createPanel() {
     return avatar;
   }
 
-  function marketSection(items: (MarketMomentumToken & {thumbnail:string|null})[], window: TrendingWindow) {
+  function marketSection(items: (MarketMomentumToken & {thumbnail:string|null})[], window: TrendingWindow, note?:string) {
     const section = element('section', 'market-section');
     const header = element('div', 'market-header');
     section.setAttribute('aria-label','Market momentum');
     const source = element('span', 'market-source', 'PancakeSwap V3');
     source.title = 'Confirmed PancakeSwap V3 swaps on BNB Chain';
+    if(note)header.append(element('span','market-coverage',note));
     header.append(source);
     const list = element('ol', 'list');
     for (const item of items) {
@@ -593,15 +594,27 @@ function createPanel() {
   function render(data: XTrendingResponse) {
     const items = view==='tracked'?data.items.filter(isDisplayableXTrendingToken):[];
     const marketItems = view==='market'?selectXMarketMomentum(data):[];
+    const coverage=data.marketMomentumCoverage;
+    const shorter=coverage?.resultsWindow;
+    const resultsWindow=isTrendingWindow(shorter)&&trendingWindows[shorter]<trendingWindows[data.window]?shorter:data.window;
+    const warming=coverage?.status==='warming_up';
     for (const address of expandedTokens) {
       if (!items.some(item => item.address === address)) expandedTokens.delete(address);
     }
     if (!items.length && !marketItems.length) {
-      status(view==='market'?'No tokens qualify for Market Momentum in this window.':'No tokens traded by multiple KOLs in this window.');
+      if(view==='tracked')status('No tokens traded by multiple KOLs in this window.');
+      else if(warming)status(`Collecting ${data.window} of Market Momentum history.`);
+      else if(coverage?.status==='unavailable')status('Market Momentum data is temporarily unavailable.',true);
+      else status('No tokens qualify for Market Momentum in this window.');
       return;
     }
     const feed = element('div', 'feed');
-    if (marketItems.length) feed.append(marketSection(marketItems, data.window));
+    if (marketItems.length) {
+      const note=resultsWindow===data.window?undefined:warming
+        ?`Collecting ${data.window} history · Showing ${resultsWindow}`
+        :`No ${data.window} matches · Showing ${resultsWindow}`;
+      feed.append(marketSection(marketItems,resultsWindow,note));
+    }
     const list = element('ol', 'list');
     for (const item of items) {
       const name = item.name || item.symbol || shortAddress(item.address);

@@ -40,6 +40,13 @@ export interface TrendingTokens {
   asOf: string;
   items: TrendingToken[];
   marketMomentum?: MarketMomentumToken[];
+  marketMomentumCoverage?: MarketMomentumCoverage;
+}
+
+export interface MarketMomentumCoverage {
+  status: 'ready' | 'warming_up' | 'unavailable';
+  /** Timeframe used for the displayed results when it differs from window. */
+  resultsWindow?: TrendingWindow;
 }
 
 /** Activity of one BSC DEX pool in the selected window. No KOL attribution. */
