@@ -229,7 +229,7 @@ function createPanel() {
   header.append(element('h2', '', 'Trending Tokens'), brand);
 
   let selected: TrendingWindow = defaultTrendingWindow;
-  let view:XTrendingView='tracked';
+  let view: XTrendingView = 'tracked';
   const expandedTokens = new Set<string>();
   let pendingBuy: {
     address: string;
@@ -242,24 +242,112 @@ function createPanel() {
   let request = 0;
   const windows = Object.keys(trendingWindows) as TrendingWindow[];
   const tools = element('div', 'tools');
-  const views=element('div','views');
-  views.setAttribute('role','group');
-  views.setAttribute('aria-label','Trending feed');
-  const viewOptions=[['tracked','Tracked KOL activity'],['market','Market momentum']] as const;
-  const viewButtons=viewOptions.map(([option,label])=>{
-    const button=element('button','',label);
-    button.type='button';
-    button.setAttribute('aria-pressed',String(option===view));
-    button.addEventListener('click',()=>{
-      if(option===view||pendingBuy)return;
-      view=option;
+  const feedSettings = element('div', 'feed-settings');
+  const settingsButton = element('button', 'feed-settings-toggle');
+  settingsButton.type = 'button';
+  settingsButton.title = 'Trending token settings';
+  settingsButton.setAttribute('aria-label', settingsButton.title);
+  settingsButton.setAttribute('aria-haspopup', 'menu');
+  settingsButton.setAttribute('aria-controls', 'trending-feed-menu');
+  settingsButton.setAttribute('aria-expanded', 'false');
+  const gear = document.createElementNS(svgNamespace, 'svg');
+  gear.setAttribute('viewBox', '0 0 24 24');
+  gear.setAttribute('aria-hidden', 'true');
+  const gearOutline = document.createElementNS(svgNamespace, 'path');
+  gearOutline.setAttribute('d', 'm9.6 2.2-.7 2.5-1.7 1-2.5-.7-2.4 4.2 1.9 1.8v2l-1.9 1.8 2.4 4.2 2.5-.7 1.7 1 .7 2.5h4.8l.7-2.5 1.7-1 2.5.7 2.4-4.2-1.9-1.8v-2l1.9-1.8-2.4-4.2-2.5.7-1.7-1-.7-2.5z');
+  const gearCenter = document.createElementNS(svgNamespace, 'circle');
+  gearCenter.setAttribute('cx', '12');
+  gearCenter.setAttribute('cy', '12');
+  gearCenter.setAttribute('r', '3');
+  gear.append(gearOutline, gearCenter);
+  settingsButton.append(gear);
+
+  const feedMenu = element('div', 'feed-menu');
+  feedMenu.id = 'trending-feed-menu';
+  feedMenu.hidden = true;
+  feedMenu.setAttribute('role', 'menu');
+  feedMenu.setAttribute('aria-label', 'Show tokens');
+  const viewOptions = [['tracked', 'Tracked KOL activity'], ['market', 'Market momentum']] as const;
+  const viewButtons = viewOptions.map(([option, label]) => {
+    const button = element('button', '', label);
+    button.type = 'button';
+    button.tabIndex = -1;
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', String(option === view));
+    button.addEventListener('click', () => {
+      if (pendingBuy) return;
+      closeFeedMenu(true);
+      if (option === view) return;
+      view = option;
       hideBuyStatus();
-      for(const [index,item] of viewButtons.entries())item.setAttribute('aria-pressed',String(viewOptions[index][0]===view));
+      for (const [index, item] of viewButtons.entries()) {
+        item.setAttribute('aria-checked', String(viewOptions[index][0] === view));
+      }
       void refresh(true);
     });
-    views.append(button);
+    feedMenu.append(button);
     return button;
   });
+  feedSettings.append(settingsButton, feedMenu);
+
+  function closeFeedMenu(restoreFocus = false) {
+    if (feedMenu.hidden) return;
+    feedMenu.hidden = true;
+    settingsButton.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) settingsButton.focus({ preventScroll: true });
+  }
+
+  function openFeedMenu(option: HTMLButtonElement) {
+    if (pendingBuy) return;
+    feedMenu.hidden = false;
+    settingsButton.setAttribute('aria-expanded', 'true');
+    option.focus({ preventScroll: true });
+  }
+
+  settingsButton.addEventListener('click', () => {
+    if (feedMenu.hidden) openFeedMenu(viewButtons[view === 'tracked' ? 0 : 1]);
+    else closeFeedMenu(true);
+  });
+  settingsButton.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    openFeedMenu(event.key === 'ArrowDown' ? viewButtons[0] : viewButtons[viewButtons.length - 1]);
+  });
+  feedMenu.addEventListener('keydown', event => {
+    if (event.key === 'Tab') {
+      closeFeedMenu(true);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeFeedMenu(true);
+      return;
+    }
+    const index = viewButtons.findIndex(button => button === shadow.activeElement);
+    let next: number;
+    switch (event.key) {
+      case 'ArrowDown': next = (index + 1) % viewButtons.length; break;
+      case 'ArrowUp': next = (index + viewButtons.length - 1) % viewButtons.length; break;
+      case 'Home': next = 0; break;
+      case 'End': next = viewButtons.length - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    viewButtons[next].focus({ preventScroll: true });
+  });
+  feedMenu.addEventListener('focusout', event => {
+    const next = event.relatedTarget;
+    if (next !== settingsButton && !(next instanceof Node && feedMenu.contains(next))) {
+      closeFeedMenu();
+    }
+  });
+  function dismissFeedMenu(event: Event) {
+    const within = event.currentTarget === shadow ? feedSettings : host;
+    if (!event.composedPath().includes(within)) closeFeedMenu();
+  }
+  shadow.addEventListener('pointerdown', dismissFeedMenu, true);
+  document.addEventListener('pointerdown', dismissFeedMenu, true);
   const filters = element('div', 'filters');
   filters.setAttribute('role', 'group');
   filters.setAttribute('aria-label', 'Trade window');
@@ -282,7 +370,7 @@ function createPanel() {
   chain.src = __BNB_ICON__;
   chain.alt = 'BNB Chain';
   chain.title = 'BNB Chain';
-  tools.append(filters, chain);
+  tools.append(filters, feedSettings, chain);
   const loadingLabel = element('span', 'loading-label');
   loadingLabel.setAttribute('role', 'status');
   const copyStatus = element('span', 'loading-label');
@@ -313,7 +401,7 @@ function createPanel() {
   preview.alt = '';
   preview.referrerPolicy = 'no-referrer';
   artwork.append(preview);
-  panel.append(header, views, tools, loadingLabel, copyStatus, buyAnnouncement, buyStatusAnchor, content, artwork);
+  panel.append(header, tools, loadingLabel, copyStatus, buyAnnouncement, buyStatusAnchor, content, artwork);
   shadow.append(panel);
 
   function hideBuyStatus() {
@@ -438,7 +526,8 @@ function createPanel() {
       button.setAttribute('aria-busy', 'true');
       buyLabel.textContent = 'Opening…';
       showBuyStatus('pending', `Opening buy review for ${buyName}…`);
-      const disabled = [...buttons, ...viewButtons, ...content.querySelectorAll<HTMLButtonElement>('button.token-buy')];
+      closeFeedMenu();
+      const disabled = [...buttons, settingsButton, ...viewButtons, ...content.querySelectorAll<HTMLButtonElement>('button.token-buy')];
       for (const control of disabled) control.setAttribute('aria-disabled', 'true');
       try {
         const response = await chrome.runtime.sendMessage({
@@ -717,7 +806,14 @@ function createPanel() {
         buy.button.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
     },
     invalidateBuySource() { if (pendingBuy) pendingBuy.url = null; },
-    stop: () => { ++request; clearTimeout(timer); hideBuyStatus(); hideArtwork(); host.remove(); },
+    stop: () => {
+      ++request;
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', dismissFeedMenu, true);
+      hideBuyStatus();
+      hideArtwork();
+      host.remove();
+    },
   };
 }
 
