@@ -80,6 +80,7 @@ export interface FreshDecodeServices {
    * continue supplying knownLaunch without this live-discovery hook. */
   tokenDiscovery?(tokenAddress:string):Promise<'eligible'|'excluded'|'pending'>;
   priceUsd(token: string): Promise<string | null>;
+  stockExchangeUsd?(quoteRaw:bigint,nativePriceUsd:string|null):Promise<string|null>;
   /** Exact-block retained/imported precision only; optional display enrichment
    * must not launch new historical RPC work after financial valuation succeeds. */
   retainedQuoteMetadata?(token:string):Promise<Pick<FreshTokenMetadata,'decimals'>|null>;
@@ -319,7 +320,9 @@ export async function normalizeFreshReceipt(entry: FreshCapturedReceipt, block: 
     const exchange=exchangeCandidate&&targets.every(target=>target.token===exchangeCandidate.sellToken&&target.raw===-exchangeCandidate.sellRaw
       ||target.token===exchangeCandidate.buyToken&&target.raw===exchangeCandidate.buyRaw)?exchangeCandidate:null;
     let exchangeUsd:string|null=null;
-    if(exchange){const precision=await meta(exchange.quoteAddress),usd=await price(exchange.quoteAddress);
+    if(exchange?.kind==='ordinary_token_exchange_via_stock_quote'){
+      exchangeUsd=await services.stockExchangeUsd?.(exchange.quoteRaw,await price(WBNB))??null;
+    }else if(exchange){const precision=await meta(exchange.quoteAddress),usd=await price(exchange.quoteAddress);
       if(precision&&usd!==null)exchangeUsd=q(units(exchange.quoteRaw,precision.decimals)).mul(q(usd)).decimal();}
     const base = { walletAddress: execution.wallet, blockNumber: String(freshInteger(block.number)), blockHash: block.hash.toLowerCase(), transactionHash: tx.hash.toLowerCase(),
       transactionIndex: Number(freshInteger(tx.transactionIndex)), executionIndex: execution.index, occurredAt, canonical: true };
@@ -1025,13 +1028,15 @@ export function canRecoverFreshMetadata(error:unknown){
 }
 
 export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?: number; now?: Date; trace?: FreshTraceLoader; recoveryBatch?: FreshRecoveryBatch; maxNormalizeMs?:number; normalizationNow?:()=>number;repairFirst?:boolean;
+ archiveTradeTrace?:(entry:FreshCapturedReceipt,block:FreshPriceBlock)=>Promise<Pick<FreshCapturedReceipt,'trace'|'completeTraceProof'>|null>;
  gangHistoricalMetadata?:(context:{tokenAddress:string;entry:FreshCapturedReceipt;block:FreshPriceBlock})=>Promise<FreshGangImportedMetadata|null> } = {}) {
   const now = options.now ?? new Date(), selected = await selectFreshDecodeEvidence(database, now, options.limit,{repairFirst:options.repairFirst});
   if (!selected.rows.length) return { receipts: 0, attemptedReceipts:0,deferredReceipts:0,events: 0, repair: 0, unsupported: 0, evidenceMerges:0,completeCutoffBlock: null };
   const boundary = (await database.query("SELECT value FROM fresh.checkpoints WHERE key='capture'")).rows[0]?.value?.startBlock;
   if (!Number.isSafeInteger(Number(boundary))) throw new Error('tracking_boundary_uninitialized');
   type GangRecovery={anchorSha256?:string;withoutSupply?:boolean;proof?:unknown;imported?:FreshGangImportedMetadata};
-  const decodedRows: { row: any; entry: FreshCapturedReceipt; decoded: FreshDecodedReceipt; state:FreshStateEvidenceRpc; recovery:ReturnType<typeof createFreshReceiptRecovery>;gang:GangRecovery }[] = [];
+  const decodedRows: { row: any; entry: FreshCapturedReceipt; decoded: FreshDecodedReceipt; state:FreshStateEvidenceRpc; recovery:ReturnType<typeof createFreshReceiptRecovery>;gang:GangRecovery;
+    archiveProof:Pick<FreshCapturedReceipt,'trace'|'completeTraceProof'>|null }[] = [];
   const recoverySnapshot=(recovery:ReturnType<typeof createFreshReceiptRecovery>,gang:GangRecovery,block:FreshPriceBlock):FreshReceiptRecoveryEvidence|undefined=>{
     const prior=recovery.snapshot();return gang.proof?{...(prior??{version:1,target:block,metadata:{},quotes:[],pools:[]}),metadata:{...prior?.metadata,[GANG_TOKEN_ADDRESS]:gang.proof}}:prior;};
   const admissionCache=new Map<string,Promise<Awaited<ReturnType<typeof readFreshTokenAdmission>>>>();
@@ -1052,8 +1057,14 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
     if(!canStartGroup())break;
     for (const row of group) {attemptedReceipts++;
     const entry = decodeFreshEvidence(row.payload), block: FreshPriceBlock = { number: Number(row.block_number), hash: row.block_hash, timestamp: new Date(row.occurred_at).toISOString() };
+    let archiveProof:Pick<FreshCapturedReceipt,'trace'|'completeTraceProof'>|null=null;
+    if(row.decoder_status==='repair'&&String(row.last_error??'').split(',').some(reason=>
+      ['trade_value_unavailable','exchange_quote_valuation_unavailable','wrapped_settlement_trace_unverified'].includes(reason))){
+      archiveProof=await options.archiveTradeTrace?.(entry,block).catch(()=>null)??null;
+    }
+    const normalizationEntry=archiveProof?{...entry,...archiveProof}:entry;
     const state=createFreshStateEvidenceRpc(sharedRpc,block,entry.stateEvidence);
-    const recovery=createFreshReceiptRecovery(database,sharedRpc,entry,block,{state:()=>state.snapshot()??undefined,batch:options.recoveryBatch});
+    const recovery=createFreshReceiptRecovery(database,sharedRpc,normalizationEntry,block,{state:()=>state.snapshot()??undefined,batch:options.recoveryBatch});
     const gang:GangRecovery={};
     const services: FreshDecodeServices = {
       async metadata(token) {const imported=await recovery.importedMetadata(token);if(imported)return imported;
@@ -1075,6 +1086,7 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
       async eligible(token) {return Boolean(await admission(token.address,block.number));},
       priceUsd(token) { return (TRUSTED_QUOTE_FEEDS[token]?freshQuoteUsd(token,{rpc:state.rpc,block}):freshCurrentQuote(token,{rpc:state.rpc,block}).then(quote=>quote.priceUsd)).catch(()=>recovery.priceUsd(token)); },
       additionalNativeFeeWei:recovery.additionalNativeFeeWei,
+      stockExchangeUsd:recovery.stockExchangeUsd,
       directFlapPurchaseUsd:recovery.directFlapPurchaseUsd,
       quotePaymentUsd:recovery.quotePaymentUsd,
       retainedQuoteMetadata:recovery.importedMetadata,
@@ -1086,8 +1098,8 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
       tradeAdmission:token=>admission(token,block.number),
       trace: options.trace ?? freshIpcTrace,
     };
-    try { const decoded = await normalizeFreshReceipt(entry, { number: `0x${block.number.toString(16)}`, hash: block.hash, timestamp: `0x${Math.floor(Date.parse(block.timestamp) / 1_000).toString(16)}` }, services);
-      if(entry.launchRepair)decoded.reasons.push('factory_launch_unverified');await state.settle();decodedRows.push({ row, entry, decoded,state,recovery,gang }); }
+    try { const decoded = await normalizeFreshReceipt(normalizationEntry, { number: `0x${block.number.toString(16)}`, hash: block.hash, timestamp: `0x${Math.floor(Date.parse(block.timestamp) / 1_000).toString(16)}` }, services);
+      if(entry.launchRepair)decoded.reasons.push('factory_launch_unverified');await state.settle();decodedRows.push({ row, entry, decoded,state,recovery,gang,archiveProof }); }
     catch (error) {
       unsupported++;
       const reason = error instanceof Error ? error.message.slice(0, 128) : 'receipt_decoder_unavailable';
@@ -1123,6 +1135,11 @@ export async function runFreshDecode(database: Pool, rpc: Rpc, options: { limit?
         const current = (await client.query('SELECT wallet_addresses,payload FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2 FOR UPDATE', [work.row.tx_hash, work.row.block_hash])).rows[0];
         const reconciled=reconcileFreshDecodeEvidence(current,work.row,work.entry,work.state);
         work.entry=reconciled.entry;work.state=reconciled.state;if(reconciled.merged)evidenceMerges++;
+        if(work.archiveProof){
+          work.entry={...work.entry,...work.archiveProof};
+          await client.query('UPDATE fresh.recent_evidence SET payload=$3 WHERE tx_hash=$1 AND block_hash=$2',
+            [work.row.tx_hash,work.row.block_hash,encodeFreshEvidence(work.entry)]);
+        }
       }
       // A concurrent authenticated launch correction or permission change
       // wins even when stale normalization emitted no financial facts.

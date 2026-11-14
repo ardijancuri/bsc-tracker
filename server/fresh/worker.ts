@@ -25,6 +25,7 @@ import{createFreshUrgentTraceCapture}from'./urgentTrace.js';
 import{createFreshIpcTrace}from'./ipcTrace.js';
 import{runFreshTokenDiscovery}from'./discovery.js';
 import{createFreshDiscoveryArchiveRpc}from'./discoveryArchive.js';
+import{createFreshTradeArchiveTrace}from'./tradeArchiveTrace.js';
 import{readFreshQuoteRefreshStates,readFreshQuoteRefreshAnchor,observeFreshQuoteRefresh,commitFreshQuoteRefreshFailure}from'./quoteRefreshFailure.js';
 import{runFreshTokenBirthCapture}from'./tokenBirthCapture.js';
 import{runFreshSyntheticBatchAnchorCapture}from'./syntheticBatchAnchorCapture.js';
@@ -82,6 +83,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   const urgentEvidence=createFreshUrgentEvidenceCapture(db,rpc),recoveryBatch=createFreshRecoveryBatch(db,rpc,{captureHealth:()=>captureHealth});
   const urgentTrace=trace?createFreshUrgentTraceCapture(db,rpc,localSsh?createFreshSshTrace({maxQueued:0}):createFreshIpcTrace({maxQueued:0})):undefined;
   const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000,creationTraces:true});
+  const tradeArchive=discoveryArchive&&createFreshTradeArchiveTrace(db,rpc,discoveryArchive);
   const nextDecodeService=createFreshDecodeServiceCycle();
   let lastQuoteAt=0;
   // One capture owner. API requests never start scanners or accounting workers.
@@ -107,7 +109,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     loop('token_discovery',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenDiscovery(db,rpc,{signal,archiveRpc:discoveryArchive})),
     loop('admission_recheck',250,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshAdmissionRecheck(db,{signal})),
     loop('token_birth',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenBirthCapture(db,rpc,{signal})),
-    loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db),service=nextDecodeService();const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000,...service});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
+    loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db),service=nextDecodeService();const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000,...service,archiveTradeTrace:captureHealth&&captureHealth.lagBlocks<=32?tradeArchive:undefined});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
       // No relevant receipts is a complete empty block, rather than a stalled financial cursor.
       await db.query(`UPDATE fresh.checkpoints d SET block_number=c.block_number,block_hash=c.block_hash,updated_at=clock_timestamp() FROM fresh.checkpoints c WHERE d.key='decode' AND c.key='capture'
         AND d.block_number IS DISTINCT FROM c.block_number
@@ -151,7 +153,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
         JOIN fresh.checkpoints dh ON dh.key='health:decode' JOIN fresh.recent_blocks b ON b.block_number=c.block_number AND b.block_hash=c.block_hash
         WHERE c.key='capture'`)).rows[0];
       if(!freshArtworkCaptureReady(state))return{yielded:true};
-      return runFreshArtwork(db,{signal,limit:1});
+      return runFreshArtwork(db,{signal,limit:1,rpc});
     }),
     loop('maintenance',30_000,async()=>{const client=await db.connect();try{await client.query('BEGIN');await rolloverFreshUtcDay(client);await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
       return expireFreshEvidence(db);}),

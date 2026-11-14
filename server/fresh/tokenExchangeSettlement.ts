@@ -10,6 +10,7 @@ import {validFreshCompleteCallTrace} from './passiveIncoming.js';
 import {FRESH_BTCB_QUOTE} from './currentBtcQuote.js';
 import {FRESH_BNCB_QUOTE} from './currentBncbQuote.js';
 import {freshPoolQuotePair} from './currentPoolQuote.js';
+import {FRESH_STOCK_QUOTE_TOKEN} from './stockQuote.js';
 
 const router='0x5994814f2c4040b863a0125a45de152a8c2a4dec';
 const stable='0x55d398326f99059ff775485246999027b3197955';
@@ -22,7 +23,7 @@ export const hasFreshTokenExchangeRoute=(entry:FreshCapturedReceipt)=>entry.tran
   &&typeof entry.transaction.input==='string'&&entry.transaction.input.startsWith('0x0c307f76');
 interface Movement{asset:string;from:string;to:string;raw:bigint;index:number}
 export interface FreshTokenExchangeSettlement {
-  kind:'ordinary_token_exchange_via_usdt'|'ordinary_token_exchange_via_wbnb';wallet:string;sellToken:string;sellRaw:bigint;buyToken:string;buyRaw:bigint;
+  kind:'ordinary_token_exchange_via_usdt'|'ordinary_token_exchange_via_wbnb'|'ordinary_token_exchange_via_stock_quote';wallet:string;sellToken:string;sellRaw:bigint;buyToken:string;buyRaw:bigint;
   quoteAddress:string;quoteRaw:bigint;gasFeeWei:bigint;
 }
 
@@ -119,10 +120,11 @@ export function freshTokenExchangeSettlement(entry:FreshCapturedReceipt,executio
     // Keep the already verified USDT path as first preference. When no
     // USDT movement exists, exact WBNB settlement is valued by the same dated
     // native quote service. Symbols and assumed dollar pegs never select it.
-    const quote=moves.some(m=>m.asset===stable)?stable:WBNB;
+    const quote=moves.some(m=>m.asset===stable)?stable:moves.some(m=>m.asset===WBNB)?WBNB:FRESH_STOCK_QUOTE_TOKEN;
+    const stockBridge=quote===FRESH_STOCK_QUOTE_TOKEN;
     if(sell===quote||buy===quote)return null;
     const bridge=moves.filter(m=>m.asset===quote);
-    if(bridge.length<(quote===WBNB?2:3)||bridge.length>10||
+    if(bridge.length<(quote===stable?3:2)||bridge.length>10||
       bridge.some(m=>m.raw<=0n||m.from===wallet||m.to===wallet||m.from===m.to))return null;
     const bridgeNodes=[bridge[0].from,...bridge.map(m=>m.to)];
     const arrived=bridge.filter(m=>m.to===router),departed=bridge.filter(m=>m.from===router);
@@ -165,6 +167,24 @@ export function freshTokenExchangeSettlement(entry:FreshCapturedReceipt,executio
     const credit=unique(c=>c.type==='CALL'&&c.from===delivery[0].from&&c.to===buy&&yes(c)&&(()=>{try{const parsed=abi.parseTransaction({data:c.input!});return parsed?.name==='transfer'&&abi.encodeFunctionData(parsed.fragment,parsed.args).toLowerCase()===c.input&&String(parsed.args[0]).toLowerCase()===wallet&&parsed.args[1]>=incoming.incoming;}catch{return false;}})());
     if(!credit)return null;
     const gross=BigInt(abi.parseTransaction({data:credit.input!})!.args[1]);
+    if(stockBridge){
+      const firstPool=freshPoolQuotePair(sell,quote),lastPool=freshPoolQuotePair(buy,quote);
+      if(!validFreshCompleteCallTrace(entry,trace)||bridge.length!==2||bridge[0].from!==firstPool||bridge[1].to!==lastPool||delivery[0].from!==lastPool)return null;
+      const firstIn=moves.filter(move=>move.asset===sell&&move.from===wallet&&move.to===firstPool);
+      if(firstIn.length!==1)return null;
+      const provesSwap=(pool:string,assetIn:string,assetOut:string,input:bigint,output:bigint,to:string)=>{
+        const swaps=execution.logs.filter(log=>log.address===pool&&log.topics[0]===poolMarketAbi.getEvent('Swap')!.topicHash);
+        if(swaps.length!==1)return false;
+        const swap=poolMarketAbi.parseLog(swaps[0]);if(!swap||String(swap.args.to).toLowerCase()!==to)return false;
+        const inIs0=assetIn<assetOut;
+        const amounts=inIs0?[input,0n,0n,output]:[0n,input,output,0n];
+        const encoded=poolMarketAbi.encodeEventLog(swap.fragment,swap.args);
+        return encoded.data===swaps[0].data&&JSON.stringify(encoded.topics)===JSON.stringify(swaps[0].topics)
+          &&amounts.every((amount,i)=>swap.args[i+1]===amount);
+      };
+      if(!provesSwap(firstPool,sell,quote,firstIn[0].raw,bridge[0].raw,router)
+        ||!provesSwap(lastPool,quote,buy,bridge[0].raw,gross,wallet))return null;
+    }
     const deliveryEffects=moves.filter(m=>m.asset===buy&&m.from===delivery[0].from&&m.index>bridge[bridge.length-1].index&&m.index<=delivery[0].index),tax=deliveryEffects.filter(m=>m.to!==wallet);
     if(deliveryEffects.filter(m=>m.to===wallet).length!==1||deliveryEffects.reduce((sum,m)=>sum+m.raw,0n)!==gross||tax.length>1||tax.some(m=>m.to!==buy||m.raw<=0n)||tax.reduce((sum,m)=>sum+m.raw,0n)!==gross-incoming.incoming)return null;
     if(!credit||moves.filter(m=>m.asset===sell&&m.from===wallet).some(m=>m.index>=bridge[0].index)||delivery[0].index<=bridge[bridge.length-1].index
@@ -184,6 +204,6 @@ export function freshTokenExchangeSettlement(entry:FreshCapturedReceipt,executio
     }
     const gas=freshInteger(entry.receipt.gasUsed)*freshInteger(entry.receipt.effectiveGasPrice??tx.gasPrice);
     if(gas<=0n||execution.feeWei!==gas)return null;
-    return{kind:quote===stable?'ordinary_token_exchange_via_usdt':'ordinary_token_exchange_via_wbnb',wallet,sellToken:sell,sellRaw:rawIn,buyToken:buy,buyRaw:incoming.incoming,quoteAddress:quote,quoteRaw:split?.quoteRaw??bridge[0].raw,gasFeeWei:gas};
+    return{kind:stockBridge?'ordinary_token_exchange_via_stock_quote':quote===stable?'ordinary_token_exchange_via_usdt':'ordinary_token_exchange_via_wbnb',wallet,sellToken:sell,sellRaw:rawIn,buyToken:buy,buyRaw:incoming.incoming,quoteAddress:quote,quoteRaw:split?.quoteRaw??bridge[0].raw,gasFeeWei:gas};
   }catch{return null;}
 }

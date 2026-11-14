@@ -67,6 +67,7 @@ export interface FreshReceiptRecoveryEvidence {
  genericCapturedPrices?:FreshHistoricalGenericCapturedPrice[];
  nativeStockAcquisitionCosts?:FreshNativeStockAcquisitionCost[];
  nativeIntermediateAcquisitionCosts?:FreshNativeIntermediateAcquisitionCost[];
+ stockExchangeQuotes?:FreshHistoricalGenericNativeQuote[];
  parentPoolQuotes?:FreshHistoricalParentPoolQuoteEvidence[];
  parentPoolQuoteCaptures?:FreshParentPoolCapture[];
  version:1;target:FreshPriceBlock;metadata:Record<string,unknown>;quotes:FreshHistoricalQuoteEvidence[];pools:FreshHistoricalPoolEvidence[];
@@ -94,6 +95,7 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const evidence:FreshReceiptRecoveryEvidence={version:1,target:{...target},v3QuotePayments:validPrior&&Array.isArray(validPrior.v3QuotePayments)&&validPrior.v3QuotePayments.length<=4?[...validPrior.v3QuotePayments]:[],nativeStockAcquisitionCosts:validPrior&&Array.isArray(validPrior.nativeStockAcquisitionCosts)&&validPrior.nativeStockAcquisitionCosts.length<=4?[...validPrior.nativeStockAcquisitionCosts]:[],parentPoolQuoteCaptures:validPrior&&Array.isArray(validPrior.parentPoolQuoteCaptures)&&validPrior.parentPoolQuoteCaptures.length<=4?[...validPrior.parentPoolQuoteCaptures]:[],parentPoolQuotes:validPrior&&Array.isArray(validPrior.parentPoolQuotes)&&validPrior.parentPoolQuotes.length<=4?[...validPrior.parentPoolQuotes]:[],metadata:{},quotes:[],pools:[],stockwaveMarkets:[],stockQuotes:[],flapQuotes:[],flapCurveQuotes:[],capturedPoolQuotes:[],directFlapPurchases:[],quotePayments:[],nativeQuoteChanges:[],nativeStockQuoteChanges:[],signedBatchPurchases:[]};
  evidence.genericQuotePayments=validPrior&&Array.isArray(validPrior.genericQuotePayments)&&validPrior.genericQuotePayments.length<=4?[...validPrior.genericQuotePayments]:[];
  evidence.genericCapturedPrices=validPrior&&Array.isArray(validPrior.genericCapturedPrices)&&validPrior.genericCapturedPrices.length<=4?[...validPrior.genericCapturedPrices]:[];
+ evidence.stockExchangeQuotes=[];
  evidence.nativeIntermediateAcquisitionCosts=validPrior&&Array.isArray(validPrior.nativeIntermediateAcquisitionCosts)&&validPrior.nativeIntermediateAcquisitionCosts.length<=4?[...validPrior.nativeIntermediateAcquisitionCosts]:[];
  evidence.registeredV4Prices=[];
  evidence.registeredInfinityClPrices=[];
@@ -109,6 +111,28 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
  const anchor=()=>anchorWork??=(async()=>{const row=(await db.query("SELECT b.* FROM fresh.checkpoints c JOIN fresh.recent_blocks b USING(block_number,block_hash) WHERE c.key='capture'")).rows[0];
   if(!row)throw Error('recovery_anchor_unavailable');const b=targetOf(row);if(b.number<target.number||Date.now()-Date.parse(b.timestamp)>30000)throw Error('recovery_anchor_stale');return b;})();
  const canonicalHash=(number:number)=>{let work=hashCache.get(number);if(!work){work=db.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[number]).then(r=>r.rows[0]?.block_hash??null);hashCache.set(number,work);}return work;};
+ const stockExchangeUsd=async(quoteRaw:bigint,nativePriceUsd:string|null):Promise<string|null>=>{
+  if(quoteRaw<=0n||nativePriceUsd===null)return null;
+  const priorQuote=validPrior?.stockExchangeQuotes?.[0];
+  const priorWooQuote=validPrior?.stockQuotes?.find(quote=>quote.quoteToken===FRESH_STOCK_QUOTE_TOKEN);
+  if(!priorQuote){
+   try{
+    const quote=await recoverFreshStockRawQuote({rpc,target,canonicalHash,prior:priorWooQuote});
+    const next=[quote,...evidence.stockQuotes!.filter(saved=>saved.receiptSha256!==quote.receiptSha256)];
+    if(Buffer.byteLength(JSON.stringify({...evidence,stockQuotes:next}))>256*1024)return null;
+    evidence.stockQuotes=next;
+    return new MarketDecimal(quoteRaw*BigInt(quote.nativeRaw),BigInt(quote.quoteRaw)*10n**18n).mul(MarketDecimal.parse(nativePriceUsd)).text();
+   }catch{if(priorWooQuote)return null;}
+  }
+  try{
+    const quote=await recoverFreshHistoricalGenericNativeQuote({rpc,quoteAddress:FRESH_STOCK_QUOTE_TOKEN,target,
+     transactionIndex:Number(BigInt(entry.transaction.transactionIndex)),observation:'before_execution',anchor:priorQuote?.quote.anchor??await anchor(),canonicalHash,prior:priorQuote});
+    if(Buffer.byteLength(JSON.stringify({...evidence,stockExchangeQuotes:[quote]}))>256*1024)return null;
+    evidence.stockExchangeQuotes=[quote];
+    const ratio=quote.rawNativeRatio;
+    return new MarketDecimal(quoteRaw*BigInt(ratio.numerator),BigInt(ratio.denominator)*10n**18n).mul(MarketDecimal.parse(nativePriceUsd)).text();
+  }catch{return null;}
+ };
  const imported=createFreshImportedMetadataRecovery({canonicalHash:async number=>(await db.query('SELECT block_hash FROM fresh.recent_blocks WHERE block_number=$1',[number])).rows[0]?.block_hash??null});
  const templates=createFreshTemplateMetadataRecovery(db,rpc,batch,{target,entry,anchor,canonicalHash});
  const pinnedClones=createFreshPinnedCloneMetadataRecovery(db,rpc,batch,{target,entry,anchor,canonicalHash});
@@ -465,5 +489,5 @@ export function createFreshReceiptRecovery(db:Pool,rpc:Rpc,entry:FreshCapturedRe
    return proof.amountUsd;
   }catch{return null;}
  };
- return{acquisitionCost,airdropBasis,metadata,importedMetadata,priceUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.retainedNativeQuotes!.length||evidence.threeXdCurvePrices!.length||evidence.v2BridgePrices!.length||evidence.registeredV3Prices!.length||evidence.directNativePrices!.length||evidence.registeredInfinityClPrices!.length||evidence.registeredV4Prices!.length||evidence.genericQuotePayments!.length||evidence.genericCapturedPrices!.length||evidence.v3QuotePayments!.length||evidence.nativeStockAcquisitionCosts!.length||evidence.nativeIntermediateAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
+ return{acquisitionCost,airdropBasis,metadata,importedMetadata,priceUsd,stockExchangeUsd,additionalNativeFeeWei,directFlapPurchaseUsd,quotePaymentUsd,nativeQuoteChangeUsd,signedBatchPurchaseUsd,snapshot:()=>evidence.retainedNativeQuotes!.length||evidence.threeXdCurvePrices!.length||evidence.v2BridgePrices!.length||evidence.registeredV3Prices!.length||evidence.directNativePrices!.length||evidence.registeredInfinityClPrices!.length||evidence.registeredV4Prices!.length||evidence.genericQuotePayments!.length||evidence.genericCapturedPrices!.length||evidence.v3QuotePayments!.length||evidence.nativeStockAcquisitionCosts!.length||evidence.nativeIntermediateAcquisitionCosts!.length||evidence.parentPoolQuoteCaptures!.length||evidence.parentPoolQuotes!.length||evidence.quotes.length||evidence.pools.length||evidence.stockwaveMarkets!.length||evidence.stockQuotes!.length||evidence.stockExchangeQuotes!.length||evidence.flapQuotes!.length||evidence.flapCurveQuotes!.length||evidence.capturedPoolQuotes!.length||evidence.directFlapPurchases!.length||evidence.quotePayments!.length||evidence.nativeQuoteChanges!.length||evidence.nativeStockQuoteChanges!.length||evidence.signedBatchPurchases!.length||Object.keys(evidence.metadata).length?evidence:undefined};
 }

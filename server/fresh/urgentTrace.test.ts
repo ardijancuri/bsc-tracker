@@ -50,6 +50,16 @@ function memory(entries:FreshCapturedReceipt[],at=new Date()){
  return{rows,monitored,admission,start,calls,query,transactionDepth:()=>transactions,orphan(){canonical=hash(9999);},db:{query,connect:async()=>({query,release(){}})}as unknown as Pool,rpc:vi.fn(async()=>`0x${(1000+6).toString(16)}`)as unknown as Rpc};
 }
 describe('independent urgent native trace capture',()=>{
+ it('expedites an already pending valuation repair only after fresh trace proof is stored',async()=>{
+  const now=new Date(),entry=fixture(now);entry.transaction.input='0x4d819a2a';
+  const m=memory([entry],now);
+  Object.assign(m.rows[0],{decoder_status:'repair',last_error:'token_discovery_pending,trade_value_unavailable'});
+  expect(await createFreshUrgentTraceCapture(m.db,m.rpc,async()=>trace(entry))({now})).toMatchObject({attempted:1,saved:1});
+  const job=m.calls.find(call=>call.sql.startsWith('UPDATE fresh.jobs'));
+  expect(job?.params).toEqual([entry.transaction.hash+':'+blockHash]);
+  expect(job?.sql).toContain("state='pending'");
+  expect(m.calls.findIndex(call=>call.sql.startsWith('UPDATE fresh.recent_evidence SET payload=$3,position_dependency_addresses'))).toBeLessThan(m.calls.indexOf(job!));
+ });
  it('captures an exact zero-native reward claim even after fair-value decoding finished',async()=>{
   const now=new Date(),entry=fixture(now),a=FRESH_XA_FREE_CLAIM;entry.transaction.to=a.treasury;entry.transaction.value='0x0';entry.transaction.chainId='0x38';entry.transaction.input=a.selector+word('0x20').slice(2)+word('0x1').slice(2)+word('0x1').slice(2);
   entry.receipt.logs=[{...entry.receipt.logs[1],address:a.token,topics:[transferTopic,word(a.treasury),word(wallet)]}];

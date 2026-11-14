@@ -27,6 +27,7 @@ const swapAbis=[poolMarketAbi,v3MarketAbi,infinityMarketAbi,infinityBinMarketAbi
 const context=(entry:FreshCapturedReceipt)=>JSON.stringify({transaction:entry.transaction,receipt:entry.receipt,wallets:[...entry.wallets].sort(),historicalWallets:entry.historicalWallets,observedAt:entry.observedAt});
 const attemptKey=(entry:FreshCapturedReceipt)=>createHash('sha256').update(context(entry)).digest('hex');
 const attemptOutcomes=new Set(['started','saved','unavailable','transport_error','aborted','expired','rejected']);
+const traceRepairReasons=new Set(['trade_value_unavailable','exchange_quote_valuation_unavailable','wrapped_settlement_trace_unverified']);
 /** Only our bounded evidence telemetry is accepted. Its context excludes
  * additive trace/state data, so decoder-first evidence cannot reset the cap. */
 export function freshUrgentTraceAttempts(entry:FreshCapturedReceipt):FreshUrgentTraceAttempts|undefined{
@@ -199,7 +200,7 @@ export async function persistFreshUrgentTrace(database:Pool,selected:FreshCaptur
   else if(options.inboundEvidenceOnly){if(!freshUrgentInboundDependencyTargets(selected).includes(owner)&&!freshUrgentPassiveTraceTargets(selected).some(target=>target.wallet===owner))throw Error('urgent_trace_inbound_context_changed');}
   else{const admission=options.token?await readFreshTokenAdmission(client,options.token,{blockNumber:block,lock:true}):null;
    if(!admission)throw Error('urgent_trace_token_changed');}
-  const row=(await client.query('SELECT payload,wallet_addresses,decoder_status,position_dependency_addresses,position_dependency_proof FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2 FOR UPDATE',[selected.transaction.hash.toLowerCase(),hash])).rows[0];
+  const row=(await client.query('SELECT payload,wallet_addresses,decoder_status,last_error,position_dependency_addresses,position_dependency_proof FROM fresh.recent_evidence WHERE tx_hash=$1 AND block_hash=$2 FOR UPDATE',[selected.transaction.hash.toLowerCase(),hash])).rows[0];
   if(!row){await client.query('ROLLBACK');return false;}
   const latest=decodeFreshEvidence(row.payload);
   if([...row.wallet_addresses].sort().join(',')!==[...latest.wallets].sort().join(','))throw Error('urgent_trace_wallet_changed');
@@ -215,6 +216,13 @@ export async function persistFreshUrgentTrace(database:Pool,selected:FreshCaptur
     await client.query(`INSERT INTO fresh.jobs(id,kind,reference,priority,due_at,last_error,progress)VALUES($1,'decode_receipt',$2,80,$3,$4,$5::jsonb) ON CONFLICT(kind,reference)DO UPDATE SET state='pending',due_at=least(fresh.jobs.due_at,EXCLUDED.due_at),last_error=EXCLUDED.last_error,updated_at=clock_timestamp()`,['decode:'+selected.transaction.hash.toLowerCase()+':'+hash,selected.transaction.hash.toLowerCase()+':'+hash,now,reason,JSON.stringify({firstFailure:first})]);
    }
    await client.query('UPDATE fresh.recent_evidence SET payload=$3,position_dependency_addresses=COALESCE($4,position_dependency_addresses),position_dependency_proof=COALESCE($5,position_dependency_proof) WHERE tx_hash=$1 AND block_hash=$2',[selected.transaction.hash.toLowerCase(),hash,payload,dependencies?.addresses??null,dependencies?.proofHash??null]);
+   if(row.decoder_status==='repair'&&!hasCompleteTrace(latest)&&hasCompleteTrace(merged)
+     &&String(row.last_error??'').split(',').some(reason=>traceRepairReasons.has(reason))){
+    // Reuse the existing job and its diagnostics as soon as new proof arrives.
+    await client.query(`UPDATE fresh.jobs SET due_at=least(due_at,clock_timestamp()),updated_at=clock_timestamp()
+     WHERE kind='decode_receipt' AND reference=$1 AND state='pending'
+       AND (lease_until IS NULL OR lease_until<=clock_timestamp())`,[selected.transaction.hash.toLowerCase()+':'+hash]);
+   }
    if(row.decoder_status==='done'&&hasCompleteTrace(merged)&&(freshVerifiedAirdropClaimCandidate(merged)||freshPaidCreationPurchaseCandidate(merged))){
     // These exact supported methods need the newly captured tree even when a
     // quick earlier interpretation already finished. Revalidate normally;

@@ -4,12 +4,15 @@ import { isIP } from 'node:net';
 import { Agent, fetch as undiciFetch } from 'undici';
 import sharp from 'sharp';
 import type { Pool } from 'pg';
-import { normalizeLogoUrl } from '../tokenLogo.js';
+import { imageCandidateUrls, normalizeLogoUrl } from '../tokenLogo.js';
 import { imageMime, publicImageIp } from '../tokenImage.js';
+import type { Rpc } from '../rpc.js';
+import { decodeFreshFlapPoolLaunchFact, decodeFreshLaunch, validateFreshReceipt, type FreshBlock, type FreshReceipt, type FreshTransaction } from './capture.js';
+import { flapInterface } from '../launchpad.js';
 
 const maxImageBytes=10*1024*1024,maxPageBytes=512*1024,maxPixels=16_000_000;
 type Transport=(url:string,options:{signal:AbortSignal})=>Promise<Response>;
-export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page'|'genius_contract_page'|'fourmeme_token_record'|'pancakeswap_market_record' }
+export interface FreshArtwork { data:Buffer;mime:'image/webp';url:string;source:'flap_contract_page'|'flap_launch_metadata'|'genius_contract_page'|'fourmeme_token_record'|'pancakeswap_market_record' }
 export type FreshArtworkProvider='flap'|'genius'|'fourmeme'|'auto'|'pancakeswap';
 export class FreshArtworkError extends Error { constructor(readonly reason:string){super(reason);} }
 const fail=(reason:string):never=>{throw new FreshArtworkError(reason);};
@@ -118,6 +121,48 @@ async function request(url:string,limit:number,signal:AbortSignal,transport:Tran
   const response=await transport(url,{signal});return body(response,limit);
 }
 
+/** Only the exact creation log can authorize the IPFS metadata fallback. */
+export async function freshFlapLaunchArtworkUri(rpc:Rpc,address:string,launch:{tx_hash:string;block_hash:string;block_number:string|number;log_index:number|null}){
+  if(launch.log_index===null)return null;
+  const [tx,receipt,block]=await Promise.all([
+    rpc<FreshTransaction>('eth_getTransactionByHash',[launch.tx_hash]),
+    rpc<FreshReceipt>('eth_getTransactionReceipt',[launch.tx_hash]),
+    rpc<Pick<FreshBlock,'number'|'hash'|'parentHash'|'timestamp'>&{transactions:string[]}>('eth_getBlockByNumber',['0x'+Number(launch.block_number).toString(16),false]),
+  ]);
+  if(!tx||!receipt||!block||block.hash!==launch.block_hash||block.transactions[Number(BigInt(tx.transactionIndex))]!==launch.tx_hash
+    ||tx.hash!==launch.tx_hash||receipt.status!=='0x1')return null;
+  const full={...block,transactions:[tx]};
+  validateFreshReceipt(receipt,tx,full);
+  const log=receipt.logs.find(log=>Number(BigInt(log.logIndex))===launch.log_index);
+  if(!log)return null;
+  const fact=decodeFreshLaunch(log,full,0)??decodeFreshFlapPoolLaunchFact(log,full,0);
+  if(fact?.protocol!=='flap'||fact.tokenAddress!==address)return null;
+  const meta=fact.proof.launchKind==='direct_v2_pool'?fact.proof.meta:flapInterface.parseLog(log)?.args.meta;
+  if(typeof meta!=='string'||meta.length>2048)return null;
+  const normalized=normalizeLogoUrl(meta);
+  return normalized&&freshArtworkUrl(normalized)&&new URL(normalized).pathname.match(/^\/ipfs\/(?:b[a-z2-7]{20,}|Qm[1-9A-HJ-NP-Za-km-z]{44})(?:\/|$)/)?normalized:null;
+}
+
+async function artworkFromCandidates<T>(url:string,signal:AbortSignal,read:(candidate:string,signal:AbortSignal)=>Promise<T|null>):Promise<T>{
+  const stop=new AbortController(),attempt=AbortSignal.any([signal,stop.signal]);
+  try{return await Promise.any(imageCandidateUrls(url).map(async candidate=>{
+    const value=await read(candidate,attempt);
+    if(value===null)return fail('artwork_not_published');
+    return value;
+  }));}finally{stop.abort();}
+}
+
+async function loadFlapLaunchArtwork(uri:string,signal:AbortSignal,transport:Transport):Promise<FreshArtwork>{
+  const image=await artworkFromCandidates(uri,signal,async(candidate,attempt)=>{
+    const data=JSON.parse((await request(candidate,64*1024,attempt,transport)).toString('utf8'));
+    return typeof data?.image==='string'&&data.image.length<=4096?normalizeLogoUrl(data.image):null;
+  });
+  return artworkFromCandidates(image,signal,async(url,attempt)=>{
+    const data=await normalizeFreshArtwork(await request(url,maxImageBytes,attempt,transport));
+    return data?{data,mime:'image/webp',url,source:'flap_launch_metadata'}:null;
+  });
+}
+
 /** Some published token icons wrap ONE embedded PNG/JPEG/WebP in SVG. Extract
  * its raster bytes without ever handing XML to an SVG/image renderer. All other
  * SVG (including shapes, styles, entities and network references) is rejected. */
@@ -149,13 +194,13 @@ export async function normalizeFreshArtwork(data:Buffer):Promise<Buffer|null>{
 }
 /** Only artwork is read from the exact-contract launchpad page. Its prices,
  * names, supplies and other financial/identity fields are never consumed. */
-export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:FreshArtworkProvider;marketFallback?:boolean}={}):Promise<FreshArtwork>{
+export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:FreshArtworkProvider;marketFallback?:boolean;flapMetadataUri?:()=>Promise<string|null>}={}):Promise<FreshArtwork>{
   if(!/^0x[0-9a-f]{40}$/.test(address))return fail('artwork_address_invalid');
   if(options.marketFallback&&options.provider!=='pancakeswap'){
     // Reserve time for market artwork even if a launchpad or IPFS source stalls.
     // The entire operation remains below the existing 30-second job lease.
     const total=AbortSignal.timeout(20_000),signal=options.signal?AbortSignal.any([total,options.signal]):total;
-    try{return await loadFreshArtwork(address,{...options,marketFallback:false,signal:AbortSignal.any([signal,AbortSignal.timeout(12_000)])});}
+    try{return await loadFreshArtwork(address,{...options,marketFallback:false,signal:AbortSignal.any([signal,AbortSignal.timeout(options.flapMetadataUri?16_000:12_000)])});}
     catch{if(signal.aborted)return fail('artwork_deadline');}
     return loadFreshArtwork(address,{signal,transport:options.transport,provider:'pancakeswap'});
   }
@@ -164,6 +209,10 @@ export async function loadFreshArtwork(address:string,options:{signal?:AbortSign
   const transport:Transport=options.transport??(async(url,{signal})=>await undiciFetch(url,{signal,redirect:'manual',dispatcher:agent!,headers:{accept:'application/json,text/html,image/webp,image/png,image/jpeg'}}) as unknown as Response);
   const providers=options.provider==='auto'?['fourmeme','genius'] as const:[options.provider??'flap'];
   try {let image:string|null=null,source:FreshArtwork['source']='flap_contract_page';
+    if(options.provider==='flap'&&options.flapMetadataUri){
+      const metadataSignal=AbortSignal.any([signal,AbortSignal.timeout(8_000)]);
+      try{const uri=await options.flapMetadataUri();if(uri)return await loadFlapLaunchArtwork(uri,metadataSignal,transport);}catch{if(signal.aborted)return fail('artwork_deadline');}
+    }
     for(const provider of providers){
       try{
         const page=provider==='pancakeswap'?`https://api.dexscreener.com/latest/dex/tokens/${address}`:provider==='fourmeme'?`https://four.meme/meme-api/v1/private/token/get/v2?address=${address}`:provider==='genius'?`https://genius.fun/token/${address}`:`https://flap.sh/bnb/${address}`;
@@ -174,8 +223,16 @@ export async function loadFreshArtwork(address:string,options:{signal?:AbortSign
     }
     if(!image)return fail('artwork_not_published');
     const url=freshArtworkUrl(image);if(!url)return fail('artwork_url_rejected');
-    const data=await normalizeFreshArtwork(await request(url,maxImageBytes,signal,transport));
-    if(!data)return fail('artwork_image_rejected');return{data,mime:'image/webp',url,source};
+    if(source!=='flap_contract_page'){
+      const data=await normalizeFreshArtwork(await request(url,maxImageBytes,signal,transport));
+      if(!data)return fail('artwork_image_rejected');
+      return{data,mime:'image/webp',url,source};
+    }
+    try{return await artworkFromCandidates(url,signal,async(candidate,attempt)=>{
+      const data=await normalizeFreshArtwork(await request(candidate,maxImageBytes,attempt,transport));
+      return data?{data,mime:'image/webp',url:candidate,source}:null;
+    });}catch(error){if(error instanceof AggregateError&&error.errors.length===1&&error.errors[0] instanceof FreshArtworkError
+      &&error.errors[0].reason!=='artwork_not_published')throw error.errors[0];return fail('artwork_image_rejected');}
   }catch(error){if(error instanceof FreshArtworkError)throw error;return fail(signal.aborted?'artwork_deadline':'artwork_unavailable');}
   finally{await agent?.close();}
 }
@@ -192,8 +249,8 @@ export function freshArtworkCaptureReady(state:{capture_ok?:string;decode_ok?:st
 }
 /** Optional, separate worker stage. One small job per token; no financial loop
  * waits for artwork, and private-only wallet addresses never leave the server. */
-export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit?:number;loader?:typeof loadFreshArtwork}={}){
-  const selected=(await db.query(`SELECT t.address,lf.protocol FROM fresh.tokens t JOIN fresh.launch_facts lf ON lf.token_address=t.address AND lf.status='eligible' LEFT JOIN fresh.jobs j ON j.kind='token_artwork' AND j.reference=t.address
+export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit?:number;loader?:typeof loadFreshArtwork;rpc?:Rpc}={}){
+  const selected=(await db.query(`SELECT t.address,lf.protocol,lf.tx_hash,lf.block_hash,lf.block_number,lf.log_index FROM fresh.tokens t JOIN fresh.launch_facts lf ON lf.token_address=t.address AND lf.status='eligible' LEFT JOIN fresh.jobs j ON j.kind='token_artwork' AND j.reference=t.address
     WHERE t.launch_status='eligible' AND t.logo_data IS NULL AND ${publicTraded}
       AND (j.id IS NULL OR (j.state='pending' AND j.due_at<=clock_timestamp()) OR (j.state='leased' AND j.lease_until<clock_timestamp()))
     ORDER BY t.last_trade_at DESC NULLS LAST,t.address LIMIT $1`,[Math.min(2,Math.max(1,options.limit??1))])).rows;
@@ -204,12 +261,13 @@ export async function runFreshArtwork(db:Pool,options:{signal?:AbortSignal;limit
       ON CONFLICT(kind,reference) DO UPDATE SET state='leased',lease_id=EXCLUDED.lease_id,lease_until=EXCLUDED.lease_until,attempts=fresh.jobs.attempts+1,updated_at=clock_timestamp()
       WHERE (fresh.jobs.state='pending' AND fresh.jobs.due_at<=clock_timestamp()) OR (fresh.jobs.state='leased' AND fresh.jobs.lease_until<clock_timestamp()) RETURNING id`,[row.address,lease]);
     if(!owned.rowCount)continue;
-    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal,provider:row.protocol==='flap'?'flap':row.protocol==='fourmeme'?'fourmeme':'auto',marketFallback:true});
+    try{const artwork=await(options.loader??loadFreshArtwork)(row.address,{signal:options.signal,provider:row.protocol==='flap'?'flap':row.protocol==='fourmeme'?'fourmeme':'auto',marketFallback:true,
+      flapMetadataUri:row.protocol==='flap'&&options.rpc?()=>freshFlapLaunchArtworkUri(options.rpc!,row.address,row):undefined});
       const saved=await db.query(`WITH saved AS (UPDATE fresh.tokens t SET logo_data=$2,logo_mime=$3,logo_url=$4 WHERE t.address=$1 AND t.logo_data IS NULL AND t.launch_status='eligible'
-        AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.status='eligible')
+        AND EXISTS(SELECT 1 FROM fresh.launch_facts lf WHERE lf.token_address=t.address AND lf.status='eligible' AND lf.block_hash=$6 AND lf.tx_hash=$7)
         AND ${publicTraded} AND EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='token_artwork' AND j.reference=$1 AND j.lease_id=$5 AND j.lease_until>clock_timestamp()) RETURNING t.address
         ), removed AS (DELETE FROM fresh.jobs WHERE kind='token_artwork' AND reference=$1 AND lease_id=$5 RETURNING id)
-        SELECT (SELECT count(*)::int FROM saved) AS saved`,[row.address,artwork.data,artwork.mime,artwork.url,lease]);
+        SELECT (SELECT count(*)::int FROM saved) AS saved`,[row.address,artwork.data,artwork.mime,artwork.url,lease,row.block_hash,row.tx_hash]);
       ready+=saved.rows[0]?.saved??0;
     }catch(error){failed++;const reason=options.signal?.aborted?'artwork_cancelled':error instanceof FreshArtworkError?error.reason:'artwork_unavailable';
       await db.query(`UPDATE fresh.jobs SET state='pending',lease_id=NULL,lease_until=NULL,last_error=$3,
