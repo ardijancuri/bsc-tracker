@@ -192,6 +192,16 @@ export async function normalizeFreshArtwork(data:Buffer):Promise<Buffer|null>{
     return output.length<=128*1024&&imageMime(output)==='image/webp'?output:null;
   }catch{return null;}
 }
+
+export async function loadCoinImageArtwork(url:string,signal:AbortSignal):Promise<Buffer|null>{
+  const image=new URL(url);
+  if(image.origin!=='https://coin-images.coingecko.com'||!image.pathname.startsWith('/coins/images/'))return null;
+  const agent=publicAgent();
+  try{
+    return await normalizeFreshArtwork(await request(image.href,maxImageBytes,signal,async(url,{signal})=>
+      await undiciFetch(url,{signal,redirect:'manual',dispatcher:agent}) as unknown as Response));
+  }finally{await agent.close();}
+}
 /** Only artwork is read from the exact-contract launchpad page. Its prices,
  * names, supplies and other financial/identity fields are never consumed. */
 export async function loadFreshArtwork(address:string,options:{signal?:AbortSignal;transport?:Transport;provider?:FreshArtworkProvider;marketFallback?:boolean;flapMetadataUri?:()=>Promise<string|null>}={}):Promise<FreshArtwork>{

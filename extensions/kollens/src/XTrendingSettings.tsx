@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { browserApi, requestBackground } from './platform';
-import { xTrendingOrigins, xTrendingSiteAllowed } from './xTrendingAccess';
+import { xTrendingOrigins, xTrendingPreference, xTrendingSiteAllowed } from './xTrendingAccess';
 
 export function XTrendingSettings() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -21,11 +21,8 @@ export function XTrendingSettings() {
     setBusy(true);
     setError('');
     try {
-      if (wanted) {
-        if (!await browserApi.permissions.request({ origins: xTrendingOrigins })) return;
-      } else {
-        await browserApi.permissions.remove({ origins: xTrendingOrigins });
-      }
+      if(wanted&&!await browserApi.permissions.request({origins:xTrendingOrigins}))return;
+      await browserApi.storage.local.set({[xTrendingPreference]:wanted});
       await requestBackground({ kind: 'x-trending/permission' });
     } catch {
       setError('Could not update X site access. Try again.');

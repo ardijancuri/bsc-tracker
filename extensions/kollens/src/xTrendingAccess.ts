@@ -3,11 +3,16 @@ import { extensionAddress } from '../../../shared/extension';
 import { browserApi as chrome, config } from './platform';
 
 export const xTrendingOrigins = ['https://x.com/*'];
+export const xTrendingPreference='showXTrendingTokens';
+export type XTrendingView='tracked'|'market';
 const registrationId = 'kollens-x-trending';
 let permissionWork = Promise.resolve();
-export type XTrendingResponse = Omit<TrendingTokens,'items'> & { items: (TrendingToken & { thumbnail: string | null })[] };
+export type XTrendingResponse = Omit<TrendingTokens,'items'|'marketMomentum'> & {
+  items: (TrendingToken & { thumbnail: string | null })[];
+  marketMomentum?: (MarketMomentumToken & {thumbnail:string|null})[];
+};
 const cache = new Map<TrendingWindow, { expires: number; result: Promise<TrendingTokens> }>();
-const panelCache = new Map<TrendingWindow, { expires: number; result: Promise<XTrendingResponse> }>();
+const panelCache = new Map<string, { expires: number; result: Promise<XTrendingResponse> }>();
 const thumbnails = new Map<string, { expires: number; data: Promise<string | null> }>();
 const thumbnailLimit = 64 * 1024;
 
@@ -23,10 +28,10 @@ export function isDisplayableXTrendingToken(item: TrendingToken | null | undefin
   return !!item && extensionAddress(item.address) && Number.isInteger(item.kolCount) && item.kolCount >= 2;
 }
 
-export function selectXMarketMomentum(data: TrendingTokens): MarketMomentumToken[] {
+export function selectXMarketMomentum<T extends MarketMomentumToken>(data: Omit<TrendingTokens,'marketMomentum'> & {marketMomentum?:T[]}): T[] {
   if (!Array.isArray(data.marketMomentum) || data.marketMomentum.length > 4) return [];
   const seen = new Set(data.items.filter(isDisplayableXTrendingToken).map(item => item.address));
-  const results: MarketMomentumToken[] = [];
+  const results: T[] = [];
   const validUsd = (value: unknown) => typeof value === 'string' && value.length <= 48 &&
     /^\d+(?:\.\d+)?$/.test(value) && Number(value) > 0;
   for (const item of data.marketMomentum) {
@@ -43,8 +48,9 @@ export function selectXMarketMomentum(data: TrendingTokens): MarketMomentumToken
   return results;
 }
 
-export function xTrendingSiteAllowed() {
-  return chrome.permissions.contains({ origins: xTrendingOrigins });
+export async function xTrendingSiteAllowed() {
+  const [access,preferences]=await Promise.all([chrome.permissions.contains({ origins:xTrendingOrigins }),chrome.storage.local.get(xTrendingPreference)]);
+  return access&&preferences[xTrendingPreference]!==false;
 }
 
 export function refreshXTrendingAccess(reinject = false) {
@@ -99,13 +105,14 @@ async function readThumbnail(url: URL) {
   }
 }
 
-function thumbnail(item: TrendingToken) {
+function thumbnail(item: {address:string;logoUrl?:string|null},momentum=false) {
   if (!item.logoUrl || !extensionAddress(item.address)) return null;
   let url: URL;
   try { url = new URL(item.logoUrl, config.apiOrigin); } catch { return null; }
   // X permits inline raster images but blocks direct requests to our CDN.
   // Resolve only Kollens-hosted artwork belonging to this result.
-  if (url.origin !== config.apiOrigin || url.username || url.password || url.search || url.hash ||
+  if (url.origin !== config.apiOrigin || url.username || url.password || url.hash ||
+    (url.search && (!momentum || url.search !== '?fallback=momentum' || url.pathname !== '/api/token-image/' + item.address)) ||
     (url.pathname !== '/api/token-image/' + item.address &&
       !/^\/token-icons\/[a-z0-9_-]+\.(?:png|jpg|webp)$/i.test(url.pathname))) return null;
   const previous = thumbnails.get(url.href);
@@ -117,27 +124,33 @@ function thumbnail(item: TrendingToken) {
   return data;
 }
 
-export async function loadXTrendingTokens(window: unknown, sender: chrome.runtime.MessageSender) {
+export async function loadXTrendingTokens(window: unknown, sender: chrome.runtime.MessageSender, view:unknown='tracked') {
   if (!isTrendingWindow(window) || sender.id !== chrome.runtime.id || sender.frameId !== 0 || sender.tab?.id == null) {
     throw Error('Trending request context rejected');
   }
+  if(view!=='tracked'&&view!=='market')throw Error('Invalid trending view');
   const tab = await chrome.tabs.get(sender.tab.id);
   const local = __LOCAL_FIXTURE__ && tab.url?.split('?')[0] === 'http://127.0.0.1:3360/x-fixture';
   if (!local && (!isXPage(tab.url) || !isXPage(sender.url) || !await xTrendingSiteAllowed())) {
     throw Error('Trending request context rejected');
   }
-  const previous = panelCache.get(window);
+  const key=view+':'+window;
+  const previous = panelCache.get(key);
   if (previous && previous.expires > Date.now()) return previous.result;
-  const result = requestXTrendingTokens(window, true).then(async data => ({
-    ...data, items: await Promise.all(data.items.map(async item => ({ ...item, thumbnail: await thumbnail(item) }))),
-  }));
-  panelCache.set(window, { result, expires: Date.now() + 30_000 });
-  void result.catch(() => { if (panelCache.get(window)?.result === result) panelCache.delete(window); });
+  const result = requestXTrendingTokens(window,view).then(async data => {
+    const [items,marketMomentum]=await Promise.all([
+      Promise.all(data.items.map(async item=>({...item,thumbnail:await thumbnail(item)}))),
+      Promise.all(selectXMarketMomentum(data).map(async item=>({...item,thumbnail:await thumbnail(item,true)}))),
+    ]);
+    return {...data,items,marketMomentum};
+  });
+  panelCache.set(key, { result, expires: Date.now() + 30_000 });
+  void result.catch(() => { if (panelCache.get(key)?.result === result) panelCache.delete(key); });
   return result;
 }
 
-function requestXTrendingTokens(window: TrendingWindow, momentum: boolean) {
-  return fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}${momentum ? '&momentum=1' : ''}`, {
+function requestXTrendingTokens(window: TrendingWindow,view:XTrendingView) {
+  return fetch(`${config.apiOrigin}/api/extension/trending-tokens?window=${window}${view==='market'?'&view=market':''}`, {
     credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(8_000),
   }).then(async response => {
     if (!response.ok) throw Error('Trending tokens are unavailable');
@@ -152,7 +165,7 @@ function requestXTrendingTokens(window: TrendingWindow, momentum: boolean) {
 export function getXTrendingTokens(window: TrendingWindow) {
   const previous = cache.get(window);
   if (previous && previous.expires > Date.now()) return previous.result;
-  const result = requestXTrendingTokens(window, false);
+  const result = requestXTrendingTokens(window,'tracked');
   cache.set(window, { result, expires: Date.now() + 30_000 });
   void result.catch(() => { if (cache.get(window)?.result === result) cache.delete(window); });
   return result;

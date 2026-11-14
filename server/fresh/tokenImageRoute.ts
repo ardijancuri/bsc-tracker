@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { loadFreshArtwork } from './artwork.js';
+import { loadCoinImageArtwork, loadFreshArtwork } from './artwork.js';
 
 type StoredImage = { logo_data: Buffer | null; logo_mime: string | null };
 type ArtworkLoader = typeof loadFreshArtwork;
@@ -10,6 +10,7 @@ export function registerFreshTokenImage(
   app: FastifyInstance,
   findStored: (address: string) => Promise<StoredImage | undefined>,
   load: ArtworkLoader = loadFreshArtwork,
+  momentumImage?: (address:string)=>string|undefined,
 ) {
   const pending = new Map<string, Promise<Buffer | null>>();
   const cache = new Map<string, { data: Buffer | null; expiresAt: number }>();
@@ -34,30 +35,35 @@ export function registerFreshTokenImage(
     if (!/^0x[0-9a-f]{40}$/.test(address)) return reply.code(404).send();
     const stored = await findStored(address);
     if (stored?.logo_data) return reply.header('Cache-Control', 'public,max-age=3600').type(stored.logo_mime ?? 'image/webp').send(stored.logo_data);
-    if (req.query.fallback !== 'extension') return reply.code(404).send();
+    const mode=req.query.fallback;
+    if(mode!=='extension'&&mode!=='momentum')return reply.code(404).send();
+    const upstream=mode==='momentum'?momentumImage?.(address):undefined;
+    const key=mode+':'+address;
 
     const now = Date.now();
-    const cached = cache.get(address);
+    const cached = cache.get(key);
     if (cached && cached.expiresAt > now) {
-      cache.delete(address);
-      cache.set(address, cached);
+      cache.delete(key);
+      cache.set(key, cached);
       return cached.data
         ? reply.header('Cache-Control', 'public,max-age=3600').type('image/webp').send(cached.data)
         : reply.header('Cache-Control', 'public,max-age=60').code(404).send();
     }
 
-    let work = pending.get(address);
+    let work = pending.get(key);
     if (!work) {
+      if(mode==='momentum'&&!upstream)return reply.header('Cache-Control','no-store').code(404).send();
       if (now >= budget.until) budget = { until: now + 60_000, count: 0 };
       if (pending.size >= maxActive || budget.count >= 60) return reply.header('Cache-Control', 'no-store').header('Retry-After', '5').code(503).send();
       budget.count++;
-      work = lookup(address).then(data => {
-        cache.delete(address);
-        cache.set(address, { data, expiresAt: Date.now() + (data ? 3_600_000 : 60_000) });
+      const read=upstream?loadCoinImageArtwork(upstream,AbortSignal.timeout(2300)).catch(()=>null):lookup(address);
+      work = read.then(data => {
+        cache.delete(key);
+        cache.set(key, { data, expiresAt: Date.now() + (data ? 3_600_000 : 60_000) });
         if (cache.size > maxCached) cache.delete(cache.keys().next().value!);
         return data;
-      }).finally(() => pending.delete(address));
-      pending.set(address, work);
+      }).finally(() => pending.delete(key));
+      pending.set(key, work);
     }
     const data = await work;
     return data

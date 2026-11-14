@@ -7,6 +7,7 @@ vi.mock('./platform', () => ({
     runtime: { id: 'kollens-extension' },
     tabs: { get: async () => ({ url: 'https://x.com/home' }) },
     permissions: { contains: async () => true },
+    storage: { local: { get: async()=>({}) } },
   },
   config: { apiOrigin: 'https://kollens.com' },
 }));
@@ -32,16 +33,21 @@ it('keeps exact-contract order while filtering tracked duplicates and malformed 
   expect(selectXMarketMomentum(base)).toEqual([]);
 });
 
-it('requests and coalesces momentum data for the existing X extension request', async () => {
+it('loads tracked activity by default and requests momentum separately with its thumbnail', async () => {
   vi.stubGlobal('__LOCAL_FIXTURE__', false);
-  const marketMomentum = [token('bb')];
-  const fetch = vi.fn(async () => new Response(JSON.stringify({ ...base, marketMomentum })));
+  const marketMomentum = [{...token('bb'),logoUrl:'/api/token-image/'+token('bb').address+'?fallback=momentum'}];
+  const fetch = vi.fn(async (url:string|URL) => {
+    if(String(url).includes('/api/token-image/'))return new Response(new Uint8Array([1,2,3]),{headers:{'Content-Type':'image/webp'}});
+    return new Response(JSON.stringify(String(url).endsWith('&view=market')?{...base,items:[],marketMomentum}:base));
+  });
   vi.stubGlobal('fetch', fetch);
   const sender = { id: 'kollens-extension', frameId: 0, tab: { id: 1 }, url: 'https://x.com/home' } as chrome.runtime.MessageSender;
   const response = await Promise.all([loadXTrendingTokens('6h', sender), loadXTrendingTokens('6h', sender)]);
-  expect(response).toEqual(Array(2).fill({ ...base, items: [{ ...tracked, thumbnail: null }], marketMomentum }));
+  expect(response).toEqual(Array(2).fill({ ...base, items: [{ ...tracked, thumbnail: null }], marketMomentum:[] }));
   expect(fetch).toHaveBeenCalledExactlyOnceWith(
-    'https://kollens.com/api/extension/trending-tokens?window=6h&momentum=1',
+    'https://kollens.com/api/extension/trending-tokens?window=6h',
     expect.objectContaining({ credentials: 'omit', redirect: 'error' }),
   );
+  expect((await loadXTrendingTokens('6h',sender,'market')).marketMomentum?.[0]).toMatchObject({thumbnail:'data:image/webp;base64,AQID'});
+  expect(fetch).toHaveBeenCalledTimes(3);
 });

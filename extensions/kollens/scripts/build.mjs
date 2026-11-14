@@ -37,8 +37,8 @@ await build({absWorkingDir:root,entryPoints:['src/xTrending.ts'],bundle:true,for
     __BNB_ICON__:JSON.stringify(`data:image/svg+xml;base64,${await readFile(bnbIcon,'base64')}`)}});
 const manifest={manifest_version:3,name:'Kollens Companion',version,minimum_chrome_version:'127',description:'Find tokens sharing social links, with a private Kollens watch desk.',
   key:developmentKey,
-  permissions:['storage','offscreen','activeTab','scripting','identity','sidePanel'],host_permissions:[local?'http://127.0.0.1:3360/*':'https://kollens.com/*',...(qa?['https://gmgn.ai/*','https://www.gmgn.ai/*']:[])],
-  optional_host_permissions:['https://gmgn.ai/*','https://www.gmgn.ai/*','https://bsc-dataseed.bnbchain.org/*','https://x.com/*'],background:{service_worker:'background.js',type:'module'},
+  permissions:['storage','offscreen','activeTab','scripting','identity','sidePanel'],host_permissions:[...(local?['http://127.0.0.1:3360/*']:['https://kollens.com/*','https://x.com/*']),...(qa?['https://gmgn.ai/*','https://www.gmgn.ai/*']:[])],
+  optional_host_permissions:['https://gmgn.ai/*','https://www.gmgn.ai/*','https://bsc-dataseed.bnbchain.org/*'],background:{service_worker:'background.js',type:'module'},
   action:{default_title:'Open Kollens Companion',default_popup:'popup.html',default_icon:'assets/icon.png'},icons:{128:'assets/icon.png'},
   side_panel:{default_path:'sidepanel.html'},
   content_security_policy:{extension_pages:`script-src 'self'; object-src 'none'; form-action 'none'; connect-src 'self' ${local?'http://127.0.0.1:3360':'https://kollens.com'} https://bsc-dataseed.bnbchain.org;`},

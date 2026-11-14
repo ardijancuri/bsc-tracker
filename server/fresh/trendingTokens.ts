@@ -133,12 +133,20 @@ export function registerFreshTrendingTokens(
   app: FastifyInstance,
   db: TrendingDb,
   readMarketMomentum?: (window: TrendingWindow) => Promise<MarketMomentumToken[]>,
+  enrichMarketMomentum?: (items: MarketMomentumToken[]) => Promise<MarketMomentumToken[]>,
 ) {
   const cache = new Map<TrendingWindow, { expiresAt: number; data: Promise<TrendingTokens> }>();
-  app.get<{ Querystring: { window?: string; momentum?: string } }>('/api/extension/trending-tokens', async (request, reply) => {
+  app.get<{ Querystring: { window?: string; momentum?: string; view?: string } }>('/api/extension/trending-tokens', async (request, reply) => {
     const window = request.query.window ?? defaultTrendingWindow;
     if (!isTrendingWindow(window)) return reply.code(400).send({ error: 'Invalid trending window' });
     const now = Date.now();
+    const enrich=async(items:MarketMomentumToken[])=>enrichMarketMomentum
+      ?enrichMarketMomentum(items).catch(()=>items):items;
+    if(request.query.view==='market'){
+      const momentum=readMarketMomentum?await Promise.resolve().then(()=>readMarketMomentum(window)).catch(()=>[]):[];
+      reply.header('Cache-Control','no-store');
+      return {window,asOf:new Date(now).toISOString(),items:[],marketMomentum:await enrich(momentum.slice(0,4))};
+    }
     let entry = cache.get(window);
     if (!entry || entry.expiresAt <= now) {
       const data = readFreshTrendingTokens(db, window, now);
@@ -159,7 +167,7 @@ export function registerFreshTrendingTokens(
         return true;
       }).slice(0, 4);
       reply.header('Cache-Control', 'no-store');
-      return marketMomentum.length ? { ...data, marketMomentum } : data;
+      return marketMomentum.length ? { ...data, marketMomentum: await enrich(marketMomentum) } : data;
     }
     reply.header('Cache-Control', 'public, max-age=30');
     return entry.data;

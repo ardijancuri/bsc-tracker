@@ -15,6 +15,7 @@ export interface TrendingMarketDetails {
   // Basis points, present only for a verified tax on the represented market.
   buyTaxBps?: number;
   sellTaxBps?: number;
+  taxSource?: 'goplus';
 }
 
 export interface TrendingToken extends TrendingMarketDetails {
@@ -46,6 +47,7 @@ export interface MarketMomentumToken extends TrendingMarketDetails {
   address: string;
   name: string;
   symbol: string;
+  logoUrl?: string | null;
   marketCapUsd: string | null;
   volumeUsd: string;
   priceChangePct: number;

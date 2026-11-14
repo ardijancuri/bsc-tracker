@@ -4,11 +4,11 @@ Chrome Manifest V3 extension for matching the social links of distinct BSC token
 
 Companion 0.2.0 adds opt-in automatic BNB Trenches matching and on-demand GMGN AI summaries to the public ZIP.
 
-## Install the v1.5 download
+## Install Kollens Companion
 
 1. Download and extract the [Kollens Companion ZIP](https://kollens.com/downloads/kollens-companion.zip).
-2. Open `chrome://extensions`, turn on **Developer mode**, then choose **Load unpacked** and select the extracted folder containing `manifest.json`. To update an existing unpacked copy, extract the new files into its current folder and click **Reload** on its extension card. Check that the extension shows version **0.2.0**.
-3. In the Companion popup, open **Settings → About → Show trending BNB tokens** and approve the optional X site access in Chrome. **Trending Tokens** appears above **Today’s News** on X pages that show that sidebar card.
+2. Open `chrome://extensions`, turn on **Developer mode**, then choose **Load unpacked** and select the extracted folder containing `manifest.json`. To update an existing unpacked copy, extract the new files into its current folder and click **Reload** on its extension card. Check that the extension shows version **0.3.4**.
+3. Once Chrome grants X access, **Trending Tokens** appears above **Today’s News** on X pages that show that sidebar card. It opens on **Tracked KOL activity**. Choose **Market momentum** to see tokens ranked from recent BNB Chain pool activity. Use **Settings → About → Show trending BNB tokens** to hide or restore the panel.
 
 Build the same archive from source with `npm ci` followed by `npm run extension:download` in the repository root.
 

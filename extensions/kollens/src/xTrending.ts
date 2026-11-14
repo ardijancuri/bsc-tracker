@@ -3,7 +3,7 @@ import { extensionAddress, type SocialLink } from '../../../shared/extension';
 import { cardMetricColor } from './cardMetrics';
 import { normalizeSocialLink } from './matching';
 import { browserApi as chrome } from './platform';
-import { isDisplayableXTrendingToken, isXPage, selectXMarketMomentum, type XTrendingResponse } from './xTrendingAccess';
+import { isDisplayableXTrendingToken, isXPage, selectXMarketMomentum, type XTrendingResponse, type XTrendingView } from './xTrendingAccess';
 import { xTrendingStyles } from './xTrendingStyles';
 
 declare const __LOCAL_FIXTURE__: boolean;
@@ -84,7 +84,7 @@ function dollarMetric(label: string, usd: string | null | undefined, description
   return metric;
 }
 
-function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps'>) {
+function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps' | 'taxSource'>) {
   const details = element('span', 'market-details');
   const symbol = typeof item.symbol === 'string' && item.symbol.trim() || shortAddress(item.address);
   const quote = typeof item.quoteSymbol === 'string' ? item.quoteSymbol.trim() : '';
@@ -97,7 +97,7 @@ function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'qu
   const known = buy !== '—' || sell !== '—';
   const tax = element('span', 'token-tax');
   tax.dataset.known = String(known);
-  tax.title = `Buy tax: ${buy === '—' ? 'unavailable' : buy} · Sell tax: ${sell === '—' ? 'unavailable' : sell}`;
+  tax.title = `Buy tax: ${buy === '—' ? 'unavailable' : buy} · Sell tax: ${sell === '—' ? 'unavailable' : sell}${item.taxSource==='goplus'?' · Token-level estimate from GoPlus':''}`;
   const rates = element('span', '', known ? `Tax ${buy}/${sell}` : 'Tax —');
   rates.setAttribute('aria-hidden', 'true');
   tax.append(rates, element('span', 'loading-label', tax.title));
@@ -229,6 +229,7 @@ function createPanel() {
   header.append(element('h2', '', 'Trending Tokens'), brand);
 
   let selected: TrendingWindow = defaultTrendingWindow;
+  let view:XTrendingView='tracked';
   const expandedTokens = new Set<string>();
   let pendingBuy: {
     address: string;
@@ -241,6 +242,24 @@ function createPanel() {
   let request = 0;
   const windows = Object.keys(trendingWindows) as TrendingWindow[];
   const tools = element('div', 'tools');
+  const views=element('div','views');
+  views.setAttribute('role','group');
+  views.setAttribute('aria-label','Trending feed');
+  const viewOptions=[['tracked','Tracked KOL activity'],['market','Market momentum']] as const;
+  const viewButtons=viewOptions.map(([option,label])=>{
+    const button=element('button','',label);
+    button.type='button';
+    button.setAttribute('aria-pressed',String(option===view));
+    button.addEventListener('click',()=>{
+      if(option===view||pendingBuy)return;
+      view=option;
+      hideBuyStatus();
+      for(const [index,item] of viewButtons.entries())item.setAttribute('aria-pressed',String(viewOptions[index][0]===view));
+      void refresh(true);
+    });
+    views.append(button);
+    return button;
+  });
   const filters = element('div', 'filters');
   filters.setAttribute('role', 'group');
   filters.setAttribute('aria-label', 'Trade window');
@@ -294,7 +313,7 @@ function createPanel() {
   preview.alt = '';
   preview.referrerPolicy = 'no-referrer';
   artwork.append(preview);
-  panel.append(header, tools, loadingLabel, copyStatus, buyAnnouncement, buyStatusAnchor, content, artwork);
+  panel.append(header, views, tools, loadingLabel, copyStatus, buyAnnouncement, buyStatusAnchor, content, artwork);
   shadow.append(panel);
 
   function hideBuyStatus() {
@@ -419,7 +438,7 @@ function createPanel() {
       button.setAttribute('aria-busy', 'true');
       buyLabel.textContent = 'Opening…';
       showBuyStatus('pending', `Opening buy review for ${buyName}…`);
-      const disabled = [...buttons, ...content.querySelectorAll<HTMLButtonElement>('button.token-buy')];
+      const disabled = [...buttons, ...viewButtons, ...content.querySelectorAll<HTMLButtonElement>('button.token-buy')];
       for (const control of disabled) control.setAttribute('aria-disabled', 'true');
       try {
         const response = await chrome.runtime.sendMessage({
@@ -514,15 +533,32 @@ function createPanel() {
     replaceResults(label);
   }
 
-  function marketSection(items: MarketMomentumToken[], window: TrendingWindow) {
+  function tokenAvatar(symbol:string,thumbnail:string|null) {
+    const avatar=fallbackAvatar(symbol);
+    if (thumbnail && /^data:image\/(?:png|jpeg|webp|avif);base64,/.test(thumbnail)) {
+      const image=element('img','');
+      image.alt='';
+      image.referrerPolicy='no-referrer';
+      image.addEventListener('load',()=>{
+        avatar.replaceChildren(image);
+        if(avatar.matches(':hover')&&matchMedia('(any-hover: hover)').matches)showArtwork(avatar,image);
+      },{once:true});
+      avatar.addEventListener('pointerenter',event=>{
+        if(event.pointerType!=='touch')showArtwork(avatar,image);
+      });
+      avatar.addEventListener('pointerleave',hideArtwork);
+      image.src=thumbnail;
+    }
+    return avatar;
+  }
+
+  function marketSection(items: (MarketMomentumToken & {thumbnail:string|null})[], window: TrendingWindow) {
     const section = element('section', 'market-section');
     const header = element('div', 'market-header');
-    const title = element('h3', '', 'Market momentum');
-    title.id = 'kollens-x-market-momentum-title';
-    section.setAttribute('aria-labelledby', title.id);
+    section.setAttribute('aria-label','Market momentum');
     const source = element('span', 'market-source', 'PancakeSwap V3');
     source.title = 'Confirmed PancakeSwap V3 swaps on BNB Chain';
-    header.append(title, source);
+    header.append(source);
     const list = element('ol', 'list');
     for (const item of items) {
       const row = element('li', '');
@@ -530,8 +566,8 @@ function createPanel() {
       const link = external(`https://gmgn.ai/bsc/token/${item.address}`, 'token');
       link.title = `${item.name} · ${item.symbol} on GMGN`;
       const identity = element('span', 'identity');
-      identity.append(element('strong', '', item.name));
-      link.append(fallbackAvatar(item.symbol), identity);
+      identity.append(element('strong', '', item.symbol));
+      link.append(tokenAvatar(item.symbol,item.thumbnail), identity);
 
       const activity = element('span', 'activity');
       const change = element('span', 'market-change', percentChange.format(item.priceChangePct / 100));
@@ -546,7 +582,7 @@ function createPanel() {
         dollarMetric('V', item.volumeUsd, `DEX pool volume over ${window}`),
       );
       link.append(activity, tokenMarketDetails(item), metrics);
-      summary.append(link, addressButton(item.address, item.name));
+      summary.append(link, addressButton(item.address, item.symbol));
       row.append(summary);
       list.append(row);
     }
@@ -555,13 +591,13 @@ function createPanel() {
   }
 
   function render(data: XTrendingResponse) {
-    const items = data.items.filter(isDisplayableXTrendingToken);
-    const marketItems = selectXMarketMomentum(data);
+    const items = view==='tracked'?data.items.filter(isDisplayableXTrendingToken):[];
+    const marketItems = view==='market'?selectXMarketMomentum(data):[];
     for (const address of expandedTokens) {
       if (!items.some(item => item.address === address)) expandedTokens.delete(address);
     }
     if (!items.length && !marketItems.length) {
-      status('No tokens traded by multiple KOLs in this window.');
+      status(view==='market'?'No tokens qualify for Market Momentum in this window.':'No tokens traded by multiple KOLs in this window.');
       return;
     }
     const feed = element('div', 'feed');
@@ -571,21 +607,7 @@ function createPanel() {
       const name = item.name || item.symbol || shortAddress(item.address);
       const link = external(`https://kollens.com/token/${item.address}`, 'token');
       link.title = item.symbol && item.symbol !== name ? `${name} · ${item.symbol}` : name;
-      const avatar = fallbackAvatar(item.symbol || name);
-      if (item.thumbnail && /^data:image\/(?:png|jpeg|webp|avif);base64,/.test(item.thumbnail)) {
-        const image = element('img', '');
-        image.alt = '';
-        image.referrerPolicy = 'no-referrer';
-        image.addEventListener('load', () => {
-          avatar.replaceChildren(image);
-          if (avatar.matches(':hover') && matchMedia('(any-hover: hover)').matches) showArtwork(avatar, image);
-        }, { once: true });
-        avatar.addEventListener('pointerenter', event => {
-          if (event.pointerType !== 'touch') showArtwork(avatar, image);
-        });
-        avatar.addEventListener('pointerleave', hideArtwork);
-        image.src = item.thumbnail;
-      }
+      const avatar = tokenAvatar(item.symbol || name,item.thumbnail);
       const identity = element('span', 'identity');
       identity.append(element('strong', '', name));
       const profiles = tokenProfiles(item);
@@ -626,10 +648,7 @@ function createPanel() {
       }
       list.append(row);
     }
-    if (items.length) {
-      if (marketItems.length) feed.append(element('h3', 'tracked-heading', 'Tracked KOL activity'));
-      feed.append(list);
-    }
+    if(items.length)feed.append(list);
     const activeElement = shadow.activeElement;
     const activeToken = activeElement?.closest('.list > li')?.querySelector<HTMLAnchorElement>('a.token');
     const focusedKol = activeElement?.closest<HTMLElement>('.kol-names > li')?.dataset.kol;
@@ -660,7 +679,7 @@ function createPanel() {
     }
     if (showLoading || !content.childElementCount) showSkeleton();
     try {
-      const response = await chrome.runtime.sendMessage({ kind: 'x-trending/tokens', window: selected }) as XTrendingResponse & { error?: string };
+      const response = await chrome.runtime.sendMessage({ kind: 'x-trending/tokens', window: selected, view }) as XTrendingResponse & { error?: string };
       if (current !== request || !host.isConnected) return;
       if (response?.error || response?.window !== selected || !Array.isArray(response.items)) throw Error('Trending tokens unavailable');
       render(response);

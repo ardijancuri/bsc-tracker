@@ -14,21 +14,22 @@ h2 { margin:0; font-size:var(--x-title-size,20px); font-weight:750; letter-spaci
 .brand { display:inline-flex; align-items:center; gap:4px; color:var(--text); text-decoration:none; font-weight:750; font-size:11px; }
 .brand-icon { display:block; width:15px; height:15px; }
 .tools { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 var(--gutter) 9px; }
+.views { display:flex; flex-wrap:wrap; gap:4px; padding:0 var(--gutter) 10px; }
+.views button { border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:11px; white-space:nowrap; }
+.views button:hover { color:var(--text); }
+.views [aria-pressed=true] { border-color:transparent; background:rgb(128 128 128 / 34%); color:var(--text); font-weight:750; }
 .filters { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); flex:0 1 240px; min-width:0; gap:1px; padding:2px;
   border-radius:999px; background:color-mix(in srgb,var(--text) 9%,transparent); }
 button { border:0; background:transparent; color:var(--muted); font:inherit; cursor:pointer; }
 .filters button { padding:3px 0; border-radius:999px; font-size:11px; white-space:nowrap; }
 .filters button:hover { color:var(--text); }
 .filters [aria-pressed=true] { background:rgb(128 128 128 / 34%); color:var(--text); font-weight:750; }
-.filters [aria-disabled=true] { opacity:.65; cursor:wait; }
+:is(.filters,.views) [aria-disabled=true] { opacity:.65; cursor:wait; }
 .chain { display:block; width:15px; height:15px; flex:none; }
 .feed,.skeleton-list { max-height:min(520px,65vh); overflow:auto; scrollbar-width:none; }
 .list { list-style:none; padding:0; margin:0; }
-.market-header,.tracked-heading { margin:0; padding:7px var(--gutter) 3px; }
-.market-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.market-header h3,.tracked-heading { margin:0; font-size:12px; font-weight:700; }
+.market-header { padding:0 var(--gutter) 3px; text-align:end; }
 .market-source { color:var(--muted); font-size:10px; }
-.tracked-heading { padding-top:12px; border-top:1px solid var(--line); }
 .market-change { color:#62d4a1; font-weight:700; font-variant-numeric:tabular-nums; }
 .market-row .counts { flex-wrap:wrap; }
 .token-row,.skeleton-row { --avatar-size:42px; position:relative; display:grid;

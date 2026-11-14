@@ -20,6 +20,7 @@ import {selectFreshQuote} from './quoteQueue.js';
 import {registerFreshFeatures} from './features.js';
 import { registerFreshTrendingTokens } from './trendingTokens.js';
 import { readNodeMomentumSnapshot } from './nodeMomentumStore.js';
+import { createNodeMomentumDetails } from './nodeMomentumDetails.js';
 import { registerFreshTokenImage } from './tokenImageRoute.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
@@ -60,8 +61,8 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     webhook:alerts.webhook,botLoginStart:login.handleStart});
   registerCreatorRoutes(app,{pool:db});registerFreshFavorites(app,db);registerFreshPortfolio(app,{db,reads,replay,charts,requestQuote:token=>selectFreshQuote(db,token)});
   registerFreshFeatures(app,{db});
-  registerFreshTrendingTokens(app,db,process.env.KOLLENS_NODE_MARKET_MOMENTUM==='true'
-    ? window=>readNodeMomentumSnapshot(db,window) : undefined);
+  const momentumDetails=process.env.KOLLENS_NODE_MARKET_MOMENTUM==='true'?createNodeMomentumDetails():undefined;
+  registerFreshTrendingTokens(app,db,momentumDetails?window=>readNodeMomentumSnapshot(db,window):undefined,momentumDetails?.enrich);
   if (process.env.KOLLENS_ANALYTICS_ENABLED === 'true') {
     await ensureAnalyticsSchema(db);
     registerAnalytics(app, db, {
@@ -187,7 +188,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
       loadStatus:error.reason==='provider_cooldown'?'rate_limited':'provider_error',retryAfterMs:error.retryAfterMs||5000});}
     finally{req.raw.removeListener('aborted',abort);reply.raw.removeListener('close',closed);}
   });
-  registerFreshTokenImage(app, async key => (await db.query(`SELECT logo_data,logo_mime FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0]);
+  registerFreshTokenImage(app, async key => (await db.query(`SELECT logo_data,logo_mime FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0],undefined,momentumDetails?.image);
   for(const kind of ['website','translation']as const)app.get<{Params:{address:string}}>(`/api/tokens/:address/${kind}`,async req=>{
     const key=address(req.params.address),row=(await db.query(`SELECT website_url FROM fresh.tokens t WHERE t.address=$1 AND ${publicToken}`,[key])).rows[0];
     return kind==='website'?{tokenAddress:key,websiteUrl:row?.website_url??null}:{tokenAddress:key,englishName:null};});

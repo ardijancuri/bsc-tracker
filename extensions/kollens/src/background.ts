@@ -259,7 +259,7 @@ chrome.runtime.onMessage.addListener((message:any,sender:any,respond:(value:unkn
   const opening=canFocus?chrome.action.openPopup({windowId:sender.tab.windowId}):null;
   if(opening)void opening.catch(()=>{});
   const work=async()=>{
-    if(message?.kind==='x-trending/tokens')return loadXTrendingTokens(message.window,sender);
+    if(message?.kind==='x-trending/tokens')return loadXTrendingTokens(message.window,sender,message.view);
     await ready;
     if (message?.kind === 'x-trending/buy') return trendingBuy.openReview(message.address, message.window, sender);
     if (message?.kind === 'x-trending/buy-review') return trendingBuy.readReview(message.id, sender);
