@@ -1,5 +1,4 @@
-import { createTradeReplayAudio, defaultReplayMusic, loadTradeReplayMusic, TRADE_REPLAY_AUDIO_CHANNELS,
-  TRADE_REPLAY_AUDIO_SAMPLE_RATE, type ReplayAudioCue, type ReplayMusic } from './tradeReplayAudio';
+import { createTradeReplayAudio, loadTradeReplayMusic, selectTradeReplayMusic, TRADE_REPLAY_AUDIO_CHANNELS, TRADE_REPLAY_AUDIO_SAMPLE_RATE, type ReplayAudioCue } from './tradeReplayAudio';
 
 export interface ReplayRecordingCanvas {
   canvas: HTMLCanvasElement;
@@ -8,7 +7,7 @@ export interface ReplayRecordingCanvas {
   getAudioCues?(): readonly ReplayAudioCue[];
 }
 
-type ReplaySoundtrack = { cues: readonly ReplayAudioCue[]; music: AudioBuffer; startSeconds: number };
+type ReplaySoundtrack = { cues: readonly ReplayAudioCue[]; music: AudioBuffer };
 
 const formats = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 const audioFormats = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus'];
@@ -43,10 +42,10 @@ export function replayFileName(name: string, mime: string, kind: 'trade' | 'toke
 function cancelled() { return new DOMException('Video export cancelled.', 'AbortError'); }
 
 /** Encode every canvas frame at the handoff generator's fixed timestamps. */
-export async function recordTradeReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void, kind: 'trade' | 'token' = 'trade', music: ReplayMusic = defaultReplayMusic): Promise<File> {
+export async function recordTradeReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void, kind: 'trade' | 'token' = 'trade', musicUrl?: string): Promise<File> {
   if (signal.aborted) throw cancelled();
   const cues = kind === 'trade' ? player.getAudioCues?.() : undefined;
-  const soundtrack = cues ? { cues, music: await loadTradeReplayMusic(music.url, signal), startSeconds: music.startSeconds } : undefined;
+  const soundtrack = cues ? { cues, music: await loadTradeReplayMusic(musicUrl ?? selectTradeReplayMusic(), signal) } : undefined;
   if (signal.aborted) throw cancelled();
   if (hasIndexedEncoder()) {
     try { return await encodeIndexedReplay(player, name, signal, onProgress, kind, soundtrack); }
@@ -119,7 +118,7 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
     if (audio && soundtrack) {
       // The last visual frame is held until the end of its frame interval.
       const audioCues = soundtrack.cues.map(cue => ({ ...cue, progress: Math.ceil(cue.progress * (frameCount - 1) - 1e-9) / frameCount }));
-      await wait(audio.add(createTradeReplayAudio(frameCount / frameRate, audioCues, soundtrack.music, soundtrack.startSeconds)));
+      await wait(audio.add(createTradeReplayAudio(frameCount / frameRate, audioCues, soundtrack.music)));
       audio.close();
     }
     for (let index = 0; index < frameCount; index += 1) {
@@ -166,7 +165,7 @@ async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, sig
       if (typeof AudioContext === 'undefined') throw new ReplayCodecUnavailable();
       const context = audioContext = new AudioContext({ sampleRate: TRADE_REPLAY_AUDIO_SAMPLE_RATE });
       soundtrack = context.createBufferSource();
-      soundtrack.buffer = createTradeReplayAudio(player.getDuration(), audio.cues, audio.music, audio.startSeconds);
+      soundtrack.buffer = createTradeReplayAudio(player.getDuration(), audio.cues, audio.music);
       const destination = context.createMediaStreamDestination();
       soundtrack.connect(destination);
       destination.stream.getAudioTracks().forEach(track => stream!.addTrack(track));

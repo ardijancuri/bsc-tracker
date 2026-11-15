@@ -6,18 +6,17 @@ export interface ReplayAudioCue {
 export const TRADE_REPLAY_AUDIO_SAMPLE_RATE = 48_000;
 export const TRADE_REPLAY_AUDIO_CHANNELS = 2;
 
-type ReplayMusicTrack = { id: string; title: string; url: string; startSeconds: number };
+const replayMusic = [
+  new URL('./assets/replay-music/evil-empire.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-02.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-03.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-04.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-05.mp3', import.meta.url).href,
+];
 
-export const replayMusicTracks = [
-  { id: 'evil-empire', title: 'Evil Empire · Arthur Morgan', url: new URL('./assets/replay-music/evil-empire.mp3', import.meta.url).href, startSeconds: 3.2 },
-  { id: 'track-02', title: 'ssstik.io_1794665957297.mp3', url: new URL('./assets/replay-music/track-02.mp3', import.meta.url).href, startSeconds: 1.3 },
-  { id: 'track-03', title: 'ssstik.io_1794666003965.mp3', url: new URL('./assets/replay-music/track-03.mp3', import.meta.url).href, startSeconds: 0 },
-  { id: 'track-04', title: 'ssstik.io_1794665833242.mp3', url: new URL('./assets/replay-music/track-04.mp3', import.meta.url).href, startSeconds: 0 },
-  { id: 'track-05', title: 'ssstik.io_1794665897037.mp3', url: new URL('./assets/replay-music/track-05.mp3', import.meta.url).href, startSeconds: 0 },
-] as const satisfies readonly ReplayMusicTrack[];
-
-export type ReplayMusic = typeof replayMusicTracks[number];
-export const defaultReplayMusic = replayMusicTracks[0];
+export function selectTradeReplayMusic() {
+  return replayMusic[Math.floor(Math.random() * replayMusic.length)];
+}
 
 export async function loadTradeReplayMusic(url: string, signal: AbortSignal): Promise<AudioBuffer> {
   const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(8000)]);
@@ -38,26 +37,24 @@ export async function loadTradeReplayMusic(url: string, signal: AbortSignal): Pr
   }
 }
 
-function mixRecordedMusic(music: AudioBuffer, startSeconds: number, left: Float32Array, right: Float32Array) {
+function mixRecordedMusic(music: AudioBuffer, left: Float32Array, right: Float32Array) {
   const sourceLeft = music.getChannelData(0);
   const sourceRight = music.numberOfChannels > 1 ? music.getChannelData(1) : sourceLeft;
-  const outset = Math.min(music.length - 1, Math.round(startSeconds * TRADE_REPLAY_AUDIO_SAMPLE_RATE));
-  const musicLength = music.length - outset;
-  const sampleCount = Math.min(left.length, musicLength);
+  const sampleCount = Math.min(left.length, music.length);
   let squareSum = 0;
   let peak = 0;
-  for (let i = outset; i < outset + sampleCount; i++) {
+  for (let i = 0; i < sampleCount; i++) {
     squareSum += (sourceLeft[i] ** 2 + sourceRight[i] ** 2) / 2;
     peak = Math.max(peak, Math.abs(sourceLeft[i]), Math.abs(sourceRight[i]));
   }
   const rms = Math.sqrt(squareSum / sampleCount);
-  const gain = Math.min(1.5, 0.20 / (rms || 1), 0.64 / (peak || 1));
-  const edge = Math.max(1, Math.min(Math.round(0.025 * TRADE_REPLAY_AUDIO_SAMPLE_RATE), Math.floor(musicLength / 2)));
+  const gain = Math.min(1, 0.13 / (rms || 1), 0.40 / (peak || 1));
+  const edge = Math.max(1, Math.min(Math.round(0.025 * TRADE_REPLAY_AUDIO_SAMPLE_RATE), Math.floor(music.length / 2)));
   for (let i = 0; i < left.length; i++) {
-    const index = i % musicLength;
-    const level = gain * Math.min(1, index / edge, (musicLength - 1 - index) / edge);
-    left[i] = sourceLeft[outset + index] * level;
-    right[i] = sourceRight[outset + index] * level;
+    const index = i % music.length;
+    const level = gain * Math.min(1, index / edge, (music.length - 1 - index) / edge);
+    left[i] = sourceLeft[index] * level;
+    right[i] = sourceRight[index] * level;
   }
 }
 
@@ -114,7 +111,7 @@ function tradeAccent(mix: Mix, time: number, side: ReplayAudioCue['side']) {
 }
 
 /** Render the soundtrack offline so its timing does not depend on playback, browser tabs or encoding speed. */
-export function createTradeReplayAudio(durationSeconds: number, cues: readonly ReplayAudioCue[], music: AudioBuffer, startSeconds: number): AudioBuffer {
+export function createTradeReplayAudio(durationSeconds: number, cues: readonly ReplayAudioCue[], music: AudioBuffer): AudioBuffer {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new RangeError('Replay audio needs a positive duration.');
   const sampleRate = TRADE_REPLAY_AUDIO_SAMPLE_RATE;
   const length = Math.max(1, Math.round(durationSeconds * sampleRate));
@@ -125,16 +122,15 @@ export function createTradeReplayAudio(durationSeconds: number, cues: readonly R
   const mix: Mix = (start, seconds, gain, pan, sample) => {
     const first = Math.round(start * sampleRate);
     const end = Math.min(length, first + Math.round(seconds * sampleRate));
-    const accentGain = gain * 0.60;
-    const leftGain = accentGain * Math.sqrt((1 - pan) / 2);
-    const rightGain = accentGain * Math.sqrt((1 + pan) / 2);
+    const leftGain = gain * Math.sqrt((1 - pan) / 2);
+    const rightGain = gain * Math.sqrt((1 + pan) / 2);
     for (let i = first; i < end; i++) {
       const value = sample((i - first) / sampleRate);
       left[i] += value * leftGain;
       right[i] += value * rightGain;
     }
   };
-  mixRecordedMusic(music, startSeconds, left, right);
+  mixRecordedMusic(music, left, right);
 
   const last = { buy: -Infinity, sell: -Infinity };
   const accents = cues.filter(cue => Number.isFinite(cue.progress) && cue.progress >= 0 && cue.progress < 1)
@@ -157,7 +153,7 @@ export function createTradeReplayAudio(durationSeconds: number, cues: readonly R
     const holdEnd = onset + holdSamples;
     for (let i = Math.max(0, onset - leadSamples); i < Math.min(length, holdEnd + releaseSamples); i++) {
       const envelope = i < onset ? 1 - (onset - i) / leadSamples : 1 - Math.max(0, i - holdEnd) / releaseSamples;
-      duck[i] = Math.max(duck[i], 0.28 * envelope);
+      duck[i] = Math.max(duck[i], 0.64 * envelope);
     }
   }
   const musicFade = 0.78 * sampleRate;
