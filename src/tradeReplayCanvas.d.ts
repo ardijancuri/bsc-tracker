@@ -1,5 +1,4 @@
 import type { TradeReplayData } from './tradeReplayData';
-import type { ReplayAudioCue } from './tradeReplayAudio';
 export interface ReplaySnapshot {
   time: string | null; invested: number | null; proceeds: number | null; holdings: number | null;
   pnl: number | null; roi: number | null; avgEntryCap: number | null; currentCap: number;
@@ -23,7 +22,6 @@ export class ReplayCanvas {
   setData(data: TradeReplayData): Promise<void>;
   getDuration(): number;
   eventProgress(index: number): number;
-  getAudioCues(): ReplayAudioCue[];
   chartProgress(progress: number): number;
   chartCoordinate(progress: number): number;
   timeAt(progress: number): number;

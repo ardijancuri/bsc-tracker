@@ -58,7 +58,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   const [retryAt, setRetryAt] = useState(0);
   const [retrySeconds, setRetrySeconds] = useState(0);
   const exporting = exportProgress !== null;
-  const canMute = definition.kind === 'trade' && !!player.current?.getAudioCues;
+  const canMute = definition.kind === 'trade' && !!musicUrl;
   const mutedExport = canMute && muted;
   const currentMutedReplay = mutedReplay?.source === file ? mutedReplay : null;
   const exportFile = mutedExport ? currentMutedReplay?.file ?? null : file;
@@ -137,7 +137,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
   }, []);
 
   useEffect(() => {
-    if (!file || definition.kind !== 'trade' || !player.current?.getAudioCues) return;
+    if (!file || !canMute) return;
     const url = URL.createObjectURL(file);
     const audio = new Audio(url);
     audio.preload = 'auto';
@@ -149,7 +149,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       audio.load();
       URL.revokeObjectURL(url);
     };
-  }, [file, definition.kind]);
+  }, [file, canMute]);
 
   useEffect(() => {
     if (!file || !mutedExport || currentMutedReplay) return;

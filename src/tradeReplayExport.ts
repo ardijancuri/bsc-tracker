@@ -1,13 +1,11 @@
-import { createTradeReplayAudio, loadTradeReplayMusic, selectTradeReplayMusic, TRADE_REPLAY_AUDIO_CHANNELS, TRADE_REPLAY_AUDIO_SAMPLE_RATE, type ReplayAudioCue } from './tradeReplayAudio';
+import { createTradeReplayAudio, loadTradeReplayMusic,
+  TRADE_REPLAY_AUDIO_CHANNELS, TRADE_REPLAY_AUDIO_SAMPLE_RATE } from './tradeReplayAudio';
 
 export interface ReplayRecordingCanvas {
   canvas: HTMLCanvasElement;
   getDuration(): number;
   render(progress: number): void;
-  getAudioCues?(): readonly ReplayAudioCue[];
 }
-
-type ReplaySoundtrack = { cues: readonly ReplayAudioCue[]; music: AudioBuffer };
 
 const formats = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 const audioFormats = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus'];
@@ -44,23 +42,22 @@ function cancelled() { return new DOMException('Video export cancelled.', 'Abort
 /** Encode every canvas frame at the handoff generator's fixed timestamps. */
 export async function recordTradeReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress?: (progress: number) => void, kind: 'trade' | 'token' = 'trade', musicUrl?: string): Promise<File> {
   if (signal.aborted) throw cancelled();
-  const cues = kind === 'trade' ? player.getAudioCues?.() : undefined;
-  const soundtrack = cues ? { cues, music: await loadTradeReplayMusic(musicUrl ?? selectTradeReplayMusic(), signal) } : undefined;
+  const music = kind === 'trade' && musicUrl ? await loadTradeReplayMusic(musicUrl, signal) : undefined;
   if (signal.aborted) throw cancelled();
   if (hasIndexedEncoder()) {
-    try { return await encodeIndexedReplay(player, name, signal, onProgress, kind, soundtrack); }
+    try { return await encodeIndexedReplay(player, name, signal, onProgress, kind, music); }
     catch (problem) {
       // Some browsers expose WebCodecs but have no usable codec for this canvas.
       // Compatibility capture is safe only before encoding has begun; failures
       // after frames have been submitted must never produce a truncated replay.
       if (!(problem instanceof ReplayCodecUnavailable) || signal.aborted
-        || typeof document === 'undefined' || document.visibilityState === 'hidden' || !recorderFormat(!!soundtrack)) throw problem;
+        || typeof document === 'undefined' || document.visibilityState === 'hidden' || !recorderFormat(!!music)) throw problem;
     }
   }
-  return recordLiveReplay(player, name, signal, onProgress, kind, soundtrack);
+  return recordLiveReplay(player, name, signal, onProgress, kind, music);
 }
 
-async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', soundtrack?: ReplaySoundtrack): Promise<File> {
+async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', music?: AudioBuffer): Promise<File> {
   type Bunny = typeof import('mediabunny');
   let output: InstanceType<Bunny['Output']> | undefined;
   let video: InstanceType<Bunny['CanvasSource']> | undefined;
@@ -95,14 +92,14 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
     const options = { width: player.canvas.width, height: player.canvas.height, frameRate, quality };
     const audioOptions = { numberOfChannels: TRADE_REPLAY_AUDIO_CHANNELS, sampleRate: TRADE_REPLAY_AUDIO_SAMPLE_RATE, bitrate: audioBitrate };
     let codec = await wait(getFirstEncodableVideoCodec(['avc'], options));
-    let audioCodec = codec && soundtrack ? await wait(media.getFirstEncodableAudioCodec(['aac'], audioOptions)) : null;
+    let audioCodec = codec && music ? await wait(media.getFirstEncodableAudioCodec(['aac'], audioOptions)) : null;
     let format;
-    if (codec && (!soundtrack || audioCodec)) format = new Mp4OutputFormat();
+    if (codec && (!music || audioCodec)) format = new Mp4OutputFormat();
     else {
       codec = await wait(getFirstEncodableVideoCodec(['vp9', 'vp8'], options));
       if (!codec) throw new ReplayCodecUnavailable();
-      audioCodec = soundtrack ? await wait(media.getFirstEncodableAudioCodec(['opus'], audioOptions)) : null;
-      if (soundtrack && !audioCodec) throw new ReplayCodecUnavailable();
+      audioCodec = music ? await wait(media.getFirstEncodableAudioCodec(['opus'], audioOptions)) : null;
+      if (music && !audioCodec) throw new ReplayCodecUnavailable();
       format = new WebMOutputFormat();
     }
     const target = new BufferTarget();
@@ -115,10 +112,8 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
       output.addAudioTrack(audio);
     }
     await wait(output.start());
-    if (audio && soundtrack) {
-      // The last visual frame is held until the end of its frame interval.
-      const audioCues = soundtrack.cues.map(cue => ({ ...cue, progress: Math.ceil(cue.progress * (frameCount - 1) - 1e-9) / frameCount }));
-      await wait(audio.add(createTradeReplayAudio(frameCount / frameRate, audioCues, soundtrack.music)));
+    if (audio && music) {
+      await wait(audio.add(createTradeReplayAudio(frameCount / frameRate, music)));
       audio.close();
     }
     for (let index = 0; index < frameCount; index += 1) {
@@ -145,8 +140,8 @@ async function encodeIndexedReplay(player: ReplayRecordingCanvas, name: string, 
 }
 
 /** Compatibility path for browsers without WebCodecs. */
-async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', audio?: ReplaySoundtrack): Promise<File> {
-  const mime = recorderFormat(!!audio);
+async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, signal: AbortSignal, onProgress: ((progress: number) => void) | undefined, kind: 'trade' | 'token', music?: AudioBuffer): Promise<File> {
+  const mime = recorderFormat(!!music);
   if (!mime) throw new Error('Video recording is unavailable in this browser. Try Chrome, Edge, or Safari.');
   if (signal.aborted) throw cancelled();
   const tabHidden = () => document.visibilityState === 'hidden';
@@ -161,11 +156,11 @@ async function recordLiveReplay(player: ReplayRecordingCanvas, name: string, sig
   try {
     player.render(0);
     stream = player.canvas.captureStream(frameRate);
-    if (audio) {
+    if (music) {
       if (typeof AudioContext === 'undefined') throw new ReplayCodecUnavailable();
       const context = audioContext = new AudioContext({ sampleRate: TRADE_REPLAY_AUDIO_SAMPLE_RATE });
       soundtrack = context.createBufferSource();
-      soundtrack.buffer = createTradeReplayAudio(player.getDuration(), audio.cues, audio.music);
+      soundtrack.buffer = createTradeReplayAudio(player.getDuration(), music);
       const destination = context.createMediaStreamDestination();
       soundtrack.connect(destination);
       destination.stream.getAudioTracks().forEach(track => stream!.addTrack(track));
