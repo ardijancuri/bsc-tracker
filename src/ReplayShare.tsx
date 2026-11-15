@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { LoadingSkeleton, SkeletonBlock } from './LoadingSkeleton';
-import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
+import { Check, Copy, Film, Image as ImageIcon, Link2, Music2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
 import { downloadTradeReplay, muteTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
-import { selectTradeReplayMusic } from './tradeReplayAudio';
+import { defaultReplayMusic, replayMusicTracks, type ReplayMusic } from './tradeReplayAudio';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay } from './tradeReplaySharing';
 import { t } from './i18n';
@@ -31,10 +31,11 @@ function replayImage(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 export default function ReplayShare({ definition }: { definition: ReplayShareDefinition }) {
-  const [musicUrl] = useState(() => definition.kind === 'trade' ? selectTradeReplayMusic() : undefined);
+  const [music, setMusic] = useState<ReplayMusic>(defaultReplayMusic);
   const canvas = useRef<HTMLCanvasElement>(null);
   const content = useRef<HTMLElement>(null);
   const player = useRef<ReplayRecordingCanvas | null>(null);
+  const prepared = useRef<{ definition: ReplayShareDefinition; attempt: number; renderer: ReplayRecordingCanvas } | null>(null);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const progress = useRef(0);
   const frame = useRef(0);
@@ -79,11 +80,15 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
     setReady(false); setPlaying(false); setFile(null); setSeek(0); setError(''); setCanRetry(true); setNotice(''); setExportProgress(0); setRetryAt(0); setRetrySeconds(0); setImagePending(false); setCopied(false);
     setMutedReplay(null);
     progress.current = 0;
-    // Each setup owns its bitmap. A StrictMode cleanup cannot let an earlier
-    // encoder repaint or replace the file prepared by the next setup.
+    // Reuse a completed renderer when switching music. Retries and trade changes
+    // prepare fresh data, and each export still checks the current replay lease.
     let renderer: ReplayRecordingCanvas | null = null;
     const session = startReplaySession({
       prepare: async signal => {
+        if (prepared.current?.definition === definition && prepared.current.attempt === attempt) {
+          renderer = prepared.current.renderer;
+          return;
+        }
         await loadReplayFonts();
         if (signal.aborted) throw new DOMException('Video export cancelled.', 'AbortError');
         renderer = await definition.prepare(signal, retryAt => {
@@ -93,7 +98,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       },
       record: async (signal, onProgress) => {
         await definition.validateAccess?.();
-        const recorded = await recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind, musicUrl);
+        const recorded = await recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind, music);
         await definition.validateAccess?.();
         return recorded;
       },
@@ -101,7 +106,10 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       // The encoder owns an offscreen canvas. Preparing a downloadable file
       // must not play through the visible preview before the user presses Play.
       onProgress: value => setExportProgress(value),
-      onFile: exported => { renderer!.render(0); paintPreview(renderer!); progress.current = 0; setSeek(0); setFile(exported); },
+      onFile: exported => {
+        prepared.current = { definition, attempt, renderer: renderer! };
+        renderer!.render(0); paintPreview(renderer!); progress.current = 0; setSeek(0); setFile(exported);
+      },
       onError: problem => {
         if (renderer) { renderer.render(0); paintPreview(renderer); progress.current = 0; setSeek(0); }
         setError(problem instanceof Error ? t(problem.message) : t('Video export failed.'));
@@ -122,7 +130,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       previewAudio.current?.pause();
       if (player.current === renderer) player.current = null;
     };
-  }, [definition, paintPreview, attempt, musicUrl]);
+  }, [definition, paintPreview, attempt, music]);
 
   useEffect(() => {
     if (!retryAt) return;
@@ -307,6 +315,19 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
         <div className="trade-replay-share-panel">
           <div className="trade-replay-heading"><span className="trade-replay-eyebrow">kollens</span><h2>{t(definition.title)}</h2><p>{definition.subtitle}</p></div>
           {definition.controls}
+          {definition.kind === 'trade' && <label className="trade-replay-music">
+            <Music2 size={15} aria-hidden="true" />
+            <span>{t('Soundtrack')}</span>
+            <select value={music.id} disabled={ready && exporting} onChange={event => {
+              const next = replayMusicTracks.find(track => track.id === event.target.value);
+              if (!next || next === music) return;
+              pausePreview();
+              setFile(null);
+              setMusic(next);
+            }}>
+              {replayMusicTracks.map(track => <option key={track.id} value={track.id}>{track.title}</option>)}
+            </select>
+          </label>}
           <div className="trade-replay-actions">
             <button type="button" disabled={!imageAvailable} onClick={() => void saveImage()}><ImageIcon size={16} /> {t('Save image')}</button>
             <button type="button" disabled={!exportFile || exporting} onClick={download}><Film size={16} /> {t(mutedExport ? 'Save muted video' : 'Save video')}</button>
