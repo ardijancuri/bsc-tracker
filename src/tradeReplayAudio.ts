@@ -6,16 +6,60 @@ export interface ReplayAudioCue {
 export const TRADE_REPLAY_AUDIO_SAMPLE_RATE = 48_000;
 export const TRADE_REPLAY_AUDIO_CHANNELS = 2;
 
-const tau = 2 * Math.PI;
-const beatSeconds = 0.625;
-const barSeconds = 4 * beatSeconds;
-const cueSpacing = 0.09;
-const bedVoicings = [
-  [38, 53, 57, 60, 64],
-  [34, 53, 57, 60, 62],
-  [31, 53, 58, 62, 69],
-  [33, 55, 58, 62, 64],
+const replayMusic = [
+  new URL('./assets/replay-music/evil-empire.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-02.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-03.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-04.mp3', import.meta.url).href,
+  new URL('./assets/replay-music/track-05.mp3', import.meta.url).href,
 ];
+
+export function selectTradeReplayMusic() {
+  return replayMusic[Math.floor(Math.random() * replayMusic.length)];
+}
+
+export async function loadTradeReplayMusic(url: string, signal: AbortSignal): Promise<AudioBuffer> {
+  const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(8000)]);
+  try {
+    const response = await fetch(url, { signal: requestSignal });
+    if (!response.ok) throw new Error('Soundtrack request failed');
+    const bytes = await response.arrayBuffer();
+    requestSignal.throwIfAborted();
+    // Decode at the encoder's sample rate without opening an audible context.
+    const decoder = new OfflineAudioContext(TRADE_REPLAY_AUDIO_CHANNELS, 1, TRADE_REPLAY_AUDIO_SAMPLE_RATE);
+    const music = await decoder.decodeAudioData(bytes);
+    requestSignal.throwIfAborted();
+    if (!music.length) throw new Error('Empty soundtrack');
+    return music;
+  } catch {
+    signal.throwIfAborted();
+    throw new Error('Replay music could not be loaded. Try again.');
+  }
+}
+
+function mixRecordedMusic(music: AudioBuffer, left: Float32Array, right: Float32Array) {
+  const sourceLeft = music.getChannelData(0);
+  const sourceRight = music.numberOfChannels > 1 ? music.getChannelData(1) : sourceLeft;
+  const sampleCount = Math.min(left.length, music.length);
+  let squareSum = 0;
+  let peak = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    squareSum += (sourceLeft[i] ** 2 + sourceRight[i] ** 2) / 2;
+    peak = Math.max(peak, Math.abs(sourceLeft[i]), Math.abs(sourceRight[i]));
+  }
+  const rms = Math.sqrt(squareSum / sampleCount);
+  const gain = Math.min(1, 0.13 / (rms || 1), 0.40 / (peak || 1));
+  const edge = Math.max(1, Math.min(Math.round(0.025 * TRADE_REPLAY_AUDIO_SAMPLE_RATE), Math.floor(music.length / 2)));
+  for (let i = 0; i < left.length; i++) {
+    const index = i % music.length;
+    const level = gain * Math.min(1, index / edge, (music.length - 1 - index) / edge);
+    left[i] = sourceLeft[index] * level;
+    right[i] = sourceRight[index] * level;
+  }
+}
+
+const tau = 2 * Math.PI;
+const cueSpacing = 0.09;
 const hz = (midi: number) => 440 * 2 ** ((midi - 69) / 12);
 
 type Mix = (start: number, length: number, gain: number, pan: number, sample: (time: number) => number) => void;
@@ -35,46 +79,6 @@ function filteredNoise(lowHz: number, highHz: number, seed: number) {
     high += (value - high) * highStep;
     return high - low;
   };
-}
-
-function feltKey(note: number, length: number) {
-  const angle = tau * hz(note);
-  return (time: number) => {
-    const phase = angle * time;
-    const body = Math.sin(phase) + 0.22 * Math.sin(phase * 1.003 + 0.65);
-    const hammer = (0.34 * Math.sin(phase * 2.002) + 0.14 * Math.sin(phase * 3.008)) * Math.exp(-time / 0.085);
-    return (body + hammer) * attack(time, 0.012) * Math.exp(-time / 0.34) * attack(length - time, 0.14);
-  };
-}
-
-function musicBed(mix: Mix, duration: number) {
-  const brush = filteredNoise(320, 2500, 40279);
-  const pulse = (time: number) => {
-    const phase = tau * (53 * time + 26 * 0.036 * (1 - Math.exp(-time / 0.036)));
-    return attack(time, 0.013) * Math.exp(-time / 0.064) * Math.sin(phase);
-  };
-  for (let bar = 0; bar * barSeconds < duration; bar++) {
-    const start = bar * barSeconds;
-    const [bass, lower, middle, upper, color] = bedVoicings[bar % bedVoicings.length];
-    mix(start, 0.32, 0.064, 0, pulse);
-    mix(start + 2.5 * beatSeconds, 0.32, 0.038, 0, pulse);
-    mix(start + beatSeconds, 0.15, 0.075, 0.22, time =>
-      brush() * attack(time, 0.018) * Math.exp(-time / 0.037));
-    mix(start + 3 * beatSeconds, 0.15, 0.062, -0.22, time =>
-      brush() * attack(time, 0.018) * Math.exp(-time / 0.037));
-
-    mix(start + 0.024, 1.9, 0.06, 0, feltKey(bass, 1.9));
-    const notes = [
-      { note: lower, beat: 0.07, pan: -0.22, gain: 0.036 },
-      { note: middle, beat: 0.13, pan: 0.02, gain: 0.031 },
-      { note: upper, beat: 0.21, pan: 0.24, gain: 0.028 },
-      { note: color, beat: 1.53, pan: -0.16, gain: 0.045 },
-      { note: middle, beat: 2.86, pan: 0.17, gain: 0.031 },
-    ];
-    for (const { note, beat, pan, gain } of notes) {
-      mix(start + beat * beatSeconds, 1.35, gain, pan, feltKey(note, 1.35));
-    }
-  }
 }
 
 function orderTone(note: number, length: number, decay: number, brightness: number) {
@@ -107,7 +111,7 @@ function tradeAccent(mix: Mix, time: number, side: ReplayAudioCue['side']) {
 }
 
 /** Render the soundtrack offline so its timing does not depend on playback, browser tabs or encoding speed. */
-export function createTradeReplayAudio(durationSeconds: number, cues: readonly ReplayAudioCue[]): AudioBuffer {
+export function createTradeReplayAudio(durationSeconds: number, cues: readonly ReplayAudioCue[], music: AudioBuffer): AudioBuffer {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new RangeError('Replay audio needs a positive duration.');
   const sampleRate = TRADE_REPLAY_AUDIO_SAMPLE_RATE;
   const length = Math.max(1, Math.round(durationSeconds * sampleRate));
@@ -126,7 +130,7 @@ export function createTradeReplayAudio(durationSeconds: number, cues: readonly R
       right[i] += value * rightGain;
     }
   };
-  musicBed(mix, duration);
+  mixRecordedMusic(music, left, right);
 
   const last = { buy: -Infinity, sell: -Infinity };
   const accents = cues.filter(cue => Number.isFinite(cue.progress) && cue.progress >= 0 && cue.progress < 1)

@@ -370,6 +370,7 @@ export const chinese: Record<string, string> = {
   'Sharing was unavailable. Download the video and attach it on X.': '无法分享。请下载视频，并在X中添加该视频。',
   'This browser supports the preview but cannot record canvas video.': '此浏览器支持预览，但无法录制画布视频。',
   'The video preview could not be prepared.': '无法准备视频预览。', 'Video export failed.': '视频导出失败。',
+  'Replay music could not be loaded. Try again.': '无法加载回放音乐，请重试。',
   'Sharing was unavailable. Use Download video to save the file.': '无法分享，请下载视频保存文件。',
   'Video recording is unavailable in this browser. Try Chrome, Edge, or Safari.': '此浏览器无法录制视频，请尝试Chrome、Edge或Safari。',
   'Keep this tab visible while exporting the video.': '导出视频时请保持此标签页可见。',

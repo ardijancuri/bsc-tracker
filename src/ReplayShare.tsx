@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { LoadingSkeleton, SkeletonBlock } from './LoadingSkeleton';
 import { Check, Copy, Film, Image as ImageIcon, Link2, Pause, Play, RefreshCw, Send, Share2, Volume2, VolumeX } from 'lucide-react';
 import { downloadTradeReplay, muteTradeReplay, recordTradeReplay, type ReplayRecordingCanvas } from './tradeReplayExport';
+import { selectTradeReplayMusic } from './tradeReplayAudio';
 import { startReplaySession } from './tradeReplaySession';
 import { shareableTradeReplay } from './tradeReplaySharing';
 import { t } from './i18n';
@@ -30,6 +31,7 @@ function replayImage(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 export default function ReplayShare({ definition }: { definition: ReplayShareDefinition }) {
+  const [musicUrl] = useState(() => definition.kind === 'trade' ? selectTradeReplayMusic() : undefined);
   const canvas = useRef<HTMLCanvasElement>(null);
   const content = useRef<HTMLElement>(null);
   const player = useRef<ReplayRecordingCanvas | null>(null);
@@ -91,7 +93,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       },
       record: async (signal, onProgress) => {
         await definition.validateAccess?.();
-        const recorded = await recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind);
+        const recorded = await recordTradeReplay(renderer!, definition.fileName, signal, onProgress, definition.kind, musicUrl);
         await definition.validateAccess?.();
         return recorded;
       },
@@ -120,7 +122,7 @@ export default function ReplayShare({ definition }: { definition: ReplayShareDef
       previewAudio.current?.pause();
       if (player.current === renderer) player.current = null;
     };
-  }, [definition, paintPreview, attempt]);
+  }, [definition, paintPreview, attempt, musicUrl]);
 
   useEffect(() => {
     if (!retryAt) return;
