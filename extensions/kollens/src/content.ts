@@ -17,10 +17,14 @@ let startupTimer:ReturnType<typeof setTimeout>|undefined,startupEpoch=0,startupA
 const fixture=['127.0.0.1','localhost'].includes(location.hostname)&&location.pathname==='/fixture';
 const style=document.createElement('style');style.setAttribute('data-kollens-decoration','');
 style.textContent = `
+  .kollens-match,
+  .kollens-match [data-sentry-component="MetricLayer"]::before {
+    background-image: linear-gradient(color-mix(in srgb, var(--kollens-match-color) 9%, transparent) 0 100%) !important;
+  }
   .kollens-match:not(:focus-visible) {
     border-radius: 8px !important;
-    outline: 2px solid var(--kollens-match-color) !important;
-    outline-offset: -3px !important;
+    outline: 1px solid var(--kollens-match-color) !important;
+    outline-offset: -2px !important;
   }
   [data-kollens-social-match]:not(:focus-visible):not(:has(> :is(svg, img):only-child)),
   [data-kollens-social-match]:not(:focus-visible) > :is(svg, img):only-child {
