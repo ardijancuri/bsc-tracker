@@ -15,6 +15,7 @@ export interface FreshReplayManifest {
   correctionEpoch: string; membershipRevision: string | null; scopeId: string;
   valuationAt: string; from: string; to: string; issuedAt: number; expiresAt: number;
   historyPermissionDigest?:string;
+  valuationBasis?:'realized_only';
   accountingQuality?:'estimated';estimatePolicy?:'omit_unknown_costs_v1';
 }
 export type FreshReplayPreparation = ReplayPreparation & { manifest?: string; expiresAt?: string };
@@ -83,7 +84,15 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     if (reasons.some(reason => /unsupported|decoder/.test(reason))) {
       result.stages.accounting = 'unavailable'; return fail('unsupported_decoder', false);
     }
-    if (identity && accounting && reasons.includes('quote_unavailable') && identity.complete
+    const realizedOnly = scope === 'public' && identity?.scope === 'public' && identity.complete
+      && accounting?.status === 'ready' && accounting.coverage.realizedOnly === true
+      && !accounting.coverage.exactFinal && !accounting.coverage.estimatedFinal
+      && accounting.coverage.reason === 'quote_unavailable'
+      && Number(accounting.final?.remainingTokenAmount) > 0 && accounting.final?.priceUsd === null
+      && accounting.final.reportedRoi === null && accounting.final.reportedProfitUsd !== null
+      && accounting.final.reportedProfitUsd === activity.summary.realizedProfitUsd
+      && accounting.final.reportedProfitUsd === accounting.final.cumulativeRealizedProfitUsd;
+    if (!realizedOnly && identity && accounting && reasons.includes('quote_unavailable') && identity.complete
       && accounting.coverage.transactionsComplete && accounting.coverage.balanceMatched) {
       result.stages.accounting = 'ready'; result.stages.valuation = 'pending'; return fail('stale_quote', true);
     }
@@ -107,16 +116,18 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     }
     result.stages.accounting = 'ready';
     const open = activity.realizedAccounting?.position?.status === 'open' || Number(accounting.final.remainingTokenAmount) > 0;
-    const to = open ? Date.parse(accounting.final.timestamp) : last;
+    const markRequired = open && !realizedOnly;
+    const to = markRequired ? Date.parse(accounting.final.timestamp) : last;
+    if (realizedOnly && Date.parse(accounting.final.timestamp) !== last) return fail('accounting_pending', true);
     if (!Number.isFinite(to) || to < last || to > now() + 1000) return fail('stale_quote', true);
-    if (open && (!accounting.final.priceUsd || Number(accounting.final.priceUsd) <= 0 || now() - to > 120_000)) return fail('stale_quote', true);
+    if (markRequired && (!accounting.final.priceUsd || Number(accounting.final.priceUsd) <= 0 || now() - to > 120_000)) return fail('stale_quote', true);
     if (!activity.token.marketCapSupply || !Number.isFinite(Number(activity.token.marketCapSupply)) || Number(activity.token.marketCapSupply) <= 0) return fail('stale_quote', true);
     result.stages.valuation = 'ready';
     result.window = { from: new Date(from).toISOString(), to: new Date(to).toISOString(), id: hash([identity.snapshotId, from, to]) };
     let chart: ReplayMarketChart;
     try {
-      chart = await charts.replayChart(activity.token.address, { from, to, open, supply: activity.token.marketCapSupply, signal,
-        ...(open && accounting.final.priceUsd ? { ending: { timestamp: accounting.final.timestamp, priceUsd: accounting.final.priceUsd } } : {}) });
+      chart = await charts.replayChart(activity.token.address, { from, to, open: markRequired, supply: activity.token.marketCapSupply, signal,
+        ...(markRequired && accounting.final.priceUsd ? { ending: { timestamp: accounting.final.timestamp, priceUsd: accounting.final.priceUsd } } : {}) });
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof FreshChartError) {
@@ -130,13 +141,14 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
     signal.throwIfAborted();
     // Provider work can outlive an initially fresh node mark. New leases must
     // still meet the two-minute rule at issue time; cached chart pages survive.
-    if (open && now() - to > 120_000) { result.stages.valuation = 'pending'; return fail('stale_quote', true); }
+    if (markRequired && now() - to > 120_000) { result.stages.valuation = 'pending'; return fail('stale_quote', true); }
     const revision = activity.__freshRevision, issuedAt = now();
     const claims: FreshReplayManifest = { version: 1, audience: 'kollens-replay-fresh-v1', wallet: activity.kol.address.toLowerCase(), token: activity.token.address.toLowerCase(),
       scope, scopeId: revision?.scopeId ?? 'public', correctionEpoch: String(revision?.correctionEpoch ?? '0'), membershipRevision: revision?.membershipRevision === undefined ? null : String(revision.membershipRevision),...(revision?.historyPermissionDigest?{historyPermissionDigest:revision.historyPermissionDigest}:{}),
       snapshotId: identity.snapshotId, windowId: result.window.id, historyFingerprint: identity.historyFingerprint,
       cutoffBlock: accounting.inventoryBlockNumber ?? identity.coveredThroughBlock, cutoffHash: accounting.inventoryBlockHash ?? identity.valuationHash,
       valuationAt: accounting.final.timestamp, from: result.window.from, to: result.window.to, issuedAt, expiresAt: issuedAt + LEASE_MS };
+    if(realizedOnly)claims.valuationBasis='realized_only';
     if(estimated)Object.assign(claims,{accountingQuality:'estimated',estimatePolicy:'omit_unknown_costs_v1'});
     const revisionValid = await validateRevision(claims);
     // An expired owner may finish a slow database check later. It can never
@@ -235,6 +247,7 @@ export function createFreshReplay({ charts, secret, validateRevision, now = Date
       try { claims = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')) as FreshReplayManifest; }
       catch { return { valid: false, reason: 'invalid_manifest' }; }
       if (claims.version !== 1 || claims.audience !== 'kollens-replay-fresh-v1' || claims.scope !== scope
+        || claims.valuationBasis!==undefined&&(claims.valuationBasis!=='realized_only'||scope!=='public'||claims.to!==claims.valuationAt||claims.accountingQuality!==undefined)
         || (claims.accountingQuality!==undefined||claims.estimatePolicy!==undefined)&&(claims.accountingQuality!=='estimated'||claims.estimatePolicy!=='omit_unknown_costs_v1')
         || !/^0x[0-9a-f]{40}$/.test(claims.wallet) || !/^0x[0-9a-f]{40}$/.test(claims.token)
         || !Number.isSafeInteger(claims.issuedAt) || !Number.isSafeInteger(claims.expiresAt)

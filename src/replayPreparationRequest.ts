@@ -44,7 +44,7 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     || data.accountingSnapshot.source === 'node' && data.accountingSnapshot.complete && Date.now() - Date.parse(data.generatedAt) <= 180_000
     || data.replayLease && Date.parse(data.replayLease.expiresAt) > Date.now());
   const context = data.requestContext && !snapshotFresh ? { ...data.requestContext, snapshotId: undefined } : data.requestContext;
-  const frozen = context?.snapshotId ?? (!context && snapshotFresh &&(data.accountingSnapshot?.complete||validNodeCostEstimate(data.accountingSnapshot)) ? data.accountingSnapshot!.snapshotId : undefined);
+  const frozen = context?.snapshotId ?? (!context && data.replayAccounting?.inventoryBlockHash && snapshotFresh &&(data.accountingSnapshot?.complete||validNodeCostEstimate(data.accountingSnapshot)) ? data.accountingSnapshot!.snapshotId : undefined);
   const query = frozen ? `?snapshot=${encodeURIComponent(frozen)}` : '';
   const deadline = AbortSignal.timeout(8000);
   const requestSignal = AbortSignal.any([signal, deadline]);
@@ -112,8 +112,11 @@ export async function replayMarketData(data: TradeReplayData, signal: AbortSigna
     || !['node', 'mixed', 'imported', 'gmgn'].includes(chart.source) || chart.source === 'gmgn' && !lease || chart.partialHistory || chart.stale
     || !Number.isFinite(Date.parse(result.window.from)) || !Number.isFinite(Date.parse(result.window.to))
     || Date.parse(result.window.from) > Date.parse(result.window.to)) throw new Error('Replay snapshot and market window do not agree');
+  const realizedOnly = selected.replayAccounting.coverage.realizedOnly === true;
+  if (realizedOnly && (!lease || result.window.to !== selected.replayAccounting.final?.timestamp
+    || chart.currentQuote !== undefined)) throw new Error('Realized replay does not match the approved window');
   const prepared = applyReplayMarketChart(selected, chart);
   if (!prepared.chart.points.length || !prepared.replayAccounting?.final) throw new Error('Replay snapshot could not be rendered');
   return { data: prepared, notice: chart.sparseHistory ? 'Market observations are sparse. Prices and profit between observations are estimates.' : null,
-    accountingNotice: `${estimated?t(nodeCostEstimateNote):capturedPositionDescription(identity) ?? `${identity.source === 'node' ? 'Node' : identity.source === 'mixed' ? 'Node and imported' : 'Imported'} accounting.`} ${t('Historical frames are estimates; the ending uses the frozen position valuation.')}`, preparationStatus: 'ready' };
+    accountingNotice: realizedOnly ? t('Realized P&L only. Remaining holdings are unpriced.') : `${estimated?t(nodeCostEstimateNote):capturedPositionDescription(identity) ?? `${identity.source === 'node' ? 'Node' : identity.source === 'mixed' ? 'Node and imported' : 'Imported'} accounting.`} ${t('Historical frames are estimates; the ending uses the frozen position valuation.')}`, preparationStatus: 'ready' };
 }

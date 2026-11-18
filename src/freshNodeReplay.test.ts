@@ -26,6 +26,31 @@ describe('fresh compact node replay browser adapter', () => {
     const context=new Proxy({},{get:(_t,k)=>k==='measureText'?(t:string)=>({width:t.length*12}):k==='createLinearGradient'?()=>({addColorStop(){}}):()=>{}}),renderer=new ReplayCanvas({getContext:()=>context}as unknown as HTMLCanvasElement);await renderer.setData(prepared);expect(renderer.snapshot(1).totalPnl).toBe(Number(final.reportedProfitUsd));expect(renderer.snapshot(1).totalRoi).toBeNull();
     const altered=structuredClone(activity);altered.accountingSnapshot!.estimate!.snapshotId='c'.repeat(64);expect(prepareNodeReplay(altered,now)).toBeUndefined();
   });
+  it('renders a verified unpriced open position as realized P&L through its last movement', async () => {
+    const {activity, now, chartPoints}=fixture(), accounting=activity.replayAccounting!, final=accounting.final!;
+    const cutoff=accounting.events.at(-1)!.timestamp;
+    Object.assign(accounting.coverage,{exactFinal:false,realizedOnly:true,reason:'quote_unavailable'});
+    Object.assign(final,{timestamp:cutoff,priceUsd:null,reportedRoi:null,reportedProfitUsd:final.cumulativeRealizedProfitUsd});
+    activity.summary.realizedProfitUsd=final.reportedProfitUsd;
+    const approval={manifest:'signed',expiresAt:new Date(now+60_000).toISOString(),preparedAt:new Date(now).toISOString(),validatedAt:new Date(now).toISOString()};
+    const data=prepareTradeReplayData(activity,null,undefined,now,undefined,approval)!;
+    const replay=applyReplayMarketChart(data,{address:activity.token.address,period:'replay',source:'node',resolution:'1m',
+      points:chartPoints.map(p=>({timestamp:p.timestamp,priceUsd:String(p.priceUsd)})),candles:[],marketCapSupply:'10000',pending:false,stale:false,
+      updatedAt:activity.generatedAt,currentQuote:{timestamp:activity.generatedAt,priceUsd:'4'}},now);
+    const labels:string[]=[];
+    const context=new Proxy({},{get:(_target,key)=>key==='measureText'?(text:string)=>({width:text.length*12}):
+      key==='fillText'?(text:string)=>labels.push(text):key==='createLinearGradient'?()=>({addColorStop(){}}):()=>{}});
+    const renderer=new ReplayCanvas({getContext:()=>context}as unknown as HTMLCanvasElement);
+    await renderer.setData(replay);renderer.render(1);
+    expect(replay.currentQuote).toBeUndefined();
+    expect(replay.chart.points.at(-1)?.timestamp).toBe(cutoff);
+    expect(validReplayAccountingFinal(replay,now)?.reportedProfitUsd).toBe(Number(final.reportedProfitUsd));
+    expect(renderer.snapshot(1)).toMatchObject({pnl:Number(final.reportedProfitUsd),totalPnl:null,unrealizedPnl:null,roi:null,holdings:Number(final.remainingTokenAmount)});
+    expect(labels).toContain('REALIZED P&L · HOLDINGS UNPRICED');
+    expect(labels).toContain('Tokens held');
+    expect(validReplayAccountingFinal({...replay,replayLease:undefined},now)).toBeNull();
+    final.reportedProfitUsd='999';expect(prepareNodeReplay(activity,now)).toBeUndefined();
+  });
   it.each([null,'999'])('keeps transfer-neutral FIFO trading profit independent of optional outgoing mark %s',mark=>{
     const{activity,now}=fixture(),raw=activity.replayAccounting!,inventory=activity.inventory!,ending=raw.events.at(-1)!;
     Object.assign(ending,{cumulativeRealizedProfitUsd:'37.1',transferOutIncomeUsd:mark,feeInclusiveCostUsd:'101'});

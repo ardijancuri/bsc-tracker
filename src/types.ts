@@ -44,6 +44,7 @@ export interface Token {
   logoUrl: string | null;
   priceUsd: string | null;
   marketCapUsd: string | null;
+  tradeMarketCap?: { usd: string; timestamp: string };
   /** Current node valuation state, independent of position accounting. */
   valuationStatus?: string;
   change24h: string | null;

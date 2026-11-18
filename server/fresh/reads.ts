@@ -35,9 +35,20 @@ function tokenArtworkUrl(address: string, data: unknown, url?: string | null) {
   if (address === GREEN_MORNING_TOKEN_ADDRESS) return '/token-icons/green-morning.webp';
   return data ? `/api/token-image/${address}` : url ?? null;
 }
+function tradeMarketCap(row:Record<string,any>){
+  if(!row.last_priced_fill_at||!Number.isInteger(row.decimals)||row.decimals<0||row.decimals>255)return undefined;
+  try{
+    const supply=q(String(row.total_supply_raw)).div(new FreshRational(10n**BigInt(row.decimals)));
+    const quantity=q(String(row.last_fill_quantity));
+    const amount=q(String(row.last_fill_amount_usd));
+    if(supply.n<=0n||quantity.n<=0n||amount.n<=0n)return undefined;
+    return {usd:amount.div(quantity).mul(supply).decimal(),timestamp:iso(row.last_priced_fill_at)!};
+  }catch{return undefined;}
+}
 export const tokenIdentity = (r: Record<string, any>) => {
   const day=r.utc_date??(r.today_utc instanceof Date?r.today_utc.toISOString().slice(0,10):String(r.today_utc??'').slice(0,10)),today=day===freshUtcDay();
-  return { address: r.address, symbol: r.symbol, name: r.name,
+  const historical=tradeMarketCap(r);
+  return { address: r.address, symbol: r.symbol, name: r.name,...(historical?{tradeMarketCap:historical}:{}),
   logoUrl: tokenArtworkUrl(r.address,r.logo_data,r.logo_url), priceUsd: r.valuation_status==='no_liquidity'?null:r.price_usd ?? null,
   marketCapUsd: r.valuation_status==='no_liquidity'?null:r.market_cap_usd ?? null, valuationStatus:r.valuation_status, change24h: null, kolCount24h: today?r.today_kol_count??0:0,
   buys24h: today?r.today_buy_count??0:0, sells24h: today?r.today_sell_count??0:0, volume24hUsd: today?freshDecimal(r.today_volume_q??'0'):'0',
@@ -121,18 +132,27 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
     return {items:rankFreshStoredLeaderboard(items),windowStart,windowEnd,period:'24h' as const,utcDay:day,trackingBoundary:states.start?.block_number ?? null,accountingPolicy:'kollens_fifo_v1',realizedPolicy:FRESH_REALIZED_POLICY};
   }
   async function kol(wallet:string){const{items,...frame}=await leaderboard();return{...frame,kol:items.find(row=>row.address===wallet)??null};}
-  async function positionRows(scopeId:string,tokens?:string[]) {
+  async function positionRows(scopeId:string,tokens?:string[],replay=false) {
+    const capture="(SELECT block_number FROM fresh.checkpoints WHERE key='capture')";
+    // An already reconciled exit can replay through its balance proof.
+    // A later transaction belongs to the live position, outside this window.
+    const cutoff=replay?'replay_cutoff.block_number':capture;
+    const replayCutoff=replay ? `CROSS JOIN LATERAL (SELECT CASE
+      WHEN s.kind='kol' AND p.quantity_q IN ('0','0/1') AND p.balance_status='matched' AND p.balance_block>=last.block_number
+      THEN p.balance_block ELSE ${capture} END AS block_number) replay_cutoff` : '';
+
     const rows=await db.query(`SELECT p.*,t.*,${freshRealizedPolicyReadySql()} AS accounting_policy_ready,${freshRealizedEstimateReadySql()} AS estimate_policy_ready,p.token_address AS address,p.revision AS position_revision,last.block_number AS last_event_block,${freshScopeTokenCaptureSql('s','p.token_address')} AS effective_capture_block,
         EXISTS(SELECT 1 FROM fresh.financial_events imported WHERE imported.token_address=p.token_address AND imported.wallet_address=ANY(s.wallet_addresses)
           AND imported.canonical AND imported.provenance IS NOT NULL AND ${freshScopeEventSql('imported','s')}) AS imported_provenance,
-        ${freshPositionWalletGapSql("(SELECT block_number FROM fresh.checkpoints WHERE key='capture')")} AS wallet_gap,
+        ${freshPositionWalletGapSql(cutoff)} AS wallet_gap,
         EXISTS(SELECT 1 FROM fresh.jobs j WHERE j.kind='registration_capture' AND j.reference=ANY(s.wallet_addresses) AND j.state NOT IN('done','cancelled')) AS registration_pending,
         EXISTS(SELECT 1 FROM fresh.pending_trades precision WHERE precision.token_address=p.token_address
           AND ${freshPendingTradeInScopeSql('precision','s')}) AS pending_precision,
         (EXISTS(SELECT 1 FROM fresh.recent_evidence e LEFT JOIN fresh.recent_blocks h ON h.block_number=e.block_number AND h.block_hash=e.block_hash WHERE e.wallet_addresses&&s.wallet_addresses AND ${freshScopeTokenBoundarySql('s','p.token_address','e.block_number','h.occurred_at',{allowMissingTime:true})} AND e.decoder_status<>'done'
-          AND ${freshPositionReceiptRelevantSql('e','p.token_address','s',true)}) OR ${freshPendingTradeScopeSql()}) AS decoding_pending
+          ${replay?`AND e.block_number<=${cutoff}`:''}
+          AND ${freshPositionReceiptRelevantSql('e','p.token_address','s',true)}) OR ${freshPendingTradeScopeSql('s','p.token_address',cutoff)}) AS decoding_pending
         FROM fresh.positions p JOIN fresh.tokens t ON t.address=p.token_address JOIN fresh.accounting_scopes s ON s.id=p.scope_id
-        LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id WHERE p.scope_id=$1 AND ${freshTrackedTokenSql('t')}
+        LEFT JOIN fresh.financial_events last ON last.id=p.last_event_id ${replayCutoff} WHERE p.scope_id=$1 AND ${freshTrackedTokenSql('t')}
         AND (t.launch_status<>'preexisting' OR s.kind<>'kol' OR (${freshPublicTokenSql('t')})) ${tokens?'AND p.token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const lots=await db.query(`SELECT * FROM fresh.open_lots WHERE scope_id=$1 ${tokens?'AND token_address=ANY($2::text[])':''}`,tokens?[scopeId,tokens]:[scopeId]);
     const scopes=await db.query(`SELECT * FROM fresh.accounting_scopes WHERE id=$1 AND active`,[scopeId]),states=await state();
@@ -215,7 +235,7 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
     return {items,nextCursor:rows.length>limit&&last?Buffer.from(JSON.stringify({ts:last.timestamp,id:last.id})).toString('base64url'):null};
   }
   async function activity(wallet:string,token:string,scopeId=publicScope(wallet),replay=false):Promise<KolTokenActivity|null> {
-    const [row]=await positionRows(scopeId,[token]);if(!row){
+    const [row]=await positionRows(scopeId,[token],replay);if(!row){
       const[r]=await pendingPositionRows(scopeId,[token]);if(!r)return null;const scope=r.pending_scope;
       if(!scope.wallet_addresses.includes(wallet)||scope.kind==='portfolio_combined')return null;
       const identity=(await db.query('SELECT * FROM published_kols WHERE address=$1',[wallet])).rows[0];if(scope.kind==='kol'&&!identity?.is_tracked)return null;
@@ -275,7 +295,8 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
     Object.assign(result,{__freshRevision:{scopeId,correctionEpoch:String(row.scope.correction_epoch),membershipRevision:String(row.scope.revision),...(tokenHistory(row.scope,token)?{historyPermissionDigest:tokenHistory(row.scope,token)!.permissionDigest}:{})}});
     result.tracking={version:1,source:'fresh',fromBlock:tokenFrom(row.scope,token),utcDay:freshUtcDay(now()),realizedComplete:row.realizedComplete};
     if(replay){
-      const estimatedReplay=!!estimate&&row.balanceReady&&estimate.totalProfitUsd!==null;
+      const realizedOnly=row.scope.kind==='kol'&&row.realizedComplete&&reason==='quote_unavailable'&&s.quantity!=='0';
+      const estimatedReplay=!realizedOnly&&!!estimate&&row.balanceReady&&estimate.totalProfitUsd!==null;
       if(!row.realizedComplete&&!estimatedReplay){result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
         inventoryBlockNumber:row.r.balance_block==null?null:String(row.r.balance_block),inventoryBlockHash:row.r.balance_hash??null,events:[],final:null,
         coverage:{transactionsComplete:false,balanceMatched:row.balanceReady,exactFinal:false,verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',reason}};return result;}
@@ -289,11 +310,11 @@ export function createFreshReads(db: Pool, now = Date.now, transactional=false,o
         const marked=summarizeFreshPosition(position,lots,null);if(estimatedReplay){marked.realizedProfitUsd=estimatedRealized.decimal();marked.remainingCostUsd=lots.reduce((n,l)=>n.add(FreshRational.fromStored(l.costQ??l.knownCostQ??'0')),FreshRational.fromStored('0')).decimal();marked.investedUsd=FreshRational.fromStored(position.investedQ).decimal();marked.soldUsd=FreshRational.fromStored(position.soldQ).decimal();marked.feesUsd=FreshRational.fromStored(position.feesQ).decimal();marked.capitalUsd=FreshRational.fromStored(position.capitalQ).decimal();}
         profits.set(e.id,{event:applied.result.realizedQ,cumulative:position.realizedQ});frames.push({id:e.id,tradeId:['buy','sell'].includes(e.kind)?e.id:undefined,kind:e.kind,txHash:e.transaction_hash,timestamp:iso(e.occurred_at)!,blockNumber:String(e.block_number),transactionIndex:e.transaction_index,logIndex:e.log_index,
           remainingTokenAmount:marked.quantity,remainingCostBasisUsd:marked.remainingCostUsd,cumulativeRealizedProfitUsd:marked.realizedProfitUsd,investedUsd:marked.investedUsd,soldUsd:marked.soldUsd,transferOutIncomeUsd:marked.transferOutIncomeUsd,feesUsd:marked.feesUsd,feeInclusiveCostUsd:marked.capitalUsd});}
-      const last=frames.at(-1),final=last?{...last,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,cumulativeRealizedProfitUsd:s.realizedProfitUsd,investedUsd:s.investedUsd,soldUsd:s.soldUsd,transferOutIncomeUsd:s.transferOutIncomeUsd,feesUsd:s.feesUsd,feeInclusiveCostUsd:s.capitalUsd,reportedProfitUsd:s.estimatedProfitUsd,reportedRoi:s.roi,priceUsd:s.quantity==='0'?null:row.r.price_usd,timestamp:s.quantity==='0'?iso(row.r.last_event_at)!:iso(row.r.observed_at)??row.snapshot.asOf}:null;
+      const last=frames.at(-1),final=last?{...last,remainingTokenAmount:s.quantity,remainingCostBasisUsd:s.remainingCostUsd,cumulativeRealizedProfitUsd:s.realizedProfitUsd,investedUsd:s.investedUsd,soldUsd:s.soldUsd,transferOutIncomeUsd:s.transferOutIncomeUsd,feesUsd:s.feesUsd,feeInclusiveCostUsd:s.capitalUsd,reportedProfitUsd:realizedOnly?s.realizedProfitUsd:s.estimatedProfitUsd,reportedRoi:realizedOnly?null:s.roi,priceUsd:s.quantity==='0'||realizedOnly?null:row.r.price_usd,timestamp:realizedOnly?last.timestamp:s.quantity==='0'?iso(row.r.last_event_at)!:iso(row.r.observed_at)??row.snapshot.asOf}:null;
       if(estimatedReplay&&final){if(estimatedRealized.compare(q(estimate.realizedProfitUsd))!==0&&estimatedRealized.decimal()!==estimate.realizedProfitUsd)throw Error('estimated_replay_projection_mismatch');Object.assign(final,{...last,remainingTokenAmount:s.quantity,remainingCostBasisUsd:estimate.knownRemainingCostUsd,cumulativeRealizedProfitUsd:estimate.realizedProfitUsd,feeInclusiveCostUsd:estimate.knownCapitalUsd,reportedProfitUsd:estimate.totalProfitUsd,reportedRoi:null,priceUsd:s.quantity==='0'?null:row.r.price_usd,timestamp:s.quantity==='0'?iso(row.r.last_event_at)!:iso(row.r.observed_at)??row.snapshot.asOf});}
-      result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:complete?'ready':estimatedReplay?'estimated':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
+      result.replayAccounting={version:2,source:row.snapshot.source,policy:'kollens_fifo_v1',walletAddress:wallet,tokenAddress:token,status:complete||realizedOnly&&final?'ready':estimatedReplay?'estimated':pending?'pending':'unavailable',checkedAt:row.snapshot.asOf,
         inventoryBlockNumber:row.r.balance_block==null?null:String(row.r.balance_block),inventoryBlockHash:row.r.balance_hash??null,events:frames,final,
-        coverage:{transactionsComplete:row.balanceReady,balanceMatched:row.balanceReady,exactFinal:complete,...(estimatedReplay?{estimatedFinal:true}:{}),verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',...(complete?{}:{reason})}};
+        coverage:{transactionsComplete:row.balanceReady,balanceMatched:row.balanceReady,exactFinal:complete,...(estimatedReplay?{estimatedFinal:true}:{}),...(realizedOnly&&final?{realizedOnly:true}:{}),verification:row.snapshot.source==='mixed'?'mixed_history':'node_history',...(complete?{}:{reason})}};
       const eventsById=new Map(events.map(event=>[event.id,event]));
       result.inventory={version:1,events:frames.map(frame=>({...frame,tokenAmount:freshQuantity(eventsById.get(frame.id)!.quantity)})),
         coverage:{complete:row.balanceReady,reconciled:row.balanceReady,fromBlock:tokenFrom(row.scope,token),toBlock:row.r.balance_block==null?null:String(row.r.balance_block),blockHash:row.r.balance_hash??null,

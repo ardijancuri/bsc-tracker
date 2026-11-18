@@ -131,6 +131,10 @@ export function validReplayAccountingFinal(data: TradeReplayData, now = Date.now
   if(accounting?.version===2&&accounting.status==='estimated'&&accounting.coverage.estimatedFinal&&estimate&&final&&final.reportedRoi===null
     &&final.reportedProfitUsd===Number(estimate.totalProfitUsd)&&final.cumulativeRealizedProfitUsd===Number(estimate.realizedProfitUsd)
     &&replayAccountingIsFresh(data,now)&&replayInventoryIsFresh(data,now))return final;
+  if (accounting?.version === 2 && data.accountingSnapshot?.complete && final && accounting.coverage.realizedOnly === true
+    && final.reportedProfitUsd !== null && final.reportedProfitUsd === final.cumulativeRealizedProfitUsd
+    && final.priceUsd === null && final.reportedRoi === null && Date.parse(final.timestamp) === replayEndTimestamp(data)
+    && replayLeaseTime(data, now) !== null && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)) return final;
   if (accounting?.version === 2 && data.accountingSnapshot?.complete && final && accounting.coverage.exactFinal
     && replayAccountingIsFresh(data, now) && replayInventoryIsFresh(data, now)) return final;
   if (data.requestContext?.kind === 'journal' && accounting?.coverage.journalFinal && final
@@ -334,7 +338,7 @@ function prepareReplayInventory(activity: ReplayActivity, trades: ReplayTrade[],
 
 function checkedCurrentQuote(data: TradeReplayData, quote: { timestamp: string; priceUsd: number | string } | undefined, supply: number | null, now: number) {
   now = replayLeaseTime(data, now) ?? now;
-  if (!quote || !replayIsOpen(data)) return undefined;
+  if (!quote || data.replayAccounting?.coverage.realizedOnly || !replayIsOpen(data)) return undefined;
   const time = Date.parse(quote.timestamp), price = replayNumber(quote.priceUsd);
   const lastFill = replayEndTimestamp(data);
   if (price === null || !Number.isFinite(time) || !Number.isFinite(lastFill) || time < lastFill || time > now + serverClockSkewMs || now - time > 180_000) return undefined;
@@ -362,7 +366,7 @@ function sparseQuoteTail(chart: TradeReplayData['chart'], currentQuote: TradeRep
  * it never changes the selected wallet, executions, or accounting snapshot. */
 export function applyReplayMarketChart(data: TradeReplayData, chart: ReplayMarketChart, now = Date.now()): TradeReplayData {
   if (chart.address.toLowerCase() !== data.token.address.toLowerCase() || !data.trades.length && !data.inventory?.events.length) return data;
-  const open = replayIsOpen(data);
+  const open = !data.replayAccounting?.coverage.realizedOnly && replayIsOpen(data);
   const supply = replayNumber(chart.marketCapSupply) ?? data.chart.marketCapSupply;
   const accountingFinal = validReplayAccountingFinal(data, now);
   const providerQuote = accountingFinal?.priceUsd ? { timestamp: accountingFinal.timestamp, priceUsd: accountingFinal.priceUsd } : undefined;

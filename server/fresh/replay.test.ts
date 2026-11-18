@@ -30,6 +30,23 @@ describe('fresh frozen replay preparation', () => {
     expect(JSON.parse(Buffer.from(ready.manifest!.split('.')[0],'base64url').toString())).toMatchObject({accountingQuality:'estimated',estimatePolicy:'omit_unknown_costs_v1'});expect((await service.validate(ready.manifest!)).valid).toBe(true);
     const bad=structuredClone(value);bad.replayAccounting!.coverage.balanceMatched=false;expect((await service.prepare(bad,{scope:'other'})).status).not.toBe('ready');
   });
+  it('signs a realized-only public ending while the verified open position has no current price',async()=>{
+    const value=activity(),a=value.replayAccounting!,final=a.final!,last=(a.history?.events??a.events).at(-1)!;
+    Object.assign(a.coverage,{exactFinal:false,realizedOnly:true,reason:'quote_unavailable'});
+    Object.assign(final,{remainingTokenAmount:'123',priceUsd:null,reportedRoi:null,timestamp:last.timestamp,reportedProfitUsd:final.cumulativeRealizedProfitUsd});
+    value.summary.realizedProfitUsd=final.reportedProfitUsd;
+    const replayChart=vi.fn(async()=>chart(value));
+    const service=createFreshReplay({charts:{replayChart},secret,validateRevision:async()=>true,now:()=>frozen});
+    const ready=await service.prepare(value),claims=JSON.parse(Buffer.from(ready.manifest!.split('.')[0],'base64url').toString());
+    expect(ready).toMatchObject({status:'ready',window:{to:last.timestamp}});
+    expect(claims).toMatchObject({valuationBasis:'realized_only',valuationAt:last.timestamp,to:last.timestamp});
+    expect(replayChart).toHaveBeenCalledWith(value.token.address,expect.objectContaining({open:false,to:Date.parse(last.timestamp)}));
+    expect(replayChart.mock.calls[0]).not.toEqual(expect.arrayContaining([expect.objectContaining({ending:expect.anything()})]));
+    expect((await service.validate(ready.manifest!)).valid).toBe(true);
+    expect((await service.prepare(value,{scope:'account:private'})).reason).toBe('stale_quote');
+    const bad=structuredClone(value);bad.accountingSnapshot!.snapshotId='b'.repeat(64);bad.replayAccounting!.coverage.balanceMatched=false;
+    expect((await service.prepare(bad)).manifest).toBeUndefined();
+  });
   it('signs the exact historical permission and rechecks it for issued and remembered financial objects',async()=>{
     const value=activity(),digest='c'.repeat(64);value.__freshRevision!.historyPermissionDigest=digest;let active=digest;
     const service=createFreshReplay({charts:{replayChart:async()=>chart(value)},secret,validateRevision:async claims=>claims.historyPermissionDigest===active,now:()=>frozen});

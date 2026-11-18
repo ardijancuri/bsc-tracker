@@ -136,7 +136,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
     const wallet=address(req.params.address),token=address(req.params.token);if(!wallet||!token)return reply.code(400).send({error:'Invalid wallet or token'});
     const saved=req.query.snapshot?await replay.authorizedSaved(req.query.snapshot,'public'):null;
     if(req.query.snapshot&&(!saved||saved.kol.address!==wallet||saved.token.address!==token))return reply.code(410).send({error:'Prepare this replay again.'});
-    const selected=mode==='replay-preparation'||req.query.replay==='true'||req.query.pnl==='true'&&req.query.profile!=='true';
+    const selected=mode==='replay-preparation'||req.query.replay==='true';
     const activity=saved??await reads.activity(wallet,token,publicScope(wallet),selected);
     if(!activity)return reply.code(404).send({error:'KOL token activity not found'});reply.header('Cache-Control','no-store');
     if(!saved)await selectFreshQuote(db,token);

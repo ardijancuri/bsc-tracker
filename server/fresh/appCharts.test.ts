@@ -100,12 +100,14 @@ describe('fresh public chart and replay HTTP adapters', () => {
     expect(response.json()).toMatchObject({ address: token, period: '24h', source: 'unavailable', loadStatus: 'rate_limited', pending: true, retryAfterMs: 90_000, fullHistory: true,
       historyLoadStatus:'rate_limited',historyRetryAfterMs:90_000,historyRecoveryPending:true });
   });
-  it('pins selected details while keeping card/background accounting reads light',async()=>{
+  it('keeps modal and background details light and builds accounting for explicit replay requests',async()=>{
     const {app,token,wallet,reads,replay,input}=await fixture();const remember=vi.spyOn(replay,'remember');
     await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true&profile=true`);
     expect(reads.activity.mock.calls[0][3]).toBe(false);expect(remember).not.toHaveBeenCalled();
     await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?pnl=true`);
-    expect(reads.activity.mock.calls[1][3]).toBe(true);expect(remember).toHaveBeenCalledWith(input.activity,'public');
+    expect(reads.activity.mock.calls[1][3]).toBe(false);expect(remember).not.toHaveBeenCalled();
+    await app.inject(`/api/kols/${wallet}/tokens/${token}/activity?replay=true`);
+    expect(reads.activity.mock.calls[2][3]).toBe(true);expect(remember).toHaveBeenCalledWith(input.activity,'public');
   });
   it('cancels a disconnected chart subscriber without leaving queued provider work',async()=>{
     const {app,token,chart}=await fixture();let signal!:AbortSignal;

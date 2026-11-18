@@ -51,8 +51,14 @@ export function prepareNodeReplay(activity: KolTokenActivity, now: number, conte
     if (raw.final) {
       const values = Object.fromEntries(fields.map(field => [field, numeric(raw.final![field])])) as { [Key in keyof ReplayAccountingSnapshot]: number | null };
       const profit = numeric(raw.final.reportedProfitUsd), roi = numeric(raw.final.reportedRoi), price = numeric(raw.final.priceUsd), timestamp = Date.parse(raw.final.timestamp);
-      if (fields.some(field => raw.final![field] !== null && values[field] === null) || profit === null || roi === null&&!estimated || !Number.isFinite(timestamp)
-        || timestamp < last || timestamp > now + 1000 || values.remainingTokenAmount! > 0 && (price === null || price <= 0)) return;
+      const realizedOnly = raw.coverage.realizedOnly === true;
+      if (realizedOnly && (context || !identity.complete || raw.status !== 'ready' || raw.coverage.exactFinal
+        || raw.coverage.estimatedFinal || raw.coverage.reason !== 'quote_unavailable' || price !== null || raw.final.priceUsd !== null
+        || raw.final.reportedRoi !== null || !(values.remainingTokenAmount! > 0) || timestamp !== last
+        || raw.final.reportedProfitUsd !== activity.summary.realizedProfitUsd || raw.final.reportedProfitUsd !== raw.final.cumulativeRealizedProfitUsd
+        || quantityKey(raw.final.remainingTokenAmount) !== quantityKey(coverage.balance))) return;
+      if (fields.some(field => raw.final![field] !== null && values[field] === null) || profit === null || roi === null&&!estimated&&!realizedOnly || !Number.isFinite(timestamp)
+        || timestamp < last || timestamp > now + 1000 || !realizedOnly && values.remainingTokenAmount! > 0 && (price === null || price <= 0)) return;
       final = { ...raw.final, ...values, reportedProfitUsd: profit, reportedRoi: roi, priceUsd: price };
     }
     return { inventory: { ...inventory, events: inventoryEvents }, accounting: { ...raw, events, final } };

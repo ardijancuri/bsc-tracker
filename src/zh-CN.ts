@@ -302,6 +302,7 @@ export const chinese: Record<string, string> = {
   'Market cap calculated from market closes and current token supply. Drag to pan. Use arrow keys to inspect, plus and minus to zoom, and Home to reset.': '市值根据市场收盘价与当前代币供应量计算。拖动平移，使用方向键查看，加减键缩放，Home 键重置。',
   'B / S marks this KOL’s buys and sells. Numbers group trades in the same candle.': 'B / S 标记此KOL的买卖。同一根K线上的交易按数量合并。',
   'Realized P&L': '已实现盈亏', 'Transaction pagination': '交易分页', 'MCAP': '市值',
+  'Last trade MCAP': '上次成交市值', 'Estimated from the last priced trade · {time}': '按上次已计价成交估算 · {time}',
   'Realized P&L from indexed trades in this token. Gas fees are excluded.': '基于此代币已记录交易的已实现盈亏，不含Gas费用。',
   'GMGN realized P&L includes marked transfer-out gains and fees.': 'GMGN已实现盈亏包含按转出时估值计算的收益和费用。',
   'Est. realized P&L': '预计已实现盈亏',

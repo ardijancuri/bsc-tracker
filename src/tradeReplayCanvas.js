@@ -1121,7 +1121,8 @@ export class ReplayCanvas {
       prefix = event;
     }
     const completePrefix = prefix?.id === this.accountingEvents.at(-1)?.id;
-    const final = ending && completePrefix && (accounting.coverage.exactFinal || accounting.coverage.journalFinal || accounting.coverage.estimatedFinal) ? accounting.final : null;
+    const realizedOnly = accounting.coverage.realizedOnly === true;
+    const final = ending && completePrefix && (accounting.coverage.exactFinal || accounting.coverage.journalFinal || accounting.coverage.estimatedFinal || realizedOnly) ? accounting.final : null;
     const snapshot = final ?? prefix;
     if (!snapshot) return unavailable;
     const invested = finite(snapshot.investedUsd, null), proceeds = finite(snapshot.soldUsd, null);
@@ -1131,13 +1132,13 @@ export class ReplayCanvas {
     const cost = finite(snapshot.feeInclusiveCostUsd, null);
     const fees = finite(snapshot.feesUsd, null);
     const value = holdings === 0 ? 0 : holdings !== null && state.currentPrice > 0 ? holdings * state.currentPrice : null;
-    const unrealized = value !== null && basis !== null ? value - basis : null;
-    let total = replayAccountingTotal(snapshot, state.currentPrice, accounting.version === 2);
+    const unrealized = !realizedOnly && value !== null && basis !== null ? value - basis : null;
+    let total = realizedOnly ? null : replayAccountingTotal(snapshot, state.currentPrice, accounting.version === 2);
     let roi = total !== null && cost > 0 ? total / cost : null;
     // Exact provider totals belong only to the ending. A different selected
     // price reprices the remaining quantity, without changing disposal gains.
     const reported = finite(final?.reportedProfitUsd, null), referencePrice = positive(final?.priceUsd);
-    if (reported !== null && holdings !== null && (holdings === 0 || referencePrice !== null && value !== null)) {
+    if (!realizedOnly && reported !== null && holdings !== null && (holdings === 0 || referencePrice !== null && value !== null)) {
       const delta = holdings === 0 ? 0 : holdings * (state.currentPrice - referencePrice);
       total = reported + delta;
       const sameQuote = holdings === 0 || Math.abs(state.currentPrice - referencePrice) <= referencePrice * 1e-10;
@@ -1146,7 +1147,7 @@ export class ReplayCanvas {
     if(accounting.coverage.estimatedFinal)roi=null;
     return { ...state, invested, proceeds, holdings, remainingCostBasis: basis, accountingFinal: final !== null,
       realizedPnl: realized, realizedRoi: !accounting.coverage.estimatedFinal&&realized !== null && cost > 0 ? realized / cost : null,
-      unrealizedPnl: unrealized, pnl: total, roi, totalPnl: total, totalRoi: roi,
+      unrealizedPnl: unrealized, pnl: realizedOnly ? realized : total, roi, totalPnl: total, totalRoi: roi,
       avgEntryCap: invested !== null && boughtTokens > 0 && this.supply ? invested / boughtTokens * this.supply : null };
   }
 
@@ -1567,8 +1568,9 @@ export class ReplayCanvas {
       text(ctx, part.text, roiX, 907 + (part.bounds.ascent - part.bounds.descent) / 2, part.font, part.color);
       roiX += part.width + part.paddingAfter;
     }
+    const realizedOnly = this.data.replayAccounting?.coverage.realizedOnly === true;
     if (this.data.replayAccounting?.version === 2) text(ctx,
-      `${this.data.replayAccounting.coverage.estimatedFinal?'ESTIMATED · MISSING COSTS EXCLUDED':state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.accountingSnapshot?.historyBoundary === 'verified_zero_position' ? ' · TRACKED POSITION' : ''}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
+      realizedOnly ? 'REALIZED P&L · HOLDINGS UNPRICED' : `${this.data.replayAccounting.coverage.estimatedFinal?'ESTIMATED · MISSING COSTS EXCLUDED':state.accountingFinal ? 'FINAL' : 'ESTIMATE'} · ${String(this.data.replayAccounting.source).toUpperCase()}${this.data.accountingSnapshot?.historyBoundary === 'verified_zero_position' ? ' · TRACKED POSITION' : ''}${this.data.chart.marketCapEstimated ? ' · EST. MCAP' : ''}`,
       540, 958, `500 16px ${FONT}`, COLOR.dim, 'center');
 
     ctx.beginPath();
@@ -1587,7 +1589,9 @@ export class ReplayCanvas {
     const columns = [
       { center: 199, label: 'Invested', value: state.invested !== null ? money(state.invested, 2, true) : '—' },
       { center: 540, label: 'Avg. entry', value: this.capMode && state.avgEntryCap > 0 ? money(state.avgEntryCap, 0, true) : '—' },
-      { center: 881, label: 'Current', value: state.currentCap > 0 ? this.capMode ? money(state.currentCap, 0, true) : this.priceText(state.currentCap) : '—' },
+      realizedOnly
+        ? { center: 881, label: 'Tokens held', value: state.holdings === null ? '—' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(state.holdings) }
+        : { center: 881, label: 'Current', value: state.currentCap > 0 ? this.capMode ? money(state.currentCap, 0, true) : this.priceText(state.currentCap) : '—' },
     ].map(column => {
       const labelFont = fitFont(ctx, column.label, 290, 28, 22, 500);
       const valueFont = fitFont(ctx, column.value, 280, 40, 28, 600);

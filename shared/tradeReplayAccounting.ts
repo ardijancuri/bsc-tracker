@@ -64,6 +64,8 @@ export interface TradeReplayAccounting {
     exactFinal: boolean;
     /** Signed display-only ending. It does not certify unknown purchase basis. */
     estimatedFinal?: boolean;
+    /** Verified realized P&L through the last movement. Remaining inventory is unpriced. */
+    realizedOnly?: boolean;
     verification?: 'gmgn_history' | 'node_history' | 'mixed_history' | 'imported_history';
     reason?: string;
   };
