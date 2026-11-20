@@ -5,17 +5,26 @@ import { FreshRational } from './accounting.js';
 import { freshCall,type FreshPriceBlock } from './pricing.js';
 import { blockHex } from '../rpc.js';
 import { freshHash,freshInteger } from './capture.js';
-import {freshBalanceWorkSql,freshBalanceCommitSql} from './balanceScheduling.js';
+import {freshBalanceWorkSql,freshBalanceSweepWorkSql,freshBalanceCommitSql} from './balanceScheduling.js';
 const abi=new Interface(['function balanceOf(address) view returns(uint256)']);
 const q=FreshRational.parse;
+type BalanceSweep = { after: { scopeId: string; tokenAddress: string } | null };
+
 /** Confirm current quantities in place. There is no periodic balance-history table. */
-export async function refreshFreshBalances(db:Pool,rpc:Rpc,limit=64) {
+export async function refreshFreshBalances(db:Pool,rpc:Rpc,limit=64,sweep?:BalanceSweep) {
   const checkpoint=(await db.query("SELECT block_number::text,block_hash FROM fresh.checkpoints WHERE key='capture'")).rows[0];
   if(!checkpoint?.block_number||!freshHash(checkpoint.block_hash))return{checked:0,matched:0,mismatch:0,pending:0,block:null};
   const header=await rpc<{number:string;hash:string;timestamp:string}>('eth_getBlockByNumber',[blockHex(Number(checkpoint.block_number)),false]);
   if(!header||Number(freshInteger(header.number))!==Number(checkpoint.block_number)||header.hash?.toLowerCase()!==checkpoint.block_hash)throw new Error('balance_capture_block_changed');
   const block:FreshPriceBlock={number:Number(checkpoint.block_number),hash:checkpoint.block_hash,timestamp:new Date(Number(freshInteger(header.timestamp))*1000).toISOString()};
-  const rows=(await db.query(freshBalanceWorkSql,[limit,block.number])).rows;
+  const candidates=(sweep
+    ? await db.query(freshBalanceSweepWorkSql,[limit,block.number,sweep.after?.scopeId??null,sweep.after?.tokenAddress??null])
+    : await db.query(freshBalanceWorkSql,[limit,block.number])).rows;
+  if (sweep) {
+    const {next_scope_id, next_token_address} = candidates[0] ?? {};
+    sweep.after = next_scope_id && next_token_address ? {scopeId:next_scope_id,tokenAddress:next_token_address} : null;
+  }
+  const rows = sweep ? candidates.filter(row=>row.scope_id!=null) : candidates;
   const calls=new Map<string,Promise<bigint>>();let matched=0,mismatch=0,pending=0;
   const headers=new Map<number,Promise<FreshPriceBlock>>();headers.set(block.number,Promise.resolve(block));
   const captureBlock=(n:number)=>{let work=headers.get(n);if(!work){work=(async()=>{const h=await rpc<{number:string;hash:string;timestamp:string}>('eth_getBlockByNumber',[blockHex(n),false]);if(!h||Number(freshInteger(h.number))!==n||!freshHash(h.hash))throw Error('balance_token_capture_block_changed');return{number:n,hash:h.hash.toLowerCase(),timestamp:new Date(Number(freshInteger(h.timestamp))*1000).toISOString()};})();headers.set(n,work);}return work;};
@@ -34,4 +43,10 @@ export async function refreshFreshBalances(db:Pool,rpc:Rpc,limit=64) {
     }catch{pending++;await db.query(`UPDATE fresh.positions SET balance_status='pending' WHERE scope_id=$1 AND token_address=$2 AND revision=$3 AND balance_status IS DISTINCT FROM 'pending'`,[row.scope_id,row.token_address,row.revision]);}
   }));
   return{checked:rows.length,matched,mismatch,pending,block:block.number};
+}
+
+/** Share the shortlist between priority work and a rotating slice. */
+export function createFreshBalanceRefresher(db: Pool, rpc: Rpc, limit = 64) {
+  const sweep: BalanceSweep = {after:null};
+  return () => refreshFreshBalances(db,rpc,limit,sweep);
 }

@@ -11,7 +11,7 @@ import {freshCurrentQuote,commitFreshCurrentQuote,freshQuoteUsd,freshQuoteFailur
 import {rolloverFreshUtcDay} from './accounting.js';
 import {refreshFreshRollingKolTotals} from './rolling.js';
 import {WBNB} from '../launchpad.js';
-import {refreshFreshBalances} from './balances.js';
+import {createFreshBalanceRefresher} from './balances.js';
 import {rollbackTelegramNotifications} from '../telegramNotifications.js';
 import {freshRuntimeDigest} from './runtime.js';
 import {createFreshSshTrace} from './sshTrace.js';
@@ -85,6 +85,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   const discoveryArchive=createFreshDiscoveryArchiveRpc(process.env.FRESH_DISCOVERY_ARCHIVE_RPC_URL,{signal,maxRequestsPerMinute:20,minIntervalMs:1000,creationTraces:true});
   const tradeArchive=discoveryArchive&&createFreshTradeArchiveTrace(db,rpc,discoveryArchive);
   const nextDecodeService=createFreshDecodeServiceCycle();
+  const refreshBalances=createFreshBalanceRefresher(db,rpc);
   let lastQuoteAt=0;
   // One capture owner. API requests never start scanners or accounting workers.
   if(!(await connection.query('SELECT pg_try_advisory_lock(73621945) AS owned')).rows[0].owned){connection.release();throw new Error('fresh_worker_already_running');}
@@ -131,7 +132,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
       const bnbPriceUsd=await freshQuoteUsd(WBNB,{rpc,block}).catch(()=>null);
       await db.query(`INSERT INTO fresh.checkpoints(key,block_number,block_hash,value) VALUES('quote',$1,$2,$3::jsonb) ON CONFLICT(key) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,value=EXCLUDED.value,updated_at=clock_timestamp()`,[block.number,block.hash,JSON.stringify({bnbPriceUsd,observedAt:block.timestamp})]);
       return{ready,failed,unavailableReasons};}),
-    loop('balances',5000,()=>refreshFreshBalances(db,rpc)),
+    loop('balances',5000,refreshBalances),
     loop('rolling_pnl',1000,async()=>{const client=await db.connect();try{
       await client.query('BEGIN');const result=await refreshFreshRollingKolTotals(client,{limit:64});
       await client.query('COMMIT');if(result.updated)await db.query("SELECT pg_notify('bscan_update','update')");return result;

@@ -4,6 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {Pool} from 'pg';
 import {applyFreshFinancialEvents,freshDecimal,rebuildFreshScopesAfterReorg,rolloverFreshUtcDay} from './accounting.js';
 import {advanceFreshRollingKolTotals,refreshFreshRollingKolTotals,rebuildFreshRollingKolTotals} from './rolling.js';
+import {freshStoredKolRollingMetrics} from './leaderboard.js';
 import {freshRollingSchemaSql} from './rollingSchema.js';
 import type {FreshFinancialEvent} from '../../shared/freshAccounting.js';
 const url=new URL(process.env.DATABASE_URL??'');
@@ -38,7 +39,60 @@ try{
  const privateEvent=event({walletAddress:privateWallet,tokenAddress:token2,kind:'buy',occurredAt:'2026-10-24T12:00:06Z'});await applyFreshFinancialEvents(c,[privateEvent],{now:'2026-10-24T12:00:06Z'});assert.equal((await row()).rolling_trade_count,4);checks++;
  const unallocated=event({kind:'fee',tokenAddress:null,quantity:'0',amountUsd:null,feeUsd:'7',feeAttribution:{status:'unattributed',nativeFeeWei:'123'},occurredAt:'2026-10-24T12:00:06Z'});await applyFreshFinancialEvents(c,[unallocated],{now:'2026-10-24T12:00:06Z'});k=await row();assert.equal(k.rolling_unallocated_fee_count,1);assert.equal(k.rolling_unallocated_fee_q,'7');assert.equal(freshDecimal(k.rolling_realized_q),'49');checks+=3;
  // Bootstrap and idle expiration run in a bounded maintenance pass.
- await c.query('UPDATE fresh.kols SET rolling_as_of=NULL WHERE wallet_address=$1',[wallet]);const maintenance=await refreshFreshRollingKolTotals(c,{now:'2026-10-24T12:00:06Z',limit:256});assert.ok(maintenance.updated>0);k=await row();assert.equal(freshDecimal(k.rolling_realized_q),'49');assert.equal(k.rolling_unallocated_fee_count,1);checks+=3;
+ await c.query('UPDATE fresh.kols SET rolling_as_of=NULL,rolling_next_expiry_at=NULL WHERE wallet_address=$1',[wallet]);const maintenance=await refreshFreshRollingKolTotals(c,{now:'2026-10-24T12:00:06Z',limit:256});assert.ok(maintenance.updated>0);k=await row();assert.equal(freshDecimal(k.rolling_realized_q),'49');assert.equal(k.rolling_unallocated_fee_count,1);checks+=3;
+ // Make the saved projection disagree with the canonical sell that is about to expire.
+ const otherWallet='0x'+randomBytes(20).toString('hex');
+ await c.query('INSERT INTO fresh.wallets(address,monitoring_from_block) VALUES($1,1)',[otherWallet]);
+ await c.query("INSERT INTO fresh.kols(wallet_address,display_name) VALUES($1,'Independent rolling fixture')",[otherWallet]);
+ await c.query("INSERT INTO fresh.accounting_scopes(id,kind,wallet_addresses,starts_at,starts_block) VALUES($1,'kol',$2,'2026-10-20T00:00:00Z',1)",['kol:'+otherWallet,[otherWallet]]);
+ await c.query('UPDATE fresh.kols SET rolling_trade_count=0,rolling_sell_count=0 WHERE wallet_address=$1',[wallet]);
+ const correctionAt='2026-10-24T23:00:00Z';
+ const newBuy=event({occurredAt:correctionAt}),otherBuy=event({walletAddress:otherWallet,occurredAt:correctionAt});
+ const otherGas=event({kind:'fee',tokenAddress:null,quantity:'0',amountUsd:null,feeUsd:'4',feeAttribution:{status:'unattributed',nativeFeeWei:'1'},occurredAt:correctionAt});
+ assert.deepEqual(await applyFreshFinancialEvents(c,[newBuy,otherBuy,otherGas],{now:correctionAt}),{inserted:3,applied:2});
+ k=await row();
+ assert.equal(k.rolling_trade_count,3);
+ assert.equal(k.rolling_sell_count,2);
+ assert.equal(k.rolling_unallocated_fee_count,2);
+ assert.equal(k.rolling_unallocated_fee_q,'11');
+ assert.equal((await c.query('SELECT rolling_trade_count FROM fresh.kols WHERE wallet_address=$1',[otherWallet])).rows[0].rolling_trade_count,1);
+ assert.deepEqual(await applyFreshFinancialEvents(c,[newBuy,otherBuy,otherGas],{now:correctionAt}),{inserted:0,applied:0});
+ assert.equal((await row()).rolling_unallocated_fee_q,'11');checks+=8;
+
+ // Exercise a real PostgreSQL transaction error during projection rebuild.
+ await c.query(`
+   CREATE FUNCTION pg_temp.fail_rolling_rebuild() RETURNS trigger LANGUAGE plpgsql AS $$
+   BEGIN
+     IF NEW.wallet_address = TG_ARGV[0] AND NEW.rolling_as_of IS NOT NULL
+       AND NEW.rolling_as_of IS DISTINCT FROM OLD.rolling_as_of THEN
+       RAISE EXCEPTION 'canceling statement due to statement timeout' USING ERRCODE='57014';
+     END IF;
+     RETURN NEW;
+   END $$;
+   CREATE TRIGGER rolling_fixture_timeout BEFORE UPDATE ON fresh.kols
+     FOR EACH ROW EXECUTE FUNCTION pg_temp.fail_rolling_rebuild('${wallet}');
+ `);
+ await c.query('UPDATE fresh.kols SET rolling_trade_count=0,rolling_sell_count=0 WHERE wallet_address=$1',[wallet]);
+ const expiryAt='2026-10-25T01:00:00Z';
+ const timedOutBuy=event({occurredAt:expiryAt}), independentBuy=event({walletAddress:otherWallet,occurredAt:expiryAt});
+ const timedOutGas=event({kind:'fee',tokenAddress:null,quantity:'0',amountUsd:null,feeUsd:'3',feeAttribution:{status:'excluded',nativeFeeWei:'1'},occurredAt:expiryAt});
+ assert.deepEqual(await applyFreshFinancialEvents(c,[timedOutBuy,independentBuy,timedOutGas],{now:expiryAt}),{inserted:3,applied:2});
+ k=await row();
+ assert.equal(k.rolling_as_of,null);
+ assert.equal(new Date(k.rolling_next_expiry_at).toISOString(),'2026-10-25T01:00:05.000Z');
+ assert.deepEqual(freshStoredKolRollingMetrics(k,Date.parse(expiryAt)).reasons,['rolling_totals_pending']);
+ assert.equal(freshStoredKolRollingMetrics(k,Date.parse(expiryAt)).realizedProfitUsd,null);
+ assert.equal((await c.query('SELECT rolling_trade_count FROM fresh.kols WHERE wallet_address=$1',[otherWallet])).rows[0].rolling_trade_count,2);
+ assert.equal((await c.query('SELECT unallocated_fee_q FROM fresh.accounting_scopes WHERE id=$1',[scope])).rows[0].unallocated_fee_q,'14');
+ assert.equal(await advanceFreshRollingKolTotals(c,wallet,'2026-10-25T01:00:04Z'),null);
+ await c.query('DROP TRIGGER rolling_fixture_timeout ON fresh.kols');
+ await refreshFreshRollingKolTotals(c,{now:'2026-10-25T01:00:05Z',limit:256});
+ k=await row();
+ assert.equal(k.rolling_trade_count,3);
+ assert.equal(k.rolling_sell_count,1);
+ assert.equal(k.rolling_unallocated_fee_count,3);
+ assert.equal(k.rolling_unallocated_fee_q,'14');checks+=12;
+
  const immutable=(await c.query('SELECT id,quantity,amount_usd,fee_usd,canonical FROM fresh.financial_events WHERE wallet_address=$1 ORDER BY id',[wallet])).rows;
  await advanceFreshRollingKolTotals(c,wallet,'2026-10-26T12:00:06Z');k=await row();assert.equal(k.rolling_realized_q,'0');assert.equal(k.rolling_trade_count,0);assert.equal(k.rolling_unallocated_fee_count,0);assert.deepEqual((await c.query('SELECT id,quantity,amount_usd,fee_usd,canonical FROM fresh.financial_events WHERE wallet_address=$1 ORDER BY id',[wallet])).rows,immutable);checks+=4;
  console.log(JSON.stringify({ok:true,checks,fixtureWrites:'rolled_back',nodeRequests:0,financialProviderRequests:0}));

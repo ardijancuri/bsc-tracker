@@ -10,6 +10,11 @@ const countFields=['trade_count','token_count','unknown_count','buy_count','sell
 type QField=typeof qFields[number];type CountField=typeof countFields[number];
 export type FreshRollingTotals=Record<QField,string>&Record<CountField,number>&{realized_q:string|null;estimated_realized_q:string|null};
 type Row=Record<string,any>;
+class RollingCounterUnderflow extends Error {
+  constructor(readonly counter: CountField) { super('rolling_negative_counter'); }
+}
+const rollingRebuildTimeoutMs = 1_000;
+const rollingRebuildRetryMs = 5_000;
 const rational=(v:string)=>FreshRational.fromStored(v);
 const milliseconds=(now:string|Date|number)=>{const value=new Date(now).getTime();if(!Number.isFinite(value))throw Error('invalid_rolling_time');return value;};
 export const freshRollingWindow=(now:string|Date|number)=>{const at=milliseconds(now);return{from:new Date(at-FRESH_ROLLING_WINDOW_MS).toISOString(),to:new Date(at).toISOString()};};
@@ -25,7 +30,7 @@ export function freshRollingTotalsFromRow(row:Row):FreshRollingTotals{
 /** Deltas are already FIFO/fee results. This never recalculates a purchase cost. */
 export function addFreshRollingContribution(totals:FreshRollingTotals,row:Row,sign:1|-1=1):FreshRollingTotals{
   const next={...totals};let estimate=totals.unknown_count?totals.estimated_realized_q:totals.known_realized_q;const addQ=(key:QField,value:string)=>{const term=rational(value);next[key]=rational(next[key]).add(sign===1?term:new FreshRational(-term.n,term.d,true)).exact();};
-  const addCount=(key:CountField,value:number)=>{next[key]+=sign*value;if(next[key]<0)throw Error('rolling_negative_counter');};
+  const addCount=(key:CountField,value:number)=>{next[key]+=sign*value;if(next[key]<0)throw new RollingCounterUnderflow(key);};
   if(row.is_excluded_fee){
     addCount('unallocated_fee_count',1);addQ('unallocated_fee_q',row.fee_usd??'0');
     addCount('unallocated_fee_unknown_count',row.fee_usd==null?1:0);addCount('unattributed_fee_count',row.fee_attribution?.status==='excluded'?0:1);
@@ -90,6 +95,34 @@ async function persist(client:PoolClient,wallet:string,totals:FreshRollingTotals
     WHERE wallet_address=$1`,[wallet,...keys.map(key=>totals[key as keyof FreshRollingTotals]),asOf,next]);
 }
 
+async function recomputeWindow(client: PoolClient, wallet: string, scope: Row, window: ReturnType<typeof freshRollingWindow>) {
+  // Recover only failures of this derived projection. The caller's financial
+  // transaction and its original timeout still govern all other writes.
+  await client.query('SAVEPOINT fresh_rolling_recompute');
+  try {
+    const {ms} = (await client.query("SELECT setting::int AS ms FROM pg_settings WHERE name='statement_timeout'")).rows[0];
+    const capTimeout = ms === 0 || ms > rollingRebuildTimeoutMs;
+    if (capTimeout) await client.query("SELECT set_config('statement_timeout',$1,true)", [String(rollingRebuildTimeoutMs)]);
+    let totals = emptyFreshRollingTotals();
+    for (const row of await rangeRows(client, scope, window.from, window.to)) totals = addFreshRollingContribution(totals, row);
+    totals.token_count = await countTokens(client, scope.id, window.from, window.to);
+    await persist(client, wallet, totals, window.to, await nextExpiry(client, scope, window.from, window.to));
+    if (capTimeout) await client.query("SELECT set_config('statement_timeout',$1,true)", [String(ms)]);
+    await client.query('RELEASE SAVEPOINT fresh_rolling_recompute');
+    return totals;
+  } catch (error) {
+    await client.query('ROLLBACK TO SAVEPOINT fresh_rolling_recompute');
+    await client.query('RELEASE SAVEPOINT fresh_rolling_recompute');
+    if (!(error instanceof Error) || !('code' in error) ||
+      !(error.code === '55P03' || error.code === '57014' && error.message.includes('statement timeout'))) throw error;
+    // With no as-of watermark, next expiry is the next rebuild attempt.
+    const retryAt = new Date(milliseconds(window.to) + rollingRebuildRetryMs).toISOString();
+    await client.query('UPDATE fresh.kols SET rolling_as_of=NULL,rolling_next_expiry_at=$2,revision=revision+1 WHERE wallet_address=$1', [wallet, retryAt]);
+    console.warn(JSON.stringify({event:'fresh_rolling_rebuild_deferred',wallet,reason:error.code,retryAt}));
+    return null;
+  }
+}
+
 /** Caller holds its scope lock; initialization reads at most the current compact
  * 24-hour result window once. Thereafter only entering/expiring deltas are read. */
 export async function advanceFreshRollingKolTotals(client:PoolClient,wallet:string,now:string|Date|number=Date.now()){
@@ -98,21 +131,24 @@ export async function advanceFreshRollingKolTotals(client:PoolClient,wallet:stri
   const saved=(await client.query('SELECT * FROM fresh.kols WHERE wallet_address=$1 FOR UPDATE',[wallet])).rows[0];
   if(!saved)throw Error('kol_scope_without_identity');
   const before=saved.rolling_as_of==null?null:milliseconds(saved.rolling_as_of),at=milliseconds(window.to);
+  if(before===null&&saved.rolling_next_expiry_at!=null&&milliseconds(saved.rolling_next_expiry_at)>at)return null;
   if(before!==null&&at<before)throw Error('rolling_clock_moved_backwards');
   if(before===at)return freshRollingTotalsFromRow(saved);
   // With no due contribution the stored total is still exact. In particular,
   // duplicate decoding/display enrichment cannot churn the KOL current row.
   if(before!==null&&(saved.rolling_next_expiry_at==null||milliseconds(saved.rolling_next_expiry_at)>at))return freshRollingTotalsFromRow(saved);
+  if(before===null||at-before>=FRESH_ROLLING_WINDOW_MS)return recomputeWindow(client,wallet,scope,window);
+  const oldWindow=freshRollingWindow(before),expired=await rangeRows(client,scope,oldWindow.from,window.from),entered=await rangeRows(client,scope,oldWindow.to,window.to);
   let totals=freshRollingTotalsFromRow(saved);
-  if(before===null||at-before>=FRESH_ROLLING_WINDOW_MS){
-    totals=emptyFreshRollingTotals();for(const row of await rangeRows(client,scope,window.from,window.to))totals=addFreshRollingContribution(totals,row);
-    totals.token_count=await countTokens(client,scope.id,window.from,window.to);
-  }else{
-    const oldWindow=freshRollingWindow(before),expired=await rangeRows(client,scope,oldWindow.from,window.from),entered=await rangeRows(client,scope,oldWindow.to,window.to);
+  try {
     for(const row of expired)totals=addFreshRollingContribution(totals,row,-1);
-    for(const row of entered)totals=addFreshRollingContribution(totals,row);
-    if([...expired,...entered].some(row=>row.tokens_trade))totals.token_count=await countTokens(client,scope.id,window.from,window.to);
+  } catch (error) {
+    if (!(error instanceof RollingCounterUnderflow)) throw error;
+    console.warn(JSON.stringify({event:'fresh_rolling_counter_underflow',wallet,counter:error.counter,previous:oldWindow.to,asOf:window.to}));
+    return recomputeWindow(client,wallet,scope,window);
   }
+  for(const row of entered)totals=addFreshRollingContribution(totals,row);
+  if([...expired,...entered].some(row=>row.tokens_trade))totals.token_count=await countTokens(client,scope.id,window.from,window.to);
   await persist(client,wallet,totals,window.to,await nextExpiry(client,scope,window.from,window.to));return totals;
 }
 
@@ -123,6 +159,7 @@ export async function addFreshRollingKolResult(client:PoolClient,scope:FreshScop
   const window=freshRollingWindow(now),at=milliseconds(event.occurredAt),from=milliseconds(window.from),to=milliseconds(window.to),wallet=scope.walletAddresses[0];
   if(at<=from)return;
   const saved=(await client.query('SELECT * FROM fresh.kols WHERE wallet_address=$1 FOR UPDATE',[wallet])).rows[0];
+  if(saved?.rolling_as_of===null)return; // The next rebuild will include this saved result.
   if(!saved?.rolling_as_of||milliseconds(saved.rolling_as_of)>to||saved.rolling_next_expiry_at!=null&&milliseconds(saved.rolling_next_expiry_at)<=to)throw Error('rolling_window_not_advanced');
   let totals=freshRollingTotalsFromRow(saved);
   if(at<=to){
@@ -140,6 +177,7 @@ export async function addFreshRollingKolExcludedFee(client:PoolClient,scope:Fres
   const window=freshRollingWindow(now),at=milliseconds(event.occurredAt),from=milliseconds(window.from),to=milliseconds(window.to),wallet=scope.walletAddresses[0];
   if(at<=from)return;
   const saved=(await client.query('SELECT * FROM fresh.kols WHERE wallet_address=$1 FOR UPDATE',[wallet])).rows[0];
+  if(saved?.rolling_as_of===null)return; // The next rebuild will include this saved fee.
   if(!saved?.rolling_as_of||milliseconds(saved.rolling_as_of)>to||saved.rolling_next_expiry_at!=null&&milliseconds(saved.rolling_next_expiry_at)<=to)throw Error('rolling_window_not_advanced');
   const totals=at<=to?addFreshRollingContribution(freshRollingTotalsFromRow(saved),excludedFeeRow(event)):freshRollingTotalsFromRow(saved);
   const due=new Date(at>to?at:at+FRESH_ROLLING_WINDOW_MS).toISOString(),next=saved.rolling_next_expiry_at&&milliseconds(saved.rolling_next_expiry_at)<milliseconds(due)?new Date(saved.rolling_next_expiry_at).toISOString():due;
@@ -150,7 +188,7 @@ export async function addFreshRollingKolExcludedFee(client:PoolClient,scope:Fres
 export async function rebuildFreshRollingKolTotals(client:PoolClient,wallet:string,now:string|Date|number=Date.now()){
   const scope=await scopeRow(client,wallet);
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`fresh-scope:${scope.id}`]);
-  await client.query('UPDATE fresh.kols SET rolling_as_of=NULL WHERE wallet_address=$1',[wallet]);
+  await client.query('UPDATE fresh.kols SET rolling_as_of=NULL,rolling_next_expiry_at=NULL WHERE wallet_address=$1',[wallet]);
   return advanceFreshRollingKolTotals(client,wallet,now);
 }
 
@@ -159,10 +197,11 @@ export async function rebuildFreshRollingKolTotals(client:PoolClient,wallet:stri
 export async function refreshFreshRollingKolTotals(client:PoolClient,options:{now?:string|Date|number;limit?:number}={}){
   await client.query('SELECT pg_advisory_xact_lock(73621941)');
   const now=options.now??Date.now(),at=freshRollingWindow(now).to,limit=Math.min(256,Math.max(1,options.limit??64));
-  const rows=(await client.query(`SELECT k.wallet_address FROM fresh.kols k WHERE (k.rolling_as_of IS NULL OR k.rolling_next_expiry_at<=$1::timestamptz)
+  const rows=(await client.query(`SELECT k.wallet_address FROM fresh.kols k WHERE ((k.rolling_as_of IS NULL AND k.rolling_next_expiry_at IS NULL) OR k.rolling_next_expiry_at<=$1::timestamptz)
     AND EXISTS(SELECT 1 FROM fresh.accounting_scopes s WHERE s.kind='kol' AND s.active AND s.wallet_addresses=ARRAY[k.wallet_address]::text[])
     ORDER BY k.rolling_as_of NULLS FIRST,k.rolling_next_expiry_at NULLS FIRST,k.wallet_address LIMIT $2`,[at,limit])).rows;
   // Match normal scope-lock ordering for callers that batch several KOLs.
-  for(const row of rows.sort((a,b)=>a.wallet_address.localeCompare(b.wallet_address)))await advanceFreshRollingKolTotals(client,row.wallet_address,now);
-  return{updated:rows.length,limit,asOf:at};
+  let updated=0;
+  for(const row of rows.sort((a,b)=>a.wallet_address.localeCompare(b.wallet_address)))if(await advanceFreshRollingKolTotals(client,row.wallet_address,now))updated++;
+  return{updated,deferred:rows.length-updated,limit,asOf:at};
 }

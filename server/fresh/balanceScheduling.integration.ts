@@ -1,7 +1,7 @@
 /** Actual SQL and fake RPC, using TEMP tables inside a rollback only. */
 import assert from'node:assert/strict';
 import{resolve}from'node:path';import{fileURLToPath}from'node:url';import{Pool}from'pg';
-import type{Rpc}from'../rpc.js';import{refreshFreshBalances}from'./balances.js';import{freshBalanceWorkSql}from'./balanceScheduling.js';
+import type{Rpc}from'../rpc.js';import{createFreshBalanceRefresher,refreshFreshBalances}from'./balances.js';import{freshBalanceWorkSql,freshBalanceSweepWorkSql}from'./balanceScheduling.js';
 export async function runFreshBalanceSchedulingIntegration(){
  const u=new URL(process.env.DATABASE_URL??'');if(!['127.0.0.1','localhost'].includes(u.hostname)||![["5436","/kollens_fresh_20261022_24h"],["5439","/kollens_replay_gap_20261029"]].some(([port,path])=>u.port===port&&u.pathname===path))throw Error('Exact isolated Fresh PostgreSQL required');
  const db=new Pool({connectionString:u.toString(),max:1}),client=await db.connect(),checks:string[]=[];
@@ -9,7 +9,8 @@ export async function runFreshBalanceSchedulingIntegration(){
  const base=Date.parse('2026-10-23T21:00:00Z'),at=(n:number)=>new Date(base+n*1000),names=['positions','accounting_scopes','tokens','financial_events','pending_trades','wallets','kols','launch_facts','jobs','recent_evidence','recent_blocks','checkpoints'];
  const rewrite=(sql:string)=>names.reduce((s,name)=>s.replaceAll('fresh.'+name,'pg_temp.balance_'+name),sql).replaceAll('public.journal_wallets','pg_temp.balance_members');
  let serial:Promise<unknown>=Promise.resolve();
- const facade={query:(sql:string,args:unknown[])=>{const work=serial.then(()=>client.query(rewrite(sql),args));serial=work.then(()=>undefined,()=>undefined);return work;}}as unknown as Pool;
+ const sweepStarts: unknown[][]=[];
+ const facade={query:(sql:string,args:unknown[])=>{if(sql===freshBalanceSweepWorkSql)sweepStarts.push(args.slice(2));const work=serial.then(()=>client.query(rewrite(sql),args));serial=work.then(()=>undefined,()=>undefined);return work;}}as unknown as Pool;
  let stateCalls=0,beforeState:undefined|(()=>Promise<void>);
  const rpc=(async(method:string,params:any[])=>{
   if(method==='eth_getBlockByNumber'){assert.deepEqual(params,['0x78',false]);return{number:'0x78',hash:h(120),timestamp:'0x'+Math.floor(at(120).getTime()/1000).toString(16)};}
@@ -38,16 +39,34 @@ export async function runFreshBalanceSchedulingIntegration(){
    CREATE TEMP TABLE balance_checkpoints(key text PRIMARY KEY,block_number bigint,block_hash text,value jsonb DEFAULT '{}',updated_at timestamptz DEFAULT clock_timestamp())ON COMMIT DROP;
    CREATE TEMP TABLE balance_members(user_id text,wallet_address text,registration_block bigint,activity_from timestamptz,PRIMARY KEY(user_id,wallet_address))ON COMMIT DROP`);
   await reset();await scope('blocked',[a(1)]);await scope('ready',[a(2)]);await pending(a(1));
-  for(let n=0;n<70;n++)await position('blocked',n,'1/1',100);const ready=await position('ready',100);
+  for(let n=0;n<512;n++)await position('blocked',n,'1/1',100);const ready=await position('ready',600);
   const old=(await client.query('SELECT scope_id FROM balance_positions ORDER BY balance_checked_at NULLS FIRST,last_event_at DESC LIMIT 64')).rows;assert.ok(old.every(r=>r.scope_id==='blocked'));
-  const work=await selected();assert.equal(work.length,64);assert.equal(work[0].scope_id,'ready');assert.equal(work[0].decoding_pending,false);assert.ok(work.slice(1).every(r=>r.decoding_pending));checks.push('ready_work_outside_old64_precedes_history_blocked_prefix');
+  const work=await selected();assert.equal(work.length,64);assert.equal(work[0].scope_id,'ready');assert.equal(work[0].decoding_pending,false);assert.ok(work.slice(1).every(r=>r.decoding_pending));checks.push('ready_work_outside_old128_precedes_512_history_blocked_positions');
   const immutable=(await client.query('SELECT md5(string_agg(id||block_number::text,\',\' ORDER BY id)) AS digest FROM balance_financial_events')).rows[0].digest;
   const pendingBefore=(await client.query("SELECT scope_id,token_address,ctid::text FROM balance_positions WHERE scope_id='blocked' ORDER BY token_address")).rows;
-  const result=await refreshFreshBalances(facade,rpc);assert.equal(result.matched,1);assert.equal(result.pending,63);assert.equal(stateCalls,1);
+  const refreshBacklog=createFreshBalanceRefresher(facade,rpc);
+  const result=await refreshBacklog();assert.equal(result.matched,1);assert.equal(result.pending,63);assert.equal(stateCalls,1);
   const proof=(await client.query('SELECT * FROM balance_positions WHERE scope_id=$1 AND token_address=$2',['ready',ready])).rows[0];assert.equal(proof.balance_status,'matched');assert.equal(proof.balance_quantity,'1');assert.equal(Number(proof.balance_block),120);assert.equal(proof.balance_hash,h(120));
   const blocked=(await client.query("SELECT * FROM balance_positions WHERE scope_id='blocked'")).rows;assert.ok(blocked.every(r=>r.balance_status==='pending'&&r.balance_block===null&&r.balance_checked_at===null));checks.push('blocked_rows_remain_explicit_pending_without_state_calls_or_false_proofs','real_canonical_balance_updates_only_ready_current_row');
   await refreshFreshBalances(facade,rpc);assert.deepEqual((await client.query("SELECT scope_id,token_address,ctid::text FROM balance_positions WHERE scope_id='blocked' ORDER BY token_address")).rows,pendingBefore);assert.equal(stateCalls,1);checks.push('idle_blocked_poll_rewrites_no_unchanged_position_rows');
   assert.equal((await client.query('SELECT md5(string_agg(id||block_number::text,\',\' ORDER BY id)) AS digest FROM balance_financial_events')).rows[0].digest,immutable);checks.push('no_financial_journal_writes');
+  await reset();sweepStarts.length=0;
+  await scope('a-blocked',[a(1)]);await scope('z-ready',[a(2)]);await pending(a(1));await pending(a(2));
+  await client.query("UPDATE balance_recent_evidence SET position_dependency_addresses=$1,position_dependency_proof=$2 WHERE wallet_addresses=ARRAY[$3::text]",[[a(2),a(3)],'a'.repeat(64),a(2)]);
+  for(let n=0;n<3;n++)await position('a-blocked',n,'1/1',100);
+  const oldReady=await position('z-ready',10);
+  const runBatch=createFreshBalanceRefresher(facade,rpc,1);
+  for(let pass=0;pass<3;pass++)assert.equal((await runBatch()).matched,0);
+  assert.equal(stateCalls,0);
+  await scope('0-new',[a(3)]);const newReady=await position('0-new',20,'1/1',110);
+  assert.equal((await runBatch()).matched,1);
+  assert.equal((await client.query('SELECT balance_block::int AS block FROM balance_positions WHERE scope_id=$1 AND token_address=$2',['z-ready',oldReady])).rows[0].block,120);
+  assert.equal((await client.query('SELECT balance_block FROM balance_positions WHERE scope_id=$1 AND token_address=$2',['0-new',newReady])).rows[0].balance_block,null);
+  assert.equal((await runBatch()).matched,1);
+  assert.equal((await client.query('SELECT balance_block::int AS block FROM balance_positions WHERE scope_id=$1 AND token_address=$2',['0-new',newReady])).rows[0].block,120);
+  assert.equal((await runBatch()).matched,0);
+  assert.deepEqual(sweepStarts.map(start=>start[0]),[null,'a-blocked','a-blocked','a-blocked','z-ready',null]);
+  assert.equal(stateCalls,2);checks.push('rotation_reaches_ready_position_under_conservative_scope_hint_and_new_work');
   await reset();await scope('private',[a(1),a(2)],'account');await scope('public',[a(2)]);await scope('removed',[a(3)],'account');
   await client.query('INSERT INTO balance_members VALUES($1,$2,10,$3),($1,$4,100,$5)',['account',a(1),at(10),a(2),at(101)]);
   await position('private',1,'2/1');await position('public',2);await position('removed',3);await pending(a(2),80);await pending(a(2),100);
