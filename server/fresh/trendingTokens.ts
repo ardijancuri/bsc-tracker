@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { QueryResultRow } from 'pg';
-import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumCoverage, type MarketMomentumToken, type TrendingKol, type TrendingTokens, type TrendingWindow } from '../../shared/trendingTokens.js';
+import { defaultTrendingWindow, isTrendingWindow, trendingWindows, type MarketMomentumCoverage, type MarketMomentumToken, type TrendingKol, type TrendingToken, type TrendingTokens, type TrendingWindow } from '../../shared/trendingTokens.js';
 import { kolProfileTokenSql } from '../kolProfileToken.js';
 import { readTrendingMarketTax, trendingQuoteSymbol } from './settlementQuote.js';
 import { freshPublicTradeScopeSql } from './publicTokens.js';
@@ -38,6 +38,7 @@ const trendingSql = `WITH eligible_trades AS MATERIALIZED (
   -- Each confirmed transaction supplies at most one effective price. Ignore dust.
   SELECT e.token_address, e.transaction_hash, max(e.occurred_at) AS observed_at,
     min(e.wallet_address) AS first_wallet, max(e.wallet_address) AS last_wallet,
+    sum(e.amount_usd) AS amount_usd, sum(e.quantity) AS quantity,
     sum(e.amount_usd)/sum(e.quantity) AS execution_price
   FROM eligible_trades e JOIN activity a USING (token_address)
   WHERE e.amount_usd>=5 AND e.quantity>0
@@ -74,9 +75,16 @@ const trendingSql = `WITH eligible_trades AS MATERIALIZED (
   LEFT JOIN price_bands late ON late.token_address=a.token_address AND late.band='late'
   ORDER BY score DESC,kol_count DESC,buy_count+sell_count DESC,last_public_trade_at DESC,token_address
   LIMIT 12
+), last_fills AS (
+  SELECT DISTINCT ON (p.token_address) p.token_address, p.observed_at, p.amount_usd, p.quantity
+  FROM priced_transactions p JOIN ranked USING (token_address)
+  ORDER BY p.token_address,p.observed_at DESC,p.transaction_hash DESC
 )
 SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_data,
-  t.market_cap_usd,t.price_usd,t.observed_at,t.valuation_status,ranked.*,
+  t.market_cap_usd,t.price_usd,t.observed_at,t.valuation_status,t.price_source,t.total_supply_raw,t.decimals,ranked.*,
+  EXISTS (SELECT 1 FROM fresh.recent_blocks b WHERE b.block_number=t.observed_block
+    AND b.block_hash=t.observed_hash AND b.occurred_at=t.observed_at) AS quote_canonical,
+  fills.observed_at AS last_priced_fill_at,fills.quantity AS last_fill_quantity,fills.amount_usd AS last_fill_amount_usd,
   market.quote_address AS market_quote_address,market.identity->'quoteSymbol' AS observed_market_quote_symbol,
   market.identity->'nativeQuote' AS native_market_quote,
   CASE WHEN t.valuation_status='ready' AND t.observed_at BETWEEN $2::timestamptz - interval '2 minutes' AND $2::timestamptz
@@ -89,6 +97,7 @@ SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_da
     FROM participation p JOIN published_kols k ON k.address=p.wallet_address
     WHERE p.token_address=ranked.token_address) AS kols
 FROM ranked JOIN fresh.tokens t ON t.address=ranked.token_address
+LEFT JOIN last_fills fills ON fills.token_address=t.address
 LEFT JOIN LATERAL (
   SELECT min(m.quote_address) AS quote_address,jsonb_agg(m.identity)->0 AS identity
   FROM fresh.markets m
@@ -101,15 +110,44 @@ LEFT JOIN LATERAL (
 ) market ON true
 ORDER BY score DESC,kol_count DESC,buy_count+sell_count DESC,last_public_trade_at DESC,t.address`;
 
+type DisplayMarketCap = Pick<TrendingToken, 'marketCapUsd' | 'marketCapSource' | 'marketCapAsOf'>;
+const positiveUsd = (value: unknown): value is string =>
+  typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value) && Number.isFinite(Number(value)) && Number(value) > 0;
+
+/** Keep expired quotes and settlement-derived caps dated and display-only. */
+function trendingMarketCap(
+  row: QueryResultRow,
+  token: ReturnType<typeof freshTokenDirectoryIdentity>,
+  from: number,
+  now: number,
+): DisplayMarketCap {
+  const quoteAt = token.observedAt === null ? NaN : Date.parse(token.observedAt);
+  const trade = token.tradeMarketCap;
+  const tradeAt = trade ? Date.parse(trade.timestamp) : NaN;
+  const verifiedQuote = row.price_source === 'node' && row.quote_canonical === true && quoteAt <= now;
+  if (verifiedQuote && positiveUsd(token.marketCapUsd)) {
+    return { marketCapUsd: token.marketCapUsd, marketCapSource: 'current_quote', marketCapAsOf: token.observedAt! };
+  }
+  const hasTrade = trade && tradeAt > from && tradeAt <= now && positiveUsd(trade.usd);
+  if (verifiedQuote && quoteAt > from && positiveUsd(row.price_usd) && positiveUsd(row.market_cap_usd)
+    && (row.valuation_status === 'ready' || row.valuation_status === 'quote_unavailable') && (!hasTrade || quoteAt >= tradeAt)) {
+    return { marketCapUsd: row.market_cap_usd, marketCapSource: 'last_quote', marketCapAsOf: token.observedAt! };
+  }
+  return hasTrade
+    ? { marketCapUsd: trade.usd, marketCapSource: 'last_trade', marketCapAsOf: trade.timestamp }
+    : { marketCapUsd: null };
+}
+
 export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWindow, now = Date.now()): Promise<TrendingTokens> {
   const asOf = new Date(now).toISOString();
-  const from = new Date(now - trendingWindows[window] * 60_000).toISOString();
+  const from = now - trendingWindows[window] * 60_000;
   const recentFrom = new Date(now - Math.min(trendingWindows[window], 15) * 60_000).toISOString();
-  const { rows } = await db.query(trendingSql, [from, asOf, recentFrom]);
+  const { rows } = await db.query(trendingSql, [new Date(from).toISOString(), asOf, recentFrom]);
   return {
     window, asOf,
     items: rows.map(row => {
-      const { address, symbol, name, logoUrl, marketCapUsd } = freshTokenDirectoryIdentity(row, now);
+      const identity = freshTokenDirectoryIdentity(row, now);
+      const { address, symbol, name, logoUrl } = identity;
       const quoteAsset = trendingQuoteSymbol(row.market_quote_address, row.observed_market_quote_symbol);
       const quoteSymbol = quoteAsset === 'WBNB' && row.native_market_quote === true ? 'BNB' : quoteAsset;
       const kols = ((row.kols ?? []) as TrendingKol[]).map(kol => {
@@ -118,7 +156,7 @@ export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWi
         const twitter = handle && !/^(?:home|explore|search|intent|i|share|settings|messages)$/i.test(handle) ? handle : null;
         return { ...kol, twitter };
       });
-      return { address, symbol, name, logoUrl, marketCapUsd, kolCount: row.kol_count,
+      return { address, symbol, name, logoUrl, ...trendingMarketCap(row, identity, from, now), kolCount: row.kol_count,
         volumeUsd: row.display_volume_usd, volumeIncomplete: row.volume_incomplete,
         buyCount: row.buy_count, sellCount: row.sell_count, kols, recentKols: kols.slice(0, 3).map(kol => kol.name),
         ...(quoteSymbol === undefined ? {} : { quoteSymbol }),

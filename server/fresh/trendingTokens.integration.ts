@@ -45,7 +45,7 @@ try {
   await client.query(`
     CREATE TEMP TABLE tokens(address text, name text, symbol text, launch_status text, valuation_status text,
       logo_url text, logo_data bytea, market_cap_usd numeric, price_usd numeric, observed_at timestamptz,
-      observed_block bigint, observed_hash text);
+      observed_block bigint, observed_hash text, price_source text, total_supply_raw numeric, decimals integer);
     CREATE TEMP TABLE markets(token_address text, quote_address text, identity jsonb, status text,
       observed_at timestamptz, observed_block bigint, observed_hash text);
     CREATE TEMP TABLE financial_events(token_address text, wallet_address text, transaction_hash text, kind text,
@@ -170,6 +170,36 @@ try {
     WHERE token_address=$1`, [rising, String(now / 1_000 + 15)]);
   assert.equal((await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === rising)?.buyTaxBps, undefined,
     'The cached feed cannot carry a tax past its verified expiry');
+
+  await client.query(`UPDATE tokens SET total_supply_raw='1000000000000000000000000000', decimals=18
+    WHERE address=ANY($1)`, [[rising, flat, burst]]);
+  await client.query(`UPDATE tokens SET price_source='node', price_usd='0.00001', market_cap_usd=10000
+    WHERE address=ANY($1)`, [[rising, flat, ancient, down]]);
+  await client.query(`UPDATE tokens SET observed_at=$2, observed_block=501, observed_hash='retained',
+    valuation_status='quote_unavailable' WHERE address=$1`, [ancient, expired]);
+  await client.query(`UPDATE tokens SET observed_block=502, observed_hash='expired' WHERE address=$1`, [flat]);
+  await client.query(`UPDATE tokens SET observed_at=$2, observed_block=503, observed_hash='old' WHERE address=$1`,
+    [down, new Date(now - 7 * 60 * minute)]);
+  await client.query(`INSERT INTO recent_blocks VALUES
+    (500,'canonical',$1),(501,'retained',$2),(502,'expired',$2),(503,'old',$3)`,
+    [recent, expired, new Date(now - 7 * 60 * minute)]);
+  await trade(burst, 1, now - 1_000, { amount: 1 });
+  const marketCaps = async () => new Map((await readFreshTrendingTokens(fixtureDb, '6h', now)).items
+    .map(item => [item.address, { cap: item.marketCapUsd, source: item.marketCapSource, at: item.marketCapAsOf }]));
+  const caps = await marketCaps();
+  assert.deepEqual(caps.get(rising), { cap: '10000', source: 'current_quote', at: recent.toISOString() },
+    'A fresh canonical node quote wins over an execution estimate');
+  assert.deepEqual(caps.get(ancient), { cap: '10000', source: 'last_quote', at: expired.toISOString() },
+    'A temporary quote failure exposes only the verified quote time');
+  assert.deepEqual(caps.get(flat), { cap: '1000000000', source: 'last_trade', at: new Date(now - 2 * minute + 2).toISOString() },
+    'A newer qualifying trade wins over an older node quote');
+  assert.deepEqual(caps.get(burst), { cap: '1000000000', source: 'last_trade', at: recent.toISOString() },
+    'A token without a node quote uses the latest priced transaction and observed supply, skipping dust');
+  assert.deepEqual(caps.get(down), { cap: null, source: undefined, at: undefined },
+    'An out-of-window quote and missing supply leave the cap unavailable');
+  await client.query(`UPDATE tokens SET observed_hash='orphaned' WHERE address=$1`, [ancient]);
+  assert.deepEqual((await marketCaps()).get(ancient), { cap: null, source: undefined, at: undefined },
+    'A quote from a different block hash stays unavailable');
 
   for (let i = 0; i < 14; i++) {
     const other = await token(200 + i);

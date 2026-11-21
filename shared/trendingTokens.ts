@@ -18,12 +18,17 @@ export interface TrendingMarketDetails {
   taxSource?: 'goplus';
 }
 
+export type TrendingMarketCapSource = 'current_quote' | 'last_quote' | 'last_trade';
+
 export interface TrendingToken extends TrendingMarketDetails {
   address: string;
   name: string | null;
   symbol: string | null;
   logoUrl: string | null;
   marketCapUsd: string | null;
+  /** Observation used for the displayed value, which can be older than the feed. */
+  marketCapSource?: TrendingMarketCapSource;
+  marketCapAsOf?: string;
   // USD subtotal of the valued public KOL buys and sells in the selected window.
   volumeUsd: string | null;
   volumeIncomplete: boolean;

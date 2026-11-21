@@ -19,6 +19,7 @@ const dollarOptions = { style: 'currency', currency: 'USD', notation: 'compact',
 const lowerBoundOptions = { ...dollarOptions, roundingMode: 'floor' } as const;
 const compactDollars = new Intl.NumberFormat('en', dollarOptions);
 const lowerBoundDollars = new Intl.NumberFormat('en', lowerBoundOptions);
+const metricDate = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' });
 const percentChange = new Intl.NumberFormat('en', { style: 'percent', signDisplay: 'always', maximumFractionDigits: 1 });
 const taxPercent = new Intl.NumberFormat('en', { style: 'percent', maximumFractionDigits: 2 });
 const formatTax = (bps: number | undefined) =>
@@ -71,17 +72,34 @@ function external(url: string, className: string, label?: string) {
   return link;
 }
 
-function dollarMetric(label: string, usd: string | null | undefined, description: string, incomplete = false) {
+function dollarMetric(label: string, usd: string | null | undefined, description: string, {
+  incomplete = false, approximate = false, observedAt,
+}: { incomplete?: boolean; approximate?: boolean; observedAt?: string } = {}) {
   const metric = element('span', 'metric', `${label} `);
   const amount = Number(usd);
   const formatter = incomplete ? lowerBoundDollars : compactDollars;
   const formatted = Number.isFinite(amount) && amount > 0 ? formatter.format(amount) : null;
-  const value = element('strong', '', formatted ? `${incomplete ? '≥' : ''}${formatted}` : '—');
+  const prefix = incomplete ? '≥' : approximate ? '≈' : '';
+  const text = formatted ? `${prefix}${formatted}` : '—';
+  const value = element('strong', '', text);
   const color = formatted && cardMetricColor({ value: formatted });
   if (color) value.style.color = color;
-  metric.title = formatted && incomplete ? `${description} (known amounts only)` : description;
+  const timestamp = typeof observedAt === 'string' ? Date.parse(observedAt) : NaN;
+  const date = Number.isFinite(timestamp) ? `${metricDate.format(timestamp)} UTC` : '';
+  metric.title = formatted
+    ? [incomplete ? `${description} (known amounts only)` : description, text, date].filter(Boolean).join(' · ')
+    : `${description} unavailable`;
   metric.append(value);
   return metric;
+}
+
+function trackedMarketCapMetric(item: TrendingToken) {
+  const lastQuote = item.marketCapSource === 'last_quote';
+  const lastTrade = item.marketCapSource === 'last_trade';
+  const description = lastQuote ? 'Market cap at last quote' : lastTrade ? 'Estimated market cap at last trade' : 'Market cap';
+  return dollarMetric('MC', item.marketCapUsd, description, {
+    approximate: lastQuote || lastTrade, observedAt: item.marketCapAsOf,
+  });
 }
 
 function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps' | 'taxSource'>) {
@@ -470,8 +488,8 @@ function createPanel() {
     button.setAttribute('aria-label', `Buy ${buyName}`);
 
     const metrics = element('span', 'metrics');
-    const marketCap = dollarMetric('MC', item.marketCapUsd, 'Market cap');
-    const volume = dollarMetric('V', item.volumeUsd, 'Tracked KOL volume for this time window', item.volumeIncomplete);
+    const marketCap = trackedMarketCapMetric(item);
+    const volume = dollarMetric('V', item.volumeUsd, 'Tracked KOL volume for this time window', { incomplete: item.volumeIncomplete });
     metrics.append(marketCap, volume);
     button.setAttribute('aria-description', `${marketCap.title}, ${volume.title}`);
     const label = element('span', 'buy-label');
