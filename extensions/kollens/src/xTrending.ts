@@ -73,6 +73,11 @@ function external(url: string, className: string, label?: string) {
   return link;
 }
 
+function observationDate(observedAt?: string) {
+  const timestamp = typeof observedAt === 'string' ? Date.parse(observedAt) : NaN;
+  return Number.isFinite(timestamp) ? `${metricDate.format(timestamp)} UTC` : '';
+}
+
 function dollarMetric(label: 'MC' | 'V', usd: string | null | undefined, description: string, {
   incomplete = false, observedAt,
 }: { incomplete?: boolean; observedAt?: string } = {}) {
@@ -85,8 +90,7 @@ function dollarMetric(label: 'MC' | 'V', usd: string | null | undefined, descrip
   const value = element('strong', '', text);
   const color = formatted && cardMetricColor({ value: formatted });
   if (color) value.style.color = color;
-  const timestamp = typeof observedAt === 'string' ? Date.parse(observedAt) : NaN;
-  const date = Number.isFinite(timestamp) ? `${metricDate.format(timestamp)} UTC` : '';
+  const date = observationDate(observedAt);
   metric.title = formatted
     ? [incomplete ? `${description} (known amounts only)` : description, text, date].filter(Boolean).join(' · ')
     : `${description} unavailable`;
@@ -101,20 +105,23 @@ function trackedMarketCapMetric(item: TrendingToken) {
   return dollarMetric('MC', item.marketCapUsd, description, { observedAt: item.marketCapAsOf });
 }
 
-function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps' | 'taxSource'>) {
+function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'quoteSource' | 'buyTaxBps' | 'sellTaxBps' | 'taxSource' | 'taxAsOf'>) {
   const details = element('span', 'market-details');
   const symbol = typeof item.symbol === 'string' && item.symbol.trim() || shortAddress(item.address);
   const quote = typeof item.quoteSymbol === 'string' ? item.quoteSymbol.trim() : '';
   const pairLabel = element('span', 'token-pair');
   pairLabel.append(document.createTextNode('Pair '), element('strong', '', quote || '—'));
-  pairLabel.title = quote ? `Trading pair: ${symbol}/${quote}` : 'Trading pair unavailable';
+  const pairSource = item.quoteSource === 'dexscreener' ? ' · DEX Screener pool' : '';
+  pairLabel.title = quote ? `Trading pair: ${symbol}/${quote}${pairSource}` : 'Trading pair unavailable';
 
   const buy = formatTax(item.buyTaxBps);
   const sell = formatTax(item.sellTaxBps);
   const known = buy !== '—' || sell !== '—';
   const tax = element('span', 'token-tax');
   tax.dataset.known = String(known);
-  tax.title = `Buy tax: ${buy === '—' ? 'unavailable' : buy} · Sell tax: ${sell === '—' ? 'unavailable' : sell}${item.taxSource==='goplus'?' · Token-level estimate from GoPlus':''}`;
+  const date = observationDate(item.taxAsOf);
+  const source = item.taxSource === 'goplus' ? 'Token-level estimate from GoPlus' : date ? `Observed ${date}` : '';
+  tax.title = [`Buy tax: ${buy === '—' ? 'unavailable' : buy}`, `Sell tax: ${sell === '—' ? 'unavailable' : sell}`, known ? source : ''].filter(Boolean).join(' · ');
   const rates = element('span', '', known ? `Tax ${buy}/${sell}` : 'Tax —');
   rates.setAttribute('aria-hidden', 'true');
   tax.append(rates, element('span', 'loading-label', tax.title));

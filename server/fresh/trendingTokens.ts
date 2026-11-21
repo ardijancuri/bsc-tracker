@@ -6,6 +6,7 @@ import { readTrendingMarketTax, trendingQuoteSymbol } from './settlementQuote.js
 import { freshPublicTradeScopeSql } from './publicTokens.js';
 import { freshTokenDirectoryIdentity } from './tokenDirectory.js';
 import { freshTrackedEventSql } from './tracking.js';
+import type { createTrackedTrendingDetails } from './trackedTrendingDetails.js';
 
 type TrendingDb = {
   query: (sql: string, values: string[]) => Promise<{ rows: QueryResultRow[] }>;
@@ -86,9 +87,10 @@ SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_da
     AND b.block_hash=t.observed_hash AND b.occurred_at=t.observed_at) AS quote_canonical,
   fills.observed_at AS last_priced_fill_at,fills.quantity AS last_fill_quantity,fills.amount_usd AS last_fill_amount_usd,
   market.quote_address AS market_quote_address,market.identity->'quoteSymbol' AS observed_market_quote_symbol,
-  market.identity->'nativeQuote' AS native_market_quote,
-  CASE WHEN t.valuation_status='ready' AND t.observed_at BETWEEN $2::timestamptz - interval '2 minutes' AND $2::timestamptz
-    THEN market.identity->'tokenTax' END AS market_tax,
+  market.identity->'nativeQuote' AS native_market_quote,market.address AS market_address,market.protocol AS market_protocol,
+  coalesce(launch.protocol,market.identity#>>'{launch,platform}') AS launch_protocol,
+  CASE WHEN market.observed_at >= $2::timestamptz - interval '24 hours' THEN market.identity->'tokenTax' END AS market_tax,
+  market.observed_at AS market_observed_at,
   (SELECT jsonb_agg(jsonb_build_object(
       'walletAddress',p.wallet_address,
       'name',coalesce(nullif(k.display_name,''),left(p.wallet_address,6)||'…'||right(p.wallet_address,4)),
@@ -99,15 +101,22 @@ SELECT t.address,t.symbol,t.name,t.logo_url,(t.logo_data IS NOT NULL) AS logo_da
 FROM ranked JOIN fresh.tokens t ON t.address=ranked.token_address
 LEFT JOIN last_fills fills ON fills.token_address=t.address
 LEFT JOIN LATERAL (
-  SELECT min(m.quote_address) AS quote_address,jsonb_agg(m.identity)->0 AS identity
+  SELECT min(m.quote_address) AS quote_address,min(m.address) AS address,min(m.protocol) AS protocol,
+    min(m.observed_at) AS observed_at,jsonb_agg(m.identity)->0 AS identity
   FROM fresh.markets m
   WHERE m.token_address=t.address AND m.status='ready' AND t.valuation_status IN ('ready','quote_unavailable')
     AND m.observed_block=t.observed_block AND m.observed_hash=t.observed_hash AND m.observed_at=t.observed_at
     AND m.observed_at<=$2::timestamptz
+    AND EXISTS (SELECT 1 FROM fresh.recent_blocks b WHERE b.block_number=m.observed_block AND b.block_hash=m.observed_hash)
     AND m.identity->'canonicalIdentityInvalid' IS DISTINCT FROM 'true'::jsonb
     AND m.identity#>'{market,canonicalIdentityInvalid}' IS DISTINCT FROM 'true'::jsonb
   HAVING count(*)=1
 ) market ON true
+LEFT JOIN LATERAL (
+  SELECT CASE WHEN count(DISTINCT f.protocol)=1 THEN min(f.protocol) END AS protocol
+  FROM fresh.launch_facts f
+  WHERE f.token_address=t.address AND f.status='eligible' AND f.protocol IN ('flap','fourmeme')
+) launch ON true
 ORDER BY score DESC,kol_count DESC,buy_count+sell_count DESC,last_public_trade_at DESC,t.address`;
 
 type DisplayMarketCap = Pick<TrendingToken, 'marketCapUsd' | 'marketCapSource' | 'marketCapAsOf'>;
@@ -138,14 +147,14 @@ function trendingMarketCap(
     : { marketCapUsd: null };
 }
 
-export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWindow, now = Date.now()): Promise<TrendingTokens> {
+type EnrichTracked = ReturnType<typeof createTrackedTrendingDetails>;
+
+export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWindow, now = Date.now(), enrichTracked?: EnrichTracked): Promise<TrendingTokens> {
   const asOf = new Date(now).toISOString();
   const from = now - trendingWindows[window] * 60_000;
   const recentFrom = new Date(now - Math.min(trendingWindows[window], 15) * 60_000).toISOString();
   const { rows } = await db.query(trendingSql, [new Date(from).toISOString(), asOf, recentFrom]);
-  return {
-    window, asOf,
-    items: rows.map(row => {
+  const items: TrendingToken[] = rows.map(row => {
       const identity = freshTokenDirectoryIdentity(row, now);
       const { address, symbol, name, logoUrl } = identity;
       const quoteAsset = trendingQuoteSymbol(row.market_quote_address, row.observed_market_quote_symbol);
@@ -156,13 +165,23 @@ export async function readFreshTrendingTokens(db: TrendingDb, window: TrendingWi
         const twitter = handle && !/^(?:home|explore|search|intent|i|share|settings|messages)$/i.test(handle) ? handle : null;
         return { ...kol, twitter };
       });
+      const tax = readTrendingMarketTax(row.market_tax, now + trendingCacheMs);
+      const observedAt = row.market_observed_at == null ? NaN : new Date(row.market_observed_at).getTime();
+      const taxAsOf = Number.isFinite(observedAt) && (tax.buyTaxBps !== undefined || tax.sellTaxBps !== undefined)
+        ? new Date(observedAt).toISOString() : undefined;
       return { address, symbol, name, logoUrl, ...trendingMarketCap(row, identity, from, now), kolCount: row.kol_count,
         volumeUsd: row.display_volume_usd, volumeIncomplete: row.volume_incomplete,
         buyCount: row.buy_count, sellCount: row.sell_count, kols, recentKols: kols.slice(0, 3).map(kol => kol.name),
         ...(quoteSymbol === undefined ? {} : { quoteSymbol }),
-        ...readTrendingMarketTax(row.market_tax, now + trendingCacheMs) };
-    }),
-  };
+        ...tax, ...(taxAsOf ? { taxAsOf } : {}) };
+  });
+  const marketContexts = new Map(rows.map(row => [row.address, {
+    protocol: row.launch_protocol === 'flap' || row.launch_protocol === 'fourmeme' ? row.launch_protocol : undefined,
+    quoteAddress: row.market_quote_address ?? undefined,
+    marketAddress: row.market_address ?? undefined,
+    marketProtocol: row.market_protocol ?? undefined,
+  }]));
+  return { window, asOf, items: enrichTracked ? await enrichTracked(items, marketContexts).catch(() => items) : items };
 }
 
 const trendingCacheMs = 30_000;
@@ -173,6 +192,7 @@ export function registerFreshTrendingTokens(
   readMarketMomentum?: (window: TrendingWindow) => Promise<MarketMomentumToken[]>,
   enrichMarketMomentum?: (items: MarketMomentumToken[]) => Promise<MarketMomentumToken[]>,
   readMarketFeed?: (window: TrendingWindow) => Promise<{items:MarketMomentumToken[];coverage:MarketMomentumCoverage}>,
+  enrichTracked?: EnrichTracked,
 ) {
   const cache = new Map<TrendingWindow, { expiresAt: number; data: Promise<TrendingTokens> }>();
   app.get<{ Querystring: { window?: string; momentum?: string; view?: string } }>('/api/extension/trending-tokens', async (request, reply) => {
@@ -193,7 +213,7 @@ export function registerFreshTrendingTokens(
     }
     let entry = cache.get(window);
     if (!entry || entry.expiresAt <= now) {
-      const data = readFreshTrendingTokens(db, window, now);
+      const data = readFreshTrendingTokens(db, window, now, enrichTracked);
       entry = { expiresAt: Infinity, data };
       const pending = entry;
       cache.set(window, pending);

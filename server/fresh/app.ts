@@ -21,6 +21,7 @@ import {registerFreshFeatures} from './features.js';
 import { registerFreshTrendingTokens } from './trendingTokens.js';
 import { readNodeMomentumFeed,readNodeMomentumSnapshot } from './nodeMomentumStore.js';
 import { createNodeMomentumDetails } from './nodeMomentumDetails.js';
+import { createLocalTrackedTrendingDetails } from './trackedTrendingDetails.js';
 import { registerFreshTokenImage } from './tokenImageRoute.js';
 import {freshPublicTokenSql,freshPublicTradeScopeSql} from './publicTokens.js';
 import {freshPositionReceiptRelevantSql,freshPendingTradeScopeSql} from './positionDependencies.js';
@@ -63,7 +64,7 @@ export async function createFreshApp(db:Pool,options:{services?:FreshServices;lo
   registerFreshFeatures(app,{db});
   const momentumDetails=process.env.KOLLENS_NODE_MARKET_MOMENTUM==='true'?createNodeMomentumDetails():undefined;
   registerFreshTrendingTokens(app,db,momentumDetails?window=>readNodeMomentumSnapshot(db,window):undefined,
-    momentumDetails?.enrich,momentumDetails?window=>readNodeMomentumFeed(db,window):undefined);
+    momentumDetails?.enrich,momentumDetails?window=>readNodeMomentumFeed(db,window):undefined,createLocalTrackedTrendingDetails());
   if (process.env.KOLLENS_ANALYTICS_ENABLED === 'true') {
     await ensureAnalyticsSchema(db);
     registerAnalytics(app, db, {

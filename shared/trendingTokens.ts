@@ -12,10 +12,12 @@ export interface TrendingKol {
 
 export interface TrendingMarketDetails {
   quoteSymbol?: string;
-  // Basis points, present only for a verified tax on the represented market.
+  quoteSource?: 'dexscreener';
+  // Basis points for the represented market, or a labeled token-level estimate.
   buyTaxBps?: number;
   sellTaxBps?: number;
   taxSource?: 'goplus';
+  taxAsOf?: string;
 }
 
 export type TrendingMarketCapSource = 'current_quote' | 'last_quote' | 'last_trade';

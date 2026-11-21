@@ -26,6 +26,7 @@ function logRangeLimit(message: string) {
 export function createNodeMomentumRpc(endpoint = 'http://127.0.0.1:8545', options: {
   deadlineMs?: number;
   fetch?: typeof fetch;
+  allowCodeRead?: boolean;
 } = {}): Rpc & { stats(): NodeMomentumRpcStats } {
   const target = new URL(endpoint);
   if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || target.pathname !== '/' ||
@@ -38,7 +39,8 @@ export function createNodeMomentumRpc(endpoint = 'http://127.0.0.1:8545', option
   let active = false;
 
   async function request(items: RpcBatchRequest[], batch: boolean): Promise<PromiseSettledResult<unknown>[]> {
-    if (!items.length || items.length > maxBatch || items.some(item => !allowedMethods.has(item.method))) throw Error('momentum_rpc_request_invalid');
+    if (!items.length || items.length > maxBatch || items.some(({ method }) =>
+      !allowedMethods.has(method) && !(options.allowCodeRead && method === 'eth_getCode'))) throw Error('momentum_rpc_request_invalid');
     if (active) throw Error('momentum_rpc_busy');
     active = true;
     const start = performance.now();

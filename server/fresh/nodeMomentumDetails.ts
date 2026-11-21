@@ -8,7 +8,7 @@ type TaxDetails={buyTaxBps?:number;sellTaxBps?:number};
 type Cached<T>={value:T;expires:number};
 type MarketRecord={type?:unknown;id?:unknown;attributes?:{address?:unknown;market_cap_usd?:unknown;image_url?:unknown}};
 
-async function readJson(url:string,fetcher:typeof fetch){
+export async function readTrendingProviderJson(url:string,fetcher:typeof fetch){
   const response=await fetcher(url,{redirect:'error',signal:AbortSignal.timeout(2300)});
   if(!response.ok||!response.body){await response.body?.cancel();return null;}
   const reader=response.body.getReader(),chunks:Uint8Array[]=[];
@@ -31,6 +31,13 @@ function parseTax(value:unknown){
   return ratio<=1?Math.round(ratio*10_000):undefined;
 }
 
+export async function readGoPlusTrendingTax(address:string,fetcher=fetch):Promise<TaxDetails>{
+  if(!addressPattern.test(address))return {};
+  const body=await readTrendingProviderJson('https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses='+address,fetcher).catch(()=>null);
+  const record=body?.code===1?body.result?.[address]:null;
+  return {buyTaxBps:parseTax(record?.buy_tax),sellTaxBps:parseTax(record?.sell_tax)};
+}
+
 /** Display-only metadata for ranked public contracts. The node owns the
  * ranking, counts and volume. External results never enter the ledger. */
 export function createNodeMomentumDetails(fetcher=fetch,now=Date.now){
@@ -46,7 +53,7 @@ export function createNodeMomentumDetails(fetcher=fetch,now=Date.now){
 
   async function loadMetadata(addresses:string[]){
     if(!addresses.length)return;
-    const body=await readJson('https://api.geckoterminal.com/api/v2/networks/bsc/tokens/multi/'+addresses.join(','),fetcher).catch(()=>null);
+    const body=await readTrendingProviderJson('https://api.geckoterminal.com/api/v2/networks/bsc/tokens/multi/'+addresses.join(','),fetcher).catch(()=>null);
     const records:MarketRecord[]=Array.isArray(body?.data)?body.data:[];
     for(const address of addresses){
       const row=records.find(record=>record?.type==='token'&&record.id==='bsc_'+address&&
@@ -64,9 +71,7 @@ export function createNodeMomentumDetails(fetcher=fetch,now=Date.now){
   }
 
   async function loadTax(address:string){
-    const body=await readJson('https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses='+address,fetcher).catch(()=>null);
-    const record=body?.code===1?body.result?.[address]:null;
-    const buyTaxBps=parseTax(record?.buy_tax),sellTaxBps=parseTax(record?.sell_tax);
+    const {buyTaxBps,sellTaxBps}=await readGoPlusTrendingTax(address,fetcher);
     remember(tax,address,{buyTaxBps,sellTaxBps},buyTaxBps!==undefined||sellTaxBps!==undefined?taxTtl:retryAfterMs);
   }
 

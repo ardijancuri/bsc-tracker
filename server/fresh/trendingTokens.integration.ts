@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { WBNB } from '../launchpad.js';
 import { nodeMomentumCheckpoint, readNodeMomentumSnapshot } from './nodeMomentumStore.js';
 import { readFreshTrendingTokens } from './trendingTokens.js';
+import { createTrackedTrendingDetails } from './trackedTrendingDetails.js';
 
 const url = new URL(process.env.TRENDING_TEST_DATABASE_URL ?? '');
 if (url.hostname !== '127.0.0.1') throw Error('Use a local PostgreSQL test database');
@@ -47,7 +48,7 @@ try {
       logo_url text, logo_data bytea, market_cap_usd numeric, price_usd numeric, observed_at timestamptz,
       observed_block bigint, observed_hash text, price_source text, total_supply_raw numeric, decimals integer);
     CREATE TEMP TABLE markets(token_address text, quote_address text, identity jsonb, status text,
-      observed_at timestamptz, observed_block bigint, observed_hash text);
+      observed_at timestamptz, observed_block bigint, observed_hash text, address text, protocol text);
     CREATE TEMP TABLE financial_events(token_address text, wallet_address text, transaction_hash text, kind text,
       occurred_at timestamptz, quantity text, amount_usd text, canonical boolean, observed_live boolean,
       provenance jsonb, block_number bigint);
@@ -56,7 +57,7 @@ try {
     CREATE TEMP TABLE accounting_scopes(id text, kind text, wallet_addresses text[], account_id text, active boolean,
       starts_block bigint, starts_at timestamptz);
     CREATE TEMP TABLE checkpoints(key text, block_number bigint, block_hash text, value jsonb);
-    CREATE TEMP TABLE launch_facts(token_address text, status text);
+    CREATE TEMP TABLE launch_facts(token_address text, status text, protocol text);
     CREATE TEMP TABLE recent_blocks(block_number bigint, block_hash text, occurred_at timestamptz);
     CREATE TEMP TABLE published_kols(address text, display_name text, twitter text);
     INSERT INTO checkpoints(key, block_number) VALUES ('capture', 1000);
@@ -133,14 +134,31 @@ try {
   assert.equal(feed.items.find(item => item.address === pending)?.volumeUsd, null);
   assert.equal(feed.items.find(item => item.address === pending)?.volumeIncomplete, true);
   assert(!(await readFreshTrendingTokens(fixtureDb, '5m', now)).items.some(item => item.address === ancient));
+  await client.query("INSERT INTO launch_facts VALUES ($1,'eligible','flap')", [pending]);
+  const details = createTrackedTrendingDetails({
+    now: () => now,
+    fetcher: async () => Response.json([]),
+    marketLookup: {
+      confirmedBlock: async () => ({ number: 500, hash: hash(500), timestamp: new Date(now).toISOString() }),
+      read: async request => {
+        assert.deepEqual(request, { address: pending, protocol: 'flap', marketAddress: undefined, marketProtocol: undefined, quoteAddress: undefined });
+        return { quoteSymbol: 'FXIon', buyTaxBps: 0, sellTaxBps: 100 };
+      },
+    },
+  });
+  const augmented = (await readFreshTrendingTokens(fixtureDb, '6h', now, details)).items.find(item => item.address === pending);
+  assert.deepEqual(augmented, { ...feed.items.find(item => item.address === pending),
+    quoteSymbol: 'FXIon', buyTaxBps: 0, sellTaxBps: 100, taxAsOf: new Date(now).toISOString(),
+  }, 'The ranked feed can supply pair and tax before a USD quote exists');
 
   const recent = new Date(now - minute);
   const expired = new Date(now - 3 * minute);
+  await client.query("INSERT INTO recent_blocks VALUES (500,'canonical',$1)", [recent]);
   for (const [key, time] of [[rising, recent], [flat, expired], [down, recent], [weak, recent]] as const) {
     await client.query(`UPDATE tokens SET observed_at=$2, observed_block=500, observed_hash='canonical', valuation_status='ready'
       WHERE address=$1`, [key, time]);
   }
-  await client.query(`INSERT INTO markets VALUES
+  await client.query(`INSERT INTO markets(token_address,quote_address,identity,status,observed_at,observed_block,observed_hash) VALUES
     ($1,$5,'{"nativeQuote":true,"tokenTax":{"buyTaxBps":0,"sellTaxBps":325}}','ready',$6,500,'canonical'),
     ($2,$5,'{"tokenTax":{"buyTaxBps":400,"sellTaxBps":500}}','ready',$7,500,'canonical'),
     ($3,$5,'{"tokenTax":{"buyTaxBps":300}}','ready',$6,500,'orphaned'),
@@ -151,7 +169,8 @@ try {
   assert.equal(enriched.find(item => item.address === rising)?.buyTaxBps, 0);
   assert.equal(enriched.find(item => item.address === rising)?.sellTaxBps, 325);
   assert.equal(enriched.find(item => item.address === flat)?.quoteSymbol, 'WBNB');
-  assert.equal(enriched.find(item => item.address === flat)?.sellTaxBps, undefined);
+  assert.equal(enriched.find(item => item.address === flat)?.sellTaxBps, 500);
+  assert.equal(enriched.find(item => item.address === flat)?.taxAsOf, expired.toISOString());
   assert.equal(enriched.find(item => item.address === down)?.quoteSymbol, undefined);
   assert.equal(enriched.find(item => item.address === weak)?.quoteSymbol, undefined);
   await client.query(`UPDATE markets SET identity='{"market":{"canonicalIdentityInvalid":true}}' WHERE token_address=$1`, [weak]);
@@ -161,7 +180,8 @@ try {
     WHERE token_address=$1`, [rising, address(77)]);
   const retained = (await readFreshTrendingTokens(fixtureDb, '6h', now)).items.find(item => item.address === rising);
   assert.equal(retained?.quoteSymbol, 'FXIon', 'A verified pair survives a temporary USD quote failure');
-  assert.equal(retained?.buyTaxBps, undefined, 'A failed refresh does not renew the tax');
+  assert.equal(retained?.buyTaxBps, 100, 'A temporary USD failure still exposes the last verified tax');
+  assert.equal(retained?.taxAsOf, recent.toISOString(), 'A failed refresh does not renew the observed timestamp');
   await client.query(`UPDATE tokens SET valuation_status='ready' WHERE address=$1`, [rising]);
   await client.query(`UPDATE markets SET identity=jsonb_set(identity,'{tokenTax,expiresAtSeconds}',$2::jsonb)
     WHERE token_address=$1`, [rising, String(now / 1_000 - 1)]);
@@ -181,8 +201,8 @@ try {
   await client.query(`UPDATE tokens SET observed_at=$2, observed_block=503, observed_hash='old' WHERE address=$1`,
     [down, new Date(now - 7 * 60 * minute)]);
   await client.query(`INSERT INTO recent_blocks VALUES
-    (500,'canonical',$1),(501,'retained',$2),(502,'expired',$2),(503,'old',$3)`,
-    [recent, expired, new Date(now - 7 * 60 * minute)]);
+    (501,'retained',$1),(502,'expired',$1),(503,'old',$2)`,
+  [expired, new Date(now - 7 * 60 * minute)]);
   await trade(burst, 1, now - 1_000, { amount: 1 });
   const marketCaps = async () => new Map((await readFreshTrendingTokens(fixtureDb, '6h', now)).items
     .map(item => [item.address, { cap: item.marketCapUsd, source: item.marketCapSource, at: item.marketCapAsOf }]));
@@ -209,8 +229,7 @@ try {
   const limited = await readFreshTrendingTokens(fixtureDb, '6h', now);
   assert.equal(limited.items.length, 12);
   assert.equal(limited.items[0]?.address, rising, 'Top-12 is chosen after momentum ranking');
-  await client.query(`ALTER TABLE checkpoints ADD COLUMN revision bigint DEFAULT 1;
-    ALTER TABLE markets ADD COLUMN address text, ADD COLUMN protocol text;`);
+  await client.query('ALTER TABLE checkpoints ADD COLUMN revision bigint DEFAULT 1');
   const item = {
     address: rising, name: 'Meme token', symbol: 'MEME', quoteSymbol: 'WBNB',
     poolAddress: address(111), quoteAddress: WBNB, marketCapUsd: null,
