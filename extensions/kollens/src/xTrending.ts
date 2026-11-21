@@ -18,6 +18,7 @@ lifecycle.kollensXTrendingCleanup?.();
 const dollarOptions = { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 2 } as const;
 const lowerBoundOptions = { ...dollarOptions, roundingMode: 'floor' } as const;
 const compactDollars = new Intl.NumberFormat('en', dollarOptions);
+const marketCapDollars = new Intl.NumberFormat('en', { ...dollarOptions, minimumFractionDigits: 2 });
 const lowerBoundDollars = new Intl.NumberFormat('en', lowerBoundOptions);
 const metricDate = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' });
 const percentChange = new Intl.NumberFormat('en', { style: 'percent', signDisplay: 'always', maximumFractionDigits: 1 });
@@ -72,14 +73,14 @@ function external(url: string, className: string, label?: string) {
   return link;
 }
 
-function dollarMetric(label: string, usd: string | null | undefined, description: string, {
-  incomplete = false, approximate = false, observedAt,
-}: { incomplete?: boolean; approximate?: boolean; observedAt?: string } = {}) {
+function dollarMetric(label: 'MC' | 'V', usd: string | null | undefined, description: string, {
+  incomplete = false, observedAt,
+}: { incomplete?: boolean; observedAt?: string } = {}) {
   const metric = element('span', 'metric', `${label} `);
   const amount = Number(usd);
-  const formatter = incomplete ? lowerBoundDollars : compactDollars;
+  const formatter = label === 'MC' ? marketCapDollars : incomplete ? lowerBoundDollars : compactDollars;
   const formatted = Number.isFinite(amount) && amount > 0 ? formatter.format(amount) : null;
-  const prefix = incomplete ? '≥' : approximate ? '≈' : '';
+  const prefix = incomplete ? '≥' : '';
   const text = formatted ? `${prefix}${formatted}` : '—';
   const value = element('strong', '', text);
   const color = formatted && cardMetricColor({ value: formatted });
@@ -97,9 +98,7 @@ function trackedMarketCapMetric(item: TrendingToken) {
   const lastQuote = item.marketCapSource === 'last_quote';
   const lastTrade = item.marketCapSource === 'last_trade';
   const description = lastQuote ? 'Market cap at last quote' : lastTrade ? 'Estimated market cap at last trade' : 'Market cap';
-  return dollarMetric('MC', item.marketCapUsd, description, {
-    approximate: lastQuote || lastTrade, observedAt: item.marketCapAsOf,
-  });
+  return dollarMetric('MC', item.marketCapUsd, description, { observedAt: item.marketCapAsOf });
 }
 
 function tokenMarketDetails(item: Pick<TrendingToken, 'address' | 'symbol' | 'quoteSymbol' | 'buyTaxBps' | 'sellTaxBps' | 'taxSource'>) {
