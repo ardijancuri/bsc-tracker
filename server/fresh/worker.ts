@@ -87,6 +87,7 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
   const nextDecodeService=createFreshDecodeServiceCycle();
   const refreshBalances=createFreshBalanceRefresher(db,rpc);
   let lastQuoteAt=0;
+  let tokenBirthTurn=0;
   // One capture owner. API requests never start scanners or accounting workers.
   if(!(await connection.query('SELECT pg_try_advisory_lock(73621945) AS owned')).rows[0].owned){connection.release();throw new Error('fresh_worker_already_running');}
   if(process.env.FRESH_LOCAL_ONLY==='true')await db.query(`INSERT INTO fresh.checkpoints(key,value) VALUES('runtime:worker',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[JSON.stringify({pid:process.pid,startedAt:new Date().toISOString(),sourceDigest:await freshRuntimeDigest()})]);
@@ -109,7 +110,11 @@ export async function runFreshWorker(db:Pool,rpc:Rpc,signal:AbortSignal) {
     loop('synthetic_batch_anchor',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshSyntheticBatchAnchorCapture(db,rpc,{signal})),
     loop('token_discovery',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenDiscovery(db,rpc,{signal,archiveRpc:discoveryArchive})),
     loop('admission_recheck',250,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshAdmissionRecheck(db,{signal})),
-    loop('token_birth',1000,()=>!captureHealth||captureHealth.lagBlocks>32?Promise.resolve({yielded:true,reason:'capture_priority'}):runFreshTokenBirthCapture(db,rpc,{signal})),
+    loop('token_birth',1000,()=>{
+      if(!captureHealth||captureHealth.lagBlocks>32)return Promise.resolve({yielded:true,reason:'capture_priority'});
+      tokenBirthTurn=(tokenBirthTurn+1)%5;
+      return runFreshTokenBirthCapture(db,rpc,{signal,preferRetry:tokenBirthTurn===0});
+    }),
     loop('decode',500,async()=>{const transferRevaluation=await runFreshTransferValuation(db),service=nextDecodeService();const result=await runFreshDecode(db,rpc,{limit:32,trace,recoveryBatch,maxNormalizeMs:3_000,...service,archiveTradeTrace:captureHealth&&captureHealth.lagBlocks<=32?tradeArchive:undefined});if(result.receipts)await db.query("SELECT pg_notify('bscan_update','update')");
       // No relevant receipts is a complete empty block, rather than a stalled financial cursor.
       await db.query(`UPDATE fresh.checkpoints d SET block_number=c.block_number,block_hash=c.block_hash,updated_at=clock_timestamp() FROM fresh.checkpoints c WHERE d.key='decode' AND c.key='capture'

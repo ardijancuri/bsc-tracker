@@ -1,6 +1,6 @@
 /** TEMP/rollback-only lifecycle checks. Every persistent table remains intact. */
 import assert from'node:assert/strict';import{Pool}from'pg';import{randomUUID}from'node:crypto';
-import{runFreshTokenBirthCapture}from'./tokenBirthCapture.js';import{tokenBirthFixture,birthHash}from'./fixtures/tokenBirthFixture.js';
+import{freshTokenBirthLeaseSql,runFreshTokenBirthCapture}from'./tokenBirthCapture.js';import{tokenBirthFixture,birthHash}from'./fixtures/tokenBirthFixture.js';
 import{encodeFreshEvidence}from'./capture.js';import type{Rpc}from'../rpc.js';
 const url=new URL(process.env.DATABASE_URL??'');if(url.hostname!=='127.0.0.1'||url.port!=='5436'||url.pathname!=='/kollens_tempo_wpc_20261025_192724')throw Error('token_birth_owned_local_clone_only');
 const pool=new Pool({connectionString:url.href,max:1}),c=await pool.connect(),now=new Date(),statements:string[]=[],checks:string[]=[];
@@ -28,6 +28,46 @@ try{await c.query('BEGIN');await c.query("SET LOCAL statement_timeout='10s'");aw
  reorg=false;revisionRace=true;await query("UPDATE fresh.jobs SET due_at=$2 WHERE kind='token_birth' AND reference=$1",[fresh.token,now]);assert.equal((await runFreshTokenBirthCapture(db,rpc,{now})).certified,0);assert.equal((await query("SELECT proof->'tokenBirth' c FROM fresh.launch_facts WHERE token_address=$1",[fresh.token])).rows[0].c,null);checks.push('Capture correction epoch change rejects stale publication');
  revisionRace=false;await query("UPDATE fresh.positions SET last_event_at=$2 WHERE token_address=$1",[fresh.token,new Date(now.getTime()-25*3600_000)]);await query("UPDATE fresh.jobs SET due_at=$2 WHERE kind='token_birth' AND reference=$1",[fresh.token,now]);const callsBeforeStale=rpcCalls;assert.equal((await runFreshTokenBirthCapture(db,rpc,{now})).certified,0);assert.equal(rpcCalls,callsBeforeStale);assert.equal((await query("SELECT state FROM fresh.jobs WHERE kind='token_birth' AND reference=$1",[fresh.token])).rows[0].state,'cancelled');checks.push('Expired inactive work cancels without further node calls');
  await query('UPDATE fresh.positions SET last_event_at=$2 WHERE token_address=$1',[fresh.token,now]);assert.equal((await runFreshTokenBirthCapture(db,rpc,{now})).certified,1);assert.equal((await query("SELECT count(*)::int n FROM fresh.jobs WHERE kind='token_birth' AND reference=$1",[fresh.token])).rows[0].n,1);checks.push('New activity revives the same bounded token job instead of adding rows');
+ // A completed job for a replaced birth receipt must not suppress the new birth.
+ await query("UPDATE fresh.launch_facts SET proof=proof-'tokenBirth' WHERE token_address=$1",[fresh.token]);
+ await query("UPDATE fresh.jobs SET attempts=27683,progress=jsonb_set(progress,'{blockHash}',to_jsonb($2::text)) WHERE kind='token_birth' AND reference=$1",[fresh.token,birthHash(999)]);
+ assert.equal((await runFreshTokenBirthCapture(db,rpc,{now})).certified,1);
+ const replacement=(await query("SELECT state,attempts,progress,lease_id FROM fresh.jobs WHERE kind='token_birth' AND reference=$1",[fresh.token])).rows[0];
+ assert.equal(replacement.state,'done');
+ assert.equal(replacement.attempts,0);
+ assert.equal(replacement.progress.blockHash,fresh.fact.blockHash);
+ assert.equal(replacement.lease_id,null);
+ assert.equal((await runFreshTokenBirthCapture(db,rpc,{now})).attempted,0);
+ checks.push('A job bound to an orphaned launch resets for the new canonical launch and certifies only once');
+
+ // Model the production queue with many old selected retries already due.
+ // These are only job rows. Neither missing history nor fake payment data is inserted.
+ await query(
+  `INSERT INTO fresh.jobs(id,kind,reference,priority,state,attempts,progress,due_at)
+   SELECT 'old:'||n,'token_birth','old:'||n,100,'pending',27683,
+    jsonb_build_object('selectedUntilMs',$2::bigint),$1::timestamptz-interval '4 hours'
+   FROM generate_series(1,65) n`,
+  [now,now.getTime()-60000]);
+ await query(
+  `INSERT INTO fresh.jobs(id,kind,reference,priority,progress,due_at) VALUES
+   ('fresh-normal','token_birth','fresh-normal',50,'{}',$1::timestamptz-interval '20 seconds'),
+   ('expired-selection','token_birth','expired-selection',100,jsonb_build_object('selectedUntilMs',$2::bigint),$1::timestamptz-interval '10 seconds'),
+   ('live-selection','token_birth','live-selection',100,jsonb_build_object('selectedUntilMs',$3::bigint),$1::timestamptz),
+   ('invalid-selection','token_birth','invalid-selection',100,jsonb_build_object('selectedUntilMs',$4::bigint),$1::timestamptz)`,
+  [now,now.getTime()-60000,now.getTime()+60000,now.getTime()+180000]);
+ const reserve=async(preferRetry:boolean)=>(await query(freshTokenBirthLeaseSql,[now,randomUUID(),preferRetry])).rows[0];
+ assert.equal((await reserve(false)).reference,'live-selection');
+ assert.equal((await reserve(false)).reference,'fresh-normal');
+ assert.equal((await reserve(false)).reference,'expired-selection');
+ assert.equal((await reserve(false)).reference,'invalid-selection');
+ checks.push('Unexpired selection wins its turn; 65 ancient priority-100 retries and expired selection cannot jump fresh work');
+ await query("INSERT INTO fresh.jobs(id,kind,reference,priority,due_at)VALUES('another-fresh','token_birth','another-fresh',50,$1)",[now]);
+ const retried=await reserve(true);
+ assert.match(retried.reference,/^old:/);
+ assert.equal(retried.attempts,27683);
+ assert.equal((await reserve(false)).reference,'another-fresh');
+ checks.push('A reserved retry turn services the old queue even with another fresh job due');
+
  assert(!statements.some(sql=>/INSERT INTO fresh.financial_events|UPDATE fresh.accounting_scopes|telegram|public\./.test(sql)));checks.push('No financial, account or external message writes');
  await c.query('ROLLBACK');console.log(JSON.stringify({passed:true,checks:checks.length,persistentWrites:0,nodeCalls:0,simulatedNodeCalls:rpcCalls,financialWrites:0}));
 }catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();await pool.end();}

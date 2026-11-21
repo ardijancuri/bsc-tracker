@@ -1,13 +1,13 @@
 import{describe,expect,it,vi}from'vitest';
-import type{Pool}from'pg';import type{Rpc}from'../rpc.js';
+import type{Pool}from'pg';import{RpcRequestError,type Rpc}from'../rpc.js';
 import{encodeFreshEvidence,decodeFreshEvidence,type FreshCapturedReceipt}from'./capture.js';
 import{tokenBirthFixture,birthHash}from'./fixtures/tokenBirthFixture.js';
-import{runFreshTokenBirthCapture,freshTokenBirthQueueSql,freshTokenBirthSelectionSql}from'./tokenBirthCapture.js';
+import{runFreshTokenBirthCapture,freshTokenBirthLeaseSql,freshTokenBirthQueueSql,freshTokenBirthRetryDelaySeconds,freshTokenBirthSelectionSql}from'./tokenBirthCapture.js';
 const clone=<T>(x:T):T=>structuredClone(x);
-function memory(options:{retained?:boolean;stale?:boolean;noJob?:boolean;revisionChanged?:boolean;factChanged?:boolean;leaseChanged?:boolean;lateLeaseLost?:boolean;bodyConflict?:boolean;selectionMissing?:boolean;lateSelectionMissing?:boolean}={}){
+function memory(options:{retained?:boolean;stale?:boolean;noJob?:boolean;revisionChanged?:boolean;factChanged?:boolean;leaseChanged?:boolean;lateLeaseLost?:boolean;bodyConflict?:boolean;selectionMissing?:boolean;lateSelectionMissing?:boolean;attempts?:number;rpcError?:Error}={}){
  const f=tokenBirthFixture(),now=new Date('2026-10-26T12:00:00Z'),initial={token_address:f.token,protocol:f.fact.protocol,block_number:'120',block_hash:f.fact.blockHash,tx_hash:f.fact.txHash,log_index:f.fact.logIndex,launched_at:new Date(f.timestamp),proof:clone(f.fact.proof),status:'eligible'};
  let row=clone(initial),payload:Buffer|undefined=options.retained?encodeFreshEvidence({...f.creation,wallets:[f.creation.transaction.from],observedAt:'2026-01-01T00:02:05Z',decodeDiagnostics:{version:1,valuationReasons:['retained_reason'],firstFailure:{version:1,at:'2026-01-01T00:02:05Z',reasons:['retained_reason']}}}as FreshCapturedReceipt):undefined;
- const firstPayload=payload&&Buffer.from(payload),job:any={id:'token_birth:'+f.token,reference:f.token,progress:{version:1,kind:'token_birth_capture_v1',blockNumber:120,blockHash:f.fact.blockHash,transactionHash:f.fact.txHash}};
+ const firstPayload=payload&&Buffer.from(payload),job:any={id:'token_birth:'+f.token,reference:f.token,attempts:options.attempts??0,progress:{version:1,kind:'token_birth_capture_v1',blockNumber:120,blockHash:f.fact.blockHash,transactionHash:f.fact.txHash}};
  let before:{row:any;payload:Buffer|undefined}|undefined,lease:string|undefined,selectionChecks=0;
  const statements:{sql:string;params:any[]}[]=[],query=vi.fn(async(sql:string,params:any[]=[]):Promise<any>=>{
   statements.push({sql,params});if(sql.startsWith('SELECT c.revision'))return{rows:[{revision:'1',block_number:'130',occurred_at:new Date(now.getTime()-(options.stale?21000:1000))}]};
@@ -26,15 +26,59 @@ function memory(options:{retained?:boolean;stale?:boolean;noJob?:boolean;revisio
   if(sql.startsWith('UPDATE fresh.launch_facts')){row.proof=JSON.parse(params[1]);return{rows:[],rowCount:1};}
   if(sql.startsWith('INSERT INTO fresh.recent_evidence')){payload=params[4];return{rows:[],rowCount:1};}
   if(sql.startsWith("UPDATE fresh.jobs SET state='done'"))return{rows:[],rowCount:options.lateLeaseLost?0:1};
-  if(sql.startsWith('UPDATE fresh.jobs SET lease_id=NULL'))return{rows:[],rowCount:lease===params[1]?1:0};
+  if(sql.startsWith("UPDATE fresh.jobs SET state=CASE WHEN $3='token_birth_not_selected'"))return{rows:[],rowCount:lease===params[1]?1:0};
   return{rows:[],rowCount:1};
  });
- const rpc=vi.fn(async(method:string,params:unknown[])=>{expect(statements.some(s=>s.sql==='BEGIN')).toBe(false);if(method==='eth_getBlockByNumber')return params[1]===true?clone(f.creation.block):{...clone(f.creation.block),transactions:[]};if(method==='eth_getTransactionReceipt')return clone(f.creation.receipt);throw Error('unexpected_financial_or_state_rpc');})as unknown as Rpc;
+ const rpc=vi.fn(async(method:string,params:unknown[])=>{expect(statements.some(s=>s.sql==='BEGIN')).toBe(false);if(options.rpcError)throw options.rpcError;if(method==='eth_getBlockByNumber')return params[1]===true?clone(f.creation.block):{...clone(f.creation.block),transactions:[]};if(method==='eth_getTransactionReceipt')return clone(f.creation.receipt);throw Error('unexpected_financial_or_state_rpc');})as unknown as Rpc;
  return{f,now,query,rpc,statements,firstPayload,get row(){return row;},get payload(){return payload;},db:{query,connect:async()=>({query,release(){}})}as unknown as Pool};
 }
 describe('bounded selected-token birth evidence capture',()=>{
  it('restricts queue candidates to captured, selected or own-scope last24h positions and keeps one reference per token',()=>{
   expect(freshTokenBirthQueueSql).toContain('l.block_number<=$2');expect(freshTokenBirthQueueSql).toContain("interval '24 hours'");expect(freshTokenBirthQueueSql).toContain("selected.priority>=100");expect(freshTokenBirthQueueSql).toContain('s.active');expect(freshTokenBirthQueueSql).toContain('LIMIT 16');expect(freshTokenBirthQueueSql).toContain("WHERE fresh.jobs.state='cancelled'");
+ });
+ it('uses a bounded lease with a separate turn for unresolved retries',async()=>{
+  expect(freshTokenBirthLeaseSql).toContain('FOR UPDATE SKIP LOCKED');
+  expect(freshTokenBirthLeaseSql).toContain('selectedUntilMs');
+  expect(freshTokenBirthLeaseSql).toContain('attempts');
+  expect(freshTokenBirthLeaseSql).toContain('$3');
+  const m=memory({noJob:true});
+  await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now});
+  const lease=m.statements.find(s=>s.sql===freshTokenBirthLeaseSql)!;
+  expect(lease.params).toEqual([m.now,expect.any(String),false]);
+  expect(m.rpc).not.toHaveBeenCalled();
+  const retry=memory({noJob:true});
+  await runFreshTokenBirthCapture(retry.db,retry.rpc,{now:retry.now,preferRetry:true});
+  expect(retry.statements.find(s=>s.sql===freshTokenBirthLeaseSql)?.params).toEqual([retry.now,expect.any(String),true]);
+ });
+ it('spaces retries by cause and caps backoff after thousands of attempts',()=>{
+  expect(freshTokenBirthRetryDelaySeconds(0,'transport_timeout')).toBe(60);
+  expect(freshTokenBirthRetryDelaySeconds(0,'token_birth_history_unavailable')).toBe(300);
+  expect(freshTokenBirthRetryDelaySeconds(0,'token_birth_creation_unsupported')).toBe(3600);
+  expect(freshTokenBirthRetryDelaySeconds(2,'token_birth_history_unavailable')).toBeGreaterThan(300);
+  expect(freshTokenBirthRetryDelaySeconds(27683,'token_birth_history_unavailable')).toBe(21600);
+  expect(freshTokenBirthRetryDelaySeconds(27683,'transport_timeout')).toBe(21600);
+  expect(freshTokenBirthRetryDelaySeconds(27683,'token_birth_creation_unsupported')).toBe(21600);
+ });
+ it('uses capped backoff for an existing long-retrying job',async()=>{
+  const m=memory({attempts:27683,rpcError:new RpcRequestError('pruned state','state_unavailable')});
+  expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now,preferRetry:true})).toMatchObject({reason:'token_birth_history_unavailable'});
+  expect(m.statements.find(s=>s.sql.includes('attempts=attempts+1'))?.params.slice(2)).toEqual(['token_birth_history_unavailable',21600]);
+ });
+ it('recognizes an explicit null node result as unavailable historical evidence',async()=>{
+  const missing=new RpcRequestError('RPC eth_getBlockByNumber unavailable','invalid_response',{nullResult:true});
+  const m=memory({rpcError:missing});
+  expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now})).toMatchObject({attempted:1,certified:0,reason:'token_birth_history_unavailable'});
+  expect(m.rpc).toHaveBeenCalledTimes(1);
+  expect(m.statements.find(s=>s.sql.includes('attempts=attempts+1'))?.params.slice(2)).toEqual(['token_birth_history_unavailable',300]);
+  expect(m.statements.some(s=>s.sql==='BEGIN')).toBe(false);
+ });
+ it('keeps transport failures distinct from missing historical evidence',async()=>{
+  const transport=new RpcRequestError('test node transport failed','transport');
+  const m=memory({rpcError:transport});
+  const result=await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now});
+  expect(result.reason).toBe('test node transport failed');
+  expect(m.statements.find(s=>s.sql.includes('attempts=attempts+1'))?.params.slice(2)).toEqual(['test node transport failed',60]);
+  expect(m.statements.some(s=>s.sql==='BEGIN')).toBe(false);
  });
  it('adds an authenticated certificate and one temporary canonical receipt without touching financial records',async()=>{
   const m=memory();expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now})).toMatchObject({attempted:1,certified:1});
@@ -67,6 +111,7 @@ describe('bounded selected-token birth evidence capture',()=>{
   expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now})).toMatchObject({certified:0,reason:'token_birth_creation_orphaned'});expect(m.row.proof.tokenBirth).toBeUndefined();expect(m.statements.some(s=>s.sql==='BEGIN')).toBe(false);
  });
  it('keeps unsupported creation semantics pending with a bounded retry instead of approving an event alone',async()=>{
-  const m=memory();m.f.creation.receipt.logs[0].data=birthHash(0);expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now})).toMatchObject({certified:0,reason:'token_birth_creation_unsupported'});expect(m.row.proof.tokenBirth).toBeUndefined();expect(m.statements.some(s=>s.sql.includes("interval '1 hour'"))).toBe(true);
+  const m=memory();m.f.creation.receipt.logs[0].data=birthHash(0);expect(await runFreshTokenBirthCapture(m.db,m.rpc,{now:m.now})).toMatchObject({certified:0,reason:'token_birth_creation_unsupported'});expect(m.row.proof.tokenBirth).toBeUndefined();const failed=m.statements.find(s=>s.sql.includes('attempts=attempts+1'))!;
+  expect(failed.params[3]).toBe(3600);
  });
 });
